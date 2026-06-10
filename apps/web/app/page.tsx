@@ -58,7 +58,7 @@ export default function Home() {
           </p>
           <div className="hero-cta">
             <a className="btn primary" href="#run">
-              npx camus install
+              npx camus-cli install
             </a>
           </div>
         </div>
@@ -218,7 +218,7 @@ export default function Home() {
             <pre>
               <span className="c"># one-time</span>
               {'\n'}
-              <span className="p">$</span> npm i -g camus
+              <span className="p">$</span> npm i -g camus-cli
               {'\n'}
               <span className="p">$</span> camus install{'                 '}
               <span className="c"># skill + workflows → ~/.claude (frozen copy)</span>

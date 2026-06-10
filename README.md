@@ -89,7 +89,7 @@ CAMUS-SPEC.md             # the full design
 ## Install
 
 ```bash
-npm i -g camus
+npm i -g camus-cli
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)

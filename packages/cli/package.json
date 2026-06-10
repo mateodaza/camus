@@ -1,5 +1,5 @@
 {
-  "name": "camus",
+  "name": "camus-cli",
   "version": "0.1.0",
   "description": "Camus — an autonomous coding loop that can't grade its own homework. Claude implements, Codex reviews, your own tests have the final word.",
   "bin": {

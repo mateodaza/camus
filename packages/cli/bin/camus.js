@@ -39,7 +39,7 @@ function py(script, args) {
 
 const HELP = `camus ${pkg.version} — the coding loop that can't grade its own homework
 
-usage: npx camus <command>
+usage: npx camus-cli <command>
 
   install      copy skill + workflows into ~/.claude (frozen copy, not symlink)
   check        preflight: installed gate in sync with package? (run before any auto/feat run)
@@ -49,7 +49,7 @@ usage: npx camus <command>
   version      print version
 
 per-run recipe (from your repo):
-  npx camus check
+  npx camus-cli check
   export CAMUS_REPO_ROOT="$(pwd -P)"
   export CAMUS_VERIFY_CMD="<type-check && tests>"   # include TESTS, not just types
   claude --permission-mode auto
