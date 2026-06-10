@@ -1,268 +1,221 @@
-function SlopeMark({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" className={className} aria-hidden="true">
-      <polygon points="0,120 120,120 120,0" fill="#0B0B16" />
-      <circle cx="63" cy="33" r="19" fill="#0B0B16" />
-    </svg>
-  );
-}
-
-function RoundsDivider() {
-  return (
-    <div className="divider" aria-hidden="true">
-      <svg viewBox="0 0 168 84" xmlns="http://www.w3.org/2000/svg">
-        <polygon points="0,56 56,56 56,0" fill="#0B0B16" />
-        <polygon points="56,84 84,84 84,56" fill="#0B0B16" />
-        <polygon points="84,84 98,84 98,70" fill="#0B0B16" />
-      </svg>
-    </div>
-  );
-}
+import { SiteNav } from './components/SiteNav';
+import { SiteFooter } from './components/SiteFooter';
+import { ClimbLoop } from './components/ClimbLoop';
+import { Artifact } from './components/Artifact';
+import { Reveal } from './components/Reveal';
+import { CoverMark } from './components/CoverMark';
 
 export default function Home() {
   return (
     <>
-      <nav>
-        <div className="wrap nav-row">
-          <a className="lockup" href="#" aria-label="Camus">
-            <SlopeMark />
-            <span>CAMUS</span>
-          </a>
-          <div className="nav-links">
-            <a href="#honesty">The gates</a>
-            <a href="#autonomy">Autonomy</a>
-            <a href="#run">Run it</a>
+      <SiteNav />
+      <main id="top">
+        <header className="hero">
+          <div className="wrap hero-in">
+            <h1 className="hero-h1">
+              <span className="lockup">
+                <ClimbLoop />
+                <span className="wordmark">Camus</span>
+              </span>
+              <span className="tagline">A coding loop that proves every change.</span>
+            </h1>
+            <p className="hero-sub">
+              A different model reviews every change. Your own tests have the final word.
+            </p>
+            <div className="cta-row">
+              <a className="cta" href="https://www.npmjs.com/package/camus-cli">npx camus-cli install</a>
+              <a className="cta-ghost" href="https://github.com/mateodaza/camus">GitHub &#8599;</a>
+            </div>
           </div>
-        </div>
-      </nav>
+        </header>
 
-      <header>
-        <svg
-          className="hero-tri"
-          viewBox="0 0 120 120"
-          preserveAspectRatio="xMaxYMid slice"
-          xmlns="http://www.w3.org/2000/svg"
-          aria-hidden="true"
-        >
-          <polygon points="0,120 120,120 120,0" fill="#0B0B16" />
-          <circle cx="63" cy="33" r="19" fill="#0B0B16" />
-        </svg>
-        <div className="wrap">
-          <h1>
-            An autonomous coding loop that <em>can&apos;t grade its own homework.</em>
-          </h1>
-          <p className="sub">
-            Camus runs your coding tasks from plan to verified commit, unattended. Claude writes
-            the code. Codex, a different vendor&apos;s model, reviews every change. Your own tests
-            have the final word.
-          </p>
-          <div className="hero-cta">
-            <a className="btn primary" href="#run">
-              npx camus-cli install
-            </a>
-          </div>
-        </div>
-      </header>
+        <section className="sec" id="watch">
+          <div className="wrap">
+            <Reveal>
+              <h2 className="sec-h2">Watch it work.</h2>
+              <p className="sec-sub">
+                It ships as a skill and two workflows, so it runs wherever skills run. Every phase of
+                every task is on screen as it happens.
+              </p>
+            </Reveal>
+            <Reveal>
+              <div className="term term--tree">
+                <pre>
+{`camus · feat "harden input boundaries" · 3 tasks
 
-      <div className="loop">
-        <div className="wrap">
-          <div className="loop-row">
-            <span className="stage">plan</span>
-            <span className="arr">→</span>
-            <span className="stage">implement</span>
-            <span className="arr">→</span>
-            <span className="stage codex">codex review</span>
-            <span className="arr">⇄</span>
-            <span className="stage">fix</span>
-            <span className="arr">→</span>
-            <span className="stage">commit gate</span>
-            <span className="arr">→</span>
-            <span className="stage det">verify: types + tests</span>
-            <span className="arr">→</span>
-            <span className="stage det">done</span>
-          </div>
-          <div className="loop-note">
-            loops while <b>P0 / P1 / P2</b> findings remain · round cap 3 · every round leaves an
-            audit file on disk
-          </div>
-        </div>
-      </div>
-
-      <section id="honesty">
-        <div className="wrap">
-          <RoundsDivider />
-          <h2>How it stays honest</h2>
-          <p className="lede">
-            Most agent loops are maker and checker from the same vendor. Camus separates them.
-          </p>
-          <div className="grid">
-            <div className="cell">
-              <h3>Cross-vendor review</h3>
-              <p>
-                The reviewer is <code>codex</code>, not another Claude. A thin runner relays its
-                JSON verbatim; Claude never re-judges the verdict. Each round gets a fresh Codex
-                session, so findings are re-raised.
-              </p>
-            </div>
-            <div className="cell">
-              <h3>Tests have the last word</h3>
-              <p>
-                A clean review doesn&apos;t ship code that fails <code>type-check</code> or{' '}
-                <code>test</code>. If no verifier is found, that is a failure, not a pass.
-              </p>
-            </div>
-            <div className="cell">
-              <h3>Infra failure ≠ findings</h3>
-              <p>
-                Codex not running is <code>ran:false</code>: retried, never treated as a rejection
-                or a pass. Missing deps is <code>verify_inconclusive</code>, not broken code.
-              </p>
-            </div>
-            <div className="cell">
-              <h3>Work provably lands</h3>
-              <p>
-                A commit gate after review: nothing staged means <code>no_changes</code>, never a
-                task silently marked done. Every <code>done</code> carries its{' '}
-                <code>commit_sha</code>.
-              </p>
-            </div>
-            <div className="cell">
-              <h3>Reviews leave receipts</h3>
-              <p>
-                Every round writes Codex&apos;s raw output to <code>~/.camus/reviews/</code>. A
-                missing file means the review never ran.
-              </p>
-            </div>
-            <div className="cell">
-              <h3>Scripts stay in bounds</h3>
-              <p>
-                Every gate script is bound to the calling repo, <code>camus/*</code> branches and{' '}
-                <code>camus-wt-*</code> worktrees. Anything else is rejected.
-              </p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section id="autonomy">
-        <div className="wrap">
-          <h2>Autonomy, bounded</h2>
-          <p className="lede">
-            No permission prompts when that&apos;s safe. A question when a task is genuinely
-            ambiguous.
-          </p>
-          <ul className="rules">
-            <li>
-              <span className="n">i</span>
-              <div>
-                <b>Zero-click runs</b>
-                <p>
-                  One egress trust line and allow rules for five gate scripts. Not{' '}
-                  <code>bypassPermissions</code>, no broad shell access.
-                </p>
+  `}<span className="g">✓</span>{`  env + baseline
+  │
+  `}<span className="g">✓</span>{`  1  guard empty input · embedding.ts        sonnet
+  │     plan · implement · review · verify          → a1f9c2e
+  │
+  `}<span className="g">✓</span>{`  2  filter empty roles · chunk-roles.ts     sonnet → opus
+  │     plan · implement · `}<span className="r">review ⇄ fix ×2</span>{` · verify  → 3c4d5e6
+  │
+  `}<span className="r">▍</span>{`  3  guard the question counter · counter.ts  sonnet
+  │     plan · implement · `}<span className="r">reviewing …</span>{`
+  │
+  …  integration verify · report → ~/.camus/reports/harden-…json`}
+                </pre>
               </div>
-            </li>
-            <li>
-              <span className="n">ii</span>
-              <div>
-                <b>Three policies</b>
-                <p>
-                  <code>autonomous</code> · <code>ask_on_ambiguity</code> (default) ·{' '}
-                  <code>ask_on_major</code>. An ambiguous task halts with a question; your answer
-                  resumes the same run.
-                </p>
-              </div>
-            </li>
-            <li>
-              <span className="n">iii</span>
-              <div>
-                <b>Decisions are reported</b>
-                <p>
-                  Every judgment call lands in the report with the reason and the rejected
-                  alternative. You review decisions, not just diffs.
-                </p>
-              </div>
-            </li>
-            <li>
-              <span className="n">iv</span>
-              <div>
-                <b>Models are routed, then escalated</b>
-                <p>
-                  Trivial work goes to Sonnet, the rest to Opus. Persistent findings escalate the
-                  fix model. Override with <code>model:</code> or <code>modelTier:</code>.
-                </p>
-              </div>
-            </li>
-            <li>
-              <span className="n">v</span>
-              <div>
-                <b>Interrupted runs resume</b>
-                <p>
-                  Resumed with their exact original arguments. Done tasks skip; the unfinished one
-                  re-runs.
-                </p>
-              </div>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <section id="run">
-        <div className="wrap">
-          <h2>Run it</h2>
-          <p className="lede">
-            You need Claude Code (subscription), the Codex CLI (authenticated), node, python3, and
-            a repo you trust.
-          </p>
-          <div className="term">
-            <pre>
-              <span className="c"># one-time</span>
-              {'\n'}
-              <span className="p">$</span> npm i -g camus-cli
-              {'\n'}
-              <span className="p">$</span> camus install{'                 '}
-              <span className="c"># skill + workflows → ~/.claude (frozen copy)</span>
-              {'\n'}
-              <span className="p">$</span> camus auto-setup{'              '}
-              <span className="c"># opt-in: scoped unattended profile</span>
-              {'\n\n'}
-              <span className="c"># per run, from your repo</span>
-              {'\n'}
-              <span className="p">$</span> camus check{'                   '}
-              <span className="c"># gate in sync?</span>
-              {'\n'}
-              <span className="p">$</span> export CAMUS_REPO_ROOT=<span className="o">&quot;$(pwd -P)&quot;</span>
-              {'\n'}
-              <span className="p">$</span> export CAMUS_VERIFY_CMD=
-              <span className="o">&quot;pnpm type-check &amp;&amp; pnpm test&quot;</span>
-              {'\n'}
-              <span className="p">$</span> claude --permission-mode auto
-              {'\n\n'}
-              <span className="p">&gt;</span> /camus-feat{' '}
-              <span className="o">{'{ feat: "Harden input boundaries", tasks: [...] }'}</span>
-              {'\n'}
-              <span className="g">✓</span> env + baseline · 3/3 tasks done · integration verify
-              green
-              {'\n'}
-              <span className="g">✓</span> report → ~/.camus/reports/harden-input-boundaries-x1f9q2.json
-            </pre>
+            </Reveal>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <footer>
-        <div className="wrap">
-          <p className="epigraph">
-            The struggle itself toward the heights is enough to fill a man&apos;s heart. One must
-            imagine Sisyphus happy.
-          </p>
-          <p className="attrib">— Albert Camus, The Myth of Sisyphus (tr. Justin O&apos;Brien)</p>
-          <div className="foot-meta">
-            <span>Camus — formerly Nightcrawler v2. Open source, trusted-code tool.</span>
-            <a href="https://github.com/mateodaza/camus">github.com/mateodaza/camus</a>
+        <section className="sec" id="honest">
+          <div className="wrap">
+            <Reveal>
+              <h2 className="sec-h2">No step approves its own work.</h2>
+              <p className="sec-sub">
+                Most agent loops are maker and checker from the same vendor. Camus separates them,
+                and leaves the receipts.
+              </p>
+            </Reveal>
+
+            <div className="evs">
+              <Reveal className="ev">
+                <p className="ev-cap">
+                  The review comes from a different vendor&apos;s model, relayed word for word.{' '}
+                  <em>Claude never re-judges it.</em>
+                </p>
+                <Artifact tone="dark" path="~/.camus/reviews/harden-x1f9q2-r1.json" label="A Codex review verdict">
+{`{
+  `}<span className="k">&quot;ran&quot;</span>{`: true,
+  `}<span className="k">&quot;verdict&quot;</span>{`: `}<span className="rej">&quot;REJECT&quot;</span>{`,
+  `}<span className="k">&quot;blocking&quot;</span>{`: [
+    { `}<span className="k">&quot;priority&quot;</span>{`: 1, `}<span className="k">&quot;note&quot;</span>{`: "missing empty-input guard" }
+  ]
+}`}
+                </Artifact>
+              </Reveal>
+
+              <Reveal className="ev">
+                <p className="ev-cap">
+                  A clean review still does not ship code that fails the repo&apos;s own checks.{' '}
+                  <em>No verifier found is a failure, not a pass.</em>
+                </p>
+                <Artifact tone="dark" path="camus verify" label="A verification run">
+{`$ pnpm type-check     `}<span className="ok">ok</span>{`
+$ pnpm test           `}<span className="ok">ok</span>{`   163 passed
+→ done · commit a1f9c2e`}
+                </Artifact>
+              </Reveal>
+
+              <Reveal className="ev">
+                <p className="ev-cap">
+                  Every judgment call is logged with its reason and the path not taken.{' '}
+                  <em>You review decisions, not just diffs.</em>
+                </p>
+                <Artifact path="~/.camus/reports/harden-input-boundaries.json" label="A decision in the run report">
+{`  `}<span className="k">&quot;decisions&quot;</span>{`: [
+    {
+      `}<span className="k">&quot;what&quot;</span>{`:     "widened content type to unknown",
+      `}<span className="k">&quot;why&quot;</span>{`:      "callers pass non-string payloads",
+      `}<span className="k">&quot;rejected&quot;</span>{`: "a string-only guard"
+    }
+  ]`}
+                </Artifact>
+              </Reveal>
+            </div>
           </div>
-        </div>
-      </footer>
+        </section>
+
+        <section className="sec" id="autonomy">
+          <div className="wrap">
+            <Reveal>
+              <h2 className="sec-h2">
+                Unattended, <em>not unaccountable.</em>
+              </h2>
+              <p className="sec-sub">
+                No prompts when that is safe. A real question when a task is genuinely ambiguous,
+                and your answer resumes the same run.
+              </p>
+              <div className="pol">
+                <b>autonomous</b>
+                <span>·</span>
+                <span>
+                  <b>ask_on_ambiguity</b> (default)
+                </span>
+                <span>·</span>
+                <b>ask_on_major</b>
+              </div>
+            </Reveal>
+
+            <div className="evs">
+              <Reveal className="ev">
+                <p className="ev-cap">
+                  When it genuinely cannot decide, it stops and asks. <em>It does not guess.</em>
+                </p>
+                <Artifact path="~/.camus/reports/feat-9c2.json" label="A run paused for a human">
+{`  `}<span className="k">&quot;status&quot;</span>{`:   `}<span className="rej">&quot;needs_human&quot;</span>{`,
+  `}<span className="k">&quot;question&quot;</span>{`: "Two callers expect different shapes.
+              Which contract should win?"`}
+                </Artifact>
+              </Reveal>
+            </div>
+          </div>
+        </section>
+
+        <section className="sec cover-sec" id="philosophy">
+          <div className="wrap">
+            <Reveal>
+              <div className="cover-grid">
+                <CoverMark />
+                <div className="cover-text">
+                  <h2 className="sec-h2">Bigger than code.</h2>
+                  <p className="sec-sub">
+                    Camus is built for code. The harder question underneath is how far you can trust
+                    an agent that runs on its own.
+                  </p>
+                  <div className="creed">
+                    <p>An agent can do the work. It can&apos;t be the one who decides the work is good.</p>
+                    <p>
+                      You set how far it goes alone: all the way to a commit, or it stops and asks
+                      when a task is genuinely unclear, or only on the calls that are big.
+                    </p>
+                    <p>
+                      It keeps a record of what it changed, why, the option it rejected, and every
+                      review. You read the decisions, not just the diff.
+                    </p>
+                    <p>It never really finishes. The boulder rolls back down, and the checks are what keep each run honest.</p>
+                  </div>
+                </div>
+              </div>
+            </Reveal>
+          </div>
+        </section>
+
+        <section className="sec" id="run">
+          <div className="wrap">
+            <Reveal>
+              <h2 className="sec-h2">Run it.</h2>
+              <p className="sec-sub">
+                It runs in Claude Code today: a subscription, the Codex CLI authenticated, node,
+                python3, and a repo you trust.
+              </p>
+            </Reveal>
+            <Reveal>
+              <div className="term">
+                <pre>
+{`# one-time
+$ npm i -g camus-cli
+$ camus install        `}<span className="c"># skill + workflows into ~/.claude</span>{`
+$ camus auto-setup     `}<span className="c"># opt-in scoped unattended profile</span>{`
+
+# per run, from your repo
+$ camus check
+$ export CAMUS_REPO_ROOT=`}<span className="o">&quot;$(pwd -P)&quot;</span>{`
+$ export CAMUS_VERIFY_CMD=`}<span className="o">&quot;pnpm type-check &amp;&amp; pnpm test&quot;</span>{`
+$ claude --permission-mode auto
+
+> /camus-feat { feat: "Harden input boundaries", tasks: [...] }
+`}<span className="o">✓</span>{` env + baseline · 3/3 tasks done · integration verify green`}
+                </pre>
+              </div>
+            </Reveal>
+          </div>
+        </section>
+      </main>
+      <SiteFooter />
     </>
   );
 }

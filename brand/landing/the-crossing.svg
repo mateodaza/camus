@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 600" role="img" aria-label="Four roads at right and diagonal angles converge on a clearing holding a single boulder">
+<clipPath id="c"><rect width="400" height="600"/></clipPath><g clip-path="url(#c)"><rect x="0" y="0" width="400" height="600" fill="#F4F1E8"/>
+<rect x="0" y="204" width="400" height="12" fill="#0B0B16"/>
+<rect x="141" y="0" width="18" height="600" fill="#0B0B16"/>
+<polygon points="-700,-685 1100,1115 1100,1205 -700,-595" fill="#0B0B16"/>
+<polygon points="-700,1049 1100,-751 1100,-729 -700,1071" fill="#0B0B16"/>
+<circle cx="150" cy="210" r="40" fill="#F4F1E8"/>
+<circle cx="150" cy="210" r="22" fill="#0B0B16"/></g>
+</svg>

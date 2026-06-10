@@ -5,6 +5,9 @@ out/
 dist/
 *.tgz
 
+# pnpm store-probe leftovers
+_tmp_*
+
 # python
 __pycache__/
 *.pyc

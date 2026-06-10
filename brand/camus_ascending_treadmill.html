@@ -1,0 +1,43 @@
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;600&display=swap');
+.at{text-align:center;font-family:'Archivo',Inter,-apple-system,'Helvetica Neue',sans-serif}
+.at-sub{font-size:10.5px;color:#8B8A8A;letter-spacing:.22em;font-weight:600}
+.at-stage{width:320px;max-width:86%;height:auto;display:block;margin:18px auto 0}
+.at-cap{margin-top:24px;font-size:12px;color:#2E2D35;letter-spacing:.02em}
+.at-scene,.at-rock{will-change:transform}
+/* the mountain is a constant-velocity conveyor; it never stops */
+.at-scene{animation:atScene 5s linear infinite}
+.at-rock{animation:atRock 5s linear infinite}
+@keyframes atScene{
+  from{transform:translate(0,0)}
+  to{transform:translate(-120px,40px)}
+}
+/* constant speed along the whole path: climb (0-61.5%), arc over the apex
+   (61.5-72.5%), roll down the back slope (72.5-100%), bounce, repeat.
+   keyframe spacing is proportional to arc length, so the pace never varies. */
+@keyframes atRock{
+  0%{transform:translate(0,0)}
+  61.5%{transform:translate(72px,-72px)}
+  64.5%{transform:translate(76px,-74px)}
+  67%{transform:translate(80px,-75px)}
+  70%{transform:translate(84px,-74px)}
+  72.5%{transform:translate(88px,-72px)}
+  100%{transform:translate(120px,-40px)}
+}
+@media (prefers-reduced-motion:reduce){.at-scene,.at-rock{animation:none}}
+</style>
+<div class="at">
+  <div class="at-sub">THE LOOP</div>
+  <svg class="at-stage" viewBox="26 33 134 97" role="img" aria-label="The Camus mark in perpetual motion: the boulder climbs the 45-degree slope, crests, rolls down the far side, and climbs again without pause">
+    <clipPath id="atClip"><rect x="26" y="33" width="134" height="97"/></clipPath>
+    <g clip-path="url(#atClip)">
+      <g class="at-scene">
+        <polygon fill="#0B0B16" points="-70,162 10,82 50,122 130,42 170,82 250,2 290,42 370,-38 370,340 -70,340"/>
+        <g class="at-rock">
+          <circle cx="50" cy="105.6" r="13" fill="#0B0B16"/>
+        </g>
+      </g>
+    </g>
+  </svg>
+  <div class="at-cap">one must imagine sisyphus happy.</div>
+</div>
