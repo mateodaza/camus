@@ -108,6 +108,23 @@ camus auto-setup     # optional: the zero-click permission profile
 From a checkout: `npm i -g ./packages/cli` from the repo root, or run `./install.sh`
 directly inside `packages/cli/`. The CLI and the shell script are the same entrypoints.
 
+### Upgrading
+
+The gate in `~/.claude` is a **frozen copy** — updating the npm package alone changes
+nothing about what your runs execute. Upgrading is two steps, and `camus check` walks
+you through both:
+
+```bash
+npm i -g camus-cli@latest
+camus check          # now reports DRIFT (your frozen gate is the old version)
+camus install        # re-freeze the new gate into ~/.claude
+camus auto-setup     # only if check flagged the auto profile — re-runs migrate it in place
+```
+
+`camus check` is the upgrade detector by design: run it before any auto/feat run and a
+stale gate can never run silently. (0.2.0 upgraders: re-run `camus auto-setup` once — the
+trusted-context line changed for the new worktree home, and apply migrates the old line out.)
+
 ## Run
 
 From your repo:

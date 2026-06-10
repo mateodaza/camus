@@ -61,6 +61,12 @@ per-run recipe (from your repo):
   export CAMUS_VERIFY_CMD="<type-check && tests>"   # include TESTS, not just types
   claude --permission-mode auto
   # then: /camus-feat with your task list, or /camus-loop <one task>
+
+upgrading (the gate is a FROZEN copy — updating npm alone is not enough):
+  npm i -g camus-cli@latest   # or use npx camus-cli@latest below
+  npx camus-cli check         # reports DRIFT (old gate) + auto-profile status
+  npx camus-cli install       # re-freeze the new gate into ~/.claude
+  npx camus-cli auto-setup    # re-run if check said the auto profile is outdated
 `;
 
 switch (cmd) {
