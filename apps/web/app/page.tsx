@@ -2,7 +2,7 @@ function SlopeMark({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" className={className} aria-hidden="true">
       <polygon points="0,120 120,120 120,0" fill="#0B0B16" />
-      <circle cx="71" cy="35" r="11.5" fill="#0B0B16" />
+      <circle cx="63" cy="33" r="19" fill="#0B0B16" />
     </svg>
   );
 }
@@ -45,7 +45,7 @@ export default function Home() {
           aria-hidden="true"
         >
           <polygon points="0,120 120,120 120,0" fill="#0B0B16" />
-          <circle cx="71" cy="35" r="11.5" fill="#0B0B16" />
+          <circle cx="63" cy="33" r="19" fill="#0B0B16" />
         </svg>
         <div className="wrap">
           <h1>
@@ -59,9 +59,6 @@ export default function Home() {
           <div className="hero-cta">
             <a className="btn primary" href="#run">
               npx camus install
-            </a>
-            <a className="btn ghost" href="#honesty">
-              How it stays honest
             </a>
           </div>
         </div>
@@ -96,62 +93,51 @@ export default function Home() {
           <RoundsDivider />
           <h2>How it stays honest</h2>
           <p className="lede">
-            Most agent loops are maker and checker from the same vendor — the fox auditing the
-            henhouse. Camus structurally separates judgment from generation.
+            Most agent loops are maker and checker from the same vendor. Camus separates them.
           </p>
           <div className="grid">
             <div className="cell">
-              <span className="k">Gate</span>
               <h3>Cross-vendor review</h3>
               <p>
                 The reviewer is <code>codex</code>, not another Claude. A thin runner relays its
-                JSON verbatim — Claude never re-judges the verdict. Fresh reviewer session every
-                round, so issues get re-raised, not politely dropped.
+                JSON verbatim; Claude never re-judges the verdict. Each round gets a fresh Codex
+                session, so findings are re-raised.
               </p>
             </div>
             <div className="cell">
-              <span className="k">Gate</span>
-              <h3>Deterministic verify</h3>
+              <h3>Tests have the last word</h3>
               <p>
                 A clean review doesn&apos;t ship code that fails <code>type-check</code> or{' '}
-                <code>test</code>. Stack-agnostic detection, or <code>CAMUS_VERIFY_CMD</code> — and
-                if no verifier is found, that&apos;s a loud failure, never a pass.
+                <code>test</code>. If no verifier is found, that is a failure, not a pass.
               </p>
             </div>
             <div className="cell">
-              <span className="k">Guard</span>
               <h3>Infra failure ≠ findings</h3>
               <p>
-                Codex didn&apos;t run? That&apos;s <code>ran:false</code> — retried, never fed to
-                the fix loop as a rejection, never counted as clean. Missing deps?{' '}
-                <code>verify_inconclusive</code>, not broken code. The #1 runaway cause, fenced off.
+                Codex not running is <code>ran:false</code>: retried, never treated as a rejection
+                or a pass. Missing deps is <code>verify_inconclusive</code>, not broken code.
               </p>
             </div>
             <div className="cell">
-              <span className="k">Guard</span>
               <h3>Work provably lands</h3>
               <p>
-                A commit gate after review-clean: nothing staged means <code>no_changes</code>,
-                never a silent empty merge marked done. Every <code>done</code> carries its{' '}
+                A commit gate after review: nothing staged means <code>no_changes</code>, never a
+                task silently marked done. Every <code>done</code> carries its{' '}
                 <code>commit_sha</code>.
               </p>
             </div>
             <div className="cell">
-              <span className="k">Audit</span>
               <h3>Reviews leave receipts</h3>
               <p>
-                Every round persists Codex&apos;s raw and parsed output to{' '}
-                <code>~/.camus/reviews/</code>. A missing audit file means the binary never ran —
-                fabrication is detectable.
+                Every round writes Codex&apos;s raw output to <code>~/.camus/reviews/</code>. A
+                missing file means the review never ran.
               </p>
             </div>
             <div className="cell">
-              <span className="k">Guard</span>
-              <h3>Fail-closed target guard</h3>
+              <h3>Scripts stay in bounds</h3>
               <p>
-                Every gate script is bound to the caller&apos;s repo, <code>camus/*</code> branches
-                and <code>camus-wt-*</code> worktrees. Hardened across three Codex review rounds,
-                probe-verified live.
+                Every gate script is bound to the calling repo, <code>camus/*</code> branches and{' '}
+                <code>camus-wt-*</code> worktrees. Anything else is rejected.
               </p>
             </div>
           </div>
@@ -160,64 +146,59 @@ export default function Home() {
 
       <section id="autonomy">
         <div className="wrap">
-          <RoundsDivider />
-          <h2>Autonomy with a leash</h2>
+          <h2>Autonomy, bounded</h2>
           <p className="lede">
-            Runs without permission prompts when that&apos;s safe. Stops and asks you when a task
-            is genuinely ambiguous.
+            No permission prompts when that&apos;s safe. A question when a task is genuinely
+            ambiguous.
           </p>
           <ul className="rules">
             <li>
               <span className="n">i</span>
               <div>
-                <b>Zero-click auto mode</b>
+                <b>Zero-click runs</b>
                 <p>
-                  A narrow scoped profile: one egress trust line for the review diff plus allow
-                  rules for five gate scripts — not <code>bypassPermissions</code>, not broad shell
-                  access. Full feature runs with zero permission prompts, proven live.
+                  One egress trust line and allow rules for five gate scripts. Not{' '}
+                  <code>bypassPermissions</code>, no broad shell access.
                 </p>
               </div>
             </li>
             <li>
               <span className="n">ii</span>
               <div>
-                <b>A policy dial, not a personality</b>
+                <b>Three policies</b>
                 <p>
                   <code>autonomous</code> · <code>ask_on_ambiguity</code> (default) ·{' '}
-                  <code>ask_on_major</code>. Genuinely ambiguous tasks halt with a question; resume
-                  threads your answer back into the same run.
+                  <code>ask_on_major</code>. An ambiguous task halts with a question; your answer
+                  resumes the same run.
                 </p>
               </div>
             </li>
             <li>
               <span className="n">iii</span>
               <div>
-                <b>Decisions log, always on</b>
+                <b>Decisions are reported</b>
                 <p>
-                  Every judgment call the loop makes — &quot;widened param type{' '}
-                  <code>string → unknown</code>, because…&quot; — lands in the report with the why
-                  and the rejected alternative. You review decisions, not just diffs.
+                  Every judgment call lands in the report with the reason and the rejected
+                  alternative. You review decisions, not just diffs.
                 </p>
               </div>
             </li>
             <li>
               <span className="n">iv</span>
               <div>
-                <b>Model control with escalation</b>
+                <b>Models are routed, then escalated</b>
                 <p>
-                  A cheap classify pass routes trivial work to Sonnet, the rest to Opus. Persistent
-                  review findings escalate the fix model automatically. Force it with{' '}
-                  <code>model:</code> or <code>modelTier:</code> when you know better.
+                  Trivial work goes to Sonnet, the rest to Opus. Persistent findings escalate the
+                  fix model. Override with <code>model:</code> or <code>modelTier:</code>.
                 </p>
               </div>
             </li>
             <li>
               <span className="n">v</span>
               <div>
-                <b>Resume, don&apos;t reconstruct</b>
+                <b>Interrupted runs resume</b>
                 <p>
-                  Interrupted feature runs are detected and resumed with their canonical persisted
-                  args — same policy, same answers, same scope. Done tasks skip; the unfinished one
+                  Resumed with their exact original arguments. Done tasks skip; the unfinished one
                   re-runs.
                 </p>
               </div>
@@ -228,12 +209,10 @@ export default function Home() {
 
       <section id="run">
         <div className="wrap">
-          <RoundsDivider />
           <h2>Run it</h2>
           <p className="lede">
             You need Claude Code (subscription), the Codex CLI (authenticated), node, python3, and
-            a repo you trust. Camus is two workflows, one skill, and five audited gate scripts,
-            tested by 163 stdlib assertions.
+            a repo you trust.
           </p>
           <div className="term">
             <pre>

@@ -29,7 +29,10 @@ as a headline; never paraphrased.
 | C | **The Rounds** | **Secondary motif.** Section dividers, loading/progress states, round counters in run UIs. Never competes with A on the same surface at similar scale. |
 | B | **The Collar** | Retired (kept in `brand/` as an exploration; may return as an "author portrait" accent if refined). |
 
-Rules for the chosen mark: single ink, no gradients, no outlines, no rotation.
+Canonical geometry (locked 2026-06-10): boulder r=19 at (63,33) on the 120-unit
+half-square — large enough to read from a distance; the paper notch between boulder
+and slope is part of the mark, never filled. Single ink, no gradients, no outlines,
+no rotation.
 Clear space = the mark's own height / 4 on all sides. Inverts cleanly (paper mark
 on ink ground). 45° angles only — every shape is a half-square or a circle.
 
@@ -46,9 +49,10 @@ always acceptable; a screen with two coral elements is not.
 
 ## Typography
 
-- **Display serif** — headlines, the epigraph: `Source Serif 4` (Google Fonts), or
-  system Georgia as fallback. Large, tight-leaded, sentence case. Italic only for
-  the quote.
+- **Display serif** — headlines, the epigraph: `EB Garamond` (Google Fonts), Georgia
+  fallback. Garamond is the canonical French book face — Gallimard, Camus's publisher,
+  sets its covers in Garamond-family type. Literary by lineage, not decoration. Large,
+  tight-leaded, sentence case; the true italic carries the headline emphasis and the quote.
 - **Grotesque sans** — UI, body, labels: `Archivo` (or `Inter`). Generous line-height.
 - **Mono** — code, terminal blocks, metadata chips: system mono stack.
 - Caps + letterspacing (`0.3em`) reserved for the wordmark CAMUS and tiny labels only.

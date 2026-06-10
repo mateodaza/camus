@@ -3,5 +3,5 @@
        triangle, the Vintage cover's atomic unit) and the boulder, mid-ascent.
        One ink, no gradient. Invert by swapping fill to paper on ink ground. -->
   <polygon points="0,120 120,120 120,0" fill="#0B0B16"/>
-  <circle cx="71" cy="35" r="11.5" fill="#0B0B16"/>
+  <circle cx="63" cy="33" r="19" fill="#0B0B16"/>
 </svg>
