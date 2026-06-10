@@ -117,6 +117,26 @@ def test_has_profile():
     assert M.has_profile({}) is False
 
 
+def test_superseded_line_migrated_in_place():
+    # A pre-2026-06-10 install carries the OLD context line — --apply must replace it, not stack.
+    old = M.SUPERSEDED_ENV_LINES[0]
+    settings = {"autoMode": {"environment": [M.DEFAULTS, M.TRUST_LINE, old, "user custom line"]},
+                "permissions": {"allow": list(M.allow_rules())}}
+    assert M.has_profile(settings) is False           # old profile reads as missing → upgrade path
+    out = M.apply(settings)
+    env = out["autoMode"]["environment"]
+    assert old not in env                              # superseded line removed
+    assert env.count(M.CONTEXT_LINE) == 1              # new line present exactly once
+    assert "user custom line" in env                   # user's own lines untouched
+    assert M.has_profile(M.apply(copy.deepcopy(out))) is True   # idempotent after upgrade
+
+
+def test_superseded_list_never_contains_current_lines():
+    # Guard against a future edit accidentally self-deleting the live profile.
+    for line in M.ENV_LINES:
+        assert line not in M.SUPERSEDED_ENV_LINES
+
+
 # --- CLI round-trip --------------------------------------------------------
 
 def _tmp(contents=None):

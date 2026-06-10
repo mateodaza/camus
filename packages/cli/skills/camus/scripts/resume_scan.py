@@ -31,6 +31,7 @@ SAFE-to-auto-resume rule (ALL must hold):
 
 Terminal / NOT auto-resumable (a deliberate stop — a human decides next):
   done, done_with_noops, halted, needs_human (resume needs an answers map, not a blind re-invoke),
+  paused_by_user (a `camus steer --pause` — the human resumes when ready),
   dirty_tree, base_red, env_not_ready, infra_error, feat_integration_failed.
 """
 import json
@@ -48,6 +49,7 @@ TERMINAL_STATUSES = (
     "done_with_noops",
     "halted",
     "needs_human",
+    "paused_by_user",
     "dirty_tree",
     "base_red",
     "env_not_ready",

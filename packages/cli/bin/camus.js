@@ -24,6 +24,7 @@ const rest = argv.slice(1);
 
 function sh(args) {
   const r = spawnSync('bash', [INSTALL, ...args], { stdio: 'inherit' });
+  if (r.error) console.error('camus: ' + r.error.message);   // e.g. bash not found — never exit 1 silently
   process.exit(r.status === null ? 1 : r.status);
 }
 
@@ -34,6 +35,7 @@ function py(script, args) {
     ? installed
     : path.join(ROOT, 'skills', 'camus', 'scripts', script);
   const r = spawnSync('python3', [src, ...args], { stdio: 'inherit' });
+  if (r.error) console.error('camus: ' + r.error.message);   // e.g. python3 not found — never exit 1 silently
   process.exit(r.status === null ? 1 : r.status);
 }
 
@@ -45,6 +47,11 @@ usage: npx camus-cli <command>
   check        preflight: installed gate in sync with package? (run before any auto/feat run)
   auto-setup   opt-in: install the narrow scoped auto-mode profile (zero-click runs)
   env-check [repo]   is the repo runnable? node version / deps / verifier toolchain
+  status [featId]    live dashboard for a feat run: tasks, last steps, review rounds, steer
+  steer [...]        redirect a RUNNING feat at its next task boundary:
+                       steer "<guidance>"        steer the next task
+                       steer --task <id> "<g>"   steer one specific task
+                       steer --pause             halt there (resumable) · --show · --clear
   resume       list interrupted feat runs (canonical resumeArgs, JSON)
   version      print version
 
@@ -71,6 +78,12 @@ switch (cmd) {
     break;
   case 'resume':
     py('resume_scan.py', rest);
+    break;
+  case 'status':
+    py('status.py', rest);
+    break;
+  case 'steer':
+    py('steer.py', rest);
     break;
   case 'version':
   case 'v':

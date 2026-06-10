@@ -45,12 +45,26 @@ TRUST_LINE = (
 CONTEXT_LINE = (
     "Camus is trusted ONLY when invoked by its own installed workflows (camus-loop / "
     "camus-feat), and ONLY for: the CURRENT working repo; git branches named `camus/...` and "
-    "worktrees named `camus-wt-*`; running its own gate scripts under "
+    "worktrees named `camus-wt-*` (created under ~/.camus/worktrees/ via `git worktree add` "
+    "and removed there via `git worktree remove` once their branch is merged); running its "
+    "own gate scripts under "
     "~/.claude/skills/camus/scripts (each enforces a same-repo target guard); and state/report "
     "writes under ~/.camus. It must NOT push, deploy, run database migrations, or publish, and "
     "must NOT operate on any other repository — human merge and publish remain the boundary."
 )
 ENV_LINES = [TRUST_LINE, CONTEXT_LINE]
+
+# Older revisions of the lines above, removed on --apply so a re-run upgrades the profile in
+# place instead of accumulating near-duplicate (and eventually contradictory) context lines.
+SUPERSEDED_ENV_LINES = [
+    # pre-2026-06-10: worktrees were siblings of the repo; no centralized home, no cleanup.
+    "Camus is trusted ONLY when invoked by its own installed workflows (camus-loop / "
+    "camus-feat), and ONLY for: the CURRENT working repo; git branches named `camus/...` and "
+    "worktrees named `camus-wt-*`; running its own gate scripts under "
+    "~/.claude/skills/camus/scripts (each enforces a same-repo target guard); and state/report "
+    "writes under ~/.camus. It must NOT push, deploy, run database migrations, or publish, and "
+    "must NOT operate on any other repository — human merge and publish remain the boundary.",
+]
 
 # Only the deterministic gate scripts — never a broad command class.
 _GATE_SCRIPTS = [
@@ -132,6 +146,7 @@ def apply(settings, home=None):
         env = [DEFAULTS]                 # fresh array MUST carry $defaults
     elif not isinstance(env, list):
         raise ValueError("autoMode.environment is not an array")
+    env = [line for line in env if line not in SUPERSEDED_ENV_LINES]
     for line in ENV_LINES:
         if line not in env:
             env.append(line)

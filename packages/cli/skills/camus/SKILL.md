@@ -84,6 +84,14 @@ Defaults: `ROUND_CAP = 3`.
 - `/camus-feat` — an ordered task list as one feature: preflight → feat branch → env +
   baseline verify → per-task loop (merge on `done`) → env re-check + integration verify →
   report at `~/.camus/reports/<featId>.json`. Forwards `policy`/`model`/`modelTier`/`skipPlan`/`answers`.
+- `camus status [featId]` — live dashboard for a run, from ANY terminal, read-only and
+  token-free: feat header, per-task board (rounds/tokens/model), the last 10 run-log steps,
+  recent Codex review rounds (audit-file timeline), and any pending steer note.
+- `camus steer` — redirect a RUNNING feat at its next task boundary: `camus steer "<guidance>"`
+  (steers the next task, threaded in exactly like a `needs_human` answer), `--task <id> "<g>"`
+  (a specific task), `--pause` (graceful resumable halt), `--show` / `--clear`. A note is
+  consumed ONCE. Live mid-task injection is deliberately unsupported — the engine is a
+  deterministic, resumable script; the boundary is the safe redirect point.
 
 ## Shipped hardening (all live, all tested)
 
@@ -104,5 +112,14 @@ Defaults: `ROUND_CAP = 3`.
   emits canonical `resumeArgs` verbatim.
 - **Worktree dep-prep** (`prep.sh`): fresh worktrees install deps before verify; a toolchain
   that can't run returns `verify_inconclusive`, never `verify_failed`.
+- **Out-of-tree worktrees + cleanup**: task worktrees live under `~/.camus/worktrees/<repo>-<id>/`
+  (never inside or beside the user's project — game-engine asset importers scan the tree, and
+  sibling folders read as per-task trash). `camus-feat` removes each worktree once its branch
+  is merged (branches kept for audit); failed/paused tasks keep theirs for inspection.
+- **Watch & steer**: the feat persists a run-log event ring (last 20 steps, carried across
+  resumes) + per-task telemetry into its state file; `status.py` renders it together with the
+  per-round Codex audit mtimes. `steer.py` writes a once-consumed note the feat checks at every
+  task boundary (pause / guidance / per-task answers); `paused_by_user` is terminal for the
+  auto-resumer — only a human resumes a human pause.
 
 Target-B (VPS interactive) tooling remains **gated on G3** (subscription-auth-on-server ToS).

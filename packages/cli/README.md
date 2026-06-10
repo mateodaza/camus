@@ -68,6 +68,15 @@ silently marked done. Every `done` carries its `commit_sha`.
   exact original arguments. Finished tasks skip; the unfinished one re-runs.
 - **Gate scripts are fenced in.** Every script checks it is operating on the calling
   repo, a `camus/*` branch, and a `camus-wt-*` worktree. Anything else is rejected.
+- **Your project folder stays clean.** Task worktrees live under
+  `~/.camus/worktrees/<repo>-<id>/`, never inside or beside your project. Once a task's
+  branch is merged into the feat branch its worktree is removed (the branch is kept
+  for audit); failed or paused tasks keep theirs for inspection.
+- **You can watch it — and grab the wheel.** `camus status` is a live, read-only
+  dashboard from any terminal: per-task board, the last 10 steps, recent review
+  rounds, tokens. `camus steer "<guidance>"` redirects the next task,
+  `camus steer --pause` halts gracefully at the next task boundary (resumable) —
+  notes are consumed once, at the run's safe redirect points.
 
 ## Layout
 

@@ -54,6 +54,21 @@ if (!TASK) throw new Error('camus-loop: no task in args (pass a string or {task,
 const softBudget = `Soft budget: aim to stay under ~${TOKEN_TARGET_K}k tokens. Be terse; do not over-explore.`
 const targetLine = TARGET ? `Target path (start here): ${TARGET}` : 'No target path given — discover the relevant files yourself.'
 
+// Live token telemetry for the progress UI (run feedback 2026-06-10: surface spend like the
+// harness does). budget.spent() is the TURN total (shared pool — under camus-feat it includes
+// the feat's own spend); per-task deltas are computed by the feat. log()/result use ONLY —
+// NEVER interpolate into an agent prompt, or resume cache-replay would miss on every run.
+// `budget` ships with workflows GA (Claude Code >= 2.1.154, doc-checked 2026-06-10); degrade
+// to silence on older runtimes — the gate must never crash over telemetry.
+const spentTok = () => {
+  try { return (typeof budget === 'object' && budget && typeof budget.spent === 'function') ? budget.spent() : null }
+  catch (_) { return null }
+}
+const tokSuffix = () => {
+  const s = spentTok()
+  return s == null ? '' : ` — ~${Math.round(s / 1000)}k output tokens spent this turn`
+}
+
 // Deterministic worktree identity — computed here, never improvised by the agent.
 // (Run-1 bug: the implement agent appended the repo path into git's commit-ish slot;
 // we now hand it the exact command.)
@@ -76,7 +91,24 @@ function fnv1a(str) {
 const RUN_ID = fnv1a(ID_SALT ? ID_SALT + '::' + TASK : TASK).slice(0, 6)
 const SLUG = slugify(TASK)
 const BRANCH = `${BRANCH_PREFIX}${SLUG}-${RUN_ID}`
-const WT_REL = `../camus-wt-${SLUG}-${RUN_ID}`
+const WT_NAME = `camus-wt-${SLUG}-${RUN_ID}`
+// Worktrees live OUT of the project tree, under ~/.camus/worktrees/<repo>-<id>/ — NOT as
+// siblings of the repo (run feedback 2026-06-10: per-task `../camus-wt-*` folders read as
+// trash in the user's project dir; game-engine repos additionally must never host worktrees
+// INSIDE the repo, asset importers scan the tree). ~/.camus is already the blessed mutable
+// run-state home. $HOME and the repo name resolve in the implement agent's shell at the repo
+// root; the target guard is location-independent (same git common-dir + basename coherence).
+// DELIBERATE divergence from Claude Code's own `.claude/worktrees/<name>/` convention
+// (code.claude.com/docs/en/worktrees, checked 2026-06-10): an IN-repo worktree dir shows as
+// untracked and would trip camus-feat's clean-tree preflight unless every target repo
+// gitignores it, and it puts a full project copy inside test-glob/backup-sync reach. Do not
+// "fix" this back to the documented location without solving both.
+// Parent = <basename>-<cksum of the absolute repo path>: basename alone collides across two
+// repos both named "app"/"game" (review P2 2026-06-10); the cksum (POSIX, always present)
+// makes the parent repo-unique while staying deterministic for the same checkout path.
+const WT_PARENT_EXPR = `$HOME/.camus/worktrees/$(basename "$(pwd -P)")-$(pwd -P | cksum | cut -d' ' -f1)`
+const WT_PARENT = `"${WT_PARENT_EXPR}"`
+const WT_DEST = `"${WT_PARENT_EXPR}/${WT_NAME}"`
 
 // ── Schemas (only where the script needs structured fields) ──────────────────
 const CLASSIFY_SCHEMA = {
@@ -281,10 +313,11 @@ ${plan.plan}
 Files in scope: ${plan.relevant_files.join(', ') || (planSkipped ? 'discover the files yourself' : '(discover from the plan)')}
 
 Steps:
-1. From the repo root, run EXACTLY this command and NOTHING ELSE. Do NOT append the repo
-   path or any other argument — the new branch is created from the current HEAD:
-     git worktree add -b ${BRANCH} ${WT_REL}
-2. Get the worktree's ABSOLUTE path: run \`cd ${WT_REL} && pwd\` and use its output as worktree_path.
+1. From the repo root, run EXACTLY these two commands and NOTHING ELSE. Do NOT change any
+   path or argument — the new branch is created from the current HEAD:
+     mkdir -p ${WT_PARENT}
+     git worktree add -b ${BRANCH} ${WT_DEST}
+2. Get the worktree's ABSOLUTE path: run \`cd ${WT_DEST} && pwd\` and use its output as worktree_path.
 3. Make the change ONLY inside that worktree. Stay within the planned files unless the
    plan clearly requires touching an adjacent file.
 4. Do NOT run type-check, tests, or codex review — later phases own that.
@@ -298,15 +331,15 @@ if (!impl) return { status: 'aborted', stage: 'implement', task: TASK, plan }
 // SECURITY (audit F3): never trust the agent's returned path verbatim — it flows into
 // cd/exec, and a hallucinated or injected value (/, $HOME, an attacker dir) would become a
 // path-controlled exec primitive. Require it to end with the canonical worktree name we
-// computed; otherwise refuse. Empty -> fall back to the deterministic relative path.
-const WT_NAME = `camus-wt-${SLUG}-${RUN_ID}`
+// computed; otherwise refuse. Empty also refuses (fail closed): the centralized destination
+// depends on $HOME + the repo basename, so the script has no deterministic absolute fallback.
 const claimed = (impl && typeof impl.worktree_path === 'string') ? impl.worktree_path : ''
-if (claimed && !claimed.endsWith(WT_NAME)) {
+if (!claimed || !claimed.endsWith(WT_NAME)) {
   return { status: 'aborted', stage: 'implement', task: TASK, plan,
-    note: `Implement agent returned an unexpected worktree path (${claimed}); expected one ending in "${WT_NAME}". Refusing to cd/exec into it.` }
+    note: `Implement agent returned ${claimed ? `an unexpected worktree path (${claimed})` : 'no worktree path'}; expected an absolute path ending in "${WT_NAME}". Refusing to cd/exec into it.` }
 }
-const WT = claimed || WT_REL
-log(`Implemented in worktree ${WT} (branch ${BRANCH}).`)
+const WT = claimed
+log(`Implemented in worktree ${WT} (branch ${BRANCH})${tokSuffix()}.`)
 
 // ── Phase 3: REVIEW ↔ FIX loop (ROUND_CAP rounds) ────────────────────────────
 // Reviewer is THIN: it runs the script and echoes raw stdout. No schema, no
@@ -350,7 +383,7 @@ while (round < ROUND_CAP) {
     })
     gate = asGate(raw)
     if (gate.ran) break
-    log(`Round ${round}: reviewer infra failure (${gate.error}) — attempt ${attempt}/${INFRA_RETRIES + 1}.`)
+    log(`Round ${round}/${ROUND_CAP}: reviewer infra failure (${gate.error}) — attempt ${attempt}/${INFRA_RETRIES + 1}.`)
   }
 
   if (!gate.ran) {
@@ -362,13 +395,13 @@ while (round < ROUND_CAP) {
   // 3c: clean → done with review
   if (gate.clean === true) {
     reviewPassed = true
-    log(`Round ${round}: review CLEAN (no priority≤2 findings).`)
+    log(`Round ${round}/${ROUND_CAP}: review CLEAN (no priority≤2 findings)${tokSuffix()}.`)
     break
   }
 
   // 3d: blocking findings → fix in the SAME worktree, then loop
   lastBlocking = Array.isArray(gate.blocking) ? gate.blocking : []
-  log(`Round ${round}: ${lastBlocking.length} blocking finding(s) — dispatching fix.`)
+  log(`Round ${round}/${ROUND_CAP}: ${lastBlocking.length} blocking finding(s) — dispatching fix.`)
   // Escalate the FIX model if the cheap model is failing: round>=2 (first fix didn't clear review)
   // OR a priority-0 blocking finding is present. Monotonic, deterministic.
   if (!escalationFired && (round >= 2 || lastBlocking.some(b => b && b.priority === 0))) {
@@ -445,7 +478,7 @@ if (commitResult.committed !== true) {
   }
 }
 const COMMIT_SHA = commitResult.sha || null
-log(`Committed reviewed work (${COMMIT_SHA}) to ${BRANCH}.`)
+log(`Committed reviewed work (${COMMIT_SHA}) to ${BRANCH}${tokSuffix()}.`)
 
 // ── Phase 3.5: PREP — make the fresh worktree runnable (Node deps) before verify ─
 // A fresh git worktree has no node_modules; without this, verify can't RUN there (127 →
@@ -490,7 +523,7 @@ if (verify.pass === true) {
     status: 'done', task: TASK, worktree: WT, branch: BRANCH, commit_sha: COMMIT_SHA,
     rounds: round, summary: impl.summary, decisions: Array.isArray(impl.decisions) ? impl.decisions : [],
     tier, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
-    note: 'Review clean, change committed, and verify passed. Worktree left in place for human merge/inspection.',
+    note: 'Review clean, change committed, and verify passed. Worktree left in place for human merge/inspection (a camus-feat caller removes it after merging the branch).',
   }
 }
 

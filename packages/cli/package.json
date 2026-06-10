@@ -14,7 +14,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "bash -c 'cd skills/camus/scripts && for t in test_adapter.py test_verify.py test_env_check.py test_prep.py test_resume_scan.py test_review_audit.py; do python3 $t || exit 1; done && bash test_guard.sh && cd ../../.. && python3 test_merge_settings.py && node test_hitl_workflows.js'"
+    "test": "bash -c 'cd skills/camus/scripts && for t in test_adapter.py test_verify.py test_env_check.py test_prep.py test_resume_scan.py test_review_audit.py test_status.py test_steer.py; do python3 $t || exit 1; done && bash test_guard.sh && cd ../../.. && python3 test_merge_settings.py && node test_hitl_workflows.js'"
   },
   "engines": {
     "node": ">=18"

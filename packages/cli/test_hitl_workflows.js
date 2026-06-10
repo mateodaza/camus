@@ -3,9 +3,9 @@
 //
 //   node test_hitl_workflows.js     # exit 0 = all pass, 1 = a failure
 //
-// Verifies: clarity ask-gate (needs_human before implement), policy thresholds
-// (autonomous / ask_on_ambiguity / ask_on_major), humanAnswer resume suppresses re-ask, the
-// decisions log on done, and the feat's needs_human halt + decision rollup into the report.
+// Verifies the HITL and contract scenarios labeled S1–S7 (loop) and F1–F10 (feat) below:
+// ask-gate/policies/humanAnswer, the worktree path contract (S7) and merge-cleanup (F8),
+// the steer hook (F7), the run-log event ring (F9), and token telemetry (F10).
 const fs = require('fs')
 const path = require('path')
 const LOOP = path.join(__dirname, 'workflows', 'camus-loop.workflow.js')
@@ -14,7 +14,7 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 
 function load(p) {
   const src = fs.readFileSync(p, 'utf8').replace(/^export\s+const\s+meta/m, 'const meta')
-  return new AsyncFunction('args', 'agent', 'phase', 'log', 'workflow', src)
+  return new AsyncFunction('args', 'agent', 'phase', 'log', 'workflow', 'budget', src)
 }
 const key = (label) => (label || '').split(':')[0]
 
@@ -43,19 +43,20 @@ function makeAgent(scripts, calls, capture) {
     return typeof s === 'function' ? s() : s
   }
 }
-async function runLoop(args, scripts) {
+async function runLoop(args, scripts, budget) {
   const calls = []
-  const res = await load(LOOP)(args, makeAgent(scripts, calls), () => {}, () => {},
-    async () => { throw new Error('loop must not call workflow') })
-  return { res, calls }
+  const capture = {}
+  const res = await load(LOOP)(args, makeAgent(scripts, calls, capture), () => {}, () => {},
+    async () => { throw new Error('loop must not call workflow') }, budget)
+  return { res, calls, prompts: capture.prompts || {} }
 }
-async function runFeat(args, scripts, loopResults) {
+async function runFeat(args, scripts, loopResults, budget) {
   const calls = []
   const capture = {}
   const loopArgs = []
   let li = 0
   const res = await load(FEAT)(args, makeAgent(scripts, calls, capture), () => {}, () => {},
-    async (name, a) => { loopArgs.push(a); return loopResults[li++] })
+    async (name, a) => { loopArgs.push(a); return loopResults[li++] }, budget)
   return {
     res, calls, loopArgs, workflowCalls: li,
     stateJSON: capture.state ? extractBraces(capture.state) : null,
@@ -67,8 +68,23 @@ const J = (o) => JSON.stringify(o)
 let pass = 0, fail = 0
 const ok = (name, cond, extra) => { if (cond) { pass++; console.log('PASS ' + name) } else { fail++; console.log('FAIL ' + name + (extra ? '  ' + extra : '')) } }
 
+// Mirror of the loop's slugify/fnv1a, so stubs can return the CANONICAL worktree path the loop
+// validates (since 2026-06-10 an empty or mismatched worktree_path is refused FAIL-CLOSED, and
+// worktrees live centralized under ~/.camus/worktrees/<repo>-<id>/, never beside the repo).
+function slug(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'task' }
+function fnv(str) {
+  let h = 0x811c9dc5
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0 }
+  return h.toString(36)
+}
+const wtName = (task, salt = '') => `camus-wt-${slug(task)}-${fnv(salt ? salt + '::' + task : task).slice(0, 6)}`
+const wtPath = (task, salt = '') => `/home/u/.camus/worktrees/repo-12345/${wtName(task, salt)}`
+// Feat-side identity mirrors (featId = slug24 + hash over title+tasks; taskId salted by featId)
+const featIdOf = (feat, tasks) => `${slug(feat).slice(0, 24)}-${fnv(feat + '\n---\n' + tasks.join('\n')).slice(0, 6)}`
+const taskIdOf = (feat, tasks, task) => `${slug(task)}-${fnv(featIdOf(feat, tasks) + '::' + task).slice(0, 6)}`
+
 const happyTail = {
-  implement: { worktree_path: '', branch: 'b', summary: 's', decisions: [{ what: 'W', why: 'Y' }] },
+  implement: { worktree_path: wtPath('t'), branch: 'b', summary: 's', decisions: [{ what: 'W', why: 'Y' }] },
   review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
   commit: J({ committed: true, sha: 'abc123' }),
   prep: J({ prepped: true, ran: [] }),
@@ -129,6 +145,27 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const { res, calls } = await runLoop({ task: 't', skipPlan: true, policy: 'autonomous' }, { ...clsStd, ...planOf('clear', ''), ...happyTail })
     ok('S6c skipPlan + non-trivial → plan ran', calls.includes('plan'))
     ok('S6c → done', res.status === 'done', res.status)
+  }
+  // S7: worktree path contract (2026-06-10) — centralized out-of-tree home + fail-closed validation.
+  {
+    const { res, prompts } = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail })
+    ok('S7a implement told to use ~/.camus/worktrees', !!prompts.implement && prompts.implement.includes('$HOME/.camus/worktrees/'))
+    ok('S7a mkdir of the repo-unique parent', !!prompts.implement && prompts.implement.includes('mkdir -p "$HOME/.camus/worktrees/'))
+    ok('S7a canonical wt name in the command', !!prompts.implement && prompts.implement.includes(wtName('t')))
+    ok('S7a → done with a valid path', res.status === 'done', res.status)
+    // Cross-contract pin: the feat's cleanup consumes res.worktree — renaming this return key
+    // would keep both suites green while silently killing cleanup in production.
+    ok('S7a loop returns the claimed worktree path', res.worktree === wtPath('t'), res.worktree)
+  }
+  {
+    const bad = { ...happyTail, implement: { ...happyTail.implement, worktree_path: '/tmp/evil-dir' } }
+    const { res } = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...bad })
+    ok('S7b mismatched worktree path → aborted', res.status === 'aborted', res.status)
+  }
+  {
+    const empty = { ...happyTail, implement: { ...happyTail.implement, worktree_path: '' } }
+    const { res } = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...empty })
+    ok('S7c empty worktree path → aborted (fail closed)', res.status === 'aborted', res.status)
   }
 
   const featBase = {
@@ -218,6 +255,130 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F5 no telemetry keys when absent', !!t && !('tier' in t) && !('model' in t) && !('rounds' in t)
       && !('planSkipped' in t) && !('initialModel' in t) && !('escalated' in t))
   }
+  // F7: steer hook (2026-06-10) — a pending human note is consumed at the task boundary.
+  {
+    const { res, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, steer: J({ pause: true }) }, [])
+    ok('F7 pause note → paused_by_user before the loop', res && res.status === 'paused_by_user', res && res.status)
+    ok('F7 loop never invoked on pause', workflowCalls === 0, 'workflowCalls=' + workflowCalls)
+  }
+  {
+    const { res, loopArgs } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, steer: J({ guidance: 'use adapter B' }) },
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    ok('F7 guidance threaded as humanAnswer', !!loopArgs[0] && loopArgs[0].humanAnswer === 'use adapter B', J(loopArgs[0]))
+    ok('F7 feat still done with guidance', res && res.status === 'done', res && res.status)
+  }
+  {
+    // No note (steer agent unstubbed → undefined) → no humanAnswer, no pause: steering is opt-in.
+    const { res, loopArgs } = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    ok('F7 no note → no humanAnswer injected', !!loopArgs[0] && !('humanAnswer' in loopArgs[0]))
+    ok('F7 no note → run proceeds', res && res.status === 'done', res && res.status)
+  }
+  // F7d: pause → re-run with the SAME args resumes past the done task (the contract the
+  // finalize note promises the user).
+  {
+    let steerCalls = 0
+    const steerOnceThenPause = () => (++steerCalls === 1 ? '{}' : J({ pause: true }))
+    const r1 = await runFeat({ feat: 'P', tasks: ['a', 'b'] },
+      { ...featBase, steer: steerOnceThenPause },
+      [{ status: 'done', branch: 'camus/feat/x/a', decisions: [] }])
+    ok('F7d task a done, paused before b', r1.res && r1.res.status === 'paused_by_user' && r1.workflowCalls === 1,
+      r1.res && r1.res.status)
+    const prior = r1.stateJSON
+    ok('F7d paused state persisted (a=done)', !!prior && prior.status === 'paused_by_user' && prior.tasks[0].status === 'done')
+    const featResume = { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(prior) } }
+    const r2 = await runFeat({ feat: 'P', tasks: ['a', 'b'] }, featResume,
+      [{ status: 'done', branch: 'camus/feat/x/b', decisions: [] }])
+    ok('F7d re-run resumes: only task b runs', r2.workflowCalls === 1, 'workflowCalls=' + r2.workflowCalls)
+    ok('F7d re-run completes', r2.res && r2.res.status === 'done', r2.res && r2.res.status)
+  }
+  // F7e: a steer answers-map can target a LATER task — a regression here makes
+  // `camus steer --task` a silent no-op, the worst HITL failure mode.
+  {
+    const bId = taskIdOf('T2', ['a', 'b'], 'b')
+    let sc = 0
+    const steerNoteOnce = () => (++sc === 1 ? J({ answers: { [bId]: 'pick B' } }) : '{}')
+    const { loopArgs } = await runFeat({ feat: 'T2', tasks: ['a', 'b'] },
+      { ...featBase, steer: steerNoteOnce },
+      [{ status: 'done', branch: 'camus/feat/x/a', decisions: [] },
+       { status: 'done', branch: 'camus/feat/x/b', decisions: [] }])
+    ok('F7e first task NOT steered', !!loopArgs[0] && !('humanAnswer' in loopArgs[0]), J(loopArgs[0]))
+    ok('F7e later task got the targeted answer', !!loopArgs[1] && loopArgs[1].humanAnswer === 'pick B', J(loopArgs[1]))
+  }
+  // F7f: a PRESENT-but-unparseable note must be surfaced in the run log, not silently dropped.
+  {
+    const { res, stateJSON } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, steer: 'totally not json' },
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    ok('F7f garbage note surfaced in run log', !!stateJSON && stateJSON.events.some((e) => /UNPARSEABLE/.test(e.msg)))
+    ok('F7f run proceeds', res && res.status === 'done', res && res.status)
+  }
+
+  // F8: worktree cleanup contract — the headline "no more camus-wt-* litter" feature.
+  {
+    const tid = taskIdOf('F', ['only task'], 'only task')
+    const wt = `/home/u/.camus/worktrees/r-1/camus-wt-${tid}`
+    const { res, calls, prompts } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, cleanup: J({ removed: true }) },
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [], worktree: wt }])
+    ok('F8a cleanup fires on merge-success', calls.includes('cleanup:' + tid), calls.join(','))
+    ok('F8a cleanup runs git worktree remove (no force)', !!prompts['cleanup:' + tid]
+      && prompts['cleanup:' + tid].includes('git worktree remove') && !prompts['cleanup:' + tid].includes('--force'))
+    ok('F8a feat done', res && res.status === 'done', res && res.status)
+  }
+  {
+    // Suffix-but-not-basename path must be SKIPPED (stricter than the loop's endsWith check):
+    // basename "x-camus-wt-<tid>" endsWith the canonical name but is not equal to it.
+    const tid = taskIdOf('F', ['only task'], 'only task')
+    const { res, calls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, cleanup: J({ removed: true }) },
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [], worktree: `/tmp/x-camus-wt-${tid}` }])
+    ok('F8b suffix-but-not-basename path NOT cleaned', !calls.some((c) => c.startsWith('cleanup:')), calls.join(','))
+    ok('F8b feat still done', res && res.status === 'done', res && res.status)
+  }
+  {
+    // Refusal is fail-soft: a dirty/locked worktree never un-does a merged task.
+    const tid = taskIdOf('F', ['only task'], 'only task')
+    const { res } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, cleanup: J({ removed: false, reason: 'dirty' }) },
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [], worktree: `/h/camus-wt-${tid}` }])
+    ok('F8c cleanup refusal is fail-soft → done', res && res.status === 'done', res && res.status)
+  }
+  {
+    // The no_changes noop path cleans its (empty) worktree too.
+    const tid = taskIdOf('F', ['only task'], 'only task')
+    const { res, calls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, cleanup: J({ removed: true }) },
+      [{ status: 'no_changes', worktree: `/h/camus-wt-${tid}` }])
+    ok('F8d noop path cleans worktree', calls.includes('cleanup:' + tid), calls.join(','))
+    ok('F8d feat done_with_noops', res && res.status === 'done_with_noops', res && res.status)
+  }
+
+  // F9: run-log event ring — cap respected and seq monotonic across a resume. Not cosmetic:
+  // the full state JSON is embedded in every persistState prompt, so a broken cap grows
+  // every state write without bound.
+  {
+    const priorEvents = Array.from({ length: 25 }, (_, i) => ({ seq: i + 1, msg: 'step ' + (i + 1) }))
+    const prior = { featId: 'x', feat: 'E', status: 'running', tasks: [], events: priorEvents, eventSeq: 25 }
+    const featResume = { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(prior) } }
+    const { stateJSON } = await runFeat({ feat: 'E', tasks: ['only task'] }, featResume,
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    ok('F9 ring capped at 20', !!stateJSON && stateJSON.events.length <= 20, stateJSON && stateJSON.events.length)
+    ok('F9 carried events trimmed from the front', !!stateJSON && stateJSON.events.every((e) => e.seq >= 6))
+    ok('F9 new events continue the seq past the carry', !!stateJSON && stateJSON.events.some((e) => e.seq > 25))
+  }
+
+  // F10: token telemetry with the budget global PRESENT (every other test proves the
+  // degraded path — budget is undefined in this harness by default).
+  {
+    const { res } = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }], { spent: () => 5000 })
+    ok('F10 totalOutputTokens in report', res && res.totalOutputTokens === 5000, res && res.totalOutputTokens)
+    ok('F10 per-task tokens emitted', !!res && res.tasks[0].tokens === 0, res && JSON.stringify(res.tasks[0]))
+  }
+
   // F6: persisted state carries the feat TITLE (load-bearing for auto-resume arg reconstruction).
   {
     const { res, stateJSON } = await runFeat({ feat: 'My Feat Title', tasks: ['only task'] }, featBase,

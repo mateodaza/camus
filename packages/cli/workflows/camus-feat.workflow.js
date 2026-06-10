@@ -50,6 +50,14 @@ if (!TASKS.length) throw new Error('camus-feat: args.tasks[] is empty')
 // would both double-resolve the path after `cd` and fail the guard.
 const REPO_ARG = '"$PWD"'
 
+// Token telemetry, degradable: `budget` ships with workflows GA (Claude Code >= 2.1.154,
+// doc-checked 2026-06-10). On an older runtime spentTok() is null and every token field/log
+// fragment is simply omitted — the gate never crashes over telemetry.
+const spentTok = () => {
+  try { return (typeof budget === 'object' && budget && typeof budget.spent === 'function') ? budget.spent() : null }
+  catch (_) { return null }
+}
+
 // ── Deterministic identity (FNV-1a; NO Math.random / Date — would break resume) ──
 // These MUST mirror camus-loop's slugify/fnv1a exactly so the branch we compute
 // here equals the branch the loop creates (idSalt = featId).
@@ -118,7 +126,10 @@ const resumeArgs = {
   ...(MODEL ? { model: MODEL } : {}),
   ...(MODEL_TIER ? { modelTier: MODEL_TIER } : {}),
   ...(SKIP_PLAN ? { skipPlan: true } : {}),
-  ...(Object.keys(ANSWERS).length ? { answers: ANSWERS } : {}),
+  // SNAPSHOT, not the live object: the steer hook mutates ANSWERS mid-run, and resumeArgs must
+  // stay the verbatim ORIGINAL invocation (review 2026-06-10: aliasing let steered answers
+  // bleed into the persisted canonical args).
+  ...(Object.keys(ANSWERS).length ? { answers: { ...ANSWERS } } : {}),
 }
 const state = {
   // `feat` (the title) is persisted so a watchdog/resumer can reconstruct the original args from
@@ -129,6 +140,20 @@ const state = {
   tasks: taskNodes,
   baseline: null, env: null, envRecheck: null, integration: null,
   status: 'running',
+  // Run-log event ring — the `camus status` "last steps" feed (run feedback 2026-06-10: the
+  // human watching a run wants the recent steps without a Claude session). seq is monotonic
+  // across resumes (carried from prior state); the cap keeps the state file small.
+  events: [], eventSeq: 0,
+}
+// A step-worthy event: lands in the progress UI (log) AND in the persisted run log (status.py).
+// Persisted on the NEXT persistState call — the FIRST one fires when task 1 starts, so
+// pre-task notes (resume/feat-branch/baseline) sit in memory through Env+Baseline; early
+// finalize paths persist them via finalize → persistState.
+function note(msg) {
+  state.eventSeq++
+  state.events.push({ seq: state.eventSeq, msg })
+  if (state.events.length > 20) state.events.splice(0, state.events.length - 20)
+  log(msg)
 }
 
 // ── JSON helpers — the SCRIPT parses agent stdout, never an agent (copied from
@@ -204,6 +229,14 @@ const MERGE_SCHEMA = {
     error: { type: 'string', description: 'conflicting files / git error when merged=false' },
   },
 }
+const CLEANUP_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  required: ['removed'],
+  properties: {
+    removed: { type: 'boolean', description: 'git worktree remove exited 0' },
+    reason: { type: 'string', description: "git's refusal reason when removed=false" },
+  },
+}
 
 // ── State + report persistence (agents do all file I/O; script supplies bytes) ─
 async function persistState(phaseName) {
@@ -215,6 +248,36 @@ ${JSON.stringify(state, null, 2)}
 Return {written:true} once that file is on disk with exactly that content.`,
     { model: MODEL_RUNNER, phase: phaseName, label: 'state', schema: WRITTEN_SCHEMA }
   )
+}
+
+// Worktree cleanup, FAIL-SOFT (run feedback 2026-06-10: per-task `camus-wt-*` folders read as
+// trash in the user's filesystem). Once a task's outcome is recorded (merged, or noop with an
+// empty diff) the checkout adds nothing — git preserves the branch. SECURITY: the path comes
+// from the loop's agent; only act when its basename is EXACTLY the deterministic
+// camus-wt-<taskId> (a stricter analogue of the loop's F3 check — exact basename equality,
+// not the loop's endsWith suffix match). Never halts the feat — a refusal, a missing path, or
+// even a throwing cleanup agent just leaves the directory in place, exactly as before this
+// step existed. Failed/paused tasks keep their worktree on purpose (debugging/resume artifact).
+async function removeTaskWorktree(node, wtPath, n) {
+  const expected = `camus-wt-${node.taskId}`
+  if (!wtPath || typeof wtPath !== 'string' || wtPath.split('/').pop() !== expected) {
+    if (wtPath) log(`Task ${n}: NOT removing worktree — unexpected path (${wtPath}); expected basename ${expected}.`)
+    else log(`Task ${n}: loop reported no worktree path — skipping cleanup (a worktree may be left behind).`)
+    return
+  }
+  let rm = null
+  try {
+    rm = await agent(
+      `THIN git runner. cd ${REPO_ARG}. The Camus task worktree ${JSON.stringify(wtPath)} is no longer needed (its branch is preserved in git). Run EXACTLY this one command:
+  git worktree remove ${JSON.stringify(wtPath)}
+If git refuses (dirty, locked, or already gone): do NOT force and do NOT delete anything any other way (no rm -rf) — return removed=false with git's reason. Return {removed, reason}.`,
+      { model: MODEL_RUNNER, phase: 'Tasks', label: `cleanup:${node.taskId}`, schema: CLEANUP_SCHEMA }
+    )
+  } catch (e) {
+    rm = { removed: false, reason: `cleanup runner threw: ${String((e && e.message) || e)}` }
+  }
+  if (rm && rm.removed) note(`Task ${n}: removed worktree ${wtPath} (branch kept for audit).`)
+  else note(`Task ${n}: worktree left at ${wtPath} (${(rm && rm.reason) || 'cleanup runner returned nothing'}).`)
 }
 
 async function finalize(status, extra = {}) {
@@ -233,8 +296,11 @@ async function finalize(status, extra = {}) {
       ...(t.initialModel != null ? { initialModel: t.initialModel } : {}),
       ...(t.finalFixModel != null ? { finalFixModel: t.finalFixModel } : {}),
       ...(t.escalated != null ? { escalated: t.escalated } : {}),
+      ...(t.tokens != null ? { tokens: t.tokens } : {}),
       ...(t.question ? { question: t.question, clarity: t.clarity || '' } : {}),
     })),
+    // Output tokens spent across the whole turn (shared pool: feat overhead + every task loop).
+    ...(spentTok() != null ? { totalOutputTokens: spentTok() } : {}),
     // Feat-level rollup of every decision the loop logged across tasks — the human's merge-time
     // audit trail ("what did the agent decide that I should sanity-check before merging?").
     decisions: state.tasks.flatMap((t) => (t.decisions || []).map((d) => ({ taskId: t.taskId, ...d }))),
@@ -288,10 +354,16 @@ if (prior && Array.isArray(prior.tasks)) {
       if (p.status === 'noop') node.noop = true
       if (Array.isArray(p.decisions)) node.decisions = p.decisions
       if (p.loopStatus) node.loopStatus = p.loopStatus
+      if (p.tokens != null) node.tokens = p.tokens   // keep the real spend; a replayed delta would read ~0
       carried++
     }
   }
-  if (carried) log(`Resume: ${carried} task(s) already done/noop in ${STATE_PATH} — will skip.`)
+  // Carry the run log too, so `camus status` keeps one continuous "last steps" feed across resumes.
+  if (Array.isArray(prior.events)) {
+    state.events = prior.events.filter((e) => e && e.msg).slice(-20)
+    state.eventSeq = Number(prior.eventSeq) || state.events.length
+  }
+  if (carried) note(`Resume: ${carried} task(s) already done/noop in ${STATE_PATH} — will skip.`)
 }
 
 // ── 2. Cut (or resume) the feat branch from base ─────────────────────────────
@@ -304,7 +376,7 @@ Do nothing else. Return {ok, branch, created, error}.`,
   { model: MODEL_RUNNER, phase: 'Feat branch', label: 'feat-branch', schema: FEATBRANCH_SCHEMA }
 )
 if (!fb || !fb.ok) return finalize('infra_error', { stage: 'feat_branch', note: (fb && fb.error) || 'could not create/checkout the feat branch' })
-log(`Feat branch ${featBranch} ${fb.created ? 'created' : 'checked out (resume)'} from base ${state.base}.`)
+note(`Feat branch ${featBranch} ${fb.created ? 'created' : 'checked out (resume)'} from base ${state.base}.`)
 
 // ── 3. ENV CHECK on the feat branch (fresh trees lack node_modules — mandatory) ─
 phase('Env+Baseline')
@@ -347,7 +419,7 @@ if (baseV.pass !== true) {
     failures: baseV.failures || [],
   })
 }
-log(`Baseline green on ${featBranch}. Running ${state.tasks.length} task(s) strictly in order.`)
+note(`Baseline green on ${featBranch}. Running ${state.tasks.length} task(s) strictly in order.`)
 
 // ── 5. TASKS — sequential; reuse camus-loop; merge on done; halt on first non-done ─
 phase('Tasks')
@@ -356,8 +428,55 @@ for (let i = 0; i < state.tasks.length; i++) {
   const n = `${i + 1}/${state.tasks.length}`
   if (node.status === 'done' || node.status === 'noop') { log(`Task ${n} "${node.taskId}" already ${node.status} (resume) — skipping.`); continue }
 
+  // ── HUMAN STEERING (`camus steer` → steer.py): a note at ~/.camus/steer/<featId>.json is
+  // consumed at each task BOUNDARY — the clean, merged point where redirecting is safe. Live
+  // mid-task injection is deliberately unsupported (the engine is a deterministic, resumable
+  // script; the steer agent's result is journaled like any other, so replay stays exact).
+  //   {pause:true}        → graceful resumable halt BEFORE this task starts
+  //   {guidance:"..."}    → threads into THIS task exactly like a needs_human answer
+  //   {answers:{id:".."}} → merged into the run's answer map (may target later tasks)
+  // Steered answers live only for THIS run — they are NOT persisted into resumeArgs and do
+  // not survive a pause/resume (re-steer or pass answers explicitly on the re-run).
+  const steerRaw = await agent(
+    `THIN steer-check runner. A human may have left a steering note for this Camus run. Run EXACTLY, in order:
+1. \`cat ~/.camus/steer/${featId}.json 2>/dev/null || echo {}\` — capture the full output.
+2. \`rm -f ~/.camus/steer/${featId}.json\` — consume it (a note applies ONCE). If rm is refused, continue anyway.
+Return the captured output VERBATIM as your entire reply. No fences, no commentary.`,
+    { model: MODEL_RUNNER, phase: 'Tasks', label: `steer:${node.taskId}` }
+  )
+  const steerParsed = extractJsonObject(steerRaw)
+  // A PRESENT-but-unparseable note must not vanish silently (the rm already consumed it): the
+  // no-note case is exactly "{}" from the `|| echo {}`, so anything else that fails to parse
+  // was a real note the human wrote — surface it loudly (review 2026-06-10).
+  if (steerParsed == null && steerRaw != null && String(steerRaw).trim() !== '{}') {
+    note(`Task ${n}: a steer note was PRESENT but UNPARSEABLE — it was consumed and IGNORED. Re-issue it with \`camus steer\`.`)
+  }
+  const steer = steerParsed || {}
+  if (steer.pause === true) {
+    note(`PAUSED by a human steer note before task ${n} ("${node.taskId}").`)
+    return finalize('paused_by_user', {
+      stage: 'task', haltedTask: node.taskId,
+      note: `A human paused the run (camus steer --pause) before task ${n}. Earlier merged tasks remain on ${featBranch}. Re-run the feat with the SAME args to continue from here (resume carries done tasks forward). If the re-run immediately pauses again, the note could not be deleted — \`camus steer --clear --feat ${featId}\` first.`,
+    })
+  }
+  if (steer.answers && typeof steer.answers === 'object' && !Array.isArray(steer.answers)) {
+    Object.assign(ANSWERS, steer.answers)
+    note(`Task ${n}: human steer answers merged (${Object.keys(steer.answers).join(', ')}).`)
+  }
+  if (typeof steer.guidance === 'string' && steer.guidance.trim()) {
+    ANSWERS[node.taskId] = steer.guidance.trim()
+    note(`Task ${n}: human steer guidance applied to this task.`)
+  }
+
   node.status = 'running'
-  log(`Task ${n}: ${node.spec}  →  loop (branch ${node.branch}).`)
+  note(`Task ${n}: ${node.spec}  →  loop (branch ${node.branch}).`)
+  await persistState('Tasks')   // persist 'running' NOW so `camus status` shows the live task
+  // Per-task token telemetry (run feedback 2026-06-10): budget.spent() is the shared TURN
+  // pool, so the delta around the loop call is this task's own spend. Values feed ONLY
+  // logs/state/report — never an agent prompt that gates control flow. (On a resume the
+  // numbers differ, so the thin state/report writers re-run instead of cache-replaying —
+  // deliberate and cheap; identity/branch determinism is untouched.)
+  const tokensBefore = spentTok()
 
   // Reuse the PROVEN v2-lite loop verbatim (classify→plan→implement→codex-review↔fix→verify).
   // Feat-scope its identity so the task branch is namespaced under the feat, and its worktree
@@ -379,6 +498,8 @@ for (let i = 0; i < state.tasks.length; i++) {
     res = { status: 'infra_error', error: String((e && e.message) || e) }
   }
   node.loopStatus = (res && res.status) || 'unknown'
+  const tokensAfter = spentTok()
+  if (tokensBefore != null && tokensAfter != null) node.tokens = Math.max(0, tokensAfter - tokensBefore)
 
   if (res && res.status === 'no_changes') {
     // The loop committed nothing (empty implement, or the change was already present). Not a
@@ -386,7 +507,8 @@ for (let i = 0; i < state.tasks.length; i++) {
     node.status = 'noop'
     node.noop = true
     await persistState('Tasks')
-    log(`Task ${n}: loop returned no_changes (nothing to commit) → recorded as NO-OP, continuing.`)
+    note(`Task ${n}: loop returned no_changes (nothing to commit) → recorded as NO-OP, continuing.`)
+    await removeTaskWorktree(node, res.worktree, n)   // empty diff — the checkout adds nothing
     continue
   }
 
@@ -398,7 +520,7 @@ for (let i = 0; i < state.tasks.length; i++) {
     node.question = res.question || ''
     node.clarity = res.clarity || ''
     await persistState('Tasks')
-    log(`Task ${n}: loop PAUSED for a human decision (clarity=${res.clarity}). Halting feat to ask.`)
+    note(`Task ${n}: loop PAUSED for a human decision (clarity=${res.clarity}). Halting feat to ask.`)
     return finalize('needs_human', {
       stage: 'task', haltedTask: node.taskId,
       question: res.question || '', clarity: res.clarity || '',
@@ -413,7 +535,7 @@ for (let i = 0; i < state.tasks.length; i++) {
     // aborted) -> mark failed and HALT. M1 never builds later tasks on top of a failed one.
     node.status = 'failed'
     await persistState('Tasks')
-    log(`Task ${n} HALTED the feat — loop returned "${node.loopStatus}".`)
+    note(`Task ${n} HALTED the feat — loop returned "${node.loopStatus}".`)
     return finalize('halted', {
       stage: 'task', haltedTask: node.taskId, haltReason: node.loopStatus, loopResult: res || null,
       note: `Task ${n} did not reach "done" (${node.loopStatus}). Per M1, later tasks are NOT run on top of a failed one. Tasks merged before this remain on ${featBranch}.`,
@@ -442,6 +564,7 @@ Return {merged, committed, alreadyUpToDate, before, after, conflict, error}.`,
   )
   if (!mg || !mg.merged) {
     node.status = 'merge_failed'
+    note(`Task ${n}: merging ${mergeBranch} into ${featBranch} FAILED (${(mg && mg.error) || 'unknown'}) — halting.`)
     await persistState('Tasks')
     return finalize('feat_integration_failed', {
       stage: 'merge', haltedTask: node.taskId,
@@ -458,7 +581,8 @@ Return {merged, committed, alreadyUpToDate, before, after, conflict, error}.`,
     node.status = 'noop'
     node.noop = true
     await persistState('Tasks')
-    log(`Task ${n}: loop said "done" but the merge added NO commit (already-up-to-date) → recorded as NO-OP, not a merge.`)
+    note(`Task ${n}: loop said "done" but the merge added NO commit (already-up-to-date) → recorded as NO-OP, not a merge.`)
+    await removeTaskWorktree(node, res.worktree, n)   // branch merged/empty — checkout no longer needed
     continue
   }
   node.status = 'done'
@@ -479,9 +603,12 @@ Return {merged, committed, alreadyUpToDate, before, after, conflict, error}.`,
     node.model != null ? `model ${node.model}` : null,
     node.tier != null ? `tier ${node.tier}` : null,
     node.rounds != null ? `${node.rounds} round${node.rounds === 1 ? '' : 's'}` : null,
+    node.tokens != null ? `~${Math.round(node.tokens / 1000)}k tokens` : null,
   ].filter(Boolean)
-  log(`Task ${n} done → merged ${mergeBranch} into ${featBranch} (commit ${mg.after ? String(mg.after).slice(0, 8) : '?'})${tele.length ? ` (${tele.join(' · ')})` : ''}${node.decisions.length ? ` · ${node.decisions.length} decision(s) logged` : ''}.`)
+  note(`Task ${n} done → merged ${mergeBranch} into ${featBranch} (commit ${mg.after ? String(mg.after).slice(0, 8) : '?'})${tele.length ? ` (${tele.join(' · ')})` : ''}${node.decisions.length ? ` · ${node.decisions.length} decision(s) logged` : ''}.`)
+  await removeTaskWorktree(node, res.worktree, n)     // merged — the worktree is now just litter
 }
+note(`All tasks processed${spentTok() != null ? ` — ~${Math.round(spentTok() / 1000)}k output tokens spent this turn` : ''}.`)
 
 // ── 6. ENV RE-CHECK (tasks may have added deps) + FINAL INTEGRATION VERIFY ─────
 phase('Integration')
