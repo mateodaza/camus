@@ -3,7 +3,6 @@ import { SiteFooter } from './components/SiteFooter';
 import { ClimbLoop } from './components/ClimbLoop';
 import { Artifact } from './components/Artifact';
 import { Reveal } from './components/Reveal';
-import { CoverMark } from './components/CoverMark';
 
 export default function Home() {
   return (
@@ -20,7 +19,8 @@ export default function Home() {
               <span className="tagline">A coding loop that proves every change.</span>
             </h1>
             <p className="hero-sub">
-              A different model reviews every change. Your own tests have the final word.
+              No agent grades its own work. A competing model reviews every change, and your own
+              tests have the final word.
             </p>
             <div className="cta-row">
               <a className="cta" href="https://www.npmjs.com/package/camus-cli">npx camus-cli install</a>
@@ -32,11 +32,17 @@ export default function Home() {
         <section className="sec" id="watch">
           <div className="wrap">
             <Reveal>
-              <h2 className="sec-h2">Watch it work.</h2>
-              <p className="sec-sub">
-                It ships as a skill and two workflows, so it runs wherever skills run. Every phase of
-                every task is on screen as it happens.
-              </p>
+              <div className="sec-head">
+                <div>
+                  <h2 className="sec-h2">Watch it work.</h2>
+                  <p className="sec-sub">
+                    It ships as a skill and two workflows, so it runs wherever skills run. Every phase
+                    of every task is on screen as it happens.
+                  </p>
+                </div>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img className="sec-art" src="/brand/covers/the-glare.svg" alt="A cover study after The Stranger" width="400" height="600" />
+              </div>
             </Reveal>
             <Reveal>
               <div className="term term--tree">
@@ -64,18 +70,25 @@ export default function Home() {
         <section className="sec" id="honest">
           <div className="wrap">
             <Reveal>
-              <h2 className="sec-h2">No step approves its own work.</h2>
-              <p className="sec-sub">
-                Most agent loops are maker and checker from the same vendor. Camus separates them,
-                and leaves the receipts.
-              </p>
+              <div className="sec-head">
+                <div>
+                  <h2 className="sec-h2">No step approves its own work.</h2>
+                  <p className="sec-sub">
+                    An agent can&apos;t be accountable for its own work. Claude could run the whole
+                    loop and approve itself, so Camus pairs it with Codex, made by a competitor,
+                    whose verdict it can&apos;t override. The pairing is the point.
+                  </p>
+                </div>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img className="sec-art" src="/brand/covers/the-crossing.svg" alt="A cover study after The First Man" width="400" height="600" />
+              </div>
             </Reveal>
 
             <div className="evs">
               <Reveal className="ev">
                 <p className="ev-cap">
-                  The review comes from a different vendor&apos;s model, relayed word for word.{' '}
-                  <em>Claude never re-judges it.</em>
+                  The review comes from Codex, built by a competitor.{' '}
+                  <em>Claude relays its verdict and abides by it.</em>
                 </p>
                 <Artifact tone="dark" path="~/.camus/reviews/harden-x1f9q2-r1.json" label="A Codex review verdict">
 {`{
@@ -90,8 +103,8 @@ export default function Home() {
 
               <Reveal className="ev">
                 <p className="ev-cap">
-                  A clean review still does not ship code that fails the repo&apos;s own checks.{' '}
-                  <em>No verifier found is a failure, not a pass.</em>
+                  A clean review still has to clear the repo&apos;s own checks.{' '}
+                  <em>If no verifier runs, the run fails.</em>
                 </p>
                 <Artifact tone="dark" path="camus verify" label="A verification run">
 {`$ pnpm type-check     `}<span className="ok">ok</span>{`
@@ -102,8 +115,8 @@ $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
 
               <Reveal className="ev">
                 <p className="ev-cap">
-                  Every judgment call is logged with its reason and the path not taken.{' '}
-                  <em>You review decisions, not just diffs.</em>
+                  Every judgment call is logged with its reason and the option it rejected.{' '}
+                  <em>You can read the reasoning, change by change.</em>
                 </p>
                 <Artifact path="~/.camus/reports/harden-input-boundaries.json" label="A decision in the run report">
 {`  `}<span className="k">&quot;decisions&quot;</span>{`: [
@@ -122,13 +135,23 @@ $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
         <section className="sec" id="autonomy">
           <div className="wrap">
             <Reveal>
-              <h2 className="sec-h2">
-                Unattended, <em>not unaccountable.</em>
-              </h2>
-              <p className="sec-sub">
-                No prompts when that is safe. A real question when a task is genuinely ambiguous,
-                and your answer resumes the same run.
-              </p>
+              <div className="sec-head">
+                <div>
+                  <h2 className="sec-h2">
+                    Unattended,<br />
+                    <em>not unaccountable.</em>
+                  </h2>
+                  <p className="sec-sub">
+                    It stays quiet when that is safe, and asks a real question when a task is
+                    genuinely ambiguous. Your answer resumes the same run.
+                  </p>
+                </div>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img className="sec-art" src="/brand/covers/the-break.svg" alt="A cover study after The Rebel" width="400" height="600" />
+              </div>
+            </Reveal>
+
+            <Reveal>
               <div className="pol">
                 <b>autonomous</b>
                 <span>·</span>
@@ -143,7 +166,7 @@ $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
             <div className="evs">
               <Reveal className="ev">
                 <p className="ev-cap">
-                  When it genuinely cannot decide, it stops and asks. <em>It does not guess.</em>
+                  When it genuinely cannot decide, it stops and asks you. <em>Your answer resumes the run.</em>
                 </p>
                 <Artifact path="~/.camus/reports/feat-9c2.json" label="A run paused for a human">
 {`  `}<span className="k">&quot;status&quot;</span>{`:   `}<span className="rej">&quot;needs_human&quot;</span>{`,
@@ -155,30 +178,26 @@ $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
           </div>
         </section>
 
-        <section className="sec cover-sec" id="philosophy">
+        <section className="sec" id="philosophy">
           <div className="wrap">
             <Reveal>
-              <div className="cover-grid">
-                <CoverMark />
-                <div className="cover-text">
+              <div className="sec-head">
+                <div>
                   <h2 className="sec-h2">Bigger than code.</h2>
                   <p className="sec-sub">
-                    Camus is built for code. The harder question underneath is how far you can trust
-                    an agent that runs on its own.
+                    It is built for code, but the principle is bigger: nothing should be the judge of
+                    its own work.
                   </p>
-                  <div className="creed">
-                    <p>An agent can do the work. It can&apos;t be the one who decides the work is good.</p>
-                    <p>
-                      You set how far it goes alone: all the way to a commit, or it stops and asks
-                      when a task is genuinely unclear, or only on the calls that are big.
-                    </p>
-                    <p>
-                      It keeps a record of what it changed, why, the option it rejected, and every
-                      review. You read the decisions, not just the diff.
-                    </p>
-                    <p>It never really finishes. The boulder rolls back down, and the checks are what keep each run honest.</p>
-                  </div>
                 </div>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img className="sec-art" src="/brand/covers/the-cascade.svg" alt="A cover study after The Myth of Sisyphus" width="400" height="600" />
+              </div>
+            </Reveal>
+            <Reveal>
+              <div className="creed">
+                <p>It runs on two rival models, so nothing in the loop can approve its own work.</p>
+                <p>You decide how far it runs alone, and it logs every judgment call with the reasoning behind it.</p>
+                <p>It runs unwatched, so the checks are what let you trust a green run.</p>
               </div>
             </Reveal>
           </div>
@@ -187,11 +206,17 @@ $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
         <section className="sec" id="run">
           <div className="wrap">
             <Reveal>
-              <h2 className="sec-h2">Run it.</h2>
-              <p className="sec-sub">
-                It runs in Claude Code today: a subscription, the Codex CLI authenticated, node,
-                python3, and a repo you trust.
-              </p>
+              <div className="sec-head">
+                <div>
+                  <h2 className="sec-h2">Run it.</h2>
+                  <p className="sec-sub">
+                    It runs in Claude Code today: a subscription, the Codex CLI authenticated, node,
+                    python3, and a repo you trust.
+                  </p>
+                </div>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img className="sec-art" src="/brand/covers/the-descent.svg" alt="A cover study after The Fall" width="400" height="600" />
+              </div>
             </Reveal>
             <Reveal>
               <div className="term">
@@ -211,6 +236,18 @@ $ claude --permission-mode auto
 `}<span className="o">✓</span>{` env + baseline · 3/3 tasks done · integration verify green`}
                 </pre>
               </div>
+            </Reveal>
+          </div>
+        </section>
+
+        <section className="sec closing" id="camus">
+          <div className="wrap">
+            <Reveal>
+              <figure className="closing-mark">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src="/brand/covers/the-climb.svg" alt="The Camus loop, held as a still" width="400" height="600" />
+                <figcaption>Camus</figcaption>
+              </figure>
             </Reveal>
           </div>
         </section>

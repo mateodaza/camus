@@ -12,6 +12,10 @@ export function SiteFooter() {
           <p className="att">Albert Camus, The Myth of Sisyphus (tr. Justin O&apos;Brien)</p>
           <p className="riff">One must imagine the agents happy.</p>
         </Reveal>
+        <p className="foot-note">
+          The pieces through the page are original cover studies, after the Vintage International
+          Camus paperbacks. The boulder is the thread that runs through them.
+        </p>
         <div className="foot-links">
           <span>
             Camus. Formerly{' '}

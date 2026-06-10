@@ -1,11 +1,11 @@
 # Camus
 
-**An autonomous coding loop that can't grade its own homework.**
+**A coding loop that proves every change.**
 
-Camus runs a coding task from plan to verified commit without you watching it.
-Claude writes the code. Codex, a different vendor's model, reviews every change.
-Then your repo's own type-check and tests decide. No step in the chain is allowed
-to approve its own work.
+No agent grades its own work. Camus runs a coding task from plan to verified commit
+without you watching: Claude writes the code, Codex (a competing model) reviews
+every change, and your repo's own type-check and tests have the final word. Nothing in
+the loop, Claude included, can approve itself. The pairing is the point.
 
 It runs as two Claude Code workflows plus a skill: `/camus-loop` takes one task,
 `/camus-feat` takes an ordered task list and ships it as one feature branch with a
@@ -29,7 +29,7 @@ plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep �
 
 ## Why you can trust a green run
 
-**The reviewer is a different vendor.** Codex reviews; a thin runner relays its JSON
+**The reviewer is a competing model.** Codex reviews; a thin runner relays its JSON
 verbatim. Claude never re-judges the verdict. Each round starts a fresh Codex session
 so old findings get re-raised instead of politely dropped. Every round is also written
 to `~/.camus/reviews/`. If that file is missing, the review binary never ran.
@@ -121,7 +121,7 @@ Pure stdlib, no network, no dependencies. 163 assertions across 9 suites:
 npm test    # or run the suites individually under skills/camus/scripts/
 ```
 
-The cross-vendor gate has reviewed its own adapter, guard, and workflows, and caught
+Codex has reviewed Camus's own adapter, guard, and workflows, and caught
 real bugs each time.
 
 ## Boundary

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 600" role="img" aria-label="The boulder bedded on a long 45-degree slope rising corner to corner, a saddle below the summit">
+<clipPath id="c"><rect width="400" height="600"/></clipPath><g clip-path="url(#c)"><rect x="0" y="0" width="400" height="600" fill="#FFFFFF"/>
+<polygon points="-24,456 40,520 360,200 416,256 416,600 -24,600" fill="#0A0A0A"/>
+<circle cx="190" cy="307" r="50" fill="#0A0A0A"/></g>
+</svg>

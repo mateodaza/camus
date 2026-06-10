@@ -1,11 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 600" role="img" aria-label="The boulder mid-ascent on the great slope; the summit corner subdivides into ever-smaller identical slopes">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 600" role="img" aria-label="The boulder mid-ascent on the great slope while half-size echoes of the mountain cascade down the sky toward it">
 <rect x="0" y="0" width="400" height="600" fill="#F4F1E8"/>
 <polygon points="0,600 400,600 400,200" fill="#0B0B16"/>
-<polygon points="400,600 400,440 240,600" fill="#F4F1E8"/>
-<polygon points="400,600 400,520 320,600" fill="#0B0B16"/>
-<polygon points="400,600 400,560 360,600" fill="#F4F1E8"/>
-<polygon points="400,600 400,580 380,600" fill="#0B0B16"/>
-<polygon points="400,600 400,590 390,600" fill="#F4F1E8"/>
-<polygon points="52,140 108,140 108,84" fill="#0B0B16"/>
+<polygon points="160,160 160,64 64,160" fill="#0B0B16"/>
+<polygon points="208,208 208,160 160,208" fill="#0B0B16"/>
+<polygon points="232,232 232,208 208,232" fill="#0B0B16"/>
+<polygon points="244,244 244,232 232,244" fill="#0B0B16"/>
 <circle cx="268" cy="289" r="34" fill="#0B0B16"/>
 </svg>

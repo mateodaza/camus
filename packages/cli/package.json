@@ -1,7 +1,7 @@
 {
   "name": "camus-cli",
   "version": "0.1.0",
-  "description": "Camus — an autonomous coding loop that can't grade its own homework. Claude implements, Codex reviews, your own tests have the final word.",
+  "description": "A coding loop that proves every change. Claude writes it, Codex (a competitor) reviews it, your own tests decide. No agent grades its own work.",
   "bin": {
     "camus": "bin/camus.js"
   },

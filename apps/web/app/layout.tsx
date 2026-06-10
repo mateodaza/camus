@@ -28,12 +28,12 @@ const mono = JetBrains_Mono({
 });
 
 const FAVICON =
-  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'%3E%3Crect width='120' height='120' fill='%23ffffff'/%3E%3Cpolygon points='0,120 120,120 120,0' fill='%230A0A0A'/%3E%3Ccircle cx='63' cy='33' r='19' fill='%230A0A0A'/%3E%3C/svg%3E";
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 170 400 400'%3E%3Crect x='0' y='170' width='400' height='400' fill='%23ffffff'/%3E%3Cpolygon points='-24,456 40,520 360,200 416,256 416,600 -24,600' fill='%230A0A0A'/%3E%3Ccircle cx='190' cy='307' r='50' fill='%230A0A0A'/%3E%3C/svg%3E";
 
 export const metadata: Metadata = {
   title: "Camus: autonomous coding that can't approve its own work",
   description:
-    "Camus runs a coding task from plan to verified commit, unattended. A different vendor's model reviews every change. Your own tests have the final word.",
+    "Camus runs a coding task from plan to verified commit, unattended. A competing model reviews every change. Your own tests have the final word.",
   icons: { icon: FAVICON },
 };
 

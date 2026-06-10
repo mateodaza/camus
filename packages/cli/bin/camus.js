@@ -37,7 +37,7 @@ function py(script, args) {
   process.exit(r.status === null ? 1 : r.status);
 }
 
-const HELP = `camus ${pkg.version} — the coding loop that can't grade its own homework
+const HELP = `camus ${pkg.version} · a coding loop that proves every change
 
 usage: npx camus-cli <command>
 

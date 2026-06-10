@@ -1,105 +1,105 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 600" role="img" aria-label="A dark sun floating in a silent void, the glare built from half-square triangles">
 <rect x="0" y="0" width="400" height="600" fill="#F4F1E8"/>
-<rect x="0" y="0" width="50" height="50" fill="#0B0B16"/>
+<rect x="0" y="0" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="50,50 25,50 50,25" fill="#F4F1E8"/>
-<rect x="0" y="50" width="50" height="50" fill="#0B0B16"/>
+<rect x="0" y="50" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="50,100 25,100 50,75" fill="#F4F1E8"/>
-<rect x="0" y="100" width="50" height="50" fill="#0B0B16"/>
+<rect x="0" y="100" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="50,150 25,150 50,125" fill="#F4F1E8"/>
-<rect x="0" y="150" width="50" height="50" fill="#0B0B16"/>
+<rect x="0" y="150" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="50,200 25,200 50,175" fill="#F4F1E8"/>
-<rect x="0" y="200" width="50" height="50" fill="#0B0B16"/>
+<rect x="0" y="200" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="50,200 25,200 50,225" fill="#F4F1E8"/>
-<rect x="0" y="250" width="50" height="50" fill="#0B0B16"/>
+<rect x="0" y="250" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="50,250 25,250 50,275" fill="#F4F1E8"/>
-<rect x="0" y="300" width="50" height="50" fill="#0B0B16"/>
+<rect x="0" y="300" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="50,300 25,300 50,325" fill="#F4F1E8"/>
-<rect x="0" y="350" width="50" height="50" fill="#0B0B16"/>
+<rect x="0" y="350" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="50,350 25,350 50,375" fill="#F4F1E8"/>
-<rect x="0" y="400" width="50" height="50" fill="#0B0B16"/>
+<rect x="0" y="400" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="50,400 25,400 50,425" fill="#F4F1E8"/>
-<rect x="0" y="450" width="50" height="50" fill="#0B0B16"/>
-<rect x="0" y="500" width="50" height="50" fill="#0B0B16"/>
-<rect x="0" y="550" width="50" height="50" fill="#0B0B16"/>
-<rect x="50" y="0" width="50" height="50" fill="#0B0B16"/>
+<rect x="0" y="450" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
+<rect x="0" y="500" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
+<rect x="0" y="550" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
+<rect x="50" y="0" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="100,50 75,50 100,25" fill="#F4F1E8"/>
-<rect x="50" y="50" width="50" height="50" fill="#0B0B16"/>
+<rect x="50" y="50" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="100,100 75,100 100,75" fill="#F4F1E8"/>
-<polygon points="50,100 50,150 100,100" fill="#0B0B16"/>
-<polygon points="50,150 50,200 100,150" fill="#0B0B16"/>
-<polygon points="50,250 50,200 100,250" fill="#0B0B16"/>
-<polygon points="50,300 50,250 100,300" fill="#0B0B16"/>
-<polygon points="50,350 50,300 100,350" fill="#0B0B16"/>
-<rect x="50" y="350" width="50" height="50" fill="#0B0B16"/>
+<polygon points="50,100 50,150 100,100" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="50,150 50,200 100,150" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="50,250 50,200 100,250" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="50,300 50,250 100,300" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="50,350 50,300 100,350" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<rect x="50" y="350" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="100,350 75,350 100,375" fill="#F4F1E8"/>
-<rect x="50" y="400" width="50" height="50" fill="#0B0B16"/>
+<rect x="50" y="400" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="100,400 75,400 100,425" fill="#F4F1E8"/>
-<rect x="50" y="450" width="50" height="50" fill="#0B0B16"/>
-<rect x="50" y="500" width="50" height="50" fill="#0B0B16"/>
-<rect x="50" y="550" width="50" height="50" fill="#0B0B16"/>
-<rect x="100" y="0" width="50" height="50" fill="#0B0B16"/>
+<rect x="50" y="450" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
+<rect x="50" y="500" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
+<rect x="50" y="550" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
+<rect x="100" y="0" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="150,50 125,50 150,25" fill="#F4F1E8"/>
-<polygon points="100,50 100,100 150,50" fill="#0B0B16"/>
-<polygon points="100,100 100,150 150,100" fill="#0B0B16"/>
-<polygon points="100,150 100,200 150,150" fill="#0B0B16"/>
-<polygon points="100,300 100,250 150,300" fill="#0B0B16"/>
-<polygon points="100,350 100,300 150,350" fill="#0B0B16"/>
-<polygon points="100,400 100,350 150,400" fill="#0B0B16"/>
-<rect x="100" y="400" width="50" height="50" fill="#0B0B16"/>
+<polygon points="100,50 100,100 150,50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="100,100 100,150 150,100" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="100,150 100,200 150,150" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="100,300 100,250 150,300" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="100,350 100,300 150,350" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="100,400 100,350 150,400" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<rect x="100" y="400" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="150,400 125,400 150,425" fill="#F4F1E8"/>
-<rect x="100" y="450" width="50" height="50" fill="#0B0B16"/>
+<rect x="100" y="450" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="150,450 125,450 150,475" fill="#F4F1E8"/>
-<rect x="100" y="500" width="50" height="50" fill="#0B0B16"/>
-<rect x="100" y="550" width="50" height="50" fill="#0B0B16"/>
-<polygon points="150,0 150,50 200,0" fill="#0B0B16"/>
-<polygon points="150,50 150,100 200,50" fill="#0B0B16"/>
-<polygon points="150,400 150,350 200,400" fill="#0B0B16"/>
-<rect x="150" y="400" width="50" height="50" fill="#0B0B16"/>
+<rect x="100" y="500" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
+<rect x="100" y="550" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
+<polygon points="150,0 150,50 200,0" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="150,50 150,100 200,50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="150,400 150,350 200,400" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<rect x="150" y="400" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="200,400 175,400 200,425" fill="#F4F1E8"/>
-<rect x="150" y="450" width="50" height="50" fill="#0B0B16"/>
+<rect x="150" y="450" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="200,450 175,450 200,475" fill="#F4F1E8"/>
-<rect x="150" y="500" width="50" height="50" fill="#0B0B16"/>
-<rect x="150" y="550" width="50" height="50" fill="#0B0B16"/>
-<polygon points="200,0 200,50 250,0" fill="#0B0B16"/>
-<polygon points="200,50 200,100 250,50" fill="#0B0B16"/>
-<polygon points="200,400 200,350 250,400" fill="#0B0B16"/>
-<polygon points="200,450 200,400 250,450" fill="#0B0B16"/>
-<rect x="200" y="450" width="50" height="50" fill="#0B0B16"/>
+<rect x="150" y="500" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
+<rect x="150" y="550" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
+<polygon points="200,0 200,50 250,0" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="200,50 200,100 250,50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="200,400 200,350 250,400" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="200,450 200,400 250,450" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<rect x="200" y="450" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="250,450 225,450 250,475" fill="#F4F1E8"/>
-<rect x="200" y="500" width="50" height="50" fill="#0B0B16"/>
+<rect x="200" y="500" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="250,500 225,500 250,525" fill="#F4F1E8"/>
-<rect x="200" y="550" width="50" height="50" fill="#0B0B16"/>
-<polygon points="300,0 300,50 250,0" fill="#0B0B16"/>
-<polygon points="300,50 300,100 250,50" fill="#0B0B16"/>
-<polygon points="300,400 300,350 250,400" fill="#0B0B16"/>
-<polygon points="300,450 300,400 250,450" fill="#0B0B16"/>
-<rect x="250" y="450" width="50" height="50" fill="#0B0B16"/>
+<rect x="200" y="550" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
+<polygon points="300,0 300,50 250,0" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="300,50 300,100 250,50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="300,400 300,350 250,400" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="300,450 300,400 250,450" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<rect x="250" y="450" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="250,450 275,450 250,475" fill="#F4F1E8"/>
-<rect x="250" y="500" width="50" height="50" fill="#0B0B16"/>
+<rect x="250" y="500" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="250,500 275,500 250,525" fill="#F4F1E8"/>
-<rect x="250" y="550" width="50" height="50" fill="#0B0B16"/>
-<polygon points="350,0 350,50 300,0" fill="#0B0B16"/>
-<polygon points="350,50 350,100 300,50" fill="#0B0B16"/>
-<polygon points="350,400 350,350 300,400" fill="#0B0B16"/>
-<rect x="300" y="400" width="50" height="50" fill="#0B0B16"/>
+<rect x="250" y="550" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
+<polygon points="350,0 350,50 300,0" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="350,50 350,100 300,50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="350,400 350,350 300,400" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<rect x="300" y="400" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="300,400 325,400 300,425" fill="#F4F1E8"/>
-<rect x="300" y="450" width="50" height="50" fill="#0B0B16"/>
+<rect x="300" y="450" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="300,450 325,450 300,475" fill="#F4F1E8"/>
-<rect x="300" y="500" width="50" height="50" fill="#0B0B16"/>
-<rect x="300" y="550" width="50" height="50" fill="#0B0B16"/>
-<rect x="350" y="0" width="50" height="50" fill="#0B0B16"/>
+<rect x="300" y="500" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
+<rect x="300" y="550" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
+<rect x="350" y="0" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="350,50 375,50 350,25" fill="#F4F1E8"/>
-<polygon points="400,50 400,100 350,50" fill="#0B0B16"/>
-<polygon points="400,100 400,150 350,100" fill="#0B0B16"/>
-<polygon points="400,150 400,200 350,150" fill="#0B0B16"/>
-<polygon points="400,300 400,250 350,300" fill="#0B0B16"/>
-<polygon points="400,350 400,300 350,350" fill="#0B0B16"/>
-<polygon points="400,400 400,350 350,400" fill="#0B0B16"/>
-<rect x="350" y="400" width="50" height="50" fill="#0B0B16"/>
+<polygon points="400,50 400,100 350,50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="400,100 400,150 350,100" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="400,150 400,200 350,150" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="400,300 400,250 350,300" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="400,350 400,300 350,350" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="400,400 400,350 350,400" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7" stroke-linejoin="miter"/>
+<rect x="350" y="400" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="350,400 375,400 350,425" fill="#F4F1E8"/>
-<rect x="350" y="450" width="50" height="50" fill="#0B0B16"/>
+<rect x="350" y="450" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
 <polygon points="350,450 375,450 350,475" fill="#F4F1E8"/>
-<rect x="350" y="500" width="50" height="50" fill="#0B0B16"/>
-<rect x="350" y="550" width="50" height="50" fill="#0B0B16"/>
-<circle cx="252" cy="222" r="26" fill="#0B0B16"/>
+<rect x="350" y="500" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
+<rect x="350" y="550" width="50" height="50" fill="#0B0B16" stroke="#0B0B16" stroke-width="0.7"/>
+<circle cx="252" cy="222" r="28" fill="#0B0B16"/>
 </svg>

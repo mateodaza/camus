@@ -4,7 +4,7 @@ description: Run the Camus closed-loop on one task — discovery, plan, implemen
 disable-model-invocation: true
 ---
 
-# Camus — closed-loop task runner (v2-lite)
+# Camus — closed-loop task runner
 
 This skill is the **playbook**, not the engine. The engine is the pair of dynamic
 workflows (`camus-loop` for one task, `camus-feat` for an ordered task list) installed
@@ -24,7 +24,7 @@ discovery → plan → implement → [ Codex review → fix ]*  → verify
 ```
 
 - **Implementation** is done by Claude (cheap model for bulk work).
-- **Review** is done by **Codex** (a different vendor) — this is deliberate, to
+- **Review** is done by **Codex** (a competitor) — this is deliberate, to
   sidestep self-preferential bias. Claude must NOT re-judge Codex's verdict.
 - **Verification** is deterministic and **stack-agnostic**: `verify.sh` auto-detects the
   repo's build/test commands (node/python/rust/go/foundry/make) with zero per-project
@@ -70,7 +70,7 @@ Defaults: `ROUND_CAP = 3`.
 
 ## How the pieces fit
 
-- `review-prompt.md` — the cross-vendor audit persona + severity rubric handed to Codex.
+- `review-prompt.md` — the adversarial audit persona + severity rubric handed to Codex.
 - `sev.schema.json` — the Codex `--output-schema` (findings[] with priority 0–3 + verdict).
 - `scripts/codex_review.sh` — reviewer agent runs this → normalized gate JSON.
 - `scripts/verify.sh` — verifier agent runs this → `{pass, failures}` JSON.

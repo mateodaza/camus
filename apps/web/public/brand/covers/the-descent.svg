@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 600" role="img" aria-label="Nested squares and diamonds falling inward by half, down to a single boulder">
+<clipPath id="c"><rect width="400" height="600"/></clipPath><g clip-path="url(#c)"><rect x="0" y="0" width="400" height="600" fill="#0A0A0A"/>
+<polygon points="214,12 574,372 214,732 -146,372" fill="#FFFFFF"/>
+<polygon points="50,212 390,212 390,552 50,552" fill="#0A0A0A"/>
+<polygon points="226,234 384,392 226,550 68,392" fill="#FFFFFF"/>
+<polygon points="162,332 302,332 302,472 162,472" fill="#0A0A0A"/>
+<polygon points="238,354 296,412 238,470 180,412" fill="#FFFFFF"/>
+<circle cx="244" cy="422" r="26" fill="#0A0A0A"/></g>
+</svg>
