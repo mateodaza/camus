@@ -1,0 +1,39 @@
+{
+  "name": "camus",
+  "version": "0.1.0",
+  "description": "Camus — an autonomous coding loop that can't grade its own homework. Claude implements, Codex reviews, your own tests have the final word.",
+  "bin": {
+    "camus": "bin/camus.js"
+  },
+  "files": [
+    "bin/",
+    "skills/",
+    "workflows/",
+    "install.sh",
+    "merge_settings.py",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "bash -c 'cd skills/camus/scripts && for t in test_adapter.py test_verify.py test_env_check.py test_prep.py test_resume_scan.py test_review_audit.py; do python3 $t || exit 1; done && bash test_guard.sh && cd ../../.. && python3 test_merge_settings.py && node test_hitl_workflows.js'"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mateodaza/camus.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/mateodaza/camus#readme",
+  "bugs": "https://github.com/mateodaza/camus/issues",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "codex",
+    "autonomous-agent",
+    "code-review",
+    "cross-vendor"
+  ],
+  "author": "Mateo Daza",
+  "license": "MIT"
+}

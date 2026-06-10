@@ -1,0 +1,77 @@
+:root{
+  --ink:#0B0B16; --paper:#F4F1E8; --coral:#E8584F;
+  --ink-soft:#3E3D49; --ink-faint:#8B8896; --rule:#D8D3C4;
+  --serif:var(--font-serif),Georgia,serif;
+  --sans:var(--font-sans),Inter,-apple-system,'Helvetica Neue',sans-serif;
+  --mono:'SF Mono',ui-monospace,'Cascadia Code',Menlo,Consolas,monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--paper);color:var(--ink);font:16px/1.65 var(--sans)}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:920px;margin:0 auto;padding:0 24px}
+
+/* nav */
+nav{border-bottom:2px solid var(--ink)}
+.nav-row{display:flex;align-items:center;justify-content:space-between;padding:20px 0}
+.lockup{display:flex;align-items:center;gap:14px}
+.lockup svg{width:34px;height:34px;display:block}
+.lockup span{font-family:var(--sans);font-weight:600;font-size:15px;letter-spacing:.38em;padding-left:.38em}
+.nav-links{display:flex;gap:28px;font-size:13px;font-weight:500;letter-spacing:.06em}
+.nav-links a:hover{color:var(--coral)}
+
+/* hero */
+header{padding:104px 0 88px;position:relative;overflow:hidden}
+h1{font-family:var(--serif);font-weight:400;font-size:clamp(38px,6vw,64px);line-height:1.08;max-width:780px;letter-spacing:-0.01em}
+h1 em{font-style:italic}
+.sub{margin-top:26px;font-size:19px;line-height:1.6;color:var(--ink-soft);max-width:600px}
+.hero-cta{margin-top:40px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+.btn{font-family:var(--mono);font-size:14px;padding:14px 28px;border:2px solid var(--ink)}
+.btn.primary{background:var(--coral);border-color:var(--coral);color:var(--paper);font-weight:600}
+.btn.primary:hover{background:var(--ink);border-color:var(--ink)}
+.btn.ghost:hover{background:var(--ink);color:var(--paper)}
+.hero-tri{position:absolute;right:-40px;top:0;bottom:0;width:38%;pointer-events:none;opacity:.06}
+
+/* divider — the Rounds motif */
+.divider{display:flex;justify-content:flex-end;padding:8px 0}
+.divider svg{width:84px;height:42px;display:block}
+
+/* loop strip — ink band */
+.loop{background:var(--ink);color:var(--paper);padding:46px 0}
+.loop-row{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:13px;white-space:nowrap;overflow-x:auto;padding-bottom:4px}
+.stage{border:1px solid #3E3D49;padding:9px 15px}
+.stage.codex{background:var(--paper);color:var(--ink);border-color:var(--paper);font-weight:600}
+.stage.det{border-color:var(--paper)}
+.arr{color:#6B6878}
+.loop-note{margin-top:16px;font-family:var(--mono);font-size:12.5px;color:#8B8896}
+.loop-note b{color:var(--paper);font-weight:600}
+
+/* sections */
+section{padding:84px 0}
+h2{font-family:var(--serif);font-weight:400;font-size:34px;margin-bottom:10px;letter-spacing:-0.01em}
+.lede{color:var(--ink-soft);margin-bottom:44px;max-width:600px;font-size:17px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:0;border-top:2px solid var(--ink);border-left:2px solid var(--ink)}
+.cell{border-right:2px solid var(--ink);border-bottom:2px solid var(--ink);padding:28px 26px;background:var(--paper)}
+.cell h3{font-size:15px;font-weight:600;letter-spacing:.02em;margin-bottom:10px}
+.cell p{font-size:14px;line-height:1.7;color:var(--ink-soft)}
+.cell code{font-family:var(--mono);font-size:12.5px;background:rgba(11,11,22,.06);padding:1px 5px}
+.k{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);display:block;margin-bottom:12px}
+
+/* principles */
+.rules{counter-reset:r}
+.rules li{list-style:none;padding:24px 0;border-bottom:1px solid var(--rule);display:flex;gap:24px;align-items:baseline}
+.rules li:last-child{border-bottom:none}
+.rules .n{font-family:var(--serif);font-style:italic;font-size:20px;color:var(--ink-faint);min-width:36px}
+.rules b{display:block;font-size:16px;margin-bottom:4px;font-weight:600}
+.rules p{font-size:14.5px;color:var(--ink-soft);max-width:640px}
+
+/* terminal — the inversion moment */
+.term{background:var(--ink);color:#C9C6BB;font-family:var(--mono);font-size:13.5px;line-height:1.85;padding:30px 32px;overflow-x:auto}
+.c{color:#6B6878} .g{color:#9DC2A4} .p{color:var(--paper)} .o{color:#E8A39D}
+
+/* footer */
+footer{background:var(--ink);color:var(--paper);margin-top:84px;padding:84px 0 64px}
+.epigraph{font-family:var(--serif);font-style:italic;font-size:clamp(20px,3vw,27px);line-height:1.5;max-width:680px}
+.attrib{margin-top:18px;font-family:var(--mono);font-size:12.5px;color:#8B8896}
+.foot-meta{margin-top:64px;padding-top:24px;border-top:1px solid #3E3D49;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;font-size:12.5px;color:#8B8896}
+.foot-meta a:hover{color:var(--paper)}

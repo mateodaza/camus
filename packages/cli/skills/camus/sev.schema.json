@@ -1,0 +1,41 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["overall_correctness", "overall_confidence_score", "overall_explanation", "findings"],
+  "properties": {
+    "overall_correctness": {
+      "type": "string",
+      "enum": ["patch is correct", "patch is incorrect"]
+    },
+    "overall_confidence_score": {
+      "type": "number"
+    },
+    "overall_explanation": {
+      "type": "string"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["priority", "title", "body", "code_location", "confidence_score"],
+        "properties": {
+          "priority": {
+            "type": "integer",
+            "description": "0=P0 critical, 1=P1 high, 2=P2 medium (all block), 3=P3 nit (non-blocking). Range 0-3 enforced by the adapter."
+          },
+          "title": { "type": "string" },
+          "body": { "type": "string" },
+          "code_location": {
+            "type": "string",
+            "description": "path:line or path:start-end"
+          },
+          "confidence_score": {
+            "type": "number",
+            "description": "0.0 to 1.0"
+          }
+        }
+      }
+    }
+  }
+}

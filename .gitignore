@@ -1,0 +1,20 @@
+# deps / builds
+node_modules/
+.next/
+out/
+dist/
+*.tgz
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+pytest-cache-files-*/
+
+# env / os
+.env
+.env.*
+.DS_Store
+
+# vercel
+.vercel/

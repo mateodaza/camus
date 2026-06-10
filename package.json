@@ -1,0 +1,12 @@
+{
+  "name": "camus-monorepo",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "test": "pnpm --filter camus test",
+    "web:dev": "pnpm --filter web dev",
+    "web:build": "pnpm --filter web build",
+    "cli:pack": "pnpm --filter camus exec npm pack --dry-run"
+  }
+}

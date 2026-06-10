@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="Camus mark: the rounds">
+  <!-- C. THE ROUNDS — the cover's diminishing-triangle corner motif as product
+       truth: each review round smaller than the last, converging to done.
+       (Or: the boulder rolls back, smaller each time. Both readings are correct.) -->
+  <polygon points="8,72 72,72 72,8" fill="#0B0B16"/>
+  <polygon points="72,104 104,104 104,72" fill="#0B0B16"/>
+  <polygon points="104,120 120,120 120,104" fill="#0B0B16"/>
+</svg>

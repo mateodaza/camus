@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="Camus mark: the slope and the boulder">
+  <!-- A. THE SLOPE — Sisyphus reduced to its minimum: the mountain (half-square
+       triangle, the Vintage cover's atomic unit) and the boulder, mid-ascent.
+       One ink, no gradient. Invert by swapping fill to paper on ink ground. -->
+  <polygon points="0,120 120,120 120,0" fill="#0B0B16"/>
+  <circle cx="71" cy="35" r="11.5" fill="#0B0B16"/>
+</svg>
