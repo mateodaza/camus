@@ -36,6 +36,14 @@ def frame(base, feat_id, feedback="", now=None):
         body = ["feat state file exists but is not valid JSON (mid-write race?) — retrying…"]
     else:
         body = S.render(synth, now=now)
+        # Hygiene (2026-06-11, HARNESS-DIRECTION): a user ran watch from $HOME and the live-agents
+        # section silently vanished — the transcript lookup is keyed on the CWD's repo, so the
+        # wrong directory reads as "no agents at all". Say so, dimly, instead of staying silent.
+        # ANSI dim is safe here: frame() only feeds the TTY loop (piped invocations fall back to
+        # the one-shot status print in main() before frame is ever called).
+        if not synth.get("live"):
+            body += ["", "\x1b[2mlive agents: none visible from this directory — "
+                         "run watch from the target repo's root\x1b[0m"]
     lines = list(body) + ["", FOOTER]
     if feedback:
         lines.append("» " + feedback)
@@ -49,8 +57,11 @@ def dispatch(key, base, feat_id, prompt=input):
         fid, err = ST.resolve_feat(base, feat_id)
         if err:
             return "pause refused: " + err
-        ST.write_note(base, fid, {"pause": True})
-        return "pause note written — the run halts at the next task boundary"
+        # MERGED write (audit P1 2026-06-11): raw write_note here clobbered a pending note, so
+        # an interactive pause erased queued answers/guidance the CLI had carefully composed.
+        _, warn = ST.write_note_merged(base, fid, {"pause": True})
+        return ("pause note written — the run halts at the next task boundary"
+                + ("; WARNING: " + warn if warn else ""))
     if key == "g":
         fid, err = ST.resolve_feat(base, feat_id)
         if err:
@@ -58,8 +69,9 @@ def dispatch(key, base, feat_id, prompt=input):
         text = prompt("guidance for the next task: ").strip()
         if not text:
             return "empty guidance — nothing written"
-        ST.write_note(base, fid, {"guidance": text})
-        return "guidance note written — applied at the next task boundary"
+        _, warn = ST.write_note_merged(base, fid, {"guidance": text})
+        return ("guidance note written — applied at the next task boundary"
+                + ("; WARNING: " + warn if warn else ""))
     if key == "c":
         fid, err = ST.resolve_feat(base, feat_id, require_running=False)
         if err:

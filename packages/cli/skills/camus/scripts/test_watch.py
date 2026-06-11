@@ -113,6 +113,75 @@ def test_dispatch_unknown_key_is_noop():
         assert _note(base, "f1") is None
 
 
+def test_frame_dim_hint_when_no_live_agents_visible():
+    # Hygiene fixlet (2026-06-11, HARNESS-DIRECTION): a user ran watch from $HOME and the
+    # live-agents section silently vanished — no agents must render a dim pointer, not silence.
+    saved = W.S._transcripts
+    W.S._transcripts = None                          # deterministic: force the no-agents path
+    try:
+        with tempfile.TemporaryDirectory() as base:
+            _feat(base)
+            text = "\n".join(W.frame(base, None))
+            assert "live agents: none visible from this directory" in text
+            assert "run watch from the target repo's root" in text
+    finally:
+        W.S._transcripts = saved
+
+
+def test_frame_no_hint_when_agents_are_visible():
+    class _Stub:                                     # injectable transcript layer, agents present
+        @staticmethod
+        def live_agents(repo):
+            return [{"label": "implement", "model": "Opus", "outputTokens": 5, "toolCount": 1}]
+
+        @staticmethod
+        def estimate_cost_usd(agents):
+            return None
+    saved = W.S._transcripts
+    W.S._transcripts = _Stub
+    try:
+        with tempfile.TemporaryDirectory() as base:
+            _feat(base)
+            text = "\n".join(W.frame(base, None))
+            assert "none visible from this directory" not in text
+            assert "implement" in text               # the real section rendered instead
+    finally:
+        W.S._transcripts = saved
+
+
+def test_frame_heartbeat_warning_flows_through_watch():
+    # Item 1 (2026-06-11): the loud may-have-died line must reach the WATCH surface too —
+    # frame() reuses status.render, so a stale .hb on a running feat warns here as well.
+    saved = W.S._transcripts
+    W.S._transcripts = None
+    try:
+        with tempfile.TemporaryDirectory() as base:
+            _feat(base, "f1")                        # status=running
+            now = 1_800_000_000
+            sp = os.path.join(base, "feats", "f1.json")
+            hb = os.path.join(base, "feats", "f1.hb")
+            with open(hb, "w", encoding="utf-8") as fh:
+                fh.write("")                         # touch-equivalent: mtime is the signal
+            os.utime(sp, (now - 1500, now - 1500))
+            os.utime(hb, (now - 1500, now - 1500))
+            text = "\n".join(W.frame(base, None, now=now))
+            assert "no heartbeat for 25m" in text
+            assert "safe to resume with the same args" in text
+    finally:
+        W.S._transcripts = saved
+
+
+def test_dispatch_pause_then_guidance_compose():
+    # Audit P1 2026-06-11: watch keypresses MERGE into the pending note (write_note_merged),
+    # never clobber — pause then guidance must yield a note carrying BOTH.
+    with tempfile.TemporaryDirectory() as base:
+        _feat(base, "f1")
+        assert "pause note written" in W.dispatch("p", base, None)
+        assert "guidance note written" in W.dispatch("g", base, None, prompt=lambda _: "use B")
+        note = _note(base, "f1")
+        assert note["pause"] is True and note["guidance"] == "use B"
+
+
 # --- stdlib runner (no pytest required) ------------------------------------
 
 if __name__ == "__main__":

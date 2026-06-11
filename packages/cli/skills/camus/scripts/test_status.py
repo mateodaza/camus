@@ -195,6 +195,114 @@ def test_render_cost_estimate_is_honest():
         assert "$" not in "\n".join(S.render(synth))
 
 
+def test_render_heartbeat_age_uses_newest_of_state_and_hb_mtime():
+    # Item 1, display half (2026-06-11): 0.2.5 engines `touch` <featId>.hb at every phase
+    # boundary; the heartbeat is the NEWEST of (state json mtime, .hb mtime) — whichever
+    # artifact moved last proves the run is alive. Fixed epoch + os.utime → no sleeps, no flake.
+    with tempfile.TemporaryDirectory() as base:
+        now = 1_800_000_000
+        sp = os.path.join(base, "feats", "f.json")
+        _write(sp, _feat_state("f"))
+        hb = os.path.join(base, "feats", "f.hb")
+        _write_raw(hb, "")                            # touch-equivalent: contents irrelevant
+        os.utime(sp, (now - 300, now - 300))          # state persisted 5m ago…
+        os.utime(hb, (now - 7, now - 7))              # …but a phase boundary touched 7s ago
+        synth = S.synthesize(base, now=now)
+        synth["live"] = []                            # keep this machine's real transcripts out
+        out = "\n".join(S.render(synth, now=now))
+        assert "last heartbeat 7s ago" in out
+        assert "state updated" not in out             # the hb phrasing REPLACES the legacy line
+        os.utime(sp, (now - 3, now - 3))              # newest wins in BOTH directions
+        synth = S.synthesize(base, now=now)
+        synth["live"] = []
+        assert "last heartbeat 3s ago" in "\n".join(S.render(synth, now=now))
+
+
+def test_render_without_hb_keeps_legacy_rendering():
+    # Pre-0.2.5 runs have no .hb and must render EXACTLY as before: "state updated" phrasing and
+    # NO died-warning even when running+stale — their state only writes at task boundaries, which
+    # can legitimately be >10 min apart, so staleness alone proves nothing without the .hb contract.
+    with tempfile.TemporaryDirectory() as base:
+        now = 1_800_000_000
+        sp = os.path.join(base, "feats", "f.json")
+        _write(sp, _feat_state("f"))                  # status=running
+        os.utime(sp, (now - 1500, now - 1500))        # stale by any standard
+        synth = S.synthesize(base, now=now)
+        synth["live"] = []
+        out = "\n".join(S.render(synth, now=now))
+        assert "state updated 25m00s ago" in out
+        assert "heartbeat" not in out
+
+
+def test_render_heartbeat_stale_warning_only_when_running():
+    # "running" must MEAN running (HARNESS-DIRECTION item 1): a .hb quiet for >10 min on a
+    # running feat is loud; the same staleness on a finished feat is just history.
+    with tempfile.TemporaryDirectory() as base:
+        now = 1_800_000_000
+        sp = os.path.join(base, "feats", "f.json")
+        _write(sp, _feat_state("f"))                  # status=running
+        hb = os.path.join(base, "feats", "f.hb")
+        _write_raw(hb, "")
+        os.utime(sp, (now - 1500, now - 1500))
+        os.utime(hb, (now - 1500, now - 1500))
+        synth = S.synthesize(base, now=now)
+        synth["live"] = []
+        out = "\n".join(S.render(synth, now=now))
+        assert 'no heartbeat for 25m on a "running" feat' in out
+        assert "safe to resume with the same args" in out
+        synth["state"]["status"] = "done"             # same staleness, finished feat → silent
+        assert "no heartbeat for" not in "\n".join(S.render(synth, now=now))
+        os.utime(hb, (now - 30, now - 30))            # fresh heartbeat on a running feat → quiet too
+        synth = S.synthesize(base, now=now)
+        synth["live"] = []
+        out = "\n".join(S.render(synth, now=now))
+        assert "no heartbeat for" not in out and "last heartbeat 30s ago" in out
+
+
+def test_render_integration_pending_hints_and_never_warns():
+    # Audit P2 follow-up (2026-06-11): a fully-reconciled feat is NOT running — the explicit
+    # integration_pending status must render the finish-it hint and never trip the may-have-died
+    # warning, no matter how stale the heartbeat (nothing is supposed to be beating).
+    with tempfile.TemporaryDirectory() as base:
+        now = 1_800_000_000
+        sp = os.path.join(base, "feats", "f.json")
+        st = _feat_state("f", status="integration_pending")
+        _write(sp, st)
+        hb = os.path.join(base, "feats", "f.hb")
+        _write_raw(hb, "")
+        os.utime(sp, (now - 9000, now - 9000))
+        os.utime(hb, (now - 9000, now - 9000))
+        synth = S.synthesize(base, now=now)
+        synth["live"] = []
+        out = "\n".join(S.render(synth, now=now))
+        assert "[integration_pending]" in out
+        assert "INTEGRATION PENDING" in out and "Re-run the feat with the SAME args" in out
+        assert "no heartbeat for" not in out         # non-running → the liveness contract is silent
+
+
+def test_render_persisted_feat_token_rollup():
+    # Item 4, display half (2026-06-11): per-task tokens PERSIST across resumes, so their sum is
+    # the one cross-run feat number — rendered as a persisted counter, never an invoice.
+    with tempfile.TemporaryDirectory() as base:
+        st = _feat_state("f")
+        st["tasks"][1]["tokens"] = 60000              # both tasks counted: 145k + 60k
+        _write(os.path.join(base, "feats", "f.json"), st)
+        synth = S.synthesize(base, "f")
+        synth["live"] = []
+        out = "\n".join(S.render(synth))
+        assert "persisted feat total: ~205k output tokens across runs (per-task, survives resume)" in out
+        # …absent / non-numeric / bool tokens are never summed (no fabricated numbers): when no
+        # task carries a real count, the line is omitted entirely.
+        st2 = _feat_state("f2")
+        del st2["tasks"][0]["tokens"]
+        st2["tasks"][1]["tokens"] = "lots"
+        st2["tasks"].append({"taskId": "x-ee33ff", "spec": "x", "status": "pending", "tokens": True})
+        _write(os.path.join(base, "feats", "f2.json"), st2)
+        synth = S.synthesize(base, "f2")
+        synth["live"] = []
+        assert "persisted feat total" not in "\n".join(S.render(synth))
+
+
 # --- stdlib runner (no pytest required) ------------------------------------
 
 if __name__ == "__main__":

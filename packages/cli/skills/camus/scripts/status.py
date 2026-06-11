@@ -4,6 +4,8 @@
 Read-only: synthesizes everything from artifacts the run already writes, so it works from any
 terminal while the run is in flight (no Claude session, no tokens, no gate involvement):
   - ~/.camus/feats/<featId>.json    state: tasks, statuses, telemetry, the run-log event ring
+  - ~/.camus/feats/<featId>.hb      0.2.5 heartbeat: `touch`ed at every phase boundary — its
+                                    MTIME is the whole signal (contents irrelevant; may not exist)
   - ~/.camus/reviews/<wt>-r<n>.json per-round Codex audit files (mtimes = a real timeline)
   - ~/.camus/steer/<featId>.json    a pending human steering note, if any (see steer.py)
 
@@ -40,12 +42,17 @@ GLYPH = {
 EVENTS_SHOWN = 10       # "last 10 steps"
 REVIEWS_SHOWN = 5
 LIVE_SHOWN = 8          # live agents from the workflow transcripts
-# Liveness (run feedback 2026-06-11): the state file only writes at task boundaries, so it CANNOT
-# distinguish "actively working" from "the workflow died" — agent transcripts append per message
-# and can. BEST-EFFORT ONLY: the transcripts come from the repo's most-recent wf dir, not a
-# feat-bound wf_id, so concurrent runs in one repo (or inspecting an older feat) can mislead.
-# The first-class fix is the 0.2.5 state heartbeat/pid (docs/HARNESS-DIRECTION.md item 1).
-LIVENESS_STALE_S = 600  # no transcript writes for 10 min during a "running" feat → probably dead
+# Liveness, two layers (HARNESS-DIRECTION item 1; display half shipped 2026-06-11):
+#   1. FIRST-CLASS, feat-bound: 0.2.5 engines `touch` ~/.camus/feats/<featId>.hb at every phase
+#      boundary (plan/implement and review/fix/verify/prep/commit), so "running" + a quiet
+#      heartbeat is decidable with NO transcript dependency — `running` must mean running.
+#      Pre-0.2.5 runs have no .hb and must render exactly as before (no new warnings: their
+#      state only writes at task boundaries, which can legitimately be >10 min apart).
+#   2. FINE-GRAINED, best-effort (run feedback 2026-06-11): agent transcripts append per message
+#      and show what each agent is DOING — but they come from the repo's most-recent wf dir, not
+#      a feat-bound wf_id, so concurrent runs in one repo (or inspecting an older feat) can
+#      mislead, and an unreadable transcript format degrades them entirely.
+LIVENESS_STALE_S = 600  # quiet for 10 min during a "running" feat → probably dead (both layers)
 
 
 def _parse_ts(s):
@@ -162,9 +169,21 @@ def synthesize(base, feat_id=None, now=None, repo=None):
     if not state:
         return {"corrupt": corrupt} if corrupt else None
     try:
-        age = max(0, now - os.path.getmtime(path))
+        state_mtime = os.path.getmtime(path)
+        age = max(0, now - state_mtime)
     except OSError:
-        age = None
+        state_mtime, age = None, None
+    # Heartbeat (item 1, display half 2026-06-11): the loop's runner agents `touch` a .hb sibling
+    # of the state file at every phase boundary — its MTIME is the signal, contents irrelevant.
+    # The heartbeat age is taken from the NEWEST of (.hb, state json): either artifact moving
+    # proves life, and the state json keeps writing at boundaries on its own. Pre-0.2.5 runs have
+    # no .hb → heartbeatAge stays None and every consumer degrades to the legacy rendering.
+    hb_age = None
+    if state_mtime is not None:
+        try:
+            hb_age = max(0, now - max(state_mtime, os.path.getmtime(os.path.splitext(path)[0] + ".hb")))
+        except OSError:
+            hb_age = None
     task_ids = [t.get("taskId") for t in state.get("tasks", []) if isinstance(t, dict) and t.get("taskId")]
     # Best-effort live-agent enrichment from the workflow transcripts (the repo is the cwd the
     # user runs `camus watch`/`status` from). NEVER fatal — degrades to [] when unavailable.
@@ -180,6 +199,7 @@ def synthesize(base, feat_id=None, now=None, repo=None):
         "state": state,
         "statePath": path,
         "stateAge": age,
+        "heartbeatAge": hb_age,
         "reviews": review_activity(base, task_ids, now=now),
         "steer": steer_note(base, state.get("featId", "")),
         "live": live,
@@ -195,9 +215,22 @@ def render(synth, now=None):
     lines = []
     status = s.get("status", "?")
     lines.append("Camus feat: %s   [%s]" % (s.get("feat", "?"), status))
-    lines.append("  id %s · branch %s · base %s · state updated %s ago"
+    # Freshness: with a .hb (0.2.5 engines) "last heartbeat" REPLACES the legacy phrasing — it
+    # subsumes it (heartbeatAge is computed from the newest of state json and .hb mtimes), and a
+    # second age on the same line would just invite "which one do I trust?". Without a .hb
+    # (pre-0.2.5 runs) the line stays byte-identical to what it always said.
+    hb_age = synth.get("heartbeatAge")
+    lines.append("  id %s · branch %s · base %s · %s"
                  % (s.get("featId", "?"), s.get("featBranch", "?"), s.get("base", "?"),
-                    fmt_age(synth.get("stateAge"))))
+                    ("last heartbeat %s ago" % fmt_age(hb_age)) if hb_age is not None
+                    else ("state updated %s ago" % fmt_age(synth.get("stateAge")))))
+    # "running" must MEAN running (item 1, 2026-06-11): the engine touches .hb at EVERY phase
+    # boundary, so >10 min of silence on a running feat is loud — feat-bound, no transcript
+    # involved (the transcript "last activity" below stays as the fine-grained layer). Resume
+    # safety is real: the gate is idempotent — done tasks skip, proven work auto-lands.
+    if status == "running" and hb_age is not None and hb_age > LIVENESS_STALE_S:
+        lines.append('  ⚠ no heartbeat for %dm on a "running" feat — the run may have died; '
+                     "safe to resume with the same args" % int(hb_age // 60))
     lines.append("")
 
     tasks = [t for t in s.get("tasks", []) if isinstance(t, dict)]
@@ -213,6 +246,16 @@ def render(synth, now=None):
         lines.append("  %s %d. %-44s %-12s%s"
                      % (GLYPH.get(st, "·"), i, t.get("taskId", "?"), st,
                         (" " + " · ".join(tele)) if tele else ""))
+    # Cross-run rollup (HARNESS-DIRECTION item 4, display half, 2026-06-11): per-task `tokens`
+    # PERSIST in state across resumes, so their sum is the one feat-level number that survives a
+    # restart — unlike the live per-run estimate further down, which only sees the current run's
+    # transcripts. Honest-cost house rule: an estimate-adjacent persisted counter, never an
+    # invoice (bools are excluded on purpose — a stray `true` is not a token count).
+    feat_tokens = sum(t["tokens"] for t in tasks
+                      if isinstance(t.get("tokens"), (int, float)) and not isinstance(t.get("tokens"), bool))
+    if feat_tokens > 0:
+        lines.append("  persisted feat total: ~%dk output tokens across runs (per-task, survives resume)"
+                     % round(feat_tokens / 1000.0))
     lines.append("")
 
     # Live agents (best-effort, from the workflow transcripts): what each agent is actually doing
@@ -221,10 +264,11 @@ def render(synth, now=None):
     live = synth.get("live") or []
     if live:
         # Liveness, BEST-EFFORT: newest transcript write across the agents of the REPO'S latest
-        # workflow run — transcripts append per message, which the boundary-written state file
-        # can't do. NOT feat-bound: with concurrent camus runs in one repo, or when inspecting an
-        # older feat, this may describe a different run (the 0.2.5 state heartbeat/pid is the
-        # first-class fix). Stale + a "running" feat → still say the quiet part loudly.
+        # workflow run — transcripts append per message, so they're finer-grained than any
+        # boundary-written file. NOT feat-bound: with concurrent camus runs in one repo, or when
+        # inspecting an older feat, this may describe a different run (the .hb heartbeat in the
+        # header above is the first-class, feat-bound signal since 0.2.5). Stale + a "running"
+        # feat → still say the quiet part loudly.
         acts = [t for t in (_parse_ts(a.get("lastTs")) for a in live) if t]
         act_age = max(0.0, now - max(acts)) if acts else None
         lines.append("Live agents (repo's latest run, best-effort · model · tokens · tools)%s"
@@ -268,6 +312,15 @@ def render(synth, now=None):
             lines.append("  %s" % q)
         halted = next((t.get("taskId") for t in tasks if t.get("status") == "needs_human"), "<taskId>")
         lines.append('  resume: re-run the feat with  answers:{"%s":"<your answer>"}' % halted)
+        lines.append("")
+
+    if status == "integration_pending":
+        # Reconcile completed the last open task by hand (audit P2 follow-up 2026-06-11): every
+        # task is done/noop but the merged branch has NOT passed integration verify — and nothing
+        # is running, so no heartbeat warning applies and steer would have nothing to consume.
+        lines.append("INTEGRATION PENDING — all tasks done/noop (last one reconciled by hand);")
+        lines.append("  integration verify has NOT run. Re-run the feat with the SAME args —")
+        lines.append("  done tasks skip; env re-check + integration verify then earn 'done'.")
         lines.append("")
 
     if synth["steer"]:
