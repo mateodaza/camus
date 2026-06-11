@@ -156,6 +156,45 @@ def test_corrupt_newest_falls_back_to_older_valid_state():
         assert synth["skippedCorrupt"] == [corrupt]
 
 
+def test_render_liveness_from_transcript_activity():
+    # Run feedback 2026-06-11: the state file can't distinguish working from dead (it writes at
+    # boundaries) — transcript lastTs can. Fresh activity → an age line; stale activity on a
+    # RUNNING feat → a loud may-have-died warning.
+    with tempfile.TemporaryDirectory() as base:
+        _write(os.path.join(base, "feats", "f.json"), _feat_state("f"))
+        now = 1_800_000_000
+        iso = lambda ago: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - ago))
+        synth = S.synthesize(base)
+        synth["state"]["status"] = "running"
+        synth["live"] = [{"label": "implement", "model": "Opus", "outputTokens": 1, "toolCount": 0, "lastTs": iso(8)}]
+        out = "\n".join(S.render(synth, now=now))
+        assert "last activity" in out and "may have died" not in out
+        synth["live"] = [{"label": "implement", "model": "Opus", "outputTokens": 1, "toolCount": 0, "lastTs": iso(1500)}]
+        out = "\n".join(S.render(synth, now=now))
+        assert "may have died" in out and "camus resume" in out
+        # …but a finished feat with old transcripts is NOT flagged (nothing is supposed to run).
+        synth["state"]["status"] = "done"
+        out = "\n".join(S.render(synth, now=now))
+        assert "may have died" not in out
+
+
+def test_render_cost_estimate_is_honest():
+    # Cost line renders as an ESTIMATE (audit 2026-06-11): rate-card value, never an invoice,
+    # and the codex side is explicitly NOT dollarized (it settles in ChatGPT plan credits).
+    with tempfile.TemporaryDirectory() as base:
+        _write(os.path.join(base, "feats", "f.json"), _feat_state("f"))
+        synth = S.synthesize(base)
+        synth["live"] = [{"label": "review", "model": "Haiku", "outputTokens": 5, "toolCount": 1}]
+        synth["cost"] = {"usd": 1.23, "byModel": {"Haiku": 1.23}, "ratesAsOf": "2026-05-26"}
+        out = "\n".join(S.render(synth))
+        assert "$1.23" in out and "estimate, not an invoice" in out
+        assert "ChatGPT plan credits" in out
+        assert "2026-05-26" in out   # rate-card date rendered → stale pricing is visible, not silent
+        # …and no cost data → no fabricated dollars.
+        synth["cost"] = None
+        assert "$" not in "\n".join(S.render(synth))
+
+
 # --- stdlib runner (no pytest required) ------------------------------------
 
 if __name__ == "__main__":

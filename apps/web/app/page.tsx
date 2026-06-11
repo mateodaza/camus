@@ -16,10 +16,11 @@ export default function Home() {
                 <ClimbLoop />
                 <span className="wordmark">Camus</span>
               </span>
-              <span className="tagline">A coding loop that proves every change.</span>
+              <span className="tagline">Makes it work. Knows when to stop.</span>
             </h1>
             <p className="hero-sub">
               A competing model reviews every change, and your own tests have the final word.
+              When the judges disagree, it brings you a decision instead of burning rounds.
               No agent grades its own work.
             </p>
             <div className="cta-row">
@@ -178,6 +179,50 @@ $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
           </div>
         </section>
 
+        <section className="sec" id="stop">
+          <div className="wrap">
+            <Reveal>
+              <div className="sec-head">
+                <div>
+                  <h2 className="sec-h2">It knows when to stop.</h2>
+                  <p className="sec-sub">
+                    Review rounds are capped, and a finding that survives its own fix stops the loop
+                    early. When review stalls but your tests stay green, that becomes a decision on
+                    your desk — with the reviewer&apos;s own conviction trend as context.
+                  </p>
+                </div>
+              </div>
+            </Reveal>
+
+            <div className="evs">
+              <Reveal className="ev">
+                <p className="ev-cap">
+                  A re-raised finding with falling reviewer conviction reads as a stale flag, so the
+                  loop stops and shows its work. <em>You get a decision, not churn.</em>
+                </p>
+                <Artifact path="~/.camus/feats/harden-x1f9q2.json" label="A run stopped for a decision">
+{`  `}<span className="k">&quot;status&quot;</span>{`:      `}<span className="rej">&quot;needs_decision&quot;</span>{`,
+  `}<span className="k">&quot;verifyClean&quot;</span>{`: true,
+  `}<span className="k">&quot;stuck&quot;</span>{`: [{ `}<span className="k">&quot;title&quot;</span>{`: "missing empty-input guard",
+              `}<span className="k">&quot;confidenceTrend&quot;</span>{`: { `}<span className="k">&quot;dir&quot;</span>{`: "falling", `}<span className="k">&quot;series&quot;</span>{`: [0.9, 0.8] } }]`}
+                </Artifact>
+              </Reveal>
+
+              <Reveal className="ev">
+                <p className="ev-cap">
+                  Kill the run anywhere. Finished tasks skip, proven work lands itself through commit
+                  and verify, and only unproven work re-runs. <em>Nothing re-implements what is already proven.</em>
+                </p>
+                <Artifact tone="dark" path="camus resume" label="A resume after a crash mid-merge">
+{`prior state: `}<span className="k">&quot;ready_to_merge&quot;</span>{`   `}<span className="c"># killed between commit and merge</span>{`
+▸ Task 1 — LAND (resuming interrupted merge) → commit → verify → merge…
+`}<span className="ok">✓</span>{` merged a1f9c2e · zero review rounds spent`}
+                </Artifact>
+              </Reveal>
+            </div>
+          </div>
+        </section>
+
         <section className="sec" id="philosophy">
           <div className="wrap">
             <Reveal>
@@ -195,8 +240,13 @@ $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
             </Reveal>
             <Reveal>
               <div className="creed">
+                <p><em>A craftsman knows how to work. An artist knows when to stop.</em></p>
+                <p>
+                  An agent can always run one more round, so Camus treats stopping as judgment:
+                  it tells one more round from a decision worth a human, because perfection is out
+                  of reach and knowing when to stop is not.
+                </p>
                 <p>It runs on two rival models, so every change answers to an outside reviewer.</p>
-                <p>You decide how far it runs alone, and it logs every judgment call with the reasoning behind it.</p>
                 <p>It runs unwatched, so the checks are what let you trust a green run.</p>
               </div>
             </Reveal>

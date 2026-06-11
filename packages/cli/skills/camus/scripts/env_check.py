@@ -44,6 +44,39 @@ def _major(v):
     return m.group(1) if m else None
 
 
+def _node_major_satisfied(req, actual):
+    # engines like ">=20.6" are RANGES, not pins — a newer major satisfies them. Comparing
+    # majors for equality flagged node 22 against ">=20.6" as a mismatch (false NOT-READY).
+    # BUT a COMPOUND range with an upper bound (">=20.6 <21") must RESPECT it — node 22 does NOT
+    # satisfy "<21" (audit 2026-06-11: the lower-bound shortcut was admitting it). Pins and ^/~
+    # ranges still require the same major.
+    rmaj, amaj = _major(req), _major(actual)
+    if not rmaj or not amaj:
+        return True
+    r = (req or "").strip()
+    a, lo = int(amaj), int(rmaj)
+
+    # Lower-bound check, STRICT vs inclusive (audit 2026-06-11: ">20" was treated as ">=20", so
+    # ">20 <22" wrongly accepted node 20). Returns None when there's no lower-bound comparator.
+    def lower_ok():
+        if r.startswith(">="):
+            return a >= lo
+        if r.startswith(">"):
+            return a > lo
+        return None
+
+    um = re.search(r"<(=?)\s*(\d+)", r)                       # an upper bound, if the range has one
+    if um:
+        ubound = int(um.group(2))
+        up_ok = (a <= ubound) if um.group(1) == "=" else (a < ubound)
+        lo_ok = lower_ok()                                    # None ⇒ upper-bound-only (e.g. "<21")
+        return (lo_ok and up_ok) if lo_ok is not None else up_ok
+    lo_ok = lower_ok()
+    if lo_ok is not None:
+        return lo_ok
+    return rmaj == amaj                                       # pins and ^/~ require the same major
+
+
 def _detect_node_version(login_shell=False, cwd=None):
     # Probe node the SAME way verify will invoke it. A CAMUS_VERIFY_CMD override runs through
     # `bash -lc`, which sources login files (.bash_profile / .zprofile) and can resolve a
@@ -79,10 +112,9 @@ def check_env(repo, which=None, node_version=None, env=None):
     req = required_node(repo)
     if req is not None:
         actual = node_version() if node_version else _detect_node_version(uses_login_shell, cwd=repo)
-        rmaj, amaj = _major(req), _major(actual)
         if actual is None:
             issues.append("node not found on PATH (repo expects node %s)" % req)
-        elif rmaj and amaj and rmaj != amaj:
+        elif not _node_major_satisfied(req, actual):
             ctx = " — as resolved by the login shell CAMUS_VERIFY_CMD runs in" if uses_login_shell else ""
             issues.append("node major mismatch: repo wants %s, found %s%s "
                           "(fix nvm/fnm/.bash_profile before running)" % (req, actual, ctx))

@@ -14,10 +14,16 @@ file as they advance, so "most recent" is the live one). --json emits the raw sy
 scripting. Exit 0 always when a state exists; exit 1 when there is nothing to show.
 """
 import argparse
+import datetime
 import json
 import os
 import sys
 import time
+
+try:
+    import transcripts as _transcripts   # best-effort live-agent enrichment (same scripts dir)
+except ImportError:
+    _transcripts = None
 
 GLYPH = {
     "done": "✓",
@@ -27,10 +33,27 @@ GLYPH = {
     "failed": "✗",
     "merge_failed": "✗",
     "needs_human": "?",
+    "needs_decision": "◆",   # review didn't converge but verify is GREEN — a decision, not a failure
+    "ready_to_merge": "◇",   # loop finished (review+commit+verify) but the merge hadn't landed yet
 }
 
 EVENTS_SHOWN = 10       # "last 10 steps"
 REVIEWS_SHOWN = 5
+LIVE_SHOWN = 8          # live agents from the workflow transcripts
+# Liveness (run feedback 2026-06-11): the state file only writes at task boundaries, so it CANNOT
+# distinguish "actively working" from "the workflow died" — agent transcripts append per message
+# and can. BEST-EFFORT ONLY: the transcripts come from the repo's most-recent wf dir, not a
+# feat-bound wf_id, so concurrent runs in one repo (or inspecting an older feat) can mislead.
+# The first-class fix is the 0.2.5 state heartbeat/pid (docs/HARNESS-DIRECTION.md item 1).
+LIVENESS_STALE_S = 600  # no transcript writes for 10 min during a "running" feat → probably dead
+
+
+def _parse_ts(s):
+    """ISO-8601 timestamp (transcript `lastTs`) → epoch seconds, or None. Never raises."""
+    try:
+        return datetime.datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError, AttributeError):
+        return None
 
 
 def default_base():
@@ -129,7 +152,7 @@ def fmt_tokens(tokens):
     return "~%dk tokens" % round(tokens / 1000.0) if isinstance(tokens, (int, float)) else None
 
 
-def synthesize(base, feat_id=None, now=None):
+def synthesize(base, feat_id=None, now=None, repo=None):
     """Gather everything into one plain dict (the --json output and the render() input).
     Returns None when nothing exists; a dict WITHOUT "state" (only "corrupt": [paths]) when
     the only candidate state file(s) exist but won't parse — callers must report that
@@ -143,12 +166,24 @@ def synthesize(base, feat_id=None, now=None):
     except OSError:
         age = None
     task_ids = [t.get("taskId") for t in state.get("tasks", []) if isinstance(t, dict) and t.get("taskId")]
+    # Best-effort live-agent enrichment from the workflow transcripts (the repo is the cwd the
+    # user runs `camus watch`/`status` from). NEVER fatal — degrades to [] when unavailable.
+    live = []
+    cost = None
+    if _transcripts is not None:
+        try:
+            live = _transcripts.live_agents(repo or os.getcwd())
+            cost = _transcripts.estimate_cost_usd(live)
+        except Exception:  # noqa: BLE001
+            live, cost = [], None
     return {
         "state": state,
         "statePath": path,
         "stateAge": age,
         "reviews": review_activity(base, task_ids, now=now),
         "steer": steer_note(base, state.get("featId", "")),
+        "live": live,
+        "cost": cost,
         **({"skippedCorrupt": corrupt} if corrupt else {}),
     }
 
@@ -179,6 +214,39 @@ def render(synth, now=None):
                      % (GLYPH.get(st, "·"), i, t.get("taskId", "?"), st,
                         (" " + " · ".join(tele)) if tele else ""))
     lines.append("")
+
+    # Live agents (best-effort, from the workflow transcripts): what each agent is actually doing
+    # right now — model, output tokens, tool count, last tool. The deep "per loop, even the prompt"
+    # detail the built-in /workflows view shows, surfaced here so it works from any terminal.
+    live = synth.get("live") or []
+    if live:
+        # Liveness, BEST-EFFORT: newest transcript write across the agents of the REPO'S latest
+        # workflow run — transcripts append per message, which the boundary-written state file
+        # can't do. NOT feat-bound: with concurrent camus runs in one repo, or when inspecting an
+        # older feat, this may describe a different run (the 0.2.5 state heartbeat/pid is the
+        # first-class fix). Stale + a "running" feat → still say the quiet part loudly.
+        acts = [t for t in (_parse_ts(a.get("lastTs")) for a in live) if t]
+        act_age = max(0.0, now - max(acts)) if acts else None
+        lines.append("Live agents (repo's latest run, best-effort · model · tokens · tools)%s"
+                     % ("   · last activity %s ago" % fmt_age(act_age) if act_age is not None else ""))
+        for a in live[-LIVE_SHOWN:]:
+            tail = ("→ %s" % a["lastTool"]) if a.get("lastTool") else ""
+            lines.append("  %-13s %-7s %6s tok · %d tools %s"
+                         % (a.get("label", "agent"), a.get("model") or "?",
+                            "{:,}".format(a.get("outputTokens", 0)), a.get("toolCount", 0), tail))
+        # Honest VALUE line, never an invoice (audit 2026-06-11): Claude side priced at the public
+        # rate card; the codex review settles in OpenAI ChatGPT-plan credits — we don't invent a $.
+        cost = synth.get("cost")
+        if cost and cost.get("usd"):
+            per = " · ".join("%s $%.2f" % (k, v) for k, v in sorted(cost.get("byModel", {}).items()))
+            lines.append("  ≈ $%.2f Claude-side API value, repo's latest run (%s · rates %s — estimate, not an invoice;"
+                         % (cost["usd"], per, cost.get("ratesAsOf", "?")))
+            lines.append("    codex review settles in your ChatGPT plan credits)")
+        if act_age is not None and act_age > LIVENESS_STALE_S and status == "running":
+            lines.append("  ⚠ state says RUNNING but the repo's latest workflow transcript has been quiet for %s — the run may have died."
+                         % fmt_age(act_age))
+            lines.append("    (best-effort repo-level signal, not feat-bound; `camus resume` lists restartable runs)")
+        lines.append("")
 
     events = [e for e in s.get("events", []) if isinstance(e, dict) and e.get("msg")]
     if events:

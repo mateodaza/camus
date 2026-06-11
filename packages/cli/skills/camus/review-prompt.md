@@ -44,6 +44,13 @@ Set `overall_correctness` to "patch is incorrect" if any priority ≤ 2 finding 
   expected outcome — return an empty `findings` array and "patch is correct".
 - Do not flood with P3s. Report the issues that matter.
 - Be specific about *where* and *why*. A finding without a concrete failure mode is noise.
+- **GROUND every deviation claim.** If you assert the code "deviates from / does not match / is
+  not identical to / contradicts" a spec, contract, or another implementation, you MUST QUOTE the
+  exact diverging line(s) verbatim in the `body`, with their `file:line`. A real deviation can be
+  quoted; a hallucinated one cannot. If you cannot quote the specific diverging code, you have not
+  found a deviation — drop the finding or downgrade it to a question. (Run-4 2026-06-11: a `0.96`
+  finding claimed a normalizer "adds extra protocol/path validation" — code that did not exist.
+  High confidence is NOT correctness; a quote would have exposed the fabrication.)
 - If you cannot determine correctness without running something you cannot run, say so in
   the finding `body` and price the confidence accordingly — do not guess a high-severity
   verdict.

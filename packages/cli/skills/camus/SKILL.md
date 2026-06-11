@@ -48,6 +48,54 @@ Codex returns findings tagged `priority` 0–3. The loop blocks on **priority �
 
 Defaults: `ROUND_CAP = 3`.
 
+## review_unresolved is a decision, not always a failure (2026-06-11)
+
+When review doesn't converge, the loop now **consults deterministic verify before reporting** —
+because camus's own rule is *deterministic ground truth wins*, and a probabilistic review was
+halting verify-clean, shippable code on a stale re-flag. Two behaviors:
+- **Verify is run on a non-converged review.** A `review_unresolved` carries `verifyClean`:
+  `true` (type-check/lint/tests pass → a DECISION POINT: accept the worktree as-is, or refine),
+  `false` (genuinely not done), or `null` (verify couldn't run). camus-feat surfaces a verify-clean
+  halt as a decision, never a plain failure.
+- **A finding re-raised after a fix STOPS the loop early.** Same `code_location + title` in two
+  consecutive rounds (a fix was dispatched between) → stop and surface it (`stuck`) for a human to
+  resolve *stale-re-flag vs real disagreement*, instead of burning the rest of `roundCap`.
+- **Confidence trend disambiguates accept-vs-refine.** Each finding's `confidence_score` is tracked
+  across rounds; a re-raised finding whose confidence FALLS (the reviewer losing conviction) → most
+  likely a stale re-flag → the halt leans ACCEPT; steady/rising → a consistent disagreement → leans
+  REFINE. Guidance only — never a hard auto-pass gate (a real P1 was observed starting at 0.82 and
+  rising to 0.92, so an absolute confidence cut would misfire).
+- **ACCEPT executes via land mode** (run-5 fix: the loop's weakest link was landing code it had
+  already proven — resume re-entered plan→implement→review and a flaky review infra_errored before
+  ever committing an already-clean staged diff). Re-run the feat with `land: ["<taskId>"]` (or the
+  loop with `land: true`): it resolves the EXISTING worktree and goes straight to
+  commit → prep → verify → merge. No re-plan/re-implement/re-review; deterministic verify remains
+  the unskippable arbiter (verify red under land → `verify_failed`, never a silent ship). An
+  already-committed worktree (empty stage) proceeds to verify rather than failing.
+  REFINE = re-run normally with `answers:{<taskId>:"…"}`.
+- **The commit→merge death window auto-recovers** (audit P2): the feat persists `ready_to_merge`
+  the moment the loop returns done (review clean + committed + verify green) and BEFORE the merge
+  runs. A resume that finds a task in `ready_to_merge` AUTO-lands it — no `land` list needed —
+  because the work is fully proven and only the merge was missing; re-running the full loop there
+  would re-enter review for nothing and collide on the existing branch/worktree. The post-merge
+  half of the window is covered too: if the crash hit AFTER the merge landed (before `done`
+  persisted), the resume's re-merge reports already-up-to-date and the merge runner checks feat
+  history for this task's deterministic merge-commit message — evidence found → recorded DONE;
+  check ran and found nothing (explicit null/empty) → the original no-op guard stands (an empty
+  branch never upgrades itself). An INCOMPLETE or SELF-CONTRADICTORY merge report — verdict
+  fields (`committed`/`alreadyUpToDate`) omitted, before/after SHAs missing (required non-null
+  on a successful merge), flags contradicting HEAD movement (the SHAs are ground truth), or the
+  evidence check omitted — fails loud (`feat_integration_failed`, task stays `ready_to_merge`
+  for an idempotent merge retry): missing or contradictory evidence is an infra condition,
+  never a verdict (noop or done).
+- **Land is authorized by prior state, not by the request** (audit P1): the feat forwards
+  `land` ONLY for a task whose persisted prior status is `needs_decision` — proof that review ran
+  and deterministic verify was green. An unproven land request downgrades LOUDLY to the full loop
+  (a worktree from a run killed pre-review must never skip codex review just because verify
+  passes). Standalone `camus-loop {land:true}` is the deliberate manual override — the human
+  invoking it directly takes the reviewer's place. `land` is part of the canonical `resumeArgs`
+  (dropping it on a resume would re-enter the full loop — the exact failure land exists to avoid).
+
 ## Hard rules
 
 1. **Bound everything.** Round cap on review/fix; soft token target per task; rely on the
@@ -87,9 +135,14 @@ Defaults: `ROUND_CAP = 3`.
   posture as the feat (`policy`; resume with `answers:{<id>:"…"}`). Use it to get smaller,
   clearer tasks BEFORE running — better plans converge in fewer review rounds.
 - `/camus-loop <task>` — one task. Args: a string, or `{task, targetPath, model, modelTier,
-  skipPlan, policy, humanAnswer, branchPrefix, idSalt, roundCap}`. `roundCap` (1..10, default 3)
+  skipPlan, policy, humanAnswer, branchPrefix, idSalt, roundCap, land}`. `roundCap` (1..10, default 3)
   raises/lowers the review↔fix budget for a known-large task (run feedback 2026-06-10: a big task
-  that converges P1→P2 can run out of rounds at the default cap).
+  that converges P1→P2 can run out of rounds at the default cap). `land: true` = land mode (run-5
+  fix): commit the task's EXISTING, already-proven worktree → verify → done, skipping
+  plan/implement/review entirely. STANDALONE-loop land is the manual override (the human invoking
+  it takes the reviewer's place). Under a feat, land is state-authorized instead: explicit
+  `land: ["<taskId>", …]` executes an ACCEPT on a `needs_decision` halt, and a task persisted as
+  `ready_to_merge` (died between commit and merge) AUTO-lands on resume with no land list at all.
 - `/camus-feat` — an ordered task list as one feature: preflight → feat branch → env +
   baseline verify → per-task loop (merge on `done`) → env re-check + integration verify →
   report at `~/.camus/reports/<featId>.json`. Forwards `policy`/`model`/`modelTier`/`skipPlan`/`roundCap`/`answers`.
@@ -99,7 +152,10 @@ Defaults: `ROUND_CAP = 3`.
 - `camus watch [featId]` — the LIVE interactive version: the same dashboard auto-refreshing
   on the alternate screen, with one-key steering through the same audited steer.py path
   (`p` pause · `g` guidance · `c` clear · `q` quit). Degrades to a one-shot status print
-  when there is no TTY.
+  when there is no TTY. Backbone = camus's own stable state; `transcripts.py` adds a
+  best-effort **live-agents** section read from the workflow's on-disk transcripts (per-agent
+  model/tokens/tool calls), so the deep per-loop detail works from ANY terminal — and degrades
+  to the backbone alone when Claude Code's internal transcript format shifts.
 - `camus steer` — redirect a RUNNING feat at its next task boundary: `camus steer "<guidance>"`
   (steers the next task, threaded in exactly like a `needs_human` answer), `--task <id> "<g>"`
   (a specific task), `--pause` (graceful resumable halt), `--show` / `--clear`. A note is
@@ -146,6 +202,24 @@ Defaults: `ROUND_CAP = 3`.
   surfaced) — mirroring the model-escalation signals, and visible in the run log. Only camus's
   own review effort moves; interactive codex is untouched. Force a constant effort with
   `export CAMUS_CODEX_ARGS="-c model_reasoning_effort=xhigh"` (it wins over the dynamic pick).
+
+## Cost model (audited 2026-06-11)
+
+Two vendors, two meters — never conflated:
+- **Claude side** (classify/plan/implement/fix/runners — i.e. almost everything): runs on your
+  Claude Code subscription. Light agents are already Haiku; think-work is Sonnet/Opus by tier.
+  `camus watch`/`status` shows an **API-rate VALUE estimate** for the live run (input + output +
+  cache, public rate card, dated) — an estimate of value consumed, never an invoice.
+- **Codex side** (the review ONLY — nothing else leaves for OpenAI): under ChatGPT auth it draws
+  your ChatGPT plan credits (same pool as the desktop app — the CLI is not a premium lane); under
+  `OPENAI_API_KEY` it bills OpenAI API tokens instead. Camus never converts this to dollars.
+  The levers that matter are already default: dynamic reasoning effort (medium→high→xhigh by
+  stakes), `roundCap`, stuck-finding early-stop, and smaller diffs via `/camus-plan`. To pin a
+  cheaper/faster reviewer model explicitly: `export CAMUS_CODEX_ARGS="-c model=<model> -c
+  model_reasoning_effort=medium"` (wins over the dynamic pick). Fast-mode credit multipliers
+  (2–2.5×) have not applied on camus's `codex exec` review path as validated (codex-cli 0.137.0
+  exposed no exec fast lane) — OpenAI docs suggest Fast mode may persist to the CLI generally,
+  so re-check on codex upgrades rather than treating this as a blanket CLI rule.
 
 ## Retry idiom (after fixing a gate/env failure)
 

@@ -210,6 +210,60 @@ function asVerify(raw) {
   return v
 }
 
+// ── LAND MODE (run-5 fix 2026-06-11): land work that is ALREADY proven, without re-running the
+// loop. The run-4/5 thrash: a review-clean, verify-clean diff sat staged in its worktree, and the
+// only resume path re-entered plan→implement→review — where a flaky review infra_errored before
+// ever committing. The loop's weakest link was landing code it had already proven correct.
+// `land:true` goes straight to commit → prep → verify → done. Review is deliberately NOT re-run
+// (it already passed, or a human accepted a verify-clean review_unresolved halt); deterministic
+// verify remains the unskippable arbiter — landing is mechanical, shipping is still earned.
+const LAND = !!(args && typeof args === 'object' && args.land === true)
+if (LAND) {
+  phase('Commit')
+  // Resolve the EXISTING worktree at the same deterministic destination implement would have
+  // created — with the same fail-closed path validation (audit F3: never cd/exec an unvalidated
+  // path). No worktree → nothing to land → abort, never plan/implement under land.
+  const wtRaw = await agent(
+    `THIN land-path resolver. Run EXACTLY this one command and output ONLY its stdout (one absolute path), no commentary:
+  cd ${WT_DEST} && pwd
+If the cd fails (directory does not exist), output exactly: MISSING`,
+    { model: MODEL_RUNNER, phase: 'Commit', label: 'land-resolve' }
+  )
+  const wt = String(wtRaw || '').trim().split('\n').pop().trim()
+  if (!wt || wt === 'MISSING' || !wt.endsWith(WT_NAME)) {
+    return { status: 'aborted', stage: 'land', task: TASK, branch: BRANCH, landed: false,
+      note: `Land mode found no existing worktree at ${WT_DEST}${wt && wt !== 'MISSING' ? ` (resolver returned "${wt}")` : ''} — nothing to land. Land never plans/implements/reviews; re-run WITHOUT land:true to do the work.` }
+  }
+  log(`Land mode: committing previously verified work in ${wt} — skipping plan/implement/review (deterministic verify still gates)${tokSuffix()}.`)
+  const commitRaw = await agent(
+    `THIN commit runner. Run EXACTLY this one command and output its stdout VERBATIM (JSON {committed, sha}); no fences, no commentary:
+  ${COMMIT_CMD} ${JSON.stringify(wt)} ${JSON.stringify('chore(camus): land ' + SLUG)}`,
+    { model: MODEL_RUNNER, phase: 'Commit', label: 'commit' }
+  )
+  const commitResult = extractJsonObject(commitRaw) || { committed: false, reason: 'unparseable' }
+  if (commitResult.committed !== true && commitResult.reason !== 'empty') {
+    return { status: 'infra_error', task: TASK, worktree: wt, branch: BRANCH, rounds: 0, landed: true,
+      error: `land commit failed: ${commitResult.reason || 'unknown'}`,
+      note: 'Land mode could not commit the worktree (git error/identity/hook, or unparseable output). Fix the cause and re-run with land:true — the worktree is untouched.' }
+  }
+  const landSha = commitResult.committed === true ? (commitResult.sha || null) : null
+  log(commitResult.committed === true
+    ? `Committed previously verified work (${landSha}) to ${BRANCH}.`
+    : 'Land mode: stage was empty — the work was already committed on the branch; proceeding to verify.')
+  const v = await prepAndVerify(wt)
+  if (v.ok === 'inconclusive') {
+    return { status: 'verify_inconclusive', task: TASK, worktree: wt, branch: BRANCH, rounds: 0, landed: true, failures: v.failures,
+      note: 'Land mode committed, but deterministic verify could not RUN (env not ready — see failures). Fix the environment and re-run with land:true.' }
+  }
+  if (v.ok === 'pass') {
+    return { status: 'done', task: TASK, worktree: wt, branch: BRANCH, commit_sha: landSha, rounds: 0, landed: true,
+      summary: 'Landed previously verified work (land mode: commit → verify only).', decisions: [],
+      note: 'Land mode: committed and deterministically verified — no re-plan/re-implement/re-review (the work was already proven). Ready to merge.' }
+  }
+  return { status: 'verify_failed', task: TASK, worktree: wt, branch: BRANCH, rounds: 0, landed: true, failures: v.failures,
+    note: 'Land mode: deterministic verify did NOT pass — this worktree is not actually clean. Re-run WITHOUT land:true to fix it through the full loop.' }
+}
+
 // ── Phase 0: CLASSIFY complexity → route the think-model ─────────────────────
 phase('Classify')
 const cls = await agent(
@@ -364,6 +418,14 @@ function pickReviewEffort(rnd, priorBlocking) {
 }
 let currentEffort = 'medium'   // set per round below; read by reviewerPrompt
 
+// A human answer IS task contract — plan/implement already treat it as DECIDED. The reviewer
+// must judge the diff against the same contract, or a human-overridden finding gets re-flagged
+// every round and the loop deadlocks at the round cap on by-design behavior (run feedback
+// 2026-06-11: onboarding best-effort guard re-flagged 3 rounds straight after the human decided it).
+const REVIEW_TASK_CTX = HUMAN_ANSWER
+  ? `${TASK}\n\n## Human decision (binding — already DECIDED, do not flag behavior that conforms to it)\n${HUMAN_ANSWER}`
+  : TASK
+
 function reviewerPrompt(attempt) {
   const backoff = attempt > 1
     ? `This is reviewer attempt ${attempt} after an infra failure. First run \`sleep ${attempt * 5}\` to back off, then proceed.\n`
@@ -372,7 +434,7 @@ function reviewerPrompt(attempt) {
 the worktree and return its stdout. Do NOT interpret, summarize, re-judge, or reformat.
 
 ${backoff}Run EXACTLY this one command (the worktree path is the argument — do NOT cd, do NOT add anything else):
-  ${REVIEW_CMD} ${JSON.stringify(WT)} ${JSON.stringify(TASK)} ${round} ${currentEffort}
+  ${REVIEW_CMD} ${JSON.stringify(WT)} ${JSON.stringify(REVIEW_TASK_CTX)} ${round} ${currentEffort}
 
 Output the command's stdout VERBATIM as your entire reply — nothing before or after, no code
 fences, no commentary. It is already JSON.`
@@ -391,6 +453,39 @@ let infraAbort = null
 // (round + finding-priority based; no Date/random).
 let fixModel = thinkModel
 let escalationFired = false
+// Fix 2026-06-11 (review_unresolved deadlock): track findings across rounds so a finding re-raised
+// AFTER a fix (a stale re-flag or a genuine disagreement) STOPS the loop early for a human decision
+// instead of churning to ROUND_CAP. Identity = code_location + title.
+// Finding identity for repeat-detection + confidence trend. Deliberately tolerant-but-conservative
+// (audit 2026-06-11): use the FILE only (line numbers DRIFT as the diff is edited → a raw
+// code_location would reset the trend every round) + a NORMALIZED title (lowercased, punctuation
+// and whitespace collapsed) so a re-format or a shifted line still matches. It does NOT fuzzy-merge
+// different wordings: a heavy paraphrase mis-MISSES (→ a few more rounds, harmless) rather than
+// falsely COLLAPSING two distinct issues (→ a lying trend). The signal is advisory, so a miss only
+// costs a hint, never a gate decision.
+function findingKey(b) {
+  const file = String((b && b.code_location) || '').split(':')[0].trim().toLowerCase()
+  const title = String((b && b.title) || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+  // UN-KEYABLE: no usable identity in EITHER field (audit 2026-06-11 — codex's schema allows empty
+  // code_location/title, and two DIFFERENT empty-field findings would collapse to one key and
+  // falsely trigger "stuck"). Return null → excluded from repeat-detection AND the confidence trend.
+  if (!file && !title) return null
+  return `${file || '?'}|${title || '?'}`
+}
+let priorKeys = new Set()
+let stuckFindings = null
+// Confidence TREND (run feedback 2026-06-11): track each finding's confidence_score across rounds.
+// A finding whose confidence FALLS round-over-round is the reviewer losing conviction → most likely
+// a stale re-flag (lean accept); steady/rising → a consistent disagreement (lean refine). Used ONLY
+// to disambiguate the accept-vs-refine guidance on a halt — NEVER a hard auto-pass gate (the audit
+// data showed a real P1 that started at 0.82 and rose to 0.92, so an absolute cut would misfire).
+const confHistory = {}
+function confTrend(series) {
+  const xs = (series || []).filter((c) => typeof c === 'number')
+  if (xs.length < 2) return { dir: 'flat', series: xs }
+  const delta = xs[xs.length - 1] - xs[0]
+  return { dir: delta < -0.03 ? 'falling' : (delta > 0.03 ? 'rising' : 'flat'), series: xs }
+}
 
 while (round < ROUND_CAP) {
   round++
@@ -401,8 +496,12 @@ while (round < ROUND_CAP) {
   // 3a/3b: reviewer with bounded infra retries (ran:false ≠ rejection, ≠ clean)
   let gate = null
   for (let attempt = 1; attempt <= INFRA_RETRIES + 1; attempt++) {
+    // Label surfaces the REAL reviewer (Codex + this round's effort), not just the thin Haiku
+    // runner that shells out to it (run feedback 2026-06-11: the TUI only showed Haiku, hiding
+    // that the review is cross-vendor Codex at a dynamic effort).
     const raw = await agent(reviewerPrompt(attempt), {
-      model: MODEL_RUNNER, phase: 'Review', label: `review:r${round}.a${attempt}`,
+      model: MODEL_RUNNER, phase: 'Review',
+      label: `review:r${round} codex·${currentEffort}${attempt > 1 ? ` retry${attempt}` : ''}`,
     })
     gate = asGate(raw)
     if (gate.ran) break
@@ -424,6 +523,24 @@ while (round < ROUND_CAP) {
 
   // 3d: blocking findings → fix in the SAME worktree, then loop
   lastBlocking = Array.isArray(gate.blocking) ? gate.blocking : []
+  // Record each (KEYABLE) finding's confidence for the trend signal.
+  for (const b of lastBlocking) {
+    const k = findingKey(b)
+    if (!k) continue
+    ;(confHistory[k] = confHistory[k] || []).push(typeof (b && b.confidence_score) === 'number' ? b.confidence_score : null)
+  }
+  // Stop early if a KEYABLE finding survived a fix (re-raised after being addressed last round) — let
+  // a human resolve stale-re-flag vs real disagreement instead of burning the remaining rounds. The
+  // confidence trend is attached so the human (and the halt note) can lean accept vs refine.
+  const repeatedKeys = lastBlocking.map(findingKey).filter((k) => k && priorKeys.has(k))
+  if (repeatedKeys.length && round >= 2) {
+    stuckFindings = lastBlocking.filter((b) => repeatedKeys.includes(findingKey(b)))
+      .map((b) => ({ ...b, confidenceTrend: confTrend(confHistory[findingKey(b)]) }))
+    const falling = stuckFindings.filter((s) => s.confidenceTrend.dir === 'falling').length
+    log(`Round ${round}/${ROUND_CAP}: ${stuckFindings.length} finding(s) survived a fix and were re-raised — stopping early for a human decision${falling ? ` (${falling} with FALLING reviewer confidence → likely stale)` : ''}.`)
+    break
+  }
+  priorKeys = new Set(lastBlocking.map(findingKey).filter(Boolean))
   log(`Round ${round}/${ROUND_CAP} (review effort: ${currentEffort}): ${lastBlocking.length} blocking finding(s) — dispatching fix.`)
   // Escalate the FIX model if the cheap model is failing: round>=2 (first fix didn't clear review)
   // OR a priority-0 blocking finding is present. Monotonic, deterministic.
@@ -456,6 +573,43 @@ ${softBudget}`,
   )
 }
 
+// Deterministic PREP + VERIFY (type-check / lint / tests) on the worktree. Returns a verdict
+// {ok:'pass'|'fail'|'inconclusive', stage, failures} the caller maps to a status. Reused by BOTH
+// the clean-review path (the final gate) AND the review_unresolved path — so a non-converged review
+// is judged against deterministic ground truth before it's ever reported (Fix 2026-06-11).
+// `wt` defaults to the implement-phase WT at CALL time (default params evaluate lazily, so the
+// land path — where WT is never initialized — can pass its own resolved path without TDZ).
+async function prepAndVerify(wt = WT) {
+  phase('Prep')
+  const prepRaw = await agent(
+    `THIN prep runner. Run EXACTLY this one command and output its stdout VERBATIM as your entire reply
+(JSON {prepped, ran, ...}); no fences, no commentary:
+  ${PREP_CMD} ${JSON.stringify(wt)}`,
+    { model: MODEL_RUNNER, phase: 'Prep', label: 'prep' }
+  )
+  const prepResult = extractJsonObject(prepRaw)
+  if (!prepResult || prepResult.prepped !== true) {
+    return { ok: 'inconclusive', stage: 'prep',
+      failures: [{ stage: 'prep', kind: 'missing_tool',
+        log_tail: (prepResult && (prepResult.log_tail || prepResult.error)) || 'worktree dependency install failed or unparseable' }] }
+  }
+  log(prepResult.ran ? `Prep: installed worktree deps (${prepResult.ran.join(' ')}).` : 'Prep: no dep install needed.')
+  phase('Verify')
+  const verifyRaw = await agent(
+    `Run the Camus verification on the worktree and return its stdout JSON verbatim.
+
+Run EXACTLY this one command (the worktree path is the argument — do NOT cd, do NOT add anything else):
+  ${VERIFY_CMD} ${JSON.stringify(wt)}
+
+Output the command's stdout VERBATIM as your entire reply (it is JSON {pass, failures}).
+No fences, no commentary.`,
+    { model: MODEL_RUNNER, phase: 'Verify', label: 'verify' }
+  )
+  const verify = asVerify(verifyRaw)
+  if (verify.inconclusive) return { ok: 'inconclusive', stage: 'verify', failures: verify.failures || [] }
+  return { ok: verify.pass === true ? 'pass' : 'fail', stage: 'verify', failures: verify.failures || [] }
+}
+
 if (infraAbort) {
   return {
     status: 'infra_error', task: TASK, worktree: WT, branch: BRANCH,
@@ -465,12 +619,36 @@ if (infraAbort) {
 }
 
 if (!reviewPassed) {
-  // Hit ROUND_CAP with priority≤2 findings still present. Stop; do NOT verify.
-  return {
-    status: 'review_unresolved', task: TASK, worktree: WT, branch: BRANCH,
-    rounds: round, blocking: lastBlocking,
-    note: `Reached ROUND_CAP=${ROUND_CAP} with blocking findings still present. Surfaced for human review.`,
+  // The review did not converge (hit ROUND_CAP, or a finding survived a fix). Per camus's OWN rule
+  // — "deterministic ground truth wins" — consult VERIFY before reporting (Fix 2026-06-11: a
+  // probabilistic review was halting verify-clean, shippable code on a stale re-flag). A verify-clean
+  // halt is a DECISION POINT, never a plain failure.
+  const v = await prepAndVerify()
+  const why = stuckFindings
+    ? 'a finding was re-raised after a fix — stopped early rather than burning the rest of the rounds'
+    : `reached ROUND_CAP=${ROUND_CAP} with blocking findings still present`
+  // Confidence-trend hint disambiguates accept-vs-refine (only as guidance, never a gate).
+  const falling = (stuckFindings || []).filter((s) => s.confidenceTrend && s.confidenceTrend.dir === 'falling')
+  const confHint = stuckFindings
+    ? (falling.length
+      ? ` The re-raised finding(s) LOST reviewer confidence across rounds (${falling.map((s) => s.confidenceTrend.series.join('→')).join('; ')}) — the reviewer is losing conviction, most likely a STALE RE-FLAG: lean ACCEPT.`
+      : ` The re-raised finding(s) HELD reviewer confidence across rounds — a consistent disagreement, not erosion: lean REFINE.`)
+    : ''
+  const base = {
+    status: 'review_unresolved', task: TASK, worktree: WT, branch: BRANCH, rounds: round,
+    blocking: lastBlocking, stuck: stuckFindings || null,
+    tier, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
   }
+  if (v.ok === 'pass') {
+    return { ...base, verifyClean: true,
+      note: `Review did not converge (${why}) — BUT deterministic verify (type-check / lint / tests) PASSES on this worktree. This is likely a STALE RE-FLAG or a judgment impasse, NOT broken code. The deterministic gate says the work is shippable. DECIDE: accept (commit + merge the worktree as-is) or refine (address the finding below).${confHint}` }
+  }
+  if (v.ok === 'inconclusive') {
+    return { ...base, verifyClean: null, failures: v.failures,
+      note: `Review did not converge (${why}); deterministic verify could NOT run (env not ready — ${v.stage}). Fix the environment to get the ground-truth verdict, then decide accept vs refine. Finding(s) below.${confHint}` }
+  }
+  return { ...base, verifyClean: false, failures: v.failures,
+    note: `Review did not converge (${why}) AND deterministic verify did NOT pass — the code is genuinely not done. Finding(s) + verify failures below.` }
 }
 
 // ── Phase 3.4: COMMIT GATE — the reviewed change MUST land on the branch, or the merge ships
@@ -480,7 +658,7 @@ if (!reviewPassed) {
 phase('Commit')
 const commitRaw = await agent(
   `THIN commit runner. Run EXACTLY this one command and output its stdout VERBATIM (JSON {committed, sha}); no fences, no commentary:
-  ${COMMIT_CMD} ${JSON.stringify(WT)} ${JSON.stringify('camus: ' + SLUG)}`,
+  ${COMMIT_CMD} ${JSON.stringify(WT)} ${JSON.stringify('chore(camus): ' + SLUG)}`,
   { model: MODEL_RUNNER, phase: 'Commit', label: 'commit' }
 )
 const commitResult = extractJsonObject(commitRaw) || { committed: false, reason: 'unparseable' }
@@ -503,45 +681,21 @@ if (commitResult.committed !== true) {
 const COMMIT_SHA = commitResult.sha || null
 log(`Committed reviewed work (${COMMIT_SHA}) to ${BRANCH}${tokSuffix()}.`)
 
-// ── Phase 3.5: PREP — make the fresh worktree runnable (Node deps) before verify ─
-// A fresh git worktree has no node_modules; without this, verify can't RUN there (127 →
-// inconclusive). Node-only; non-node stacks no-op. Runs after review passes (review/fix
-// don't need deps), so we only install when we're about to verify. Install failure →
-// verify_inconclusive (env not ready, NOT code-red).
-phase('Prep')
-const prepRaw = await agent(
-  `THIN prep runner. Run EXACTLY this one command and output its stdout VERBATIM as your entire reply
-(JSON {prepped, ran, ...}); no fences, no commentary:
-  ${PREP_CMD} ${JSON.stringify(WT)}`,
-  { model: MODEL_RUNNER, phase: 'Prep', label: 'prep' }
-)
-const prepResult = extractJsonObject(prepRaw)
-if (!prepResult || prepResult.prepped !== true) {
+// ── Phase 3.5 + 4: PREP + VERIFY (deterministic ground truth — final, non-negotiable gate) ─
+// Runs after review passes + commit (review/fix don't need deps). A clean review does NOT override
+// a failing verify; an env that can't run is verify_inconclusive (NOT code-red — the run-1 false
+// negative was `turbo` missing in a fresh worktree).
+const verdict = await prepAndVerify()
+if (verdict.ok === 'inconclusive') {
   return {
     status: 'verify_inconclusive', task: TASK, worktree: WT, branch: BRANCH, rounds: round,
-    failures: [{ stage: 'prep', kind: 'missing_tool',
-      log_tail: (prepResult && (prepResult.log_tail || prepResult.error)) || 'worktree dependency install failed or unparseable' }],
-    note: 'Could not prepare the worktree to run (dependency install failed) — env not ready, NOT a code failure. Check the package manager / lockfile and re-run.',
+    failures: verdict.failures, tier, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
+    note: verdict.stage === 'prep'
+      ? 'Could not prepare the worktree to run (dependency install failed) — env not ready, NOT a code failure. Check the package manager / lockfile and re-run.'
+      : 'Verification could not RUN (toolchain/deps missing in the worktree, or no verifier detected) — NOT a code failure. Fix the environment (install deps / correct node; see env_check) and re-run.',
   }
 }
-log(prepResult.ran ? `Prep: installed worktree deps (${prepResult.ran.join(' ')}).` : 'Prep: no dep install needed.')
-
-// ── Phase 4: VERIFY (deterministic ground truth — final, non-negotiable gate) ─
-phase('Verify')
-const verifyRaw = await agent(
-  `Run the Camus verification on the worktree and return its stdout JSON verbatim.
-
-Run EXACTLY this one command (the worktree path is the argument — do NOT cd, do NOT add anything else):
-  ${VERIFY_CMD} ${JSON.stringify(WT)}
-
-Output the command's stdout VERBATIM as your entire reply (it is JSON {pass, failures}).
-No fences, no commentary.`,
-  { model: MODEL_RUNNER, phase: 'Verify', label: 'verify' }
-)
-const verify = asVerify(verifyRaw)
-
-// A clean review does NOT override a failing verify.
-if (verify.pass === true) {
+if (verdict.ok === 'pass') {
   return {
     status: 'done', task: TASK, worktree: WT, branch: BRANCH, commit_sha: COMMIT_SHA,
     rounds: round, summary: impl.summary, decisions: Array.isArray(impl.decisions) ? impl.decisions : [],
@@ -549,20 +703,8 @@ if (verify.pass === true) {
     note: 'Review clean, change committed, and verify passed. Worktree left in place for human merge/inspection (a camus-feat caller removes it after merging the branch).',
   }
 }
-
-// Infra-vs-findings for verify: if the checks could NOT run (toolchain/deps missing, or no
-// verifier detected) that is NOT a code failure — surface it distinctly so a missing env never
-// masquerades as broken code (the run-1 false negative: turbo not found in a fresh worktree).
-if (verify.inconclusive) {
-  return {
-    status: 'verify_inconclusive', task: TASK, worktree: WT, branch: BRANCH,
-    rounds: round, failures: verify.failures || [], tier, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
-    note: 'Verification could not RUN (toolchain/deps missing in the worktree, or no verifier detected) — NOT a code failure. Fix the environment (install deps / correct node; see env_check) and re-run.',
-  }
-}
-
 return {
   status: 'verify_failed', task: TASK, worktree: WT, branch: BRANCH,
-  rounds: round, failures: verify.failures || [], tier, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
+  rounds: round, failures: verdict.failures, tier, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
   note: 'Review was clean but deterministic verify ran and did not pass. Code is NOT done.',
 }

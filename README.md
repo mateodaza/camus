@@ -1,11 +1,16 @@
 # Camus
 
-**A coding loop that proves every change.**
+**Makes it work. Knows when to stop.**
 
 No agent grades its own work. Camus runs a coding task from plan to verified commit
 without you watching: Claude writes the code, Codex (a competing model) reviews
 every change, and your repo's own type-check and tests have the final word. Nothing in
 the loop, Claude included, can approve itself. The pairing is the point.
+
+Two judges can disagree, so Camus is also built for the run that does not go cleanly:
+review loops are bounded, a stalled review becomes a decision on your desk instead of
+burned rounds, and a crash at any point resumes without redoing proven work.
+*A craftsman knows how to work; an artist knows when to stop.*
 
 It runs as two Claude Code workflows plus a skill: `/camus-loop` takes one task,
 `/camus-feat` takes an ordered task list and ships it as one feature branch with a
@@ -47,6 +52,34 @@ loud failure, not a pass.
 **Work provably lands.** After review passes, a commit gate stages and commits the
 worktree. Nothing staged means `no_changes`; the task is reported as a no-op, never
 silently marked done. Every `done` carries its `commit_sha`.
+
+## Why it stops well
+
+Review↔fix churn is the failure mode of autonomous coding, so stopping is engineered,
+not hoped for.
+
+**Loops are bounded and self-aware.** Rounds are capped (`roundCap`, default 3). A
+finding that survives its own fix stops the loop early — that is a stale flag or a real
+disagreement, and both deserve a human, not more rounds. Each finding's confidence is
+tracked across rounds, so the halt tells you whether the reviewer was losing conviction
+(lean accept) or holding firm (lean refine). Advisory context, never an auto-pass.
+
+**A stalled review is a decision, not a failure.** When review will not converge but
+your type-check and tests are green, the task halts as `needs_decision`: the
+deterministic gate says shippable, the probabilistic one is stuck, and that call is
+yours. Accepting is one flag — `land: ["<taskId>"]` — and the proven worktree commits,
+verifies, and merges with nothing re-implemented. Refining is a normal re-run with your
+answer threaded in.
+
+**Kill it anywhere; resume finishes only what is left.** State persists at every
+boundary. Finished tasks skip. Work that died between commit and merge lands itself on
+resume (`ready_to_merge`), and a merge that already happened is detected by its own
+commit in feat history. Merge verdicts require complete, consistent evidence — missing
+or contradictory evidence halts the run loud; it is never read as an outcome.
+
+**Costs are stated honestly.** `camus watch` prices the Claude side of a live run at
+the published API rate card, labeled as an estimate, never an invoice. The Codex review
+settles in your ChatGPT plan credits, and Camus does not fabricate a dollar figure for it.
 
 ## Autonomy controls
 

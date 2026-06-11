@@ -1,0 +1,45 @@
+# Release automation: push a `v*` tag → a GitHub Release appears with notes generated from the
+# commit log since the previous tag, grouped by conventional prefix. No third-party actions, no
+# changelog file to maintain — the Releases page IS the changelog, derived from history.
+# Cut a release with: pnpm release:tag  (tags HEAD as v<packages/cli version> and pushes the tag).
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  github-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history — notes are generated from the commit log between tags
+
+      - name: Generate release notes from commits since the previous tag
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          PREV="$(git tag --list 'v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)"
+          RANGE="${PREV:+$PREV..}$TAG"
+          LOG="$(git log --no-merges --pretty='- %s (%h)' "$RANGE")"
+          {
+            if [ -n "$PREV" ]; then echo "Changes since \`$PREV\`:"; else echo "First tagged release."; fi
+            echo
+            for p in feat fix release web docs test refactor chore; do
+              SECTION="$(printf '%s\n' "$LOG" | grep -E "^- $p[:(!]" || true)"
+              [ -n "$SECTION" ] && printf '### %s\n%s\n\n' "$p" "$SECTION"
+            done
+            OTHER="$(printf '%s\n' "$LOG" | grep -vE "^- (feat|fix|release|web|docs|test|refactor)[:(!]" || true)"
+            [ -n "$OTHER" ] && printf '### other\n%s\n\n' "$OTHER"
+            echo "---"
+            echo "_npm: [camus-cli](https://www.npmjs.com/package/camus-cli) · site: [camus.sh](https://camus.sh)_"
+          } > /tmp/notes.md
+          echo "── notes ──"; cat /tmp/notes.md
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file /tmp/notes.md --verify-tag

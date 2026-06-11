@@ -58,6 +58,42 @@ def test_node_match_ok():
     assert not any("node" in i for i in issues)
 
 
+def test_node_range_constraint_satisfied_by_newer_major():
+    # engines ">=20.6" is a range, not a pin — node 22 satisfies it (hive-mind false positive)
+    repo = _repo({"package.json": '{"engines":{"node":">=20.6"}}'})
+    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.20.0")
+    assert not any("node major mismatch" in i for i in issues)
+
+
+def test_node_range_constraint_still_flags_older_major():
+    repo = _repo({"package.json": '{"engines":{"node":">=20.6"}}'})
+    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v18.4.0")
+    assert any("node major mismatch" in i for i in issues)
+
+
+def test_node_compound_range_respects_upper_bound():
+    # Audit 2026-06-11: ">=20.6 <21" must REJECT node 22 (the lower-bound shortcut was admitting it).
+    repo = _repo({"package.json": '{"engines":{"node":">=20.6 <21"}}'})
+    assert any("node major mismatch" in i for i in E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.0.0"))
+    # …and still ACCEPT an in-range major.
+    repo2 = _repo({"package.json": '{"engines":{"node":">=20.6 <21"}}'})
+    assert not any("node major mismatch" in i for i in E.check_env(repo2, which=ALL_PRESENT, node_version=lambda: "v20.8.0"))
+
+
+def test_node_strict_lower_bound_is_exclusive():
+    # Audit 2026-06-11 (P3): ">20 <22" must EXCLUDE node 20 (">" is strict, not ">=").
+    repo = _repo({"package.json": '{"engines":{"node":">20 <22"}}'})
+    assert any("node major mismatch" in i for i in E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v20.0.0"))
+    repo2 = _repo({"package.json": '{"engines":{"node":">20 <22"}}'})
+    assert not any("node major mismatch" in i for i in E.check_env(repo2, which=ALL_PRESENT, node_version=lambda: "v21.0.0"))
+
+
+def test_node_caret_constraint_requires_same_major():
+    repo = _repo({"package.json": '{"engines":{"node":"^20.6"}}'})
+    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.0.0")
+    assert any("node major mismatch" in i for i in issues)
+
+
 # --- deps ------------------------------------------------------------------
 
 def test_deps_missing_flagged():

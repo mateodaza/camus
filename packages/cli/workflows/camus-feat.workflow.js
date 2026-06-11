@@ -44,6 +44,10 @@ const SKIP_PLAN = A.skipPlan === true   // opt-in; forwarded only when set (loop
 // Per-task review↔fix cap, forwarded UNCHANGED to every loop (the loop bounds it 1..10). Lets a
 // caller give a known-large feat more rounds to converge. Omit → the loop's default (3).
 const ROUND_CAP = Number.isInteger(A.roundCap) ? A.roundCap : null
+// LAND list (run-5 fix 2026-06-11): taskIds whose worktree is ALREADY proven (review passed, or a
+// human ACCEPTED a verify-clean needs_decision halt). Those tasks run the loop in land mode —
+// commit → verify → merge, no re-plan/re-implement/re-review. The accept half of accept-vs-refine.
+const LAND_TASKS = Array.isArray(A.land) ? A.land.map(String) : []
 if (!FEAT) throw new Error('camus-feat: missing feat title (args.feat)')
 if (!TASKS.length) throw new Error('camus-feat: args.tasks[] is empty')
 // All feat-level git/env/verify run in the repo root (workflow cwd = $PWD).
@@ -130,6 +134,9 @@ const resumeArgs = {
   ...(MODEL_TIER ? { modelTier: MODEL_TIER } : {}),
   ...(SKIP_PLAN ? { skipPlan: true } : {}),
   ...(ROUND_CAP != null ? { roundCap: ROUND_CAP } : {}),
+  // land changes task behavior MATERIALLY (audit P1 2026-06-11): dropping it on a resume would
+  // re-enter the full loop — the exact run-5 failure land exists to avoid. Snapshot, like answers.
+  ...(LAND_TASKS.length ? { land: [...LAND_TASKS] } : {}),
   // SNAPSHOT, not the live object: the steer hook mutates ANSWERS mid-run, and resumeArgs must
   // stay the verbatim ORIGINAL invocation (review 2026-06-10: aliasing let steered answers
   // bleed into the persisted canonical args).
@@ -148,6 +155,15 @@ const state = {
   // human watching a run wants the recent steps without a Claude session). seq is monotonic
   // across resumes (carried from prior state); the cap keeps the state file small.
   events: [], eventSeq: 0,
+}
+// A short, human-voiced summary of a task spec for the live narration + status feed (run feedback
+// 2026-06-11: dumping the whole multi-paragraph spec made the view ugly). The complete spec stays
+// on the task node; this is just the headline — the first clause, capped.
+function brief(spec, max = 90) {
+  const t = String(spec || '').replace(/\s+/g, ' ').trim()
+  const dot = t.indexOf('. ')
+  const cut = (dot > 12 && dot < max) ? dot : max
+  return t.length > cut ? t.slice(0, cut).replace(/[\s,;(]+$/, '') + '…' : t
 }
 // A step-worthy event: lands in the progress UI (log) AND in the persisted run log (status.py).
 // Persisted on the NEXT persistState call — the FIRST one fires when task 1 starts, so
@@ -222,13 +238,18 @@ const ENV_SCHEMA = {
 }
 const MERGE_SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['merged'],
+  // The WHOLE verdict is required (audit P2 rounds 3–4): an omitted field is indistinguishable
+  // from a negative answer, and `didCommit` would quietly read it as "no commit" → false noop.
+  // Missing evidence must never become a verdict. A compliant runner ALWAYS emits every field
+  // (null for a SHA it could not obtain); the contract guard below fails loud regardless.
+  required: ['merged', 'committed', 'alreadyUpToDate', 'priorMergeCommit', 'before', 'after'],
   properties: {
     merged: { type: 'boolean', description: 'git exited 0 with NO conflict (includes the already-up-to-date case)' },
     committed: { type: 'boolean', description: 'a NEW merge commit was actually created (HEAD moved)' },
     alreadyUpToDate: { type: 'boolean', description: 'git printed "Already up to date." — the task branch added nothing' },
-    before: { type: 'string', description: 'HEAD SHA before the merge' },
-    after: { type: 'string', description: 'HEAD SHA after the merge' },
+    before: { type: ['string', 'null'], description: 'HEAD SHA before the merge (null only possible when merged=false — a successful merge necessarily ran rev-parse)' },
+    after: { type: ['string', 'null'], description: 'HEAD SHA after the merge (null only possible when merged=false — a successful merge necessarily ran rev-parse)' },
+    priorMergeCommit: { type: ['string', 'null'], description: 'SHA of an EXISTING merge commit for this task already in feat history (empty/null if none) — disambiguates crash-after-merge from a genuinely empty branch' },
     conflict: { type: 'boolean' },
     error: { type: 'string', description: 'conflicting files / git error when merged=false' },
   },
@@ -343,6 +364,18 @@ if (!pf.clean) {
 }
 // Resume: carry forward tasks already marked done in the prior state (already merged into the
 // feat branch, which persists in git) so we skip them.
+// PROVEN_DECISION (audit P1 2026-06-11): land is authorized by PRIOR PERSISTED STATE, not by the
+// caller's list alone. Only a task the previous run halted as `needs_decision` (review ran, didn't
+// converge, deterministic verify GREEN) is proven enough to land — a worktree from a run killed
+// pre-review must NOT skip codex review just because verify passes. An unproven land request
+// downgrades LOUDLY to the full loop; standalone `camus-loop {land:true}` stays the manual
+// override where the human takes responsibility directly.
+const PROVEN_DECISION = new Set()
+// PROVEN_READY (audit P2 2026-06-11): tasks the prior run persisted as `ready_to_merge` — the loop
+// had returned done (review clean + committed + verify green) and only the merge was missing.
+// FULLY proven, so they AUTO-land on resume (no land list needed): re-running the full loop would
+// re-enter review for nothing and collide on the existing branch/worktree.
+const PROVEN_READY = new Set()
 const prior = pf.stateRaw ? extractJsonObject(pf.stateRaw) : null
 if (prior && Array.isArray(prior.tasks)) {
   // Carry forward BOTH done AND noop. A done task is merged into the feat branch (persisted in git);
@@ -353,6 +386,8 @@ if (prior && Array.isArray(prior.tasks)) {
   let carried = 0
   for (const node of state.tasks) {
     const p = priorById.get(node.taskId)
+    if (p && p.status === 'needs_decision') PROVEN_DECISION.add(node.taskId)
+    if (p && p.status === 'ready_to_merge') PROVEN_READY.add(node.taskId)
     if (p && (p.status === 'done' || p.status === 'noop')) {
       node.status = p.status
       if (p.status === 'noop') node.noop = true
@@ -472,8 +507,21 @@ Return the captured output VERBATIM as your entire reply. No fences, no commenta
     note(`Task ${n}: human steer guidance applied to this task.`)
   }
 
+  // Land authorization (audit P1 2026-06-11): requested by the caller, AUTHORIZED by prior state —
+  // plus AUTO-land for ready_to_merge (audit P2: died between commit and merge → fully proven; only
+  // the merge was missing, so resuming the full loop would be pure churn + a worktree collision).
+  const landRequested = LAND_TASKS.includes(node.taskId)
+  const landResume = PROVEN_READY.has(node.taskId)
+  const landAuthorized = landResume || (landRequested && PROVEN_DECISION.has(node.taskId))
+  if (landRequested && !landAuthorized) {
+    note(`⚠ Task ${n}: land requested but prior state is NOT needs_decision — running the FULL loop instead (land only executes an ACCEPT on a proven verify-clean halt; unproven work must pass review). Manual override: standalone camus-loop {land:true}.`)
+  }
   node.status = 'running'
-  note(`Task ${n}: ${node.spec}  →  loop (branch ${node.branch}).`)
+  note(landResume
+    ? `▸ Task ${n} — ${brief(node.spec)} · LAND (resuming interrupted merge — loop had finished) → commit → verify → merge…`
+    : (landAuthorized
+      ? `▸ Task ${n} — ${brief(node.spec)} · LAND (accepted decision) → commit → verify → merge…`
+      : `▸ Task ${n} — ${brief(node.spec)} · plan → implement → review → verify…`))
   await persistState('Tasks')   // persist 'running' NOW so `camus status` shows the live task
   // Per-task token telemetry (run feedback 2026-06-10): budget.spent() is the shared TURN
   // pool, so the delta around the loop call is this task's own spend. Values feed ONLY
@@ -496,6 +544,7 @@ Return the captured output VERBATIM as your entire reply. No fences, no commenta
       ...(MODEL_TIER ? { modelTier: MODEL_TIER } : {}),
       ...(SKIP_PLAN ? { skipPlan: true } : {}),       // opt-in; loop honors only under policy:autonomous
       ...(ROUND_CAP != null ? { roundCap: ROUND_CAP } : {}),   // per-task review-round budget
+      ...(landAuthorized ? { land: true } : {}),  // PROVEN accept decision → land; unproven → full loop
       ...(ANSWERS[node.taskId] ? { humanAnswer: String(ANSWERS[node.taskId]) } : {}),  // resume answer
       ...(TARGET ? { targetPath: TARGET } : {}),
     })
@@ -537,15 +586,31 @@ Return the captured output VERBATIM as your entire reply. No fences, no commenta
 
   if (!res || res.status !== 'done') {
     // Any non-done (review_unresolved / verify_failed / verify_inconclusive / infra_error /
-    // aborted) -> mark failed and HALT. M1 never builds later tasks on top of a failed one.
-    node.status = 'failed'
+    // aborted) -> HALT. M1 never builds later tasks on top of a non-done one.
+    // A review_unresolved whose DETERMINISTIC verify is green is a DECISION POINT, not broken code:
+    // persist it as a DISTINCT status (audit 2026-06-11 — it was persisted as `failed` and rendered
+    // ✗, contradicting the "decision, not failure" note) so status.py shows it as a decision.
+    const verifyCleanHalt = res && res.status === 'review_unresolved' && res.verifyClean === true
+    node.status = verifyCleanHalt ? 'needs_decision' : 'failed'
     await persistState('Tasks')
-    note(`Task ${n} HALTED the feat — loop returned "${node.loopStatus}".`)
+    note(verifyCleanHalt
+      ? `⚠ Task ${n} did not converge in review, BUT deterministic verify PASSES — a decision (accept vs refine), not a failure.`
+      : `Task ${n} HALTED the feat — loop returned "${node.loopStatus}".`)
     return finalize('halted', {
       stage: 'task', haltedTask: node.taskId, haltReason: node.loopStatus, loopResult: res || null,
-      note: `Task ${n} did not reach "done" (${node.loopStatus}). Per M1, later tasks are NOT run on top of a failed one. Tasks merged before this remain on ${featBranch}. Retry idiom after fixing the cause: re-invoke the feat FRESH with the SAME args — the deterministic featId resumes from persisted state (done tasks skip, this task re-runs against its intact worktree). Do NOT resume the workflow journal (resumeFromRunId) past a gate/env fix: completed-but-failed agent calls replay their cached failure without re-running anything.`,
+      ...(verifyCleanHalt ? { verifyCleanDecision: true } : {}),
+      note: verifyCleanHalt
+        ? `Task ${n} review did not converge, BUT deterministic verify (type-check / lint / tests) PASSES on its worktree — the code is shippable by the deterministic gate. This is a DECISION, not a failure: ${(res.stuck && res.stuck.length) ? 'a finding was re-raised after a fix (likely a stale re-flag). ' : ''}review the finding(s) in loopResult.blocking, then either ACCEPT (commit + merge ${node.branch} into ${featBranch} as-is) or REFINE (fix and re-run the feat). Tasks merged before this remain on ${featBranch}.`
+        : `Task ${n} did not reach "done" (${node.loopStatus}). Per M1, later tasks are NOT run on top of a failed one. Tasks merged before this remain on ${featBranch}. Retry idiom after fixing the cause: re-invoke the feat FRESH with the SAME args — the deterministic featId resumes from persisted state (done tasks skip, this task re-runs against its intact worktree). Do NOT resume the workflow journal (resumeFromRunId) past a gate/env fix: completed-but-failed agent calls replay their cached failure without re-running anything.`,
     })
   }
+
+  // READY_TO_MERGE (audit P2 2026-06-11): the loop just returned done — review clean, committed,
+  // verify green. Persist that PROOF before attempting the merge, so a run that dies in the
+  // commit→merge window resumes by LANDING mechanically (auto-land below) instead of re-running
+  // the full loop — which would re-enter review AND collide on the existing branch/worktree.
+  node.status = 'ready_to_merge'
+  await persistState('Tasks')
 
   // Merge the loop's reported branch (cross-check against our deterministic one).
   const mergeBranch = res.branch || node.branch
@@ -558,13 +623,16 @@ Return the captured output VERBATIM as your entire reply. No fences, no commenta
 2. \`git rev-parse HEAD\`  -> record as before
 3. \`git merge --no-ff ${JSON.stringify(mergeBranch)} -m ${JSON.stringify('camus(feat): merge ' + node.taskId)}\`
 4. \`git rev-parse HEAD\`  -> record as after
+5. ONLY IF git printed "Already up to date.": \`git log ${JSON.stringify(featBranch)} --grep ${JSON.stringify('camus(feat): merge ' + node.taskId)} --format=%H -n 1\` -> record the SHA (or empty) as priorMergeCommit
 Report:
 - merged: true if git exited 0 with NO conflict (this INCLUDES the "Already up to date." case).
 - committed: true ONLY if after != before (a NEW merge commit was really created). false if git printed "Already up to date." or HEAD did not move.
-- alreadyUpToDate: true if git printed "Already up to date." (the task branch contributed nothing).
-- before, after: the two HEAD SHAs.
+- alreadyUpToDate: true if git printed "Already up to date." (the task branch tip is already in feat history).
+- priorMergeCommit: ALWAYS include this field — the step-5 SHA if one was found, else null (also null when step 5 did not apply). Omitting it is a contract violation. (Distinguishes "this task was ALREADY merged by a prior run" from "the branch never had anything to merge".)
+- before, after: the two HEAD SHAs (null only if that step never ran).
+ALWAYS include EVERY field above — booleans are always determinable; use null only for a SHA you could not obtain. An omitted field is a contract violation.
 On a CONFLICT: run \`git merge --abort\`, set merged=false, conflict=true, put the conflicting files in error. Never touch the base branch (${JSON.stringify(state.base)}).
-Return {merged, committed, alreadyUpToDate, before, after, conflict, error}.`,
+Return {merged, committed, alreadyUpToDate, priorMergeCommit, before, after, conflict, error}.`,
     { model: MODEL_RUNNER, phase: 'Tasks', label: `merge:${node.taskId}`, schema: MERGE_SCHEMA }
   )
   if (!mg || !mg.merged) {
@@ -576,6 +644,42 @@ Return {merged, committed, alreadyUpToDate, before, after, conflict, error}.`,
       note: `Merging task ${node.taskId} into ${featBranch} failed (${(mg && mg.error) || 'unknown'}). Halting; earlier merges remain.`,
     })
   }
+  // MERGE-VERDICT CONTRACT (audit P2 rounds 3–4): missing evidence must never become a verdict.
+  // Runner omissions could silently misclassify: (a) committed/alreadyUpToDate absent →
+  // didCommit defaults false → a FALSE noop; (b) already-up-to-date without the prior-merge-commit
+  // check → crash-after-merge reads as an empty branch; (c) the required priorMergeCommit field
+  // omitted even when not applicable → a schema-bypass silently reaches done. All fail LOUD instead:
+  // the task stays ready_to_merge (still literally true: proven work, merge state unresolved) so a
+  // re-run retries the idempotent merge with a fresh, contract-complete runner.
+  // NOTE: we are past the `!mg.merged` halt, so merged===true here — and a SUCCESSFUL merge means
+  // steps 2 and 4 (rev-parse before/after) necessarily ran, so missing OR null SHAs are equally
+  // contradictory (audit P2 round 5: didCommit's `!before || !after` tolerance would otherwise
+  // accept a SHA-less report as `done`).
+  const shaMissing = (v) => typeof v !== 'string' || !v.trim()
+  // CONSISTENCY (audit P2 rounds 6–7): a COMPLETE report can still contradict itself. The SHAs
+  // are the ground truth: committed must mean HEAD moved, and alreadyUpToDate must mean HEAD did
+  // not move. A flag that contradicts them is a runner misread, never a verdict.
+  const headMoved = mg.before !== mg.after
+  const contractGap = (mg.committed === undefined || mg.alreadyUpToDate === undefined)
+    ? 'committed/alreadyUpToDate omitted from the merge report'
+    : (shaMissing(mg.before) || shaMissing(mg.after))
+      ? 'before/after SHAs missing from a successful merge report'
+      : ((mg.committed !== headMoved) || (mg.alreadyUpToDate !== !headMoved))
+        ? 'self-contradictory merge report (committed/alreadyUpToDate vs HEAD movement)'
+        : (mg.priorMergeCommit === undefined
+          ? (mg.alreadyUpToDate === true
+            ? 'already-up-to-date reported without the prior-merge-commit check'
+            : 'priorMergeCommit omitted from the merge report')
+          : null)
+  if (contractGap) {
+    node.status = 'ready_to_merge'
+    await persistState('Tasks')
+    note(`Task ${n}: merge runner CONTRACT VIOLATION (${contractGap}) — ambiguous verdict, refusing to guess. Task stays ready_to_merge; re-run to retry the merge.`)
+    return finalize('feat_integration_failed', {
+      stage: 'merge', haltedTask: node.taskId,
+      note: `The merge runner for ${node.taskId} returned an incomplete report (${contractGap}). Camus does not turn missing evidence into a verdict (noop/done). The task remains ready_to_merge; re-run the feat with the SAME args — the merge retries (idempotent) with a complete report.`,
+    })
+  }
   // FALSE-POSITIVE GUARD: the loop returned "done" but the merge added NO commit — the task
   // contributed nothing to the feat branch (scope overlap with an earlier task, or an empty
   // implement). Record it as a NO-OP, not a real merge, so the feat can never claim a plain
@@ -583,10 +687,24 @@ Return {merged, committed, alreadyUpToDate, before, after, conflict, error}.`,
   // (done → done_with_noops); it can never turn a red feat green.
   const didCommit = mg.committed === true && mg.alreadyUpToDate !== true && (!mg.before || !mg.after || mg.before !== mg.after)
   if (!didCommit) {
+    // CRASH-AFTER-MERGE resume (audit P2 2026-06-11): "already up to date" is AMBIGUOUS — it also
+    // fires when a prior run merged this task and died before persisting `done`. The discriminator
+    // is EVIDENCE: our deterministic merge-commit message for this taskId already in feat history
+    // (step 5). THREE evidence states (the contract guard above removed the ambiguous third):
+    // present → done; explicitly empty (''/null — the check RAN, found nothing) → no-op guard.
+    const priorMerge = mg.alreadyUpToDate === true && typeof mg.priorMergeCommit === 'string' && mg.priorMergeCommit.trim()
+    if (priorMerge) {
+      node.status = 'done'
+      node.decisions = Array.isArray(res.decisions) ? res.decisions : []
+      await persistState('Tasks')
+      note(`✓ Task ${n} was ALREADY merged into ${featBranch} by a prior run that died before recording it (merge commit ${String(priorMerge).slice(0, 8)}) → recorded as DONE, resuming.`)
+      await removeTaskWorktree(node, res.worktree, n)   // merged — checkout no longer needed
+      continue
+    }
     node.status = 'noop'
     node.noop = true
     await persistState('Tasks')
-    note(`Task ${n}: loop said "done" but the merge added NO commit (already-up-to-date) → recorded as NO-OP, not a merge.`)
+    note(`Task ${n}: loop said "done" but the merge added NO commit (already-up-to-date, no prior merge commit for this task) → recorded as NO-OP, not a merge.`)
     await removeTaskWorktree(node, res.worktree, n)   // branch merged/empty — checkout no longer needed
     continue
   }
@@ -610,7 +728,7 @@ Return {merged, committed, alreadyUpToDate, before, after, conflict, error}.`,
     node.rounds != null ? `${node.rounds} round${node.rounds === 1 ? '' : 's'}` : null,
     node.tokens != null ? `~${Math.round(node.tokens / 1000)}k tokens` : null,
   ].filter(Boolean)
-  note(`Task ${n} done → merged ${mergeBranch} into ${featBranch} (commit ${mg.after ? String(mg.after).slice(0, 8) : '?'})${tele.length ? ` (${tele.join(' · ')})` : ''}${node.decisions.length ? ` · ${node.decisions.length} decision(s) logged` : ''}.`)
+  note(`✓ Task ${n} done — ${brief(node.spec)} · merged ${mg.after ? String(mg.after).slice(0, 8) : '?'}${tele.length ? ` (${tele.join(' · ')})` : ''}${node.decisions.length ? ` · ${node.decisions.length} decision(s)` : ''}`)
   await removeTaskWorktree(node, res.worktree, n)     // merged — the worktree is now just litter
 }
 note(`All tasks processed${spentTok() != null ? ` — ~${Math.round(spentTok() / 1000)}k output tokens spent this turn` : ''}.`)
