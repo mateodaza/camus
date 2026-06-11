@@ -138,17 +138,73 @@ def check_env(repo, which=None, node_version=None, env=None):
     return issues
 
 
+def _codex_version(run=None):
+    # `codex --version` is the only reliable source (no version file); bounded so a wedged
+    # binary can't stall preflight. None = present-but-unprobeable, handled by the caller.
+    run = run or subprocess.run
+    try:
+        out = (run(["codex", "--version"], capture_output=True, text=True, timeout=10).stdout or "").strip()
+        m = re.search(r"(\d+\.\d+\.\d+)", out)
+        return m.group(1) if m else (out or None)
+    except Exception:
+        return None
+
+
+def collect_facts(which=None, env=None, platform=None, codex_version=None):
+    """Deterministic environment FACTS for agent prompts — not readiness issues.
+
+    The rule (smoke 2026-06-11): friction that bites once becomes a fact here, instead of agents
+    rediscovering it mid-run (the reviewer was SIGTERM'd by the Bash tool's 2-min default, then
+    retried with GNU `timeout` — absent on macOS). Facts are ADVISORY context the feat threads
+    into plan/implement/fix prompts; readiness gating stays in check_env. Injectable for tests.
+    """
+    which = which or shutil.which
+    env = env if env is not None else os.environ
+    plat = platform or sys.platform
+    facts = ["platform: %s" % ("darwin (macOS)" if str(plat).startswith("darwin")
+                               else ("linux" if str(plat).startswith("linux") else str(plat)))]
+    if which("timeout") is None and which("gtimeout") is None:
+        facts.append("GNU `timeout` is NOT on PATH — never wrap commands in `timeout`/`gtimeout`; "
+                     "use the Bash tool's timeout PARAMETER for deadlines")
+    if which("codex") is None:
+        facts.append("codex CLI: NOT on PATH (cross-vendor review will fail as infra, never silently pass)")
+    else:
+        ver = codex_version() if codex_version else _codex_version()
+        facts.append("codex CLI: %s" % (ver or "present (version unprobeable)"))
+        codex_home = env.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
+        facts.append("codex auth: %s" % ("present" if os.path.exists(os.path.join(codex_home, "auth.json"))
+                                         else "MISSING (run `codex login` before the review rounds)"))
+        tier = None
+        try:
+            cfg = os.path.join(codex_home, "config.toml")
+            if os.path.exists(cfg):
+                m = re.search(r'^\s*service_tier\s*=\s*"([^"]+)"', open(cfg, encoding="utf-8").read(), re.M)
+                tier = m.group(1) if m else None
+        except Exception:
+            pass
+        facts.append("codex service tier: %s" % (tier or "unset (the ChatGPT-plan default governs)"))
+    return facts
+
+
 def main(argv=None):
     argv = argv if argv is not None else sys.argv[1:]
     repo = argv[0] if argv else os.getcwd()
     issues = check_env(repo)
+    rc = 0
     if not issues:
         print("ok: environment ready (node version, deps, and verifier toolchain present).")
-        return 0
-    print("NOT READY — fix these before running the loop (otherwise verify is inconclusive):")
-    for i in issues:
-        print("  - " + i)
-    return 1
+    else:
+        print("NOT READY — fix these before running the loop (otherwise verify is inconclusive):")
+        for i in issues:
+            print("  - " + i)
+        rc = 1
+    # Facts print on BOTH outcomes (delimited so camus-feat can lift the block verbatim): a
+    # fix-and-resume after NOT READY still has the platform truths in the captured output.
+    print("[env-facts]")
+    for f in collect_facts():
+        print(f)
+    print("[/env-facts]")
+    return rc
 
 
 if __name__ == "__main__":

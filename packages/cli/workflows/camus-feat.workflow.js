@@ -426,6 +426,13 @@ ready=true ONLY if it exits 0. Capture exitCode and the full stdout+stderr text 
 )
 state.env = env ? { ready: !!env.ready, exitCode: env.exitCode, output: env.output, when: 'baseline' }
                 : { ready: false, exitCode: -1, output: 'env agent returned nothing', when: 'baseline' }
+// ENV FACTS (smoke 2026-06-11): lift the doctor's deterministic [env-facts] block and thread it
+// into every task's loop, where it lands in the plan/implement/fix prompts — platform truths
+// (darwin, GNU-timeout absence, codex version/auth) stop being rediscovered mid-run. ADVISORY
+// only: an absent or garbled block degrades to '' and gates nothing. Bounded to keep prompts lean.
+const factsMatch = String((state.env && state.env.output) || '').match(/\[env-facts\]\s*([\s\S]*?)\s*\[\/env-facts\]/)
+const ENV_FACTS = factsMatch ? factsMatch[1].trim().slice(0, 1500) : ''
+if (ENV_FACTS) log(`Env facts captured for agent prompts (${ENV_FACTS.split('\n').length} line(s)).`)
 if (!state.env.ready) {
   return finalize('env_not_ready', {
     stage: 'baseline_env',
@@ -546,6 +553,7 @@ Return the captured output VERBATIM as your entire reply. No fences, no commenta
       ...(ROUND_CAP != null ? { roundCap: ROUND_CAP } : {}),   // per-task review-round budget
       ...(landAuthorized ? { land: true } : {}),  // PROVEN accept decision → land; unproven → full loop
       ...(ANSWERS[node.taskId] ? { humanAnswer: String(ANSWERS[node.taskId]) } : {}),  // resume answer
+      ...(ENV_FACTS ? { envFacts: ENV_FACTS } : {}),  // platform truths → loop agent prompts (advisory)
       ...(TARGET ? { targetPath: TARGET } : {}),
     })
   } catch (e) {

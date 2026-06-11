@@ -55,6 +55,13 @@ const ASK_ON = { autonomous: [], ask_on_ambiguity: ['ambiguous'], ask_on_major: 
 // On resume after a needs_human pause, the caller threads the human's answer back in. When present
 // we do NOT re-ask (the call is made) and feed it into plan + implement as resolved guidance.
 const HUMAN_ANSWER = (args && typeof args === 'object' && args.humanAnswer && String(args.humanAnswer)) || ''
+// Deterministic platform truths from the feat's env doctor (optional — standalone runs have none).
+// Injected into plan/implement/fix prompts so agents stop rediscovering environment quirks mid-run
+// (smoke 2026-06-11: the fix path improvised GNU `timeout` on a darwin host). ADVISORY context,
+// never a gate; bounded so a runaway doctor can't bloat every prompt. Comes from args → stable
+// across a journal resume (same args ⇒ same prompts ⇒ cache replay holds).
+const ENV_FACTS = (args && typeof args === 'object' && typeof args.envFacts === 'string' && args.envFacts.trim().slice(0, 1500)) || ''
+const envFactsBlock = ENV_FACTS ? `\nEnvironment facts (deterministic preflight — trust these, do not re-probe):\n${ENV_FACTS}\n` : ''
 if (!TASK) throw new Error('camus-loop: no task in args (pass a string or {task, targetPath})')
 
 const softBudget = `Soft budget: aim to stay under ~${TOKEN_TARGET_K}k tokens. Be terse; do not over-explore.`
@@ -320,7 +327,7 @@ if (planSkipped) {
     `You are planning ONE Camus task. Do NOT write code in this phase.
 
 Task: ${TASK}
-${targetLine}${HUMAN_ANSWER ? `\n\nA human has ALREADY answered the open question for this task — treat it as DECIDED, do not re-raise it:\n${HUMAN_ANSWER}` : ''}
+${targetLine}${envFactsBlock}${HUMAN_ANSWER ? `\n\nA human has ALREADY answered the open question for this task — treat it as DECIDED, do not re-raise it:\n${HUMAN_ANSWER}` : ''}
 
 Read only the files needed to understand the change. Produce a short, ordered plan
 (what to change, in which files, and why) plus the list of files the change will touch.
@@ -366,7 +373,7 @@ const impl = await agent(
   `Implement ONE Camus task in an ISOLATED git worktree so review/verify can run against it cleanly.
 
 Task: ${TASK}
-${decisionGuidance}
+${decisionGuidance}${envFactsBlock}
 Approved plan:
 ${plan.plan}
 
@@ -418,6 +425,15 @@ function pickReviewEffort(rnd, priorBlocking) {
 }
 let currentEffort = 'medium'   // set per round below; read by reviewerPrompt
 
+// REVIEWER DEADLINE (smoke 2026-06-11): codex_review.sh has NO internal timeout and `codex exec`
+// has NO deadline flag, so the Bash tool's `timeout` PARAMETER is the only real bound — and the
+// tool's 2-minute default SIGTERM'd a high-effort round mid-review (exit 143), after which the
+// agent improvised a GNU `timeout 600` retry that exit-127'd on macOS. Effort-sized deadline,
+// instructed on the FIRST call; shell `timeout` wrappers are forbidden in the prompt. 600000 is
+// the tool's default ceiling (BASH_MAX_TIMEOUT_MS raises it); reviews that need MORE than that
+// are the watchdog-reviewer design's job (docs/HARNESS-DIRECTION.md), not a bigger constant.
+const REVIEW_TIMEOUT_MS = { medium: 360000, high: 600000, xhigh: 600000 }
+
 // A human answer IS task contract — plan/implement already treat it as DECIDED. The reviewer
 // must judge the diff against the same contract, or a human-overridden finding gets re-flagged
 // every round and the loop deadlocks at the round cap on by-design behavior (run feedback
@@ -435,6 +451,11 @@ the worktree and return its stdout. Do NOT interpret, summarize, re-judge, or re
 
 ${backoff}Run EXACTLY this one command (the worktree path is the argument — do NOT cd, do NOT add anything else):
   ${REVIEW_CMD} ${JSON.stringify(WT)} ${JSON.stringify(REVIEW_TASK_CTX)} ${round} ${currentEffort}
+
+Set the Bash tool's timeout PARAMETER to ${REVIEW_TIMEOUT_MS[currentEffort] || 600000} for this
+call — the review legitimately runs for minutes and the 2-minute default kills it mid-flight.
+Do NOT wrap the command in \`timeout\`/\`gtimeout\` (not portable; absent on macOS) — the tool
+parameter is the only deadline.
 
 Output the command's stdout VERBATIM as your entire reply — nothing before or after, no code
 fences, no commentary. It is already JSON.`
@@ -563,7 +584,7 @@ beyond what each finding requires. Do not touch P3 nits.
 
 Worktree: ${WT}
   cd ${JSON.stringify(WT)}
-
+${envFactsBlock}
 Blocking findings (Codex, priority ≤ 2):
 ${JSON.stringify(lastBlocking, null, 2)}
 

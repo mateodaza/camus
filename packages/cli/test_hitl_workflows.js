@@ -336,6 +336,33 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('S9c complex tier → round1 effort high', effortOf(prompts[reviewLbl(calls, 1)]) === 'high', reviewLbl(calls, 1))
   }
 
+  // S13 (smoke 2026-06-11): the reviewer prompt instructs an EFFORT-SIZED Bash tool timeout on the
+  // FIRST call and forbids shell `timeout` wrappers — codex_review.sh has no internal deadline,
+  // `codex exec` has no deadline flag, and the tool's 2-min default SIGTERM'd a high-effort round
+  // mid-review (exit 143), after which the agent improvised GNU `timeout` (exit 127 on macOS).
+  {
+    const { calls, prompts } = await runLoop({ task: 't' }, { ...clsStd, ...planOf('clear', ''), ...blockP1 })
+    const p1 = prompts[reviewLbl(calls, 1)] || '', p2 = prompts[reviewLbl(calls, 2)] || ''
+    ok('S13 medium round → 360000 ms tool timeout instructed', /timeout PARAMETER to 360000\b/.test(p1))
+    ok('S13 high round → 600000 ms tool timeout instructed', /timeout PARAMETER to 600000\b/.test(p2))
+    ok('S13 shell timeout wrappers forbidden', p1.includes('Do NOT wrap the command in `timeout`/`gtimeout`'))
+  }
+
+  // S14 (smoke 2026-06-11): deterministic env facts (args.envFacts, threaded by the feat) reach the
+  // plan/implement/fix prompts — and ONLY those (the thin reviewer stays minimal). Absent → no block.
+  {
+    const FACTS = 'platform: darwin (macOS)\nGNU `timeout` is NOT on PATH — use the Bash tool timeout PARAMETER'
+    const { calls, prompts } = await runLoop({ task: 't', envFacts: FACTS }, { ...clsStd, ...planOf('clear', ''), ...blockP1 })
+    ok('S14 facts in plan prompt', !!prompts.plan && prompts.plan.includes(FACTS))
+    ok('S14 facts in implement prompt', !!prompts.implement && prompts.implement.includes(FACTS))
+    ok('S14 facts in fix prompt', !!prompts['fix:r1'] && prompts['fix:r1'].includes(FACTS))
+    ok('S14 thin reviewer NOT bloated with facts', !(prompts[reviewLbl(calls, 1)] || '').includes(FACTS))
+  }
+  {
+    const { prompts } = await runLoop({ task: 't' }, { ...clsStd, ...planOf('clear', ''), ...happyTail })
+    ok('S14b no envFacts → no facts block in prompts', !!prompts.plan && !prompts.plan.includes('Environment facts'))
+  }
+
   // S7: worktree path contract (2026-06-10) — centralized out-of-tree home + fail-closed validation.
   {
     const { res, prompts } = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail })
@@ -374,6 +401,21 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F1 feat halts needs_human', res && res.status === 'needs_human', res && res.status)
     ok('F1 question in report', res && res.question === 'Pick A or B?')
     ok('F1 resumeWith hint present', !!(res && res.resumeWith && res.resumeWith.answers))
+  }
+  // F15 (smoke 2026-06-11): the feat lifts the env doctor's delimited [env-facts] block VERBATIM
+  // and threads it to every task's loop as envFacts; no block (or a garbled one) → no key at all.
+  {
+    const FACTS = 'platform: darwin (macOS)\nGNU `timeout` is NOT on PATH'
+    const featFacts = { ...featBase, 'env-check': { ready: true, exitCode: 0,
+      output: `ok: environment ready.\n[env-facts]\n${FACTS}\n[/env-facts]` } }
+    const { loopArgs } = await runFeat({ feat: 'F', tasks: ['only task'] }, featFacts,
+      [{ status: 'done', branch: 'b', decisions: [] }])
+    ok('F15 env facts lifted and threaded to the loop', !!loopArgs[0] && loopArgs[0].envFacts === FACTS, JSON.stringify(loopArgs[0] && loopArgs[0].envFacts))
+  }
+  {
+    const { loopArgs } = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
+      [{ status: 'done', branch: 'b', decisions: [] }])
+    ok('F15b no facts block → no envFacts key forwarded', !!loopArgs[0] && !('envFacts' in loopArgs[0]), JSON.stringify(loopArgs[0] && loopArgs[0].envFacts))
   }
   {
     // F11: a verify-clean review_unresolved is surfaced as a DECISION, not a plain failure (2026-06-11).

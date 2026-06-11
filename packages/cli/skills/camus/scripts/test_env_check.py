@@ -179,6 +179,77 @@ def test_login_shell_mismatch_message_names_the_cause():
     assert any("node major mismatch" in i for i in issues)
 
 
+# --- env facts (deterministic platform truths for agent prompts) -----------
+# Smoke 2026-06-11: friction that bites once becomes a fact here. Everything injectable —
+# no real codex/timeout/uname is consulted.
+
+def _which_only(*present):
+    return lambda b: ("/usr/bin/" + b) if b in present else None
+
+
+def test_facts_darwin_without_gnu_timeout_warns():
+    facts = E.collect_facts(which=_which_only("codex"), env={}, platform="darwin",
+                            codex_version=lambda: "0.137.0")
+    assert any("platform: darwin" in f for f in facts)
+    assert any("timeout PARAMETER" in f for f in facts), facts
+
+
+def test_facts_no_timeout_warning_when_gnu_timeout_present():
+    facts = E.collect_facts(which=_which_only("codex", "timeout"), env={}, platform="linux",
+                            codex_version=lambda: "0.137.0")
+    assert any("platform: linux" in f for f in facts)
+    assert not any("never wrap commands" in f for f in facts)
+
+
+def test_facts_gtimeout_counts_as_timeout():
+    # brew coreutils installs `gtimeout` — that's a usable timeout binary, no warning
+    facts = E.collect_facts(which=_which_only("codex", "gtimeout"), env={}, platform="darwin",
+                            codex_version=lambda: "0.137.0")
+    assert not any("never wrap commands" in f for f in facts)
+
+
+def test_facts_codex_missing_named_loudly():
+    facts = E.collect_facts(which=NONE_PRESENT, env={}, platform="darwin")
+    assert any("codex CLI: NOT on PATH" in f for f in facts)
+    # no auth/tier lines when the CLI itself is absent
+    assert not any("codex auth" in f for f in facts)
+
+
+def test_facts_codex_auth_and_tier_from_codex_home():
+    home = _repo({"auth.json": "{}", "config.toml": 'model = "gpt-5.5"\nservice_tier = "fast"\n'})
+    facts = E.collect_facts(which=_which_only("codex"), env={"CODEX_HOME": home},
+                            platform="darwin", codex_version=lambda: "0.139.0")
+    assert any(f == "codex CLI: 0.139.0" for f in facts), facts
+    assert any("codex auth: present" in f for f in facts)
+    assert any('codex service tier: fast' in f for f in facts)
+
+
+def test_facts_codex_auth_missing_and_tier_unset():
+    home = _repo({"config.toml": 'model = "gpt-5.5"\n'})
+    facts = E.collect_facts(which=_which_only("codex"), env={"CODEX_HOME": home},
+                            platform="darwin", codex_version=lambda: None)
+    assert any("version unprobeable" in f for f in facts)
+    assert any("codex auth: MISSING" in f for f in facts)
+    assert any("tier: unset" in f for f in facts)
+
+
+def test_facts_block_printed_by_main(capsys=None):
+    # main() must print the delimited block on the READY path — camus-feat lifts it verbatim.
+    import io, contextlib
+    repo = _repo({"README.md": "x"})
+    buf = io.StringIO()
+    orig_facts = E.collect_facts
+    E.collect_facts = lambda **kw: ["platform: testbox"]
+    try:
+        with contextlib.redirect_stdout(buf):
+            rc = E.main([repo])
+    finally:
+        E.collect_facts = orig_facts
+    out = buf.getvalue()
+    assert rc == 0, out
+    assert "[env-facts]\nplatform: testbox\n[/env-facts]" in out, out
+
+
 # --- stdlib runner ---------------------------------------------------------
 
 if __name__ == "__main__":
