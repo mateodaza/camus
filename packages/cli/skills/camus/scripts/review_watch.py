@@ -101,14 +101,23 @@ def _usage(handle):
     return usage
 
 
-def _exit_code(handle):
+def _exit_code_read(handle):
+    """The wrapper's exit-code file, or None while it hasn't been written. The FILE is the
+    completion channel (audit P2 2026-06-11): pid liveness must never outrank it — a lingering
+    wrapper shell, a zombie, or a RECYCLED pid would otherwise turn a finished review into
+    pending/idle_killed (and, worse, aim a kill at whatever innocent process now owns the pid)."""
     try:
         with open(_paths(handle)["exit"], encoding="utf-8") as fh:
             return int(fh.read().strip())
     except (OSError, ValueError):
-        # The wrapper never wrote an exit code (killed, or the spawn itself died) — infra, not
-        # a verdict; adapter.py turns a nonzero exit + empty output into ran:false downstream.
-        return 1
+        return None
+
+
+def _exit_code(handle):
+    code = _exit_code_read(handle)
+    # None = the wrapper never wrote an exit code (killed, or the spawn itself died) — infra,
+    # not a verdict; adapter.py turns a nonzero exit + empty output into ran:false downstream.
+    return 1 if code is None else code
 
 
 def _kill_group(pid):
@@ -157,6 +166,13 @@ def cmd_await(args):
     pid, started_at = rec["pid"], rec.get("started_at", 0)
     deadline = time.time() + max(1, args.chunk)
     while True:
+        # COMPLETION FILE FIRST (audit P2 2026-06-11): a written exit code IS done, no matter
+        # what signal-0 says about the recorded pid — liveness only decides among the
+        # still-unfinished states below.
+        code = _exit_code_read(args.handle)
+        if code is not None:
+            return _emit({"state": "done", "exit": code,
+                          "usage": _usage(args.handle), "last": rec.get("last")})
         if not _alive(pid):
             return _emit({"state": "done", "exit": _exit_code(args.handle),
                           "usage": _usage(args.handle), "last": rec.get("last")})
@@ -171,6 +187,14 @@ def cmd_await(args):
 
 def cmd_abort(args):
     rec = _read_handle(args.handle)
+    # Finished-while-we-decided-to-abort (audit P2 2026-06-11): a written exit code means the
+    # work is DONE — return the verdict instead of killing. This is both a free verdict and the
+    # pid-reuse safety: never aim a group kill at a pid whose recorded work already completed
+    # (the live process answering signal 0 may be an innocent stranger by now).
+    code = _exit_code_read(args.handle) if rec else None
+    if code is not None:
+        return _emit({"state": "done", "exit": code,
+                      "usage": _usage(args.handle), "last": rec.get("last")})
     if rec and isinstance(rec.get("pid"), int) and _alive(rec["pid"]):
         _kill_group(rec["pid"])
     return _emit({"state": "aborted"})

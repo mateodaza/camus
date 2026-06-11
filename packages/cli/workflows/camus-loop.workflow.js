@@ -510,8 +510,15 @@ fences, no commentary. It is already JSON.`
 // thin `await` calls until a verdict lands or the budget runs out. The handle travels through
 // an agent's stdout, so it is validated against OUR deterministic layout before it is ever
 // interpolated into a command (audit F3 discipline: never cd/exec an unvalidated agent path).
-const okHandle = (h, rnd) => typeof h === 'string' && h.includes('/.camus/reviews/')
-  && h.endsWith(`-r${rnd}.watch`) && !h.includes('..') && !h.includes('"') && !h.includes('\n')
+// Two-layer handle validation, deliberately split (audit P2 2026-06-11): the LOOP owns the
+// injection defense — a strict charset allowlist (no `$`/backticks/quotes/whitespace:
+// JSON.stringify does NOT escape `$(…)` inside double quotes, so charset is the only real
+// guard), absolute, no `..`, and bound to THIS round's deterministic suffix. LOCATION is the
+// SCRIPT's job — codex_review.sh authenticates the handle against its own $CAMUS_REVIEW_DIR +
+// meta.json, which the workflow cannot see (no env access here); hard-coding `/.camus/reviews/`
+// silently broke re-attach/abort for every custom CAMUS_REVIEW_DIR run.
+const okHandle = (h, rnd) => typeof h === 'string' && /^[A-Za-z0-9._\/-]+$/.test(h)
+  && h.startsWith('/') && !h.includes('..') && h.endsWith(`-r${rnd}.watch`)
 function awaitPrompt(handle) {
   return `You are a THIN reviewer attendant. A Codex review is still RUNNING detached; your ONLY
 job is to re-attach and return the script's stdout. Do NOT interpret, summarize, or reformat.

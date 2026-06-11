@@ -476,6 +476,27 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('S22b bad handle → infra, no await dispatched', res.status === 'infra_error' && !calls.some((c) => /await1$/.test(c)), res.status + ' ' + calls.join(','))
   }
   {
+    // JSON.stringify does NOT escape $(...) inside double quotes — the charset allowlist is the
+    // real injection guard (audit hardening 2026-06-11).
+    const evil = { ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+      review: J({ pending: true, handle: `/tmp/$(touch pwned)/x-r1.watch` }) }
+    const { res, calls } = await runLoop({ task: 't', roundCap: 1 }, evil)
+    ok('S22b2 command-substitution handle rejected by charset', res.status === 'infra_error' && !calls.some((c) => /await1$/.test(c)), calls.join(','))
+  }
+  {
+    // audit P2 2026-06-11: a CUSTOM CAMUS_REVIEW_DIR emits handles outside ~/.camus/reviews —
+    // the loop must still re-attach (location authentication belongs to codex_review.sh).
+    const handle = `/tmp/custom-audit-reviews/${wtName('t')}-r1.watch`
+    let rc = 0
+    const stubs = {
+      ...clsStd, ...planOf('clear', ''), implement: happyTail.implement, ...cleanVerify,
+      commit: J({ committed: true, sha: 'abc123' }),
+      review: () => { rc++; return rc === 1 ? J({ pending: true, handle, last_event_age: 4 }) : J({ ran: true, clean: true, blocking: [], nonblocking: [] }) },
+    }
+    const { res, calls } = await runLoop({ task: 't' }, stubs)
+    ok('S22e custom review-dir handle re-attaches fine', res.status === 'done' && calls.some((c) => /await1$/.test(c)), res.status + ' ' + calls.join(','))
+  }
+  {
     // alive past the WHOLE watch budget → abort the detached process, round becomes infra.
     const handle = `/home/u/.camus/reviews/${wtName('t')}-r1.watch`
     const stubs = {

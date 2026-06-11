@@ -93,6 +93,34 @@ def test_abort_kills_outright():
         assert not _alive(pid)
 
 
+def test_exit_file_outranks_a_lingering_pid():
+    # Audit P2 2026-06-11: the wrapper's exit-code file IS the completion channel. A lingering
+    # shell, a zombie, or a RECYCLED pid must never turn a finished review into pending — write
+    # the exit file while the recorded pid is provably alive and await must say done.
+    with tempfile.TemporaryDirectory() as h:
+        pid = _start(h, ["sh", "-c", "echo started; sleep 60"])
+        assert _alive(pid)
+        with open(os.path.join(h, "exit_code"), "w", encoding="utf-8") as fh:
+            fh.write("0\n")
+        env, _ = _run("await", "--handle", h, "--chunk", "1", "--idle", "60")
+        assert env["state"] == "done" and env["exit"] == 0, env
+        os.killpg(pid, 15)   # cleanup the stand-in "lingering" process ourselves
+
+
+def test_abort_returns_done_instead_of_killing_a_finished_review():
+    # Same channel, abort side: never aim a group kill at a pid whose recorded work already
+    # completed (pid reuse would make the target an innocent stranger) — and the verdict is
+    # free, so return it.
+    with tempfile.TemporaryDirectory() as h:
+        pid = _start(h, ["sh", "-c", "echo started; sleep 60"])
+        with open(os.path.join(h, "exit_code"), "w", encoding="utf-8") as fh:
+            fh.write("0\n")
+        env, _ = _run("abort", "--handle", h)
+        assert env["state"] == "done" and env["exit"] == 0, env
+        assert _alive(pid)                     # the (possibly innocent) pid was NOT killed
+        os.killpg(pid, 15)                     # cleanup
+
+
 def test_await_without_a_handle_is_an_error_envelope():
     with tempfile.TemporaryDirectory() as h:
         env, _ = _run("await", "--handle", os.path.join(h, "nope"), "--chunk", "1", "--idle", "1")
