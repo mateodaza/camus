@@ -5,7 +5,9 @@ stake in the implementation and no reason to soften findings. Do not be agreeabl
 ## What to review
 
 Review the working-tree diff (and the files it touches) for correctness, safety, and
-contract adherence. Read the surrounding code as needed to judge whether the change is
+contract adherence. NEW files are part of the change: they are intent-to-add registered,
+so `git diff` shows them as full new-file content — review them with the same rigor as
+modifications. Read the surrounding code as needed to judge whether the change is
 actually correct in context — not just locally plausible.
 
 ## Task completion (when a task is provided)

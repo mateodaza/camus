@@ -47,7 +47,9 @@ usage: npx camus-cli <command>
   check        preflight: installed gate in sync with package? (run before any auto/feat run)
   auto-setup   opt-in: install the narrow scoped auto-mode profile (zero-click runs)
   env-check [repo]   is the repo runnable? node version / deps / verifier toolchain
-  status [featId]    live dashboard for a feat run: tasks, last steps, review rounds, steer
+  status [featId]    one-shot dashboard for a feat run: tasks, last steps, review rounds, steer
+  watch [featId]     LIVE dashboard (interactive): auto-refreshing status with one-key
+                       steering — [p]ause · [g]uidance · [c]lear note · [q]uit
   steer [...]        redirect a RUNNING feat at its next task boundary:
                        steer "<guidance>"        steer the next task
                        steer --task <id> "<g>"   steer one specific task
@@ -87,6 +89,9 @@ switch (cmd) {
     break;
   case 'status':
     py('status.py', rest);
+    break;
+  case 'watch':
+    py('watch.py', rest);
     break;
   case 'steer':
     py('steer.py', rest);

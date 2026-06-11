@@ -135,7 +135,7 @@ say "  ${CYN}bash install.sh --check${RST}        verify installed == source bef
 say "  ${CYN}bash install.sh --auto-setup${RST}   one-time, optional: narrow auto-mode profile for unattended runs"
 say "  ${CYN}/camus-loop \"<task>\"${RST}           one task — run from YOUR target repo's root"
 say "  ${CYN}/camus-feat${RST}                    an ordered task list as one feature, merged on a feat branch"
-say "  ${CYN}npx camus-cli status${RST}           watch a running feat (tasks, last steps, review rounds)"
+say "  ${CYN}npx camus-cli watch${RST}            LIVE dashboard for a running feat — one-key pause/steer"
 say "  ${CYN}npx camus-cli steer \"<guidance>\"${RST}  redirect it at the next task boundary (--pause to halt)"
 say ""
 say "${DIM}Worktrees are kept out of your project, under ~/.camus/worktrees/<repo>-<id>/ — feat runs"

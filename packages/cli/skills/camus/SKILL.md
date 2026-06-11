@@ -84,9 +84,13 @@ Defaults: `ROUND_CAP = 3`.
 - `/camus-feat` — an ordered task list as one feature: preflight → feat branch → env +
   baseline verify → per-task loop (merge on `done`) → env re-check + integration verify →
   report at `~/.camus/reports/<featId>.json`. Forwards `policy`/`model`/`modelTier`/`skipPlan`/`answers`.
-- `camus status [featId]` — live dashboard for a run, from ANY terminal, read-only and
+- `camus status [featId]` — one-shot dashboard for a run, from ANY terminal, read-only and
   token-free: feat header, per-task board (rounds/tokens/model), the last 10 run-log steps,
   recent Codex review rounds (audit-file timeline), and any pending steer note.
+- `camus watch [featId]` — the LIVE interactive version: the same dashboard auto-refreshing
+  on the alternate screen, with one-key steering through the same audited steer.py path
+  (`p` pause · `g` guidance · `c` clear · `q` quit). Degrades to a one-shot status print
+  when there is no TTY.
 - `camus steer` — redirect a RUNNING feat at its next task boundary: `camus steer "<guidance>"`
   (steers the next task, threaded in exactly like a `needs_human` answer), `--task <id> "<g>"`
   (a specific task), `--pause` (graceful resumable halt), `--show` / `--clear`. A note is
@@ -121,5 +125,20 @@ Defaults: `ROUND_CAP = 3`.
   per-round Codex audit mtimes. `steer.py` writes a once-consumed note the feat checks at every
   task boundary (pause / guidance / per-task answers); `paused_by_user` is terminal for the
   auto-resumer — only a human resumes a human pause.
+- **Review input completeness**: `codex_review.sh` intent-to-adds (`git add -N`) the worktree
+  before reviewing, so NEW files appear in the diff Codex reads (run feedback 2026-06-10: a
+  task built mostly of new files was near-invisible to plain `git diff`). It also forces
+  `</dev/null` on the codex call (an open stdin made codex block and return empty verdicts)
+  and honors `CAMUS_CODEX_ARGS` for per-run pins like `-c model_reasoning_effort=medium`.
+
+## Retry idiom (after fixing a gate/env failure)
+
+Re-invoke the feat **fresh with the same args**: the featId is a deterministic hash of the
+feat title + task list, so the new run lands on the same persisted state — done tasks skip,
+the failed task re-runs against its intact worktree, through the now-fixed gate. Do **NOT**
+resume the workflow journal (`resumeFromRunId`) past a fix: a completed-but-failed agent call
+is still "completed" to the journal, so the cached failure replays without re-running anything
+(observed live 2026-06-10: a journal resume after the stdin fix returned the cached
+`infra_error` with the review audit untouched and 0 task tokens).
 
 Target-B (VPS interactive) tooling remains **gated on G3** (subscription-auth-on-server ToS).

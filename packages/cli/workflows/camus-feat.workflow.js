@@ -538,7 +538,7 @@ Return the captured output VERBATIM as your entire reply. No fences, no commenta
     note(`Task ${n} HALTED the feat — loop returned "${node.loopStatus}".`)
     return finalize('halted', {
       stage: 'task', haltedTask: node.taskId, haltReason: node.loopStatus, loopResult: res || null,
-      note: `Task ${n} did not reach "done" (${node.loopStatus}). Per M1, later tasks are NOT run on top of a failed one. Tasks merged before this remain on ${featBranch}.`,
+      note: `Task ${n} did not reach "done" (${node.loopStatus}). Per M1, later tasks are NOT run on top of a failed one. Tasks merged before this remain on ${featBranch}. Retry idiom after fixing the cause: re-invoke the feat FRESH with the SAME args — the deterministic featId resumes from persisted state (done tasks skip, this task re-runs against its intact worktree). Do NOT resume the workflow journal (resumeFromRunId) past a gate/env fix: completed-but-failed agent calls replay their cached failure without re-running anything.`,
     })
   }
 

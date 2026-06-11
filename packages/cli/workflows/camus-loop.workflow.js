@@ -437,7 +437,7 @@ if (infraAbort) {
   return {
     status: 'infra_error', task: TASK, worktree: WT, branch: BRANCH,
     rounds: round, error: infraAbort,
-    note: 'Codex reviewer never produced a usable verdict. Not a rejection and not clean — needs a human / infra check.',
+    note: 'Codex reviewer never produced a usable verdict. Not a rejection and not clean — needs a human / infra check. Known causes of an EMPTY verdict with exit 0: codex blocking on an open stdin (fixed in codex_review.sh via </dev/null — re-run install.sh if your gate predates it) and a heavy ambient reasoning effort exhausting the output budget on a large diff (pin via CAMUS_CODEX_ARGS="-c model_reasoning_effort=medium"). Inspect ~/.camus/reviews/<wt>-r<round>.json and /tmp/camus_codex_err.log. AFTER fixing, retry by re-invoking the feat FRESH with the SAME args (deterministic featId resumes from state) — do NOT resume the workflow journal (resumeFromRunId): it replays this cached infra_error without re-running the reviewer.',
   }
 }
 

@@ -35,6 +35,13 @@ if ! cd "$target_dir" 2>/dev/null; then
   exit 0
 fi
 
+# NEW files must be reviewable (run feedback 2026-06-10: 6 of 9 deliverables were untracked,
+# and plain `git diff` omits untracked files — most of the change was INVISIBLE to the
+# reviewer). Intent-to-add records the paths so they appear in the diff as full new-file
+# content; it does NOT stage content (commit.sh owns staging, and its `git add -A` +
+# empty-diff check are unaffected). Respects .gitignore. Best-effort, never fatal.
+git add -N . 2>/dev/null || true
+
 prompt="$(cat "$prompt_file")"
 if [ -n "$task_ctx" ]; then
   extra="$task_ctx"
@@ -47,7 +54,16 @@ $extra"
 fi
 
 # Fresh session each call (no resume) for reviewer independence.
-raw="$(codex exec -s read-only --output-schema "$schema" "$prompt" 2>/tmp/camus_codex_err.log)"
+# stdin MUST be /dev/null: with an open non-TTY stdin codex prints "Reading additional
+# input from stdin..." and blocks on it, returning an empty verdict (ran:false infra_error).
+# Ambient codex config (model, reasoning effort, MCP servers) is inherited on purpose —
+# model names drift too fast to hardcode. But a heavy ambient setting can silently starve
+# reviews (e.g. xhigh reasoning exhausting the output budget on a large diff → empty
+# verdict). Pin per-run WITHOUT editing global config via CAMUS_CODEX_ARGS, e.g.:
+#   export CAMUS_CODEX_ARGS="-c model_reasoning_effort=medium"
+# (word-splitting of the var is intentional: it carries whole extra CLI args)
+# shellcheck disable=SC2086
+raw="$(codex exec -s read-only ${CAMUS_CODEX_ARGS:-} --output-schema "$schema" "$prompt" </dev/null 2>/tmp/camus_codex_err.log)"
 status=$?
 
 # AUDIT ARTIFACT: persist Codex's raw response + metadata per review round so each review is provable
