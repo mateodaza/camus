@@ -37,6 +37,7 @@ GLYPH = {
     "needs_human": "?",
     "needs_decision": "◆",   # review didn't converge but verify is GREEN — a decision, not a failure
     "ready_to_merge": "◇",   # loop finished (review+commit+verify) but the merge hadn't landed yet
+    "done_with_findings": "◈",   # merged + verify-green, review debt deferred to the human — never plain ✓
 }
 
 EVENTS_SHOWN = 10       # "last 10 steps"
@@ -220,10 +221,16 @@ def render(synth, now=None):
     # second age on the same line would just invite "which one do I trust?". Without a .hb
     # (pre-0.2.5 runs) the line stays byte-identical to what it always said.
     hb_age = synth.get("heartbeatAge")
-    lines.append("  id %s · branch %s · base %s · %s"
+    # Posture visibility (VELOCITY §1 invariant, display half 2026-06-11): a speed posture must
+    # never silently impersonate the full gate, so a non-"full" posture is loud in the header.
+    # Absent (pre-posture states) or "full" → byte-identical to the legacy id line.
+    posture = s.get("posture")
+    lines.append("  id %s · branch %s · base %s · %s%s"
                  % (s.get("featId", "?"), s.get("featBranch", "?"), s.get("base", "?"),
                     ("last heartbeat %s ago" % fmt_age(hb_age)) if hb_age is not None
-                    else ("state updated %s ago" % fmt_age(synth.get("stateAge")))))
+                    else ("state updated %s ago" % fmt_age(synth.get("stateAge"))),
+                    (" · posture %s" % posture)
+                    if isinstance(posture, str) and posture not in ("", "full") else ""))
     # "running" must MEAN running (item 1, 2026-06-11): the engine touches .hb at EVERY phase
     # boundary, so >10 min of silence on a running feat is loud — feat-bound, no transcript
     # involved (the transcript "last activity" below stays as the fine-grained layer). Resume
@@ -234,8 +241,14 @@ def render(synth, now=None):
     lines.append("")
 
     tasks = [t for t in s.get("tasks", []) if isinstance(t, dict)]
-    done = sum(1 for t in tasks if t.get("status") in ("done", "noop"))
-    lines.append("Tasks (%d/%d done)" % (done, len(tasks)))
+    # done_with_findings COUNTS as complete — the work is merged and deterministically green
+    # (VELOCITY §1) — but never silently: the tally itself says how many carry deferred review
+    # debt, so a 3/3 with debt can never be skim-read as a clean 3/3.
+    done = sum(1 for t in tasks if t.get("status") in ("done", "noop", "done_with_findings"))
+    deferred = sum(1 for t in tasks if t.get("status") == "done_with_findings")
+    lines.append("Tasks (%d/%d done%s)"
+                 % (done, len(tasks),
+                    (" · %d with DEFERRED review findings" % deferred) if deferred else ""))
     for i, t in enumerate(tasks, 1):
         st = t.get("status", "?")
         tele = [x for x in (
@@ -243,9 +256,16 @@ def render(synth, now=None):
             fmt_tokens(t.get("tokens")),
             ("model %s" % t["model"]) if t.get("model") else None,
         ) if x]
-        lines.append("  %s %d. %-44s %-12s%s"
-                     % (GLYPH.get(st, "·"), i, t.get("taskId", "?"), st,
-                        (" " + " · ".join(tele)) if tele else ""))
+        row = ("  %s %d. %-44s %-12s%s"
+               % (GLYPH.get(st, "·"), i, t.get("taskId", "?"), st,
+                  (" " + " · ".join(tele)) if tele else ""))
+        # Oneshot honest-report semantics (VELOCITY §1): the task merged green, but its single
+        # review's findings got ONE unreviewed fix pass — when the engine recorded the count,
+        # the debt is named on the task's own line. Bool/zero are never a count (house rule).
+        fd = t.get("findingsDeferred")
+        if st == "done_with_findings" and isinstance(fd, int) and not isinstance(fd, bool) and fd > 0:
+            row += " · %d finding(s) deferred to you" % fd
+        lines.append(row)
     # Cross-run rollup (HARNESS-DIRECTION item 4, display half, 2026-06-11): per-task `tokens`
     # PERSIST in state across resumes, so their sum is the one feat-level number that survives a
     # restart — unlike the live per-run estimate further down, which only sees the current run's
@@ -321,6 +341,21 @@ def render(synth, now=None):
         lines.append("INTEGRATION PENDING — all tasks done/noop (last one reconciled by hand);")
         lines.append("  integration verify has NOT run. Re-run the feat with the SAME args —")
         lines.append("  done tasks skip; env re-check + integration verify then earn 'done'.")
+        lines.append("")
+
+    if status == "done_with_findings":
+        # VELOCITY §1 (final-review outcomes + oneshot honest-report semantics): merged work,
+        # deterministic verify GREEN — never a failure — but the posture's contract deferred
+        # the review findings to the human instead of looping on them, so it must never read
+        # as a plain done either. The report carries the findings verbatim; point straight at
+        # it (derived from statePath so a --dir override still names the real file).
+        state_path = synth.get("statePath") or ""
+        report = (os.path.join(os.path.dirname(os.path.dirname(state_path)), "reports",
+                               "%s.json" % s.get("featId", "?")) if state_path
+                  else os.path.join("~", ".camus", "reports", "%s.json" % s.get("featId", "?")))
+        lines.append("REVIEW DEBT DEFERRED — merged + deterministically green, but the review findings were")
+        lines.append("  NOT re-reviewed (posture contract). Read them in the report before shipping:")
+        lines.append("  %s" % report)
         lines.append("")
 
     if synth["steer"]:

@@ -1,7 +1,7 @@
 export const meta = {
   name: 'camus-feat',
   description: 'Run an ordered task list as ONE feature through the Camus M1 gate: preflight → feat branch → env+baseline → per-task v2-lite loop (merge on done) → env re-check + integration verify → report. Linear only (no DAG/parallel/bisection).',
-  whenToUse: 'Drive a small ordered feat (2–3 tasks in M1) through v2-overnight M1. args = { feat: "<title>", tasks: ["task 1", "task 2", ...], targetPath?, policy?, answers? }. policy ∈ autonomous|ask_on_ambiguity(default)|ask_on_major controls when a task PAUSES for a human (status needs_human); on a resume after a pause, answers={ "<taskId>": "..." } threads the decision back in. Reuses camus-loop per task with feat-scoped branch identity. Launch FROM the target repo (cwd = repo root). Run `npx camus-cli check` (or `bash install.sh --check` from the package) yourself first — gate-freshness is a human step.',
+  whenToUse: 'Drive a small ordered feat (2–3 tasks in M1) through v2-overnight M1. args = { feat: "<title>", tasks: ["task 1", "task 2", ...], targetPath?, policy?, answers?, posture? }. policy ∈ autonomous|ask_on_ambiguity(default)|ask_on_major controls when a task PAUSES for a human (status needs_human); on a resume after a pause, answers={ "<taskId>": "..." } threads the decision back in. posture ∈ full(default)|oneshot — review cadence (VELOCITY §1): absent, a classifier recommends and asking policies confirm a speed posture ONCE; oneshot tasks report done_with_findings, never review-clean. Reuses camus-loop per task with feat-scoped branch identity. Launch FROM the target repo (cwd = repo root). Run `npx camus-cli check` (or `bash install.sh --check` from the package) yourself first — gate-freshness is a human step.',
   phases: [
     { title: 'Preflight',    detail: 'Agent confirms the base working tree is CLEAN and reads any prior feat state (resume). Dirty → stop.' },
     { title: 'Feat branch',  detail: 'Agent cuts (or, on resume, checks out) camus/feat-<featId> from the current base branch.' },
@@ -55,6 +55,15 @@ const BUDGET_TOKENS = (typeof A.budgetTokens === 'number' && isFinite(A.budgetTo
 // human ACCEPTED a verify-clean needs_decision halt). Those tasks run the loop in land mode —
 // commit → verify → merge, no re-plan/re-implement/re-review. The accept half of accept-vs-refine.
 const LAND_TASKS = Array.isArray(A.land) ? A.land.map(String) : []
+// REVIEW POSTURE (VELOCITY §1+§3, 0.2.6): explicit wins, no ask (rule 1) — absent, the classifier
+// recommends and the policy decides whether to confirm (resolved after preflight, below).
+// bookend/forward are 0.3 (feat-level final-review machinery) — rejected loudly, never downgraded.
+const ARG_POSTURE = (() => {
+  if (A.posture == null) return null
+  const v = String(A.posture)
+  if (v === 'full' || v === 'oneshot') return v
+  throw new Error(`camus-feat: posture "${v}" is not available (full|oneshot today; bookend/forward land in 0.3 — docs/VELOCITY-DIRECTION.md §1)`)
+})()
 if (!FEAT) throw new Error('camus-feat: missing feat title (args.feat)')
 if (!TASKS.length) throw new Error('camus-feat: args.tasks[] is empty')
 // All feat-level git/env/verify run in the repo root (workflow cwd = $PWD).
@@ -150,6 +159,7 @@ const resumeArgs = {
   ...(SKIP_PLAN ? { skipPlan: true } : {}),
   ...(ROUND_CAP != null ? { roundCap: ROUND_CAP } : {}),
   ...(BUDGET_TOKENS != null ? { budgetTokens: BUDGET_TOKENS } : {}),
+  ...(ARG_POSTURE ? { posture: ARG_POSTURE } : {}),   // explicit only — a RESOLVED posture carries via state.posture
   // land changes task behavior MATERIALLY (audit P1 2026-06-11): dropping it on a resume would
   // re-enter the full loop — the exact run-5 failure land exists to avoid. Snapshot, like answers.
   ...(LAND_TASKS.length ? { land: [...LAND_TASKS] } : {}),
@@ -224,6 +234,14 @@ function asVerify(raw) {
 
 // ── Schemas (only where the script branches on structured fields) ─────────────
 const WRITTEN_SCHEMA = { type: 'object', additionalProperties: false, required: ['written'], properties: { written: { type: 'boolean' } } }
+const POSTURE_REC_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['posture', 'why'],
+  properties: {
+    posture: { type: 'string', enum: ['full', 'oneshot'],
+      description: 'full = review↔fix rounds per task (conservative default — pick it whenever unsure, or when ANY task looks complex/cross-cutting). oneshot = one review + one unreviewed fix per task; only for a SMALL feat whose tasks are all clearly trivial/standard with small diffs.' },
+    why: { type: 'string', description: 'One sentence naming the trade (e.g. "all 3 tasks trivial, small diffs → review calls 6→3, ~half the review wall-clock; deterministic verify unchanged").' },
+  },
+}
 const PREFLIGHT_SCHEMA = {
   type: 'object', additionalProperties: false,
   required: ['clean', 'base', 'dirtyFiles', 'stateRaw'],
@@ -339,7 +357,13 @@ async function finalize(status, extra = {}) {
       ...(t.escalated != null ? { escalated: t.escalated } : {}),
       ...(t.tokens != null ? { tokens: t.tokens } : {}),
       ...(t.question ? { question: t.question, clarity: t.clarity || '' } : {}),
+      ...(t.findingsDeferred != null ? { findingsDeferred: t.findingsDeferred } : {}),
+      ...(Array.isArray(t.deferredFindings) && t.deferredFindings.length ? { deferredFindings: t.deferredFindings } : {}),
     })),
+    // POSTURE VISIBILITY (VELOCITY §1 invariant): the report header always says which review
+    // cadence ran — a speed posture must never silently impersonate the full gate.
+    ...(state.posture ? { posture: state.posture } : {}),
+    ...(state.postureDecision ? { postureDecision: state.postureDecision } : {}),
     // Output tokens spent across the whole turn (shared pool: feat overhead + every task loop).
     ...(spentTok() != null ? { totalOutputTokens: spentTok() } : {}),
     // Feat-level rollup of every decision the loop logged across tasks — the human's merge-time
@@ -404,12 +428,16 @@ if (prior && Array.isArray(prior.tasks)) {
     const p = priorById.get(node.taskId)
     if (p && p.status === 'needs_decision') PROVEN_DECISION.add(node.taskId)
     if (p && p.status === 'ready_to_merge') PROVEN_READY.add(node.taskId)
-    if (p && (p.status === 'done' || p.status === 'noop')) {
+    if (p && (p.status === 'done' || p.status === 'noop' || p.status === 'done_with_findings')) {
+      // done_with_findings is TERMINAL for camus (the posture's contract: the loop never
+      // re-litigates the deferred findings) — carried exactly like done, findings included.
       node.status = p.status
       if (p.status === 'noop') node.noop = true
       if (Array.isArray(p.decisions)) node.decisions = p.decisions
       if (p.loopStatus) node.loopStatus = p.loopStatus
       if (p.tokens != null) node.tokens = p.tokens   // keep the real spend; a replayed delta would read ~0
+      if (p.findingsDeferred != null) node.findingsDeferred = p.findingsDeferred
+      if (Array.isArray(p.deferredFindings)) node.deferredFindings = p.deferredFindings
       carried++
     }
   }
@@ -420,6 +448,57 @@ if (prior && Array.isArray(prior.tasks)) {
   }
   if (carried) note(`Resume: ${carried} task(s) already done/noop in ${STATE_PATH} — will skip.`)
 }
+
+// ── 1b. POSTURE SELECTION (VELOCITY §3: classifier recommends, human confirms) ─
+// Explicit wins, no ask (rule 1 — the user marking a desire IS the consent). Absent: a cheap
+// classifier proposes over the task briefs. A `full` recommendation applies silently — it does
+// not reduce review depth, and pausing to confirm the conservative default would be friction
+// with no moat value (deliberate narrowing of the doc's rule 2: we confirm only SPEED postures).
+// `oneshot` recommended: asking policies pause ONCE via the existing needs_human transport
+// (resume passes posture explicitly → rule 1); autonomous applies it (rule 3 allows full|oneshot
+// self-selection only) and the choice + rationale go on the record. When unsure → full, always.
+// Resume coherence: a posture RESOLVED on a prior run (recommended/confirmed) carries forward
+// from persisted state — re-recommending mid-feat could flip the cadence between resumes.
+// resumeArgs stays the verbatim ORIGINAL invocation (only an EXPLICIT posture rides in it).
+const PRIOR_POSTURE = (prior && (prior.posture === 'full' || prior.posture === 'oneshot')) ? prior.posture : null
+let POSTURE = ARG_POSTURE || PRIOR_POSTURE
+if (POSTURE) {
+  log(`Posture: ${POSTURE} (${ARG_POSTURE ? 'explicit — used verbatim, never re-asked' : 'carried from the prior run'}).`)
+} else {
+  const rec = await agent(
+    `Recommend a review POSTURE for ONE Camus feat run, from its task list alone.
+
+Tasks:
+${state.tasks.map((t, i) => `${i + 1}. ${brief(t.spec, 160)}`).join('\n')}
+
+Rules (conservative by construction):
+- ANY task that looks complex, cross-cutting, architectural, or ambiguous → "full". Speed
+  postures are for work you are CONFIDENT about; uncertainty buys MORE review, not less.
+- "oneshot" only when ALL tasks are clearly trivial/standard with small, well-scoped diffs.
+- When unsure → "full".`,
+    { model: MODEL_RUNNER, phase: 'Preflight', label: 'posture-rec', schema: POSTURE_REC_SCHEMA }
+  )
+  const recommended = (rec && rec.posture === 'oneshot') ? 'oneshot' : 'full'
+  const why = (rec && rec.why) || 'no rationale returned — defaulting conservative'
+  if (recommended === 'full') {
+    POSTURE = 'full'
+    log(`Posture: full (recommended default — ${why}).`)
+  } else if (POLICY === 'autonomous') {
+    POSTURE = 'oneshot'
+    state.postureDecision = { posture: 'oneshot', source: 'classifier_autonomous', why }
+    note(`Posture: ONESHOT (classifier recommendation, autonomous apply) — ${why}. On the record; deterministic verify unchanged.`)
+  } else {
+    note(`Posture recommendation: ONESHOT — pausing ONCE to confirm (a recommendation that silently reduced review depth would be the moat eroding itself).`)
+    return finalize('needs_human', {
+      stage: 'posture',
+      question: `Recommended posture: oneshot — ${why}. Review cadence drops to ONE review + ONE unreviewed fix per task (results read done_with_findings, never review-clean; deterministic verify unchanged). Confirm or override.`,
+      resumeWith: { posture: 'oneshot | full' },
+      note: `The classifier recommends the ONESHOT posture for this feat (${why}). Re-run with posture:"oneshot" to take the speed trade, or posture:"full" for today's full review cadence — the explicit value is used verbatim and never re-asked.`,
+    })
+  }
+}
+state.posture = POSTURE
+if (POSTURE !== 'full') note(`▶ Posture ${POSTURE.toUpperCase()} is ACTIVE for this run — review cadence reduced BY CHOICE; deterministic verify gates every task as always.`)
 
 // ── 2. Cut (or resume) the feat branch from base ─────────────────────────────
 phase('Feat branch')
@@ -488,7 +567,7 @@ phase('Tasks')
 for (let i = 0; i < state.tasks.length; i++) {
   const node = state.tasks[i]
   const n = `${i + 1}/${state.tasks.length}`
-  if (node.status === 'done' || node.status === 'noop') { log(`Task ${n} "${node.taskId}" already ${node.status} (resume) — skipping.`); continue }
+  if (node.status === 'done' || node.status === 'noop' || node.status === 'done_with_findings') { log(`Task ${n} "${node.taskId}" already ${node.status} (resume) — skipping.`); continue }
 
   // ── BUDGET CEILING (0.2.5 item 4): checked at the BOUNDARY, against PERSISTED per-task totals
   // (cross-run — node.tokens survives resumes; this turn's overhead is not double-counted). Past
@@ -622,6 +701,7 @@ Return {written:true} once that file is on disk with exactly that content.`,
       ...(landAuthorized ? { land: true } : {}),  // PROVEN accept decision → land; unproven → full loop
       ...(ANSWERS[node.taskId] ? { humanAnswer: String(ANSWERS[node.taskId]) } : {}),  // resume answer
       ...(ENV_FACTS ? { envFacts: ENV_FACTS } : {}),  // platform truths → loop agent prompts (advisory)
+      ...(POSTURE !== 'full' ? { posture: POSTURE } : {}),  // review cadence (VELOCITY §1); full = loop default
       // SIBLING CONTEXT (fixlet 2026-06-11): the other tasks' briefs + statuses, so the per-task
       // reviewer stops flagging sibling scope as "incomplete" and fix agents stay in their lane.
       ...(siblingBriefs ? { siblingTasks: siblingBriefs } : {}),
@@ -663,7 +743,11 @@ Return {written:true} once that file is on disk with exactly that content.`,
     })
   }
 
-  if (!res || res.status !== 'done') {
+  // done_with_findings (VELOCITY §1, oneshot posture) is MERGEABLE: the work is committed and
+  // deterministically green — the deferred review debt is the posture's contract, carried on
+  // the node and surfaced at the feat level (never as a plain done).
+  const mergeableStatus = res && (res.status === 'done' || res.status === 'done_with_findings')
+  if (!mergeableStatus) {
     // Any non-done (review_unresolved / verify_failed / verify_inconclusive / infra_error /
     // aborted) -> HALT. M1 never builds later tasks on top of a non-done one.
     // A review_unresolved whose DETERMINISTIC verify is green is a DECISION POINT, not broken code:
@@ -788,7 +872,11 @@ Return {merged, committed, alreadyUpToDate, priorMergeCommit, before, after, con
     await removeTaskWorktree(node, res.worktree, n)   // branch merged/empty — checkout no longer needed
     continue
   }
-  node.status = 'done'
+  node.status = res.status   // 'done', or 'done_with_findings' under oneshot (◈ on the board)
+  if (res.status === 'done_with_findings') {
+    node.findingsDeferred = res.findingsDeferred || (Array.isArray(res.findings) ? res.findings.length : 0)
+    if (Array.isArray(res.findings)) node.deferredFindings = res.findings   // verbatim, for the report
+  }
   node.decisions = Array.isArray(res.decisions) ? res.decisions : []   // audit trail for merge review
   // OPTIONAL loop telemetry (shared contract with camus-loop; all may be absent). Surfaced
   // in the report + log line so the human sees which tier/model ran the task and how many
@@ -808,7 +896,7 @@ Return {merged, committed, alreadyUpToDate, priorMergeCommit, before, after, con
     node.rounds != null ? `${node.rounds} round${node.rounds === 1 ? '' : 's'}` : null,
     node.tokens != null ? `~${Math.round(node.tokens / 1000)}k tokens` : null,
   ].filter(Boolean)
-  note(`✓ Task ${n} done — ${brief(node.spec)} · merged ${mg.after ? String(mg.after).slice(0, 8) : '?'}${tele.length ? ` (${tele.join(' · ')})` : ''}${node.decisions.length ? ` · ${node.decisions.length} decision(s)` : ''}`)
+  note(`${node.status === 'done_with_findings' ? '◈' : '✓'} Task ${n} ${node.status} — ${brief(node.spec)} · merged ${mg.after ? String(mg.after).slice(0, 8) : '?'}${tele.length ? ` (${tele.join(' · ')})` : ''}${node.decisions.length ? ` · ${node.decisions.length} decision(s)` : ''}${node.findingsDeferred ? ` · ${node.findingsDeferred} finding(s) DEFERRED to you` : ''}`)
   await removeTaskWorktree(node, res.worktree, n)     // merged — the worktree is now just litter
 }
 note(`All tasks processed${spentTok() != null ? ` — ~${Math.round(spentTok() / 1000)}k output tokens spent this turn` : ''}.`)
@@ -853,7 +941,20 @@ const intV = asVerify(intRaw)
 state.integration = intV
 if (intV.pass === true) {
   const noopTasks = state.tasks.filter((t) => t.status === 'noop').map((t) => t.taskId)
-  const realMerges = state.tasks.filter((t) => t.status === 'done').length
+  const realMerges = state.tasks.filter((t) => t.status === 'done' || t.status === 'done_with_findings').length
+  // REVIEW DEBT FIRST (VELOCITY §1 invariant: "no posture may report plain done while deferring
+  // risk"). Any task that merged with fixed-unreviewed findings makes the FEAT done_with_findings
+  // — integration verify being green is the floor, not the review. Stronger caveat than noops,
+  // so it wins when both apply (the note still names the noops).
+  const dwfTasks = state.tasks.filter((t) => t.status === 'done_with_findings')
+  if (dwfTasks.length) {
+    return finalize('done_with_findings', {
+      realMerges,
+      ...(noopTasks.length ? { noopTasks } : {}),
+      deferredFindings: dwfTasks.map((t) => ({ taskId: t.taskId, findings: t.deferredFindings || [], resolution: 'fixed_unreviewed' })),
+      note: `Integration verify is GREEN on ${featBranch} and every task merged — but ${dwfTasks.length} task(s) carry review findings that were fixed ONCE and NEVER re-reviewed (${state.posture || 'oneshot'} posture contract). The findings are verbatim in this report under deferredFindings — read them before shipping.${noopTasks.length ? ` Also: ${noopTasks.length} task(s) were no-ops.` : ''} NOT review-clean; never a plain done.`,
+    })
+  }
   if (noopTasks.length) {
     // Integration is green, but at least one task claimed "done" while adding no commit. Never
     // report a plain "done" in that case — surface the no-op(s) so a feat can't look complete

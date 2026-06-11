@@ -1,7 +1,7 @@
 export const meta = {
   name: 'camus-loop',
   description: 'Run the Camus closed loop on one task: plan → implement → (codex-review ↔ fix)* → verify',
-  whenToUse: 'Drive one task through the v2-lite Camus gate. Pass the task in args: a string, or {task, targetPath}.',
+  whenToUse: 'Drive one task through the v2-lite Camus gate. Pass the task in args: a string, or {task, targetPath, posture?}. posture ∈ full(default)|oneshot — oneshot runs ONE review + ONE unreviewed fix and reports done_with_findings (never "review clean"); deterministic verify gates in every posture.',
   phases: [
     { title: 'Classify',  detail: 'Cheap model rates complexity → routes the think-model (trivial→Sonnet, else Opus).' },
     { title: 'Plan',      detail: 'Think model reads relevant files, writes a short plan. No code.' },
@@ -39,7 +39,11 @@ const MODEL_RUNNER = 'haiku'     // review-runner, verify-runner (no judgment to
 // the worktree checkout has no `.claude/skills/camus`. Always invoke the
 // installed copy by absolute path; cwd is the worktree so the tools see the change.
 const SKILL_SCRIPTS = '"$HOME/.claude/skills/camus/scripts"'
-const REVIEW_CMD = `bash ${SKILL_SCRIPTS}/codex_review.sh`
+// review.sh is the BACKEND DISPATCHER (VELOCITY §2, 0.2.6): resolves CAMUS_REVIEWER (default
+// codex → codex_review.sh verbatim, including the watchdog await/abort forms); unknown backends
+// fail closed on the cross-vendor invariant. The loop never knows which vendor reviews — only
+// that the gate JSON contract holds.
+const REVIEW_CMD = `bash ${SKILL_SCRIPTS}/review.sh`
 const VERIFY_CMD = `bash ${SKILL_SCRIPTS}/verify.sh`
 const PREP_CMD = `bash ${SKILL_SCRIPTS}/prep.sh`     // make a fresh worktree runnable before verify
 const COMMIT_CMD = `bash ${SKILL_SCRIPTS}/commit.sh` // commit reviewed work so the branch isn't empty
@@ -58,6 +62,19 @@ const ID_SALT = (args && typeof args === 'object' && args.idSalt) || ''
 // Safety-axis HITL (destructive/out-of-repo actions) is handled separately by auto mode's classifier.
 const POLICY = (args && typeof args === 'object' && args.policy) || 'ask_on_ambiguity'
 const ASK_ON = { autonomous: [], ask_on_ambiguity: ['ambiguous'], ask_on_major: ['ambiguous', 'design_decision'] }
+// REVIEW POSTURE (VELOCITY-DIRECTION §1, 0.2.6): the cadence of the PROBABILISTIC review — never
+// the gate's presence. Deterministic verify is unskippable in EVERY posture; that is the moat.
+//   full    — review↔fix rounds up to roundCap (today's behavior; default).
+//   oneshot — ONE review; blocking findings get ONE fix pass and NO re-review; verify decides.
+//             Result is done_with_findings (resolution: fixed_unreviewed) — the phrase "review
+//             clean" is reserved for an actual clean reviewer verdict in every posture.
+// bookend/forward are 0.3 (they need the feat-level final-review machinery) — rejected LOUDLY
+// rather than silently downgraded to something that exists.
+const POSTURE = (() => {
+  const v = (args && typeof args === 'object' && typeof args.posture === 'string' && args.posture) || 'full'
+  if (v === 'full' || v === 'oneshot') return v
+  throw new Error(`camus-loop: posture "${v}" is not available (full|oneshot today; bookend/forward land in 0.3 with the final-review machinery — docs/VELOCITY-DIRECTION.md §1)`)
+})()
 // On resume after a needs_human pause, the caller threads the human's answer back in. When present
 // we do NOT re-ask (the call is made) and feed it into plan + implement as resolved guidance.
 const HUMAN_ANSWER = (args && typeof args === 'object' && args.humanAnswer && String(args.humanAnswer)) || ''
@@ -477,7 +494,7 @@ function reviewerPrompt(attempt) {
 the worktree and return its stdout. Do NOT interpret, summarize, re-judge, or reformat.
 
 ${backoff}Run EXACTLY this one command (the worktree path is the argument — do NOT cd, do NOT add anything else):
-  ${HB_TOUCH}${REVIEW_CMD} ${JSON.stringify(WT)} ${JSON.stringify(REVIEW_TASK_CTX)} ${round} ${currentEffort}
+  ${HB_TOUCH}${REVIEW_CMD} ${JSON.stringify(WT)} ${JSON.stringify(REVIEW_TASK_CTX)} ${round} ${currentEffort}${POSTURE === 'oneshot' ? ' light' : ''}
 
 Set the Bash tool's timeout PARAMETER to ${REVIEW_TIMEOUT_MS[currentEffort] || 600000} for this
 call — the review legitimately runs for minutes and the 2-minute default kills it mid-flight.
@@ -522,6 +539,12 @@ let round = 0
 let reviewPassed = false
 let lastBlocking = []
 let infraAbort = null
+// ONESHOT (VELOCITY §1): the single review's blocking findings, preserved VERBATIM for the
+// honest report — they were fixed once and never re-reviewed, and the result must say so.
+let oneshotFindings = null
+if (POSTURE === 'oneshot') {
+  log(`Posture: ONESHOT — one review, one repair, verify decides${ROUND_CAP !== 3 ? ` (roundCap=${ROUND_CAP} is ignored under oneshot)` : ''}. Review scope: light (diff-primary).`)
+}
 
 // FEATURE 1b — REVIEWER-PERSISTENCE ESCALATION: when the cheap model keeps failing Codex review,
 // bump the FIX agent to the top routed model (TIER_MODEL.complex). Trigger: round >= 2 (the first
@@ -664,15 +687,23 @@ while (round < ROUND_CAP) {
   }
   keysNow.forEach((k) => allSeenKeys.add(k))
   priorKeys = new Set(keysNow)
-  // NO FIX WITHOUT A CONFIRMATION ROUND (fixlet 2026-06-11): the loop once dispatched a fix on its
-  // FINAL round; it landed with no round left to re-review it, so the halt report described an
-  // already-fixed worktree and forced a full relaunch. If no round remains to confirm a fix, don't
-  // spend it — halt with the findings and let the decision (or a higher roundCap re-run) own it.
-  if (round >= ROUND_CAP) {
+  // ONESHOT (VELOCITY §1): one fix pass IS the posture's contract — the findings are preserved
+  // verbatim and the result reads done_with_findings/fixed_unreviewed, so the unreviewed fix is
+  // honest by construction (unlike full posture's final round, where an unconfirmable fix would
+  // silently masquerade as handled — the guard below). Escalation still applies: a P0 deserves
+  // the best fix model even when nobody re-reviews it.
+  if (POSTURE === 'oneshot') {
+    oneshotFindings = lastBlocking
+    log(`Oneshot: ${lastBlocking.length} blocking finding(s)${usageSuffix(gate)} — ONE fix pass, NO re-review (result will read fixed_unreviewed; deterministic verify still gates).`)
+  } else if (round >= ROUND_CAP) {
+    // NO FIX WITHOUT A CONFIRMATION ROUND (fixlet 2026-06-11): the loop once dispatched a fix on
+    // its FINAL round; it landed with no round left to re-review it, so the halt report described
+    // an already-fixed worktree and forced a full relaunch. If no round remains to confirm a fix,
+    // don't spend it — halt with the findings and let the decision (or a higher roundCap) own it.
     log(`Round ${round}/${ROUND_CAP}: ${lastBlocking.length} blocking finding(s) on the FINAL round — NOT dispatching a fix the loop cannot re-review; halting for the decision.`)
     break
   }
-  log(`Round ${round}/${ROUND_CAP} (review effort: ${currentEffort}): ${lastBlocking.length} blocking finding(s)${usageSuffix(gate)} — dispatching fix.`)
+  if (POSTURE !== 'oneshot') log(`Round ${round}/${ROUND_CAP} (review effort: ${currentEffort}): ${lastBlocking.length} blocking finding(s)${usageSuffix(gate)} — dispatching fix.`)
   // Escalate the FIX model if the cheap model is failing: round>=2 (first fix didn't clear review)
   // OR a priority-0 blocking finding is present. Monotonic, deterministic.
   if (!escalationFired && (round >= 2 || lastBlocking.some(b => b && b.priority === 0))) {
@@ -702,6 +733,7 @@ Apply the minimal correct fix for each. Do not run review or verify — the loop
 ${softBudget}`,
     { model: fixModel, phase: 'Fix', label: `fix:r${round}` }
   )
+  if (POSTURE === 'oneshot') break   // one repair, no re-review — the posture's whole contract
 }
 
 // Deterministic PREP + VERIFY (type-check / lint / tests) on the worktree. Returns a verdict
@@ -749,7 +781,10 @@ if (infraAbort) {
   }
 }
 
-if (!reviewPassed) {
+// Oneshot's fixed-once findings are NOT "unresolved review" — they are the posture's contract,
+// and the honest status for them is done_with_findings (set at the verify-pass return below),
+// never review_unresolved (which is full posture's impasse machinery).
+if (!reviewPassed && !oneshotFindings) {
   // The review did not converge (hit ROUND_CAP, or a finding survived a fix). Per camus's OWN rule
   // — "deterministic ground truth wins" — consult VERIFY before reporting (Fix 2026-06-11: a
   // probabilistic review was halting verify-clean, shippable code on a stale re-flag). A verify-clean
@@ -851,6 +886,18 @@ if (verdict.ok === 'inconclusive') {
   }
 }
 if (verdict.ok === 'pass') {
+  if (oneshotFindings) {
+    // HONEST-REPORT SEMANTICS (VELOCITY §1 audit P2): `done` is reserved for review-clean. The
+    // work is merged-ready and deterministically GREEN, but the single review's findings got ONE
+    // unreviewed fix pass — the human reads them, severity-sorted and verbatim, before shipping.
+    return {
+      status: 'done_with_findings', task: TASK, worktree: WT, branch: BRANCH, commit_sha: COMMIT_SHA,
+      rounds: round, summary: impl.summary, decisions: Array.isArray(impl.decisions) ? impl.decisions : [],
+      findings: oneshotFindings, findingsDeferred: oneshotFindings.length, resolution: 'fixed_unreviewed',
+      tier, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
+      note: `Oneshot posture: the single review found ${oneshotFindings.length} blocking finding(s); ONE fix pass ran and was NOT re-reviewed (the posture's contract). Deterministic verify PASSES and the change is committed. NOT review-clean — read the findings (verbatim in this result) before shipping.`,
+    }
+  }
   return {
     status: 'done', task: TASK, worktree: WT, branch: BRANCH, commit_sha: COMMIT_SHA,
     rounds: round, summary: impl.summary, decisions: Array.isArray(impl.decisions) ? impl.decisions : [],

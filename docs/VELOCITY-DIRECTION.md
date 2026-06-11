@@ -1,6 +1,19 @@
 # Camus — Velocity Direction (post-run ideas, 2026-06-11)
 
-**Status:** Direction note (not yet built) · **Source:** Mateo, after the LinkedIn feat runs 1–5
+**Status:** §4's 0.2.5a + 0.2.5b tiers BUILT 2026-06-11 into 0.2.6 — `posture: oneshot` with the
+honest-report semantics (`done_with_findings`/`fixed_unreviewed`, task + feat level, ◈ on the
+board), the reviewer backend dispatcher (`review.sh`, codex the only built-in, unknown backends
+fail closed on the cross-vendor invariant), the lighter-review scope knob (arg-5 `light`, paired
+with oneshot), and the §3 selection contract (explicit wins / classifier recommends + asking
+policies confirm speed postures once / autonomous applies full|oneshot on the record; a `full`
+recommendation applies silently — deliberate narrowing of rule 2: confirming the conservative
+default adds friction without protecting the moat). Codex experiments resolved the same day:
+official `codex exec review` NOT adopted (prose-only output in exec mode, no structured JSON, no
+usage — our `--output-schema` path is strictly better, probed live); light-model ladder shipped
+as opt-in `CAMUS_CODEX_LIGHT_MODEL` (gpt-5.4-mini validated live); tier pin shipped as
+`CAMUS_CODEX_TIER` (the billing default stays the user's call). REMAINING: §1 bookend/forward +
+final-review statuses + plan-review contract (0.3), §2 second backend behind the benchmark gate.
+**Source:** Mateo, after the LinkedIn feat runs 1–5
 **Target:** 0.2.5+ — nothing here goes into 0.2.4, which is feature-complete and staged for publish.
 
 The three ideas, verbatim (es):

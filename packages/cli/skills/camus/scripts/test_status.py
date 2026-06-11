@@ -303,6 +303,109 @@ def test_render_persisted_feat_token_rollup():
         assert "persisted feat total" not in "\n".join(S.render(synth))
 
 
+def test_render_done_with_findings_glyph_tally_and_deferred_count():
+    # VELOCITY §1, 0.2.6 display half: done_with_findings is COMPLETE work (merged, verify
+    # green) so it counts in the tally — but never silently: ◈ (never plain ✓), a loud tally
+    # suffix, and the per-task deferred count all render together.
+    with tempfile.TemporaryDirectory() as base:
+        st = _feat_state("f", status="done_with_findings")
+        st["tasks"][1]["status"] = "done_with_findings"
+        st["tasks"][1]["findingsDeferred"] = 2
+        _write(os.path.join(base, "feats", "f.json"), st)
+        synth = S.synthesize(base, "f")
+        synth["live"] = []
+        out = "\n".join(S.render(synth))
+        assert "Tasks (2/2 done · 1 with DEFERRED review findings)" in out
+        assert "◈" in out                             # distinct glyph, not the plain done ✓
+        assert "· 2 finding(s) deferred to you" in out
+        # …no count recorded → the glyph + tally still tell the truth, but no fabricated number
+        # (bool/zero are never counts — same discipline as the token rollup).
+        st2 = _feat_state("f2", status="done_with_findings")
+        st2["tasks"][1]["status"] = "done_with_findings"
+        st2["tasks"][1]["findingsDeferred"] = True
+        _write(os.path.join(base, "feats", "f2.json"), st2)
+        synth = S.synthesize(base, "f2")
+        synth["live"] = []
+        out2 = "\n".join(S.render(synth))
+        assert "◈" in out2 and "1 with DEFERRED review findings" in out2
+        assert "deferred to you" not in out2
+
+
+def test_render_done_with_findings_hint_block_and_not_on_plain_done():
+    # The feat-level status renders the REVIEW DEBT block — not a failure, never a plain done —
+    # pointing at the real report file (derived from the state path, so --dir stays honest).
+    with tempfile.TemporaryDirectory() as base:
+        st = _feat_state("f", status="done_with_findings")
+        st["tasks"][1]["status"] = "done_with_findings"
+        _write(os.path.join(base, "feats", "f.json"), st)
+        synth = S.synthesize(base, "f")
+        synth["live"] = []
+        out = "\n".join(S.render(synth))
+        assert "[done_with_findings]" in out
+        assert "REVIEW DEBT DEFERRED — merged + deterministically green" in out
+        assert "NOT re-reviewed (posture contract)" in out
+        assert os.path.join(base, "reports", "f.json") in out
+        # …a plain done feat must NOT grow the block (or any deferred phrasing).
+        st2 = _feat_state("f2", status="done")
+        st2["tasks"][1]["status"] = "done"
+        _write(os.path.join(base, "feats", "f2.json"), st2)
+        synth = S.synthesize(base, "f2")
+        synth["live"] = []
+        out2 = "\n".join(S.render(synth))
+        assert "REVIEW DEBT" not in out2 and "DEFERRED" not in out2
+
+
+def test_render_posture_loud_when_not_full_and_silent_otherwise():
+    # VELOCITY §1 invariant: the posture is loudly visible — a speed posture must never
+    # silently impersonate the full gate. Absent (legacy state) or "full" → byte-identical.
+    with tempfile.TemporaryDirectory() as base:
+        now = 1_800_000_000
+        sp = os.path.join(base, "feats", "f.json")
+        st = _feat_state("f")
+        st["posture"] = "oneshot"
+        _write(sp, st)
+        os.utime(sp, (now - 60, now - 60))
+        synth = S.synthesize(base, "f", now=now)
+        synth["live"] = []
+        out = "\n".join(S.render(synth, now=now))
+        assert "· posture oneshot" in out
+        st["posture"] = "full"
+        _write(sp, st)
+        os.utime(sp, (now - 60, now - 60))
+        synth = S.synthesize(base, "f", now=now)
+        synth["live"] = []
+        full_out = "\n".join(S.render(synth, now=now))
+        assert "posture" not in full_out
+        del st["posture"]
+        _write(sp, st)
+        os.utime(sp, (now - 60, now - 60))
+        synth = S.synthesize(base, "f", now=now)
+        synth["live"] = []
+        legacy_out = "\n".join(S.render(synth, now=now))
+        assert full_out == legacy_out                 # "full" never differs from a pre-posture state
+
+
+def test_render_done_with_findings_is_terminal_for_liveness():
+    # done_with_findings is TERMINAL for camus (VELOCITY §1) — nothing is supposed to be
+    # beating, so even an arbitrarily stale heartbeat must not trip the may-have-died warning
+    # (it stays gated on status=="running").
+    with tempfile.TemporaryDirectory() as base:
+        now = 1_800_000_000
+        sp = os.path.join(base, "feats", "f.json")
+        st = _feat_state("f", status="done_with_findings")
+        st["tasks"][1]["status"] = "done_with_findings"
+        _write(sp, st)
+        hb = os.path.join(base, "feats", "f.hb")
+        _write_raw(hb, "")
+        os.utime(sp, (now - 9000, now - 9000))
+        os.utime(hb, (now - 9000, now - 9000))
+        synth = S.synthesize(base, now=now)
+        synth["live"] = []
+        out = "\n".join(S.render(synth, now=now))
+        assert "[done_with_findings]" in out and "REVIEW DEBT DEFERRED" in out
+        assert "no heartbeat for" not in out          # terminal → the liveness contract is silent
+
+
 # --- stdlib runner (no pytest required) ------------------------------------
 
 if __name__ == "__main__":

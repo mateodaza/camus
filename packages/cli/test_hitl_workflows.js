@@ -501,6 +501,48 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('S22d codex usage in the clean-round log', logs.some((m) => /codex ~16k in\/900 out \(4000 reasoning\)/.test(m)), logs.filter((m) => /CLEAN/.test(m)).join(' | '))
   }
 
+  // S23 (VELOCITY §1, 0.2.6): ONESHOT posture — one review; blocking findings get ONE fix pass
+  // and NO re-review; verify decides; the honest status is done_with_findings, never "review
+  // clean". The deterministic floor is unskippable in every posture.
+  {
+    const { res, calls, prompts } = await runLoop({ task: 't', posture: 'oneshot' }, { ...clsStd, ...planOf('clear', ''), ...happyTail })
+    ok('S23a oneshot + clean review → plain done (clean is EARNED)', res.status === 'done', res.status)
+    ok('S23a review command carries the light scope arg', / 1 medium light\b/.test(prompts[reviewLbl(calls, 1)] || ''), reviewLbl(calls, 1))
+  }
+  {
+    const finding = { priority: 1, title: 'edge case', code_location: 'a.ts:1' }
+    const stubs = {
+      ...clsStd, ...planOf('clear', ''), implement: happyTail.implement, fix: '',
+      review: J({ ran: true, clean: false, blocking: [finding], nonblocking: [] }),
+      commit: J({ committed: true, sha: 'one5h0t' }), ...cleanVerify,
+    }
+    const { res, calls } = await runLoop({ task: 't', posture: 'oneshot', roundCap: 5 }, stubs)
+    ok('S23b oneshot blocking → done_with_findings', res.status === 'done_with_findings', res.status)
+    ok('S23b exactly ONE review + ONE fix (cap ignored)', calls.filter((c) => c.startsWith('review')).length === 1 && calls.filter((c) => c.startsWith('fix')).length === 1, calls.join(','))
+    ok('S23b findings verbatim + honest resolution', res.findingsDeferred === 1 && res.resolution === 'fixed_unreviewed' && res.findings[0].title === 'edge case', JSON.stringify(res.findings))
+    ok('S23b committed (merged-ready) + note says NOT review-clean', res.commit_sha === 'one5h0t' && /NOT review-clean/.test(res.note || ''), res.note)
+  }
+  {
+    const stubs = {
+      ...clsStd, ...planOf('clear', ''), implement: happyTail.implement, fix: '',
+      review: J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'x', code_location: 'a:1' }], nonblocking: [] }),
+      commit: J({ committed: true, sha: 'c' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: false, failures: [{ stage: 'verify', log_tail: 'boom' }] }),
+    }
+    const { res } = await runLoop({ task: 't', posture: 'oneshot' }, stubs)
+    ok('S23c oneshot + red verify → verify_failed (the floor holds)', res.status === 'verify_failed', res.status)
+  }
+  {
+    let threw = null
+    try { await runLoop({ task: 't', posture: 'bookend' }, { ...cls, ...happyTail }) } catch (e) { threw = String((e && e.message) || e) }
+    ok('S23d bookend/forward rejected LOUDLY (0.3), never downgraded', !!threw && /0\.3/.test(threw), threw)
+  }
+  {
+    const { calls, prompts } = await runLoop({ task: 't' }, { ...clsStd, ...planOf('clear', ''), ...happyTail })
+    ok('S23e full posture → no light scope arg on the review command', !/ light\b/.test(prompts[reviewLbl(calls, 1)] || ''))
+    // VELOCITY §2: reviews go through the backend DISPATCHER — the loop never names a vendor.
+    ok('S23f review command routes through review.sh (backend dispatcher)', (prompts[reviewLbl(calls, 1)] || '').includes('/review.sh'), (prompts[reviewLbl(calls, 1)] || '').slice(0, 200))
+  }
+
   // S7: worktree path contract (2026-06-10) — centralized out-of-tree home + fail-closed validation.
   {
     const { res, prompts } = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail })
@@ -605,6 +647,58 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       [{ status: 'done', branch: `camus/feat/${bid}/${b2}`, decisions: [] }])
     ok('F18b under budget → the next task runs', under.workflowCalls === 1 && under.res && under.res.status === 'done', under.res && under.res.status)
   }
+  // F21 (VELOCITY §3 rule 1): an EXPLICIT posture is used verbatim — no recommendation agent,
+  // forwarded to every loop, persisted, loud in the report, carried in resumeArgs.
+  {
+    const { res, calls, loopArgs, stateJSON } = await runFeat({ feat: 'F', tasks: ['only task'], posture: 'oneshot' }, featBase,
+      [{ status: 'done', branch: 'b', decisions: [] }])
+    ok('F21 explicit posture → forwarded, no rec agent', !!loopArgs[0] && loopArgs[0].posture === 'oneshot' && !calls.includes('posture-rec'), JSON.stringify(loopArgs[0] && loopArgs[0].posture))
+    ok('F21 posture persisted + in the report header', !!stateJSON && stateJSON.posture === 'oneshot' && res.posture === 'oneshot')
+    ok('F21 resumeArgs carries the EXPLICIT posture', !!stateJSON && stateJSON.resumeArgs.posture === 'oneshot')
+  }
+  {
+    let threw = null
+    try { await runFeat({ feat: 'F', tasks: ['t'], posture: 'forward' }, featBase, []) } catch (e) { threw = String((e && e.message) || e) }
+    ok('F21b forward/bookend rejected loudly at the feat too', !!threw && /0\.3/.test(threw), threw)
+  }
+  // F22 (VELOCITY §3 rules 2+3): posture absent → classifier recommends; oneshot under an asking
+  // policy pauses ONCE; autonomous applies it ON THE RECORD; a full recommendation never asks.
+  {
+    const { res, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, 'posture-rec': { posture: 'oneshot', why: 'all tasks trivial, small diffs' } }, [])
+    ok('F22 oneshot rec + asking policy → ONE confirm pause', res && res.status === 'needs_human' && res.stage === 'posture', res && (res.status + '/' + res.stage))
+    ok('F22 nothing ran before the confirm', workflowCalls === 0, String(workflowCalls))
+    ok('F22 the trade is named in the question', /all tasks trivial/.test((res && res.question) || ''))
+  }
+  {
+    const { res, loopArgs } = await runFeat({ feat: 'F', tasks: ['only task'], policy: 'autonomous' },
+      { ...featBase, 'posture-rec': { posture: 'oneshot', why: 'all tasks trivial' } },
+      [{ status: 'done', branch: 'b', decisions: [] }])
+    ok('F22b autonomous applies oneshot + records the decision', !!loopArgs[0] && loopArgs[0].posture === 'oneshot' && res && res.postureDecision && res.postureDecision.source === 'classifier_autonomous', res && JSON.stringify(res.postureDecision))
+  }
+  {
+    const { res, loopArgs } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, 'posture-rec': { posture: 'full', why: 'a task looks cross-cutting' } },
+      [{ status: 'done', branch: 'b', decisions: [] }])
+    ok('F22c full rec → proceeds WITHOUT asking (no depth reduced)', res && res.status === 'done' && !!loopArgs[0] && !('posture' in loopArgs[0]), res && res.status)
+  }
+  // F23 (VELOCITY §1): a done_with_findings task MERGES; the feat ends done_with_findings with
+  // the findings verbatim; resume treats it as terminal; the posture carries across resumes.
+  {
+    const finding = { priority: 2, title: 'deferred edge', code_location: 'b.ts:2' }
+    const r1 = await runFeat({ feat: 'F', tasks: ['only task'], posture: 'oneshot' }, featBase,
+      [{ status: 'done_with_findings', branch: 'camus/feat/x/only', decisions: [], findings: [finding], findingsDeferred: 1, resolution: 'fixed_unreviewed', commit_sha: 'c1' }])
+    ok('F23 dwf task merges; feat ends done_with_findings', r1.res && r1.res.status === 'done_with_findings', r1.res && r1.res.status)
+    ok('F23 findings verbatim in the report', JSON.stringify((r1.res && r1.res.deferredFindings) || []).includes('deferred edge'))
+    ok('F23 node carries ◈-able status + count', !!r1.stateJSON && r1.stateJSON.tasks[0].status === 'done_with_findings' && r1.stateJSON.tasks[0].findingsDeferred === 1)
+    ok('F23 note never reads as plain done', /NOT review-clean|never a plain done/i.test((r1.res && r1.res.note) || ''))
+    const featResume = { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(r1.stateJSON) } }
+    const r2 = await runFeat({ feat: 'F', tasks: ['only task'], posture: 'oneshot' }, featResume, [])
+    ok('F23b resume: dwf is TERMINAL for camus (skipped, never re-litigated)', r2.workflowCalls === 0 && r2.res && r2.res.status === 'done_with_findings', r2.res && r2.res.status)
+    const r3 = await runFeat({ feat: 'F', tasks: ['only task'] }, featResume, [])
+    ok('F23c resolved posture carries from prior state (no re-recommendation)', r3.res && r3.res.posture === 'oneshot' && !r3.calls.includes('posture-rec'), r3.res && r3.res.posture)
+  }
+
   // F18c (audit P2 2026-06-11): the FINAL task's spend must hit the ceiling too — recheck after
   // the last task, BEFORE integration, or a budget-blowing finale sails to a green "done".
   {
