@@ -146,6 +146,25 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('S6c skipPlan + non-trivial → plan ran', calls.includes('plan'))
     ok('S6c → done', res.status === 'done', res.status)
   }
+  // S8: roundCap arg (run feedback 2026-06-10) — caller can raise/lower the review↔fix cap; bounded.
+  const alwaysBlock = {
+    ...cls, ...planOf('clear', ''), implement: happyTail.implement,
+    review: J({ ran: true, clean: false, blocking: [{ priority: 1, note: 'x' }], nonblocking: [] }),
+    fix: '',
+  }
+  {
+    const { res, calls } = await runLoop({ task: 't', roundCap: 1 }, alwaysBlock)
+    ok('S8a roundCap:1 → review_unresolved after 1 round', res.status === 'review_unresolved', res.status)
+    ok('S8a exactly 1 review round ran', calls.filter((c) => c.startsWith('review')).length === 1, calls.filter((c) => c.startsWith('review')).join(','))
+    ok('S8a note reports the honored cap', /ROUND_CAP=1/.test(res.note || ''))
+  }
+  {
+    // out-of-range cap (99) falls back to the default 3 — bounded so a bad value can't run away.
+    const { res, calls } = await runLoop({ task: 't', roundCap: 99 }, alwaysBlock)
+    ok('S8b out-of-range roundCap → default 3 rounds', calls.filter((c) => c.startsWith('review')).length === 3, String(calls.filter((c) => c.startsWith('review')).length))
+    ok('S8b → review_unresolved', res.status === 'review_unresolved', res.status)
+  }
+
   // S7: worktree path contract (2026-06-10) — centralized out-of-tree home + fail-closed validation.
   {
     const { res, prompts } = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail })
@@ -221,6 +240,13 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const { loopArgs } = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F4 no model key when unset', loopArgs[0] && !('model' in loopArgs[0]) && !('modelTier' in loopArgs[0]))
+    ok('F4 no roundCap key when unset', loopArgs[0] && !('roundCap' in loopArgs[0]))
+  }
+  {
+    // roundCap forwarded UNCHANGED to every per-task loop (the loop bounds it).
+    const { loopArgs } = await runFeat({ feat: 'F', tasks: ['only task'], roundCap: 5 }, featBase,
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    ok('F4 roundCap forwarded to loop', loopArgs[0] && loopArgs[0].roundCap === 5, J(loopArgs[0]))
   }
   {
     // targetPath is a per-task scope hint only. Feat-level git/env/verify must stay rooted at "$PWD";

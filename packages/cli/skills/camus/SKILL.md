@@ -79,11 +79,20 @@ Defaults: `ROUND_CAP = 3`.
 
 ## Run surface
 
+- `/camus-plan <request>` — OPTIONAL pre-step. Reframes a raw/vague/large request into a
+  quality-gated camus-feat task list: ground (explore the repo read-only) → clarify (ask on a
+  genuine ambiguity) → architect → decompose to camus standards → adversarially critique →
+  emit. Writes `~/.camus/plans/<id>.json` (the exact camus-feat args) + a readable `.md`; never
+  writes code. Args: `{request, targetPath?, policy?, model?, modelTier?, answers?}`. Same ask
+  posture as the feat (`policy`; resume with `answers:{<id>:"…"}`). Use it to get smaller,
+  clearer tasks BEFORE running — better plans converge in fewer review rounds.
 - `/camus-loop <task>` — one task. Args: a string, or `{task, targetPath, model, modelTier,
-  skipPlan, policy, humanAnswer, branchPrefix, idSalt}`.
+  skipPlan, policy, humanAnswer, branchPrefix, idSalt, roundCap}`. `roundCap` (1..10, default 3)
+  raises/lowers the review↔fix budget for a known-large task (run feedback 2026-06-10: a big task
+  that converges P1→P2 can run out of rounds at the default cap).
 - `/camus-feat` — an ordered task list as one feature: preflight → feat branch → env +
   baseline verify → per-task loop (merge on `done`) → env re-check + integration verify →
-  report at `~/.camus/reports/<featId>.json`. Forwards `policy`/`model`/`modelTier`/`skipPlan`/`answers`.
+  report at `~/.camus/reports/<featId>.json`. Forwards `policy`/`model`/`modelTier`/`skipPlan`/`roundCap`/`answers`.
 - `camus status [featId]` — one-shot dashboard for a run, from ANY terminal, read-only and
   token-free: feat header, per-task board (rounds/tokens/model), the last 10 run-log steps,
   recent Codex review rounds (audit-file timeline), and any pending steer note.

@@ -50,6 +50,12 @@ silently marked done. Every `done` carries its `commit_sha`.
 
 ## Autonomy controls
 
+- **Plan it first (optional).** `/camus-plan "<request>"` reframes a vague or large
+  request into a quality-gated, ordered task list before any code is written: it grounds
+  in your repo, asks when genuinely ambiguous, designs the change, decomposes it to camus
+  standards (right-sized, baseline-green between tasks, explicit acceptance criteria), then
+  has an adversarial reviewer score the plan. It writes a plan file you review and edit,
+  then run with `camus-feat`. Better plans converge in fewer review rounds.
 - **Zero-click runs.** `camus auto-setup` installs a narrow permission profile: one
   egress trust line for the review diff, plus allow rules for the five gate scripts.
   Not `bypassPermissions`, no broad shell access. The runner agents' routine git

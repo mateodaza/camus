@@ -41,6 +41,9 @@ const ANSWERS = (A.answers && typeof A.answers === 'object' && !Array.isArray(A.
 const MODEL = (A.model != null && String(A.model)) || ''
 const MODEL_TIER = (A.modelTier != null && String(A.modelTier)) || ''
 const SKIP_PLAN = A.skipPlan === true   // opt-in; forwarded only when set (loop gates it to autonomous)
+// Per-task review↔fix cap, forwarded UNCHANGED to every loop (the loop bounds it 1..10). Lets a
+// caller give a known-large feat more rounds to converge. Omit → the loop's default (3).
+const ROUND_CAP = Number.isInteger(A.roundCap) ? A.roundCap : null
 if (!FEAT) throw new Error('camus-feat: missing feat title (args.feat)')
 if (!TASKS.length) throw new Error('camus-feat: args.tasks[] is empty')
 // All feat-level git/env/verify run in the repo root (workflow cwd = $PWD).
@@ -126,6 +129,7 @@ const resumeArgs = {
   ...(MODEL ? { model: MODEL } : {}),
   ...(MODEL_TIER ? { modelTier: MODEL_TIER } : {}),
   ...(SKIP_PLAN ? { skipPlan: true } : {}),
+  ...(ROUND_CAP != null ? { roundCap: ROUND_CAP } : {}),
   // SNAPSHOT, not the live object: the steer hook mutates ANSWERS mid-run, and resumeArgs must
   // stay the verbatim ORIGINAL invocation (review 2026-06-10: aliasing let steered answers
   // bleed into the persisted canonical args).
@@ -491,6 +495,7 @@ Return the captured output VERBATIM as your entire reply. No fences, no commenta
       ...(MODEL ? { model: MODEL } : {}),            // feat-level model override (shared contract)
       ...(MODEL_TIER ? { modelTier: MODEL_TIER } : {}),
       ...(SKIP_PLAN ? { skipPlan: true } : {}),       // opt-in; loop honors only under policy:autonomous
+      ...(ROUND_CAP != null ? { roundCap: ROUND_CAP } : {}),   // per-task review-round budget
       ...(ANSWERS[node.taskId] ? { humanAnswer: String(ANSWERS[node.taskId]) } : {}),  // resume answer
       ...(TARGET ? { targetPath: TARGET } : {}),
     })

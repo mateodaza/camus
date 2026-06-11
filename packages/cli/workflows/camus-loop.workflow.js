@@ -13,7 +13,13 @@ export const meta = {
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────
-const ROUND_CAP = 3              // review↔fix rounds (skill default)
+// Review↔fix rounds. Default 3; caller may raise it for a known-large task (run feedback
+// 2026-06-10: a 15-file task converged P1→P1→P2 but ran out of rounds at the cap). Bounded
+// 1..10 so a bad value can't turn the loop into a runaway.
+const ROUND_CAP = (() => {
+  const v = (args && typeof args === 'object') ? args.roundCap : undefined
+  return (Number.isInteger(v) && v >= 1 && v <= 10) ? v : 3
+})()
 const INFRA_RETRIES = 2          // extra reviewer attempts when ran:false (total 3 tries)
 const TOKEN_TARGET_K = 12        // soft per-agent token target; runtime agent caps are the real backstop
 
