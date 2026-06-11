@@ -718,7 +718,10 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F23b resume: dwf is TERMINAL for camus (skipped, never re-litigated)', r2.workflowCalls === 0 && r2.res && r2.res.status === 'done_with_findings', r2.res && r2.res.status)
     const r3 = await runFeat({ feat: 'F', tasks: ['only task'] }, featResume, [])
     ok('F23c resolved posture carries from prior state (no re-recommendation)', r3.res && r3.res.posture === 'oneshot' && !r3.calls.includes('posture-rec'), r3.res && r3.res.posture)
-    ok('F23d merged list includes the dwf branch (audit P3)', Array.isArray(r1.res.merged) && r1.res.merged.length === 1 && /only-task/.test(r1.res.merged[0]), JSON.stringify(r1.res && r1.res.merged))
+    // P3 follow-up: the stub's res.branch differs from the deterministic node branch, so the
+    // merge consumed res.branch — merged[] must name THAT (what actually merged), never the
+    // deterministic expectation.
+    ok('F23d merged list names the branch ACTUALLY merged (dwf included)', Array.isArray(r1.res.merged) && r1.res.merged.length === 1 && r1.res.merged[0] === 'camus/feat/x/only', JSON.stringify(r1.res && r1.res.merged))
   }
   // F24 (audit P1 2026-06-11, the F14-style crash window for done_with_findings): the proof
   // persist carries the loop's REAL verdict, and BOTH resume lanes — auto-land and the

@@ -369,7 +369,9 @@ async function finalize(status, extra = {}) {
     // Feat-level rollup of every decision the loop logged across tasks — the human's merge-time
     // audit trail ("what did the agent decide that I should sanity-check before merging?").
     decisions: state.tasks.flatMap((t) => (t.decisions || []).map((d) => ({ taskId: t.taskId, ...d }))),
-    merged: state.tasks.filter((t) => t.status === 'done' || t.status === 'done_with_findings').map((t) => t.branch),   // dwf IS merged work (audit P3)
+    // dwf IS merged work (audit P3); mergedBranch = what the merge ACTUALLY consumed when the
+    // loop's reported branch diverged from the deterministic one (P3 follow-up).
+    merged: state.tasks.filter((t) => t.status === 'done' || t.status === 'done_with_findings').map((t) => t.mergedBranch || t.branch),
     featBranchToReview: featBranch,
     ...extra,
   }
@@ -446,6 +448,7 @@ if (prior && Array.isArray(prior.tasks)) {
       if (p.tokens != null) node.tokens = p.tokens   // keep the real spend; a replayed delta would read ~0
       if (p.findingsDeferred != null) node.findingsDeferred = p.findingsDeferred
       if (Array.isArray(p.deferredFindings)) node.deferredFindings = p.deferredFindings
+      if (p.mergedBranch) node.mergedBranch = p.mergedBranch   // keep the report truthful across resumes
       carried++
     }
   }
@@ -904,6 +907,10 @@ Return {merged, committed, alreadyUpToDate, priorMergeCommit, before, after, con
   const finalStatus = (res.landed && (node.provenStatus === 'done' || node.provenStatus === 'done_with_findings'))
     ? node.provenStatus : res.status
   node.status = finalStatus   // 'done', or 'done_with_findings' under oneshot (◈ on the board)
+  // EFFECTIVE branch (audit P3 follow-up 2026-06-11): when the loop reported a different branch,
+  // the merge above used IT (the WARN tolerance) — the report must name what was actually
+  // merged, not the deterministic expectation. Stored only on mismatch; merged[] prefers it.
+  if (mergeBranch !== node.branch) node.mergedBranch = mergeBranch
   if (finalStatus === 'done_with_findings' && Array.isArray(res.findings)) {
     node.findingsDeferred = res.findingsDeferred || res.findings.length
     node.deferredFindings = res.findings   // verbatim, for the report (live path; resume carries its own)
