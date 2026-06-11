@@ -350,6 +350,20 @@ log(`Implemented in worktree ${WT} (branch ${BRANCH})${tokSuffix()}.`)
 // ── Phase 3: REVIEW ↔ FIX loop (ROUND_CAP rounds) ────────────────────────────
 // Reviewer is THIN: it runs the script and echoes raw stdout. No schema, no
 // re-judging. The SCRIPT parses the JSON and branches.
+
+// DYNAMIC REVIEW EFFORT (run feedback 2026-06-11): review IS the gate, so reasoning effort
+// scales with stakes instead of a blunt constant. Cheap `medium` first pass (most reviews are
+// simple → fast); escalate to `high` when the change is hard (complex tier, or a prior round
+// did NOT clear), and to `xhigh` when it's CRITICAL (a P0 surfaced). Mirrors the model-escalation
+// signals below; deterministic (round + finding-priority, no Date/random). The user can still
+// force a constant effort via CAMUS_CODEX_ARGS (it wins inside codex_review.sh).
+function pickReviewEffort(rnd, priorBlocking) {
+  if (priorBlocking.some((b) => b && b.priority === 0)) return 'xhigh'   // critical → maximum scrutiny
+  if (tier === 'complex' || rnd >= 2) return 'high'                      // hard / persistent → deeper
+  return 'medium'                                                         // default → fast
+}
+let currentEffort = 'medium'   // set per round below; read by reviewerPrompt
+
 function reviewerPrompt(attempt) {
   const backoff = attempt > 1
     ? `This is reviewer attempt ${attempt} after an infra failure. First run \`sleep ${attempt * 5}\` to back off, then proceed.\n`
@@ -358,7 +372,7 @@ function reviewerPrompt(attempt) {
 the worktree and return its stdout. Do NOT interpret, summarize, re-judge, or reformat.
 
 ${backoff}Run EXACTLY this one command (the worktree path is the argument — do NOT cd, do NOT add anything else):
-  ${REVIEW_CMD} ${JSON.stringify(WT)} ${JSON.stringify(TASK)} ${round}
+  ${REVIEW_CMD} ${JSON.stringify(WT)} ${JSON.stringify(TASK)} ${round} ${currentEffort}
 
 Output the command's stdout VERBATIM as your entire reply — nothing before or after, no code
 fences, no commentary. It is already JSON.`
@@ -380,6 +394,9 @@ let escalationFired = false
 
 while (round < ROUND_CAP) {
   round++
+  // Pick this round's review effort from the PRIOR round's findings + tier (lastBlocking is []
+  // on round 1 → medium unless complex). Logged so the escalation is visible in the run.
+  currentEffort = pickReviewEffort(round, lastBlocking)
 
   // 3a/3b: reviewer with bounded infra retries (ran:false ≠ rejection, ≠ clean)
   let gate = null
@@ -401,13 +418,13 @@ while (round < ROUND_CAP) {
   // 3c: clean → done with review
   if (gate.clean === true) {
     reviewPassed = true
-    log(`Round ${round}/${ROUND_CAP}: review CLEAN (no priority≤2 findings)${tokSuffix()}.`)
+    log(`Round ${round}/${ROUND_CAP} (review effort: ${currentEffort}): CLEAN (no priority≤2 findings)${tokSuffix()}.`)
     break
   }
 
   // 3d: blocking findings → fix in the SAME worktree, then loop
   lastBlocking = Array.isArray(gate.blocking) ? gate.blocking : []
-  log(`Round ${round}/${ROUND_CAP}: ${lastBlocking.length} blocking finding(s) — dispatching fix.`)
+  log(`Round ${round}/${ROUND_CAP} (review effort: ${currentEffort}): ${lastBlocking.length} blocking finding(s) — dispatching fix.`)
   // Escalate the FIX model if the cheap model is failing: round>=2 (first fix didn't clear review)
   // OR a priority-0 blocking finding is present. Monotonic, deterministic.
   if (!escalationFired && (round >= 2 || lastBlocking.some(b => b && b.priority === 0))) {

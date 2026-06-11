@@ -165,6 +165,32 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('S8b → review_unresolved', res.status === 'review_unresolved', res.status)
   }
 
+  // S9: DYNAMIC review reasoning effort (run feedback 2026-06-11) — the orchestrator passes a
+  // per-round effort (arg 4 of the review command) that scales with stakes. effortOf reads it
+  // back from the captured review prompt. (medium|high|xhigh; 'high' is a substring of 'xhigh'
+  // so the regex anchors on the round-number prefix.)
+  const effortOf = (p) => (((p || '').match(/ \d+ (medium|high|xhigh)\b/) || [])[1] || null)
+  const blockP1 = { implement: happyTail.implement, review: J({ ran: true, clean: false, blocking: [{ priority: 1, note: 'x' }], nonblocking: [] }), fix: '' }
+  const blockP0 = { implement: happyTail.implement, review: J({ ran: true, clean: false, blocking: [{ priority: 0, note: 'crit' }], nonblocking: [] }), fix: '' }
+  const clsComplex = { classify: { tier: 'complex', reason: 'x' } }
+  {
+    // standard tier: cheap MEDIUM first pass → escalate to HIGH once a fix didn't clear (round≥2).
+    const { prompts } = await runLoop({ task: 't' }, { ...clsStd, ...planOf('clear', ''), ...blockP1 })
+    ok('S9a round1 review effort = medium', effortOf(prompts['review:r1.a1']) === 'medium', effortOf(prompts['review:r1.a1']))
+    ok('S9a round2 review effort escalates to high', effortOf(prompts['review:r2.a1']) === 'high', effortOf(prompts['review:r2.a1']))
+  }
+  {
+    // a P0 (critical) finding → next round jumps to XHIGH (maximum scrutiny).
+    const { prompts } = await runLoop({ task: 't' }, { ...clsStd, ...planOf('clear', ''), ...blockP0 })
+    ok('S9b round1 medium (no prior findings yet)', effortOf(prompts['review:r1.a1']) === 'medium', effortOf(prompts['review:r1.a1']))
+    ok('S9b round2 after a P0 → xhigh', effortOf(prompts['review:r2.a1']) === 'xhigh', effortOf(prompts['review:r2.a1']))
+  }
+  {
+    // complex tier → start deeper (HIGH) even on round 1.
+    const { prompts } = await runLoop({ task: 't' }, { ...clsComplex, ...planOf('clear', ''), ...blockP1 })
+    ok('S9c complex tier → round1 effort high', effortOf(prompts['review:r1.a1']) === 'high', effortOf(prompts['review:r1.a1']))
+  }
+
   // S7: worktree path contract (2026-06-10) — centralized out-of-tree home + fail-closed validation.
   {
     const { res, prompts } = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail })

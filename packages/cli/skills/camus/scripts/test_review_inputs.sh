@@ -66,18 +66,34 @@ check "stdin is closed (/dev/null, 0 bytes — codex must never block on it)" \
   "0" "$(cat "$SPY/stdin_bytes")"
 check "schema flag passed" \
   "yes" "$(grep -qx -- '--output-schema' "$SPY/args" && echo yes || echo no)"
-check "no pin args when CAMUS_CODEX_ARGS unset" \
-  "no" "$(grep -q 'model_reasoning_effort' "$SPY/args" && echo yes || echo no)"
+check "defaults to MEDIUM reasoning when no effort arg + no CAMUS_CODEX_ARGS" \
+  "yes" "$(grep -qx 'model_reasoning_effort=medium' "$SPY/args" && echo yes || echo no)"
 check "audit file written for the round" \
   "yes" "$([ -f "$ROOT/reviews/camus-wt-task-r1.json" ] && echo yes || echo no)"
 
-# second pass: the CAMUS_CODEX_ARGS pin reaches codex's argv
-export CAMUS_CODEX_ARGS="-c model_reasoning_effort=medium"
-out="$(run_review)" || { echo "FAIL pinned review errored/hung"; exit 1; }
-check "CAMUS_CODEX_ARGS pin reaches codex argv (-c)" \
-  "yes" "$(grep -qx -- '-c' "$SPY/args" && echo yes || echo no)"
-check "CAMUS_CODEX_ARGS pin reaches codex argv (effort)" \
-  "yes" "$(grep -qx 'model_reasoning_effort=medium' "$SPY/args" && echo yes || echo no)"
+# per-call effort (arg 4) — the orchestrator's dynamic effort reaches codex
+run_review_effort() { # $1 = effort arg
+  python3 - "$R" "$here/codex_review.sh" "$WT" "$1" <<'PY'
+import subprocess, sys
+r = subprocess.run(["bash", sys.argv[2], sys.argv[3], "the task", "2", sys.argv[4]],
+                   cwd=sys.argv[1], capture_output=True, text=True, timeout=30)
+sys.stdout.write(r.stdout)
+PY
+}
+run_review_effort "xhigh" >/dev/null || { echo "FAIL effort-arg review errored/hung"; exit 1; }
+check "arg-4 effort reaches codex (xhigh)" \
+  "yes" "$(grep -qx 'model_reasoning_effort=xhigh' "$SPY/args" && echo yes || echo no)"
+run_review_effort "high" >/dev/null || true
+check "arg-4 effort reaches codex (high)" \
+  "yes" "$(grep -qx 'model_reasoning_effort=high' "$SPY/args" && echo yes || echo no)"
+
+# precedence: an explicit CAMUS_CODEX_ARGS OVERRIDES the per-call arg-4 effort
+export CAMUS_CODEX_ARGS="-c model_reasoning_effort=xhigh"
+run_review_effort "medium" >/dev/null || { echo "FAIL override review errored/hung"; exit 1; }
+check "CAMUS_CODEX_ARGS overrides the arg-4 effort (xhigh wins)" \
+  "yes" "$(grep -qx 'model_reasoning_effort=xhigh' "$SPY/args" && echo yes || echo no)"
+check "override wins: the arg-4 medium is NOT also added" \
+  "no" "$(grep -qx 'model_reasoning_effort=medium' "$SPY/args" && echo yes || echo no)"
 unset CAMUS_CODEX_ARGS
 
 # commit.sh interplay: intent-to-add must not break staging or empty-detection

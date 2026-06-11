@@ -2,7 +2,8 @@
 # Reviewer agent runs this. Emits NORMALIZED gate JSON on stdout.
 # Cross-vendor: Codex (a different vendor) reviews Claude's change.
 #
-# Usage:  codex_review.sh <worktree> [task-context] [round]
+# Usage:  codex_review.sh <worktree> [task-context] [round] [effort]
+#   effort = the per-call reasoning effort (medium|high|xhigh) the orchestrator picks; default medium.
 #
 # Notes:
 # - Model is intentionally NOT hardcoded (names drift). Pin it via codex config
@@ -56,14 +57,21 @@ fi
 # Fresh session each call (no resume) for reviewer independence.
 # stdin MUST be /dev/null: with an open non-TTY stdin codex prints "Reading additional
 # input from stdin..." and blocks on it, returning an empty verdict (ran:false infra_error).
-# Ambient codex config (model, reasoning effort, MCP servers) is inherited on purpose —
-# model names drift too fast to hardcode. But a heavy ambient setting can silently starve
-# reviews (e.g. xhigh reasoning exhausting the output budget on a large diff → empty
-# verdict). Pin per-run WITHOUT editing global config via CAMUS_CODEX_ARGS, e.g.:
-#   export CAMUS_CODEX_ARGS="-c model_reasoning_effort=medium"
-# (word-splitting of the var is intentional: it carries whole extra CLI args)
+# The MODEL is inherited from the user's codex config (names drift too fast to hardcode).
+# REASONING EFFORT is DYNAMIC (run feedback 2026-06-11): review is the gate, so effort should
+# scale with stakes rather than be a blunt constant. The orchestrator (camus-loop) passes a
+# per-call effort as arg 4 — medium for the cheap first pass, escalated to high/xhigh when the
+# change proves hard or critical. Default medium when unset (a bounded review doesn't need a
+# user's ambient xhigh, which burns 10k+ thinking tokens with no streaming — one feat cost
+# ~700k tokens). PRECEDENCE: an explicit CAMUS_CODEX_ARGS (user) wins over everything, else the
+# per-call arg-4 effort, else medium. The override only affects CAMUS's review effort (it can
+# lower OR raise it, e.g. force xhigh) — the user's interactive codex config is untouched.
+#   export CAMUS_CODEX_ARGS="-c model_reasoning_effort=xhigh"    # force a constant effort
+# (word-splitting is intentional: the var carries whole extra CLI args.)
+effort="${4:-medium}"
+codex_review_args="${CAMUS_CODEX_ARGS:--c model_reasoning_effort=$effort}"
 # shellcheck disable=SC2086
-raw="$(codex exec -s read-only ${CAMUS_CODEX_ARGS:-} --output-schema "$schema" "$prompt" </dev/null 2>/tmp/camus_codex_err.log)"
+raw="$(codex exec -s read-only ${codex_review_args} --output-schema "$schema" "$prompt" </dev/null 2>/tmp/camus_codex_err.log)"
 status=$?
 
 # AUDIT ARTIFACT: persist Codex's raw response + metadata per review round so each review is provable

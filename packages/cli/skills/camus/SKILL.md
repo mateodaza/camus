@@ -137,8 +137,15 @@ Defaults: `ROUND_CAP = 3`.
 - **Review input completeness**: `codex_review.sh` intent-to-adds (`git add -N`) the worktree
   before reviewing, so NEW files appear in the diff Codex reads (run feedback 2026-06-10: a
   task built mostly of new files was near-invisible to plain `git diff`). It also forces
-  `</dev/null` on the codex call (an open stdin made codex block and return empty verdicts)
-  and honors `CAMUS_CODEX_ARGS` for per-run pins like `-c model_reasoning_effort=medium`.
+  `</dev/null` on the codex call (an open stdin made codex block and return empty verdicts).
+- **Dynamic review reasoning effort** (run feedback 2026-06-11): review is the gate, so codex's
+  effort scales with stakes instead of a blunt constant (a user's ambient `xhigh` burns 10k+
+  thinking tokens with no streaming → one feat cost ~700k tokens). The orchestrator picks per
+  round: `medium` for the cheap first pass (most reviews are simple → ~3× faster), `high` when
+  the change is hard (complex tier, or a prior round didn't clear), `xhigh` when CRITICAL (a P0
+  surfaced) — mirroring the model-escalation signals, and visible in the run log. Only camus's
+  own review effort moves; interactive codex is untouched. Force a constant effort with
+  `export CAMUS_CODEX_ARGS="-c model_reasoning_effort=xhigh"` (it wins over the dynamic pick).
 
 ## Retry idiom (after fixing a gate/env failure)
 

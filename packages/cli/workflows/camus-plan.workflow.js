@@ -256,6 +256,7 @@ log(`Decomposed into ${plan.tasks.length} task(s). Critiquing…`)
 // ── Phase 5: CRITIQUE — adversarial review of the plan, bounded refine loop ──
 phase('Critique')
 let critique = null
+let critiqueInfra = false   // the critic produced nothing — plan is UNVERIFIED, never "clean"
 for (let round = 1; round <= CRITIQUE_CAP; round++) {
   // Fresh reviewer each round (independence), judging by the SAME standards as Decompose.
   critique = await agent(
@@ -270,8 +271,21 @@ Flag every task that violates a standard (oversized, ambiguous/under-specified s
 ordering, or a missing step). verdict="ready" ONLY if every task meets the bar. Be specific: name the taskIndex and the fix.`,
     { model: THINK, phase: 'Critique', label: `critique:r${round}`, schema: CRITIQUE_SCHEMA }
   )
-  if (!critique || critique.verdict === 'ready' || !(critique.issues || []).length) {
-    log(`Critique round ${round}/${CRITIQUE_CAP}: ${critique && critique.verdict === 'ready' ? 'READY' : 'no blocking issues'}${critique && critique.score != null ? ` (score ${critique.score})` : ''}.`)
+  if (!critique) {
+    // INFRA: the critic returned nothing. NOT a clean verdict — never claim a verified-clean plan
+    // off a failed critique (the gate's own infra≠findings discipline). Surfaced as a caveat below.
+    critiqueInfra = true
+    log(`Critique round ${round}/${CRITIQUE_CAP}: critic returned nothing (infra) — plan NOT verified clean.`)
+    break
+  }
+  if (critique.verdict === 'ready') {
+    log(`Critique round ${round}/${CRITIQUE_CAP}: READY${critique.score != null ? ` (score ${critique.score})` : ''}.`)
+    break
+  }
+  // verdict is needs_revision. Empty issues = a MALFORMED verdict (says revise, names nothing) —
+  // can't revise on it and can't trust it as clean; surface it as a caveat rather than pass it as ready.
+  if (!(critique.issues || []).length) {
+    log(`Critique round ${round}/${CRITIQUE_CAP}: needs_revision but NO issues listed (malformed) — surfacing as a caveat.`)
     break
   }
   log(`Critique round ${round}/${CRITIQUE_CAP}: ${critique.issues.length} issue(s) — revising.`)
@@ -286,7 +300,20 @@ ${STANDARDS}`,
   )
   if (revised) plan = revised
 }
-const remainingIssues = (critique && critique.verdict !== 'ready') ? (critique.issues || []) : []
+// Caveats, computed honestly. A "ready" verdict ⇒ none. An infra/malformed critique ⇒ the plan was
+// NOT verified clean ⇒ emit a SYNTHETIC issue so the result is planned_with_caveats — never a silent
+// clean "planned" off a critique that did not actually run (the gate's infra≠clean rule, applied here).
+let remainingIssues = []
+if (critiqueInfra || !critique) {
+  remainingIssues = [{ taskIndex: -1, severity: 'major',
+    problem: 'Plan critique did not run (critic returned nothing) — the plan was NOT checked against the camus standards.',
+    fix: 'Re-run camus-plan, or review the plan manually before trusting it.' }]
+} else if (critique.verdict !== 'ready') {
+  remainingIssues = (critique.issues || []).length ? critique.issues
+    : [{ taskIndex: -1, severity: 'major',
+        problem: 'Critic returned needs_revision but listed no issues (malformed verdict) — plan quality unverified.',
+        fix: 'Re-run camus-plan, or review the plan manually before trusting it.' }]
+}
 
 // ── Phase 6: EMIT — write the plan (camus-feat args + readable .md) ───────────
 phase('Emit')
@@ -339,7 +366,7 @@ const md = [
   '```',
 ].filter((x) => x !== '').join('\n')
 
-await agent(
+const emitRes = await agent(
   `Persist the Camus plan. Create directory ~/.camus/plans if missing, then write these TWO files EXACTLY (verbatim, byte-for-byte — do not reformat):
 
 1) ${PLAN_JSON} :
@@ -351,6 +378,12 @@ ${md}
 Return {written:true} once both files are on disk.`,
   { model: MODEL_RUNNER, phase: 'Emit', label: 'emit', schema: WRITTEN_SCHEMA }
 )
+// The plan files ARE the deliverable — a failed write must FAIL LOUD, not return "planned" with
+// nothing on disk (Codex audit 2026-06-11). Never trust the write happened without confirmation.
+if (!emitRes || emitRes.written !== true) {
+  return { status: 'aborted', stage: 'emit', request: REQUEST, planId: PLAN_ID,
+    note: `Plan files were NOT written to ${PLAN_JSON} (writer returned ${emitRes ? 'written:false' : 'nothing'}). The plan is the deliverable and nothing was saved — re-run camus-plan.` }
+}
 
 log(`Plan written → ${PLAN_JSON} (${plan.tasks.length} task(s)${remainingIssues.length ? `, ${remainingIssues.length} open critique issue(s)` : ''}).`)
 return {

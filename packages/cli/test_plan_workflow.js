@@ -135,6 +135,36 @@ const emitOk = { emit: { written: true } }
     ok('P7 no revise on the FINAL round (no void revision)', calls.filter((c) => c.startsWith('revise')).length === 1)
   }
 
+  // P10 (Codex audit 2026-06-11): a critic that returns NOTHING (infra) must NOT pass as a clean
+  // plan — the gate's own infra≠clean rule, applied to the planner.
+  {
+    const { res } = await run({ request: 'crit dies' },
+      { ...ground, ...clear, ...arch, ...decompose, critique: null, ...emitOk })
+    ok('P10 null critique → planned_with_caveats (NOT a clean planned)', res.status === 'planned_with_caveats', res.status)
+    ok('P10 synthetic infra issue surfaced', Array.isArray(res.remainingIssues) && res.remainingIssues.length === 1
+      && /did not run/.test(res.remainingIssues[0].problem || ''))
+  }
+  // P11: verdict needs_revision but EMPTY issues (malformed) → caveats, not a silent clean planned.
+  {
+    const malformed = { critique: { verdict: 'needs_revision', score: 50, issues: [] } }
+    const { res } = await run({ request: 'malformed crit' },
+      { ...ground, ...clear, ...arch, ...decompose, ...malformed, ...emitOk })
+    ok('P11 needs_revision + empty issues → planned_with_caveats', res.status === 'planned_with_caveats', res.status)
+    ok('P11 malformed-verdict caveat surfaced', res.remainingIssues.length === 1 && /malformed/.test(res.remainingIssues[0].problem || ''))
+  }
+  // P12: the plan files ARE the deliverable — a failed write must FAIL LOUD (aborted/stage:emit),
+  // not return "planned" with nothing on disk.
+  {
+    const { res } = await run({ request: 'write fails' },
+      { ...ground, ...clear, ...arch, ...decompose, ...critiqueReady, emit: { written: false } })
+    ok('P12 emit written:false → aborted/emit', res.status === 'aborted' && res.stage === 'emit', res.status + '/' + res.stage)
+  }
+  {
+    const { res } = await run({ request: 'write null' },
+      { ...ground, ...clear, ...arch, ...decompose, ...critiqueReady, emit: null })
+    ok('P12 emit null → aborted/emit', res.status === 'aborted' && res.stage === 'emit', res.status + '/' + res.stage)
+  }
+
   // P8: the emit prompt embeds the runnable camus-feat command + the readable plan.
   {
     const { emit } = await run({ request: 'embed check' },
