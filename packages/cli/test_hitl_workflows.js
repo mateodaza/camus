@@ -718,6 +718,43 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F23b resume: dwf is TERMINAL for camus (skipped, never re-litigated)', r2.workflowCalls === 0 && r2.res && r2.res.status === 'done_with_findings', r2.res && r2.res.status)
     const r3 = await runFeat({ feat: 'F', tasks: ['only task'] }, featResume, [])
     ok('F23c resolved posture carries from prior state (no re-recommendation)', r3.res && r3.res.posture === 'oneshot' && !r3.calls.includes('posture-rec'), r3.res && r3.res.posture)
+    ok('F23d merged list includes the dwf branch (audit P3)', Array.isArray(r1.res.merged) && r1.res.merged.length === 1 && /only-task/.test(r1.res.merged[0]), JSON.stringify(r1.res && r1.res.merged))
+  }
+  // F24 (audit P1 2026-06-11, the F14-style crash window for done_with_findings): the proof
+  // persist carries the loop's REAL verdict, and BOTH resume lanes — auto-land and the
+  // prior-merge-commit evidence path — restore it. Land mode only ever says plain done; without
+  // the stash+restore, a death in the commit→merge window LAUNDERS review debt into done.
+  {
+    const finding = { priority: 1, title: 'laundered?', code_location: 'c.ts:3' }
+    // (a) live run: the ready_to_merge MID-persist already carries provenStatus + findings.
+    const r1 = await runFeat({ feat: 'F', tasks: ['only task'], posture: 'oneshot' }, featBase,
+      [{ status: 'done_with_findings', branch: 'camus/feat/x/only', decisions: [{ what: 'W', why: 'Y' }], findings: [finding], findingsDeferred: 1, resolution: 'fixed_unreviewed', commit_sha: 'c1' }])
+    const mid = (r1.stateJSONs || [])
+      .find((s) => s && s.tasks && s.tasks[0] && s.tasks[0].status === 'ready_to_merge')
+    ok('F24a proof persist stashes provenStatus + findings BEFORE the merge',
+      !!mid && mid.tasks[0].provenStatus === 'done_with_findings' && mid.tasks[0].findingsDeferred === 1 && JSON.stringify(mid.tasks[0].deferredFindings).includes('laundered'),
+      mid && JSON.stringify(mid.tasks[0]))
+    // (b) crash BEFORE the merge → resume auto-lands (land returns plain done) → verdict restored.
+    const tid = taskIdOf('F', ['only task'], 'only task')
+    const prior = JSON.parse(JSON.stringify(r1.stateJSON))
+    prior.status = 'running'
+    prior.tasks[0] = { ...prior.tasks[0], status: 'ready_to_merge', provenStatus: 'done_with_findings', findingsDeferred: 1, deferredFindings: [finding], decisions: [{ what: 'W', why: 'Y' }] }
+    const featResume = { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(prior) } }
+    const r2 = await runFeat({ feat: 'F', tasks: ['only task'], posture: 'oneshot' }, featResume,
+      [{ status: 'done', branch: 'camus/feat/x/only', commit_sha: 'land1', landed: true, decisions: [] }])
+    ok('F24b auto-land restores done_with_findings (never laundered to done)',
+      !!r2.stateJSON && r2.stateJSON.tasks[0].status === 'done_with_findings' && r2.res && r2.res.status === 'done_with_findings',
+      r2.stateJSON && r2.stateJSON.tasks[0].status + '/' + (r2.res && r2.res.status))
+    ok('F24b findings + decisions survive the land (empty land decisions do not clobber)',
+      !!r2.stateJSON && r2.stateJSON.tasks[0].findingsDeferred === 1 && JSON.stringify(r2.res.deferredFindings || []).includes('laundered') && r2.stateJSON.tasks[0].decisions.length === 1,
+      r2.stateJSON && JSON.stringify(r2.stateJSON.tasks[0]))
+    // (c) crash AFTER the merge → already-up-to-date + prior-merge-commit evidence → same restore.
+    const r3 = await runFeat({ feat: 'F', tasks: ['only task'], posture: 'oneshot' },
+      { ...featResume, merge: { merged: true, committed: false, alreadyUpToDate: true, priorMergeCommit: 'deadbeef', before: 'aaa', after: 'aaa' } },
+      [{ status: 'done', branch: 'camus/feat/x/only', commit_sha: 'land1', landed: true, decisions: [] }])
+    ok('F24c prior-merge evidence path restores done_with_findings too',
+      !!r3.stateJSON && r3.stateJSON.tasks[0].status === 'done_with_findings' && r3.res && r3.res.status === 'done_with_findings',
+      r3.stateJSON && r3.stateJSON.tasks[0].status + '/' + (r3.res && r3.res.status))
   }
 
   // F18c (audit P2 2026-06-11): the FINAL task's spend must hit the ceiling too — recheck after

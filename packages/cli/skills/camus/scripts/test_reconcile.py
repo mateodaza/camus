@@ -138,6 +138,31 @@ def test_happy_path_marks_done_appends_decision_feat_integration_pending():
         assert "reconciled %s" % TASK in out
 
 
+def test_mixed_done_with_findings_reaches_integration_pending():
+    # Audit P2 follow-up #2 (2026-06-11): dwf is COMPLETE, terminal-for-camus work — reconciling
+    # the last open task beside it must flip the feat to integration_pending, not leave a
+    # falsely-live "running" (steerable, heartbeat-warning-prone) state.
+    with tempfile.TemporaryDirectory() as root:
+        dwf = _task("oneshot-task-dd44ee", status="done_with_findings")
+        w = _world(root, tasks=[_task(TASK), dwf])
+        rc, out, _ = _run(w, [TASK, "--commit", w["feat_sha"], "--repo", w["repo"]])
+        assert rc == 0
+        s = _state(w["state_path"])
+        assert s["status"] == "integration_pending"
+        assert "integration verify" in out
+
+
+def test_done_with_findings_feat_is_not_downgraded():
+    # dwf is TERMINAL: integration already ran green under its posture — reconciling a task in
+    # it (an audit-trail touch-up) must not regress the feat to integration_pending.
+    with tempfile.TemporaryDirectory() as root:
+        w = _world(root, status="done_with_findings")
+        rc, out, _ = _run(w, [TASK, "--commit", w["feat_sha"], "--repo", w["repo"]])
+        assert rc == 0
+        assert _state(w["state_path"])["status"] == "done_with_findings"
+        assert "left untouched" in out
+
+
 def test_already_done_feat_is_not_downgraded():
     # A feat that ALREADY passed integration stays "done" — reconciling one of its tasks (an
     # audit-trail touch-up) must not regress it to integration_pending.

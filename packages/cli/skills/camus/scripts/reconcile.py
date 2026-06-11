@@ -154,7 +154,10 @@ def apply_reconcile(state, task, sha):
     lines = ["  status %s → done · loopStatus → reconciled_by_human · evidence %s" % (was, sha),
              "  decision appended (audit trail): %s" % task["decisions"][-1]["what"]]
     tasks = [t for t in state.get("tasks", []) if isinstance(t, dict)]
-    if all(t.get("status") in ("done", "noop") for t in tasks):
+    # done_with_findings counts as COMPLETE (audit P2 follow-up #2, 2026-06-11): it is merged,
+    # terminal-for-camus work — a mixed dwf+reconciled feat must reach integration_pending, not
+    # stay falsely "running" (unsteerable-yet-steerable, heartbeat-warning-prone).
+    if all(t.get("status") in ("done", "noop", "done_with_findings") for t in tasks):
         # NEVER set the feat itself "done" here (audit P1 2026-06-11): in camus-feat, a final
         # "done" MEANS env re-check + integration verify passed on the merged branch — a human
         # commit is task evidence, not integration proof. And leaving the PRIOR status (audit P2
@@ -164,7 +167,9 @@ def apply_reconcile(state, task, sha):
         # truth — steer refuses it, resume-scan won't auto-resume it, status hints the re-run —
         # and the deliberate human re-run (done tasks skip) earns "done" via integration verify.
         feat_was = state.get("status", "?")
-        if feat_was not in ("done", "done_with_noops"):
+        # done_with_findings is TERMINAL (integration already ran green under its posture) —
+        # downgrading it to integration_pending would re-demand proof the feat already has.
+        if feat_was not in ("done", "done_with_noops", "done_with_findings"):
             state["status"] = "integration_pending"
             lines.append("  every task is now done/noop — feat status %s → integration_pending: "
                          "integration verify has NOT run on the merged branch" % feat_was)

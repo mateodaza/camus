@@ -369,7 +369,7 @@ async function finalize(status, extra = {}) {
     // Feat-level rollup of every decision the loop logged across tasks — the human's merge-time
     // audit trail ("what did the agent decide that I should sanity-check before merging?").
     decisions: state.tasks.flatMap((t) => (t.decisions || []).map((d) => ({ taskId: t.taskId, ...d }))),
-    merged: state.tasks.filter((t) => t.status === 'done').map((t) => t.branch),
+    merged: state.tasks.filter((t) => t.status === 'done' || t.status === 'done_with_findings').map((t) => t.branch),   // dwf IS merged work (audit P3)
     featBranchToReview: featBranch,
     ...extra,
   }
@@ -427,7 +427,15 @@ if (prior && Array.isArray(prior.tasks)) {
   for (const node of state.tasks) {
     const p = priorById.get(node.taskId)
     if (p && p.status === 'needs_decision') PROVEN_DECISION.add(node.taskId)
-    if (p && p.status === 'ready_to_merge') PROVEN_READY.add(node.taskId)
+    if (p && p.status === 'ready_to_merge') {
+      PROVEN_READY.add(node.taskId)
+      // Carry the crash-window stash (audit P1 2026-06-11) so the post-auto-land status can be
+      // restored to the loop's REAL verdict — land mode itself only ever says plain done.
+      if (p.provenStatus) node.provenStatus = p.provenStatus
+      if (p.findingsDeferred != null) node.findingsDeferred = p.findingsDeferred
+      if (Array.isArray(p.deferredFindings)) node.deferredFindings = p.deferredFindings
+      if (Array.isArray(p.decisions) && p.decisions.length) node.decisions = p.decisions
+    }
     if (p && (p.status === 'done' || p.status === 'noop' || p.status === 'done_with_findings')) {
       // done_with_findings is TERMINAL for camus (the posture's contract: the loop never
       // re-litigates the deferred findings) — carried exactly like done, findings included.
@@ -774,6 +782,19 @@ Return {written:true} once that file is on disk with exactly that content.`,
   // commit→merge window resumes by LANDING mechanically (auto-land below) instead of re-running
   // the full loop — which would re-enter review AND collide on the existing branch/worktree.
   node.status = 'ready_to_merge'
+  // CRASH-WINDOW DEBT CARRY (audit P1 2026-06-11): the loop's VERDICT — oneshot's
+  // fixed-unreviewed findings, and its decisions — must ride in the same proof persist.
+  // Auto-land re-runs the loop in land mode, which can only ever say plain `done` (it never
+  // re-reviews); without this stash, a death between this persist and the post-merge one would
+  // LAUNDER review debt into a clean-looking done on resume.
+  // A LANDED result is mechanical (commit→verify only) — it must never overwrite the verdict
+  // the original run stashed here; only a real loop run owns provenStatus.
+  if (!res.landed) node.provenStatus = res.status
+  if (res.status === 'done_with_findings') {
+    node.findingsDeferred = res.findingsDeferred || (Array.isArray(res.findings) ? res.findings.length : 0)
+    if (Array.isArray(res.findings)) node.deferredFindings = res.findings
+  }
+  if (Array.isArray(res.decisions) && res.decisions.length) node.decisions = res.decisions
   await persistState('Tasks')
 
   // Merge the loop's reported branch (cross-check against our deterministic one).
@@ -858,10 +879,15 @@ Return {merged, committed, alreadyUpToDate, priorMergeCommit, before, after, con
     // present → done; explicitly empty (''/null — the check RAN, found nothing) → no-op guard.
     const priorMerge = mg.alreadyUpToDate === true && typeof mg.priorMergeCommit === 'string' && mg.priorMergeCommit.trim()
     if (priorMerge) {
-      node.status = 'done'
-      node.decisions = Array.isArray(res.decisions) ? res.decisions : []
+      // Crash-AFTER-merge variant of the same window (audit P1): the proof persist's
+      // provenStatus is the loop's real verdict — restore it here too, or this evidence path
+      // launders done_with_findings exactly like a plain land would.
+      node.status = (node.provenStatus === 'done_with_findings') ? 'done_with_findings' : 'done'
+      if (!(Array.isArray(node.decisions) && node.decisions.length && !(Array.isArray(res.decisions) && res.decisions.length))) {
+        node.decisions = Array.isArray(res.decisions) ? res.decisions : []
+      }
       await persistState('Tasks')
-      note(`✓ Task ${n} was ALREADY merged into ${featBranch} by a prior run that died before recording it (merge commit ${String(priorMerge).slice(0, 8)}) → recorded as DONE, resuming.`)
+      note(`${node.status === 'done_with_findings' ? '◈' : '✓'} Task ${n} was ALREADY merged into ${featBranch} by a prior run that died before recording it (merge commit ${String(priorMerge).slice(0, 8)}) → recorded as ${node.status.toUpperCase()}, resuming.`)
       await removeTaskWorktree(node, res.worktree, n)   // merged — checkout no longer needed
       continue
     }
@@ -872,12 +898,20 @@ Return {merged, committed, alreadyUpToDate, priorMergeCommit, before, after, con
     await removeTaskWorktree(node, res.worktree, n)   // branch merged/empty — checkout no longer needed
     continue
   }
-  node.status = res.status   // 'done', or 'done_with_findings' under oneshot (◈ on the board)
-  if (res.status === 'done_with_findings') {
-    node.findingsDeferred = res.findingsDeferred || (Array.isArray(res.findings) ? res.findings.length : 0)
-    if (Array.isArray(res.findings)) node.deferredFindings = res.findings   // verbatim, for the report
+  // Final status: the loop's verdict — except on a LANDED resume, where land mode only knows
+  // `done` and the truth lives in the proof persist's provenStatus (audit P1: never let a
+  // mechanical land launder done_with_findings into done).
+  const finalStatus = (res.landed && (node.provenStatus === 'done' || node.provenStatus === 'done_with_findings'))
+    ? node.provenStatus : res.status
+  node.status = finalStatus   // 'done', or 'done_with_findings' under oneshot (◈ on the board)
+  if (finalStatus === 'done_with_findings' && Array.isArray(res.findings)) {
+    node.findingsDeferred = res.findingsDeferred || res.findings.length
+    node.deferredFindings = res.findings   // verbatim, for the report (live path; resume carries its own)
   }
-  node.decisions = Array.isArray(res.decisions) ? res.decisions : []   // audit trail for merge review
+  // Land returns decisions: [] — keep the crash-carried decisions rather than clobbering them.
+  if (!(res.landed && Array.isArray(node.decisions) && node.decisions.length && !(Array.isArray(res.decisions) && res.decisions.length))) {
+    node.decisions = Array.isArray(res.decisions) ? res.decisions : []   // audit trail for merge review
+  }
   // OPTIONAL loop telemetry (shared contract with camus-loop; all may be absent). Surfaced
   // in the report + log line so the human sees which tier/model ran the task and how many
   // implement↔review rounds it took, without inventing UI.
