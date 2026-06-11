@@ -451,6 +451,56 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('S20 plan prompt escalates product tradeoffs to ambiguous', !!prompts.plan && /USER-VISIBLE product tradeoff/.test(prompts.plan))
   }
 
+  // S22 (watchdog reviewer, 2026-06-11): a review outliving its first chunk returns
+  // {pending, handle}; the loop re-attaches with thin `await` calls until the verdict lands.
+  // Handles travel through agent stdout → validated against OUR layout before any exec.
+  {
+    const handle = `/home/u/.camus/reviews/${wtName('t')}-r1.watch`
+    let r22 = 0
+    const stubs = {
+      ...clsStd, ...planOf('clear', ''), implement: happyTail.implement, ...cleanVerify,
+      commit: J({ committed: true, sha: 'abc123' }),
+      review: () => { r22++; return r22 <= 2 ? J({ pending: true, handle, last_event_age: 12 }) : J({ ran: true, clean: true, blocking: [], nonblocking: [] }) },
+    }
+    const { res, calls, prompts } = await runLoop({ task: 't' }, stubs)
+    ok('S22 pending → re-attach → clean verdict → done', res.status === 'done', res.status)
+    ok('S22 await calls labeled and bounded', calls.some((c) => /await1$/.test(c)) && calls.some((c) => /await2$/.test(c)) && !calls.some((c) => /await3$/.test(c)), calls.join(','))
+    const awaitP = prompts[calls.find((c) => /await1$/.test(c))] || ''
+    ok('S22 await is a thin re-attach command with the handle', awaitP.includes(`await ${JSON.stringify(handle)}`) && awaitP.includes('timeout PARAMETER to 600000'))
+  }
+  {
+    // a hallucinated/foreign handle is INFRA fail-closed — never interpolated into a command.
+    const evil = { ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+      review: J({ pending: true, handle: '/tmp/evil"; rm -rf /; "' }) }
+    const { res, calls } = await runLoop({ task: 't', roundCap: 1 }, evil)
+    ok('S22b bad handle → infra, no await dispatched', res.status === 'infra_error' && !calls.some((c) => /await1$/.test(c)), res.status + ' ' + calls.join(','))
+  }
+  {
+    // alive past the WHOLE watch budget → abort the detached process, round becomes infra.
+    const handle = `/home/u/.camus/reviews/${wtName('t')}-r1.watch`
+    const stubs = {
+      ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+      review: J({ pending: true, handle, last_event_age: 3 }),
+      'review-abort': J({ ran: false, error: 'codex review aborted (watch budget exhausted)', clean: false, blocking: [], nonblocking: [] }),
+    }
+    const { res, calls } = await runLoop({ task: 't', roundCap: 1 }, stubs)
+    ok('S22c watch budget exhausted → abort called, infra surfaced', res.status === 'infra_error' && calls.filter((c) => c.startsWith('review-abort')).length >= 1, res.status + ' aborts=' + calls.filter((c) => c.startsWith('review-abort')).length)
+    ok('S22c exactly AWAIT_CAP awaits per attempt', calls.filter((c) => / await\d+$/.test(c)).length === 6 * 3, String(calls.filter((c) => / await\d+$/.test(c)).length))
+  }
+  {
+    // codex-side usage from the watchdog surfaces in the round log (honest cost, log-only).
+    const logs = []
+    const fs2 = require('fs'); const path2 = require('path')
+    const src = fs2.readFileSync(LOOP, 'utf8').replace(/^export\s+const\s+meta/m, 'const meta')
+    const fn = new (Object.getPrototypeOf(async function () {}).constructor)('args', 'agent', 'phase', 'log', 'workflow', 'budget', src)
+    const calls2 = []
+    await fn({ task: 't' }, makeAgent({ ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+      review: J({ ran: true, clean: true, blocking: [], nonblocking: [], usage: { input_tokens: 15655, output_tokens: 900, reasoning_output_tokens: 4000 } }),
+      commit: J({ committed: true, sha: 'abc123' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [] }) }, calls2),
+      () => {}, (m) => logs.push(m), async () => { throw new Error('no workflow') }, undefined)
+    ok('S22d codex usage in the clean-round log', logs.some((m) => /codex ~16k in\/900 out \(4000 reasoning\)/.test(m)), logs.filter((m) => /CLEAN/.test(m)).join(' | '))
+  }
+
   // S7: worktree path contract (2026-06-10) — centralized out-of-tree home + fail-closed validation.
   {
     const { res, prompts } = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail })

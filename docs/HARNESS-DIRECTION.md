@@ -119,13 +119,18 @@ now mostly resolved). Operational copies live in auto-memory; this section is th
    friction that bites once becomes a deterministic check. Explicitly NO LLM "predict what could
    go wrong" preflight — speculation costs tokens every run and the r3 friction was 100%
    knowable from env facts, 0% guessable.
-3. **Watchdog reviewer (0.2.5 if capacity, else 0.2.6 — feeds build-list items 1 and 4).** The
-   Bash tool caps at 600000 ms by default (`BASH_MAX_TIMEOUT_MS` raises it) and an xhigh review
-   can outlive even a maxed param. Durable shape: `codex exec --json` via `run_in_background` +
-   Monitor — an **event-idle watchdog** (kill on N min of event SILENCE on `item.*` timestamps,
-   not wall-clock), `turn.completed` carries real token usage (honest codex-side cost line), and
-   `codex exec resume <id>` recovers a killed review without re-paying it. Event names confirmed
-   from docs + source.
+3. **Watchdog reviewer — BUILT 2026-06-11** (probed live on codex 0.137.0 first: `--json` +
+   `--output-schema` + `-o` compose; `turn.completed` carries usage). Shape as specced, with one
+   refinement: instead of `run_in_background`+Monitor, codex runs DETACHED (`review_watch.py`
+   start/await/abort — own session, wrapper-file exit codes, group kills) and the loop
+   re-attaches in bounded `await` chunks ({pending, handle} → up to AWAIT_CAP=6 thin calls →
+   abort). Same effect, fully offline-testable: total review time unbounded by any tool call,
+   liveness = event-stream silence (default 360s, `CAMUS_REVIEW_IDLE_S`), honest codex usage in
+   the gate JSON + round logs. Handles are validated against the deterministic layout before
+   exec (F3 discipline). Follow-up still open: `codex exec resume <id>` to recover a killed
+   review without re-paying it. Probe side-finding: this machine's codex config carries
+   Notion+Figma MCPs that FAIL AUTH on every exec (startup noise + ~15k input-token baseline
+   per call) — user config, not camus; disabling them is a free review speedup.
 4. **Belt options (doc-check hook shape before building):** `BASH_DEFAULT/MAX_TIMEOUT_MS` via the
    settings env block `merge_settings.py` already manages; a PreToolUse `updatedInput` hook
    enforcing a floor timeout scoped to `codex_review.sh` commands (current docs say PreToolUse

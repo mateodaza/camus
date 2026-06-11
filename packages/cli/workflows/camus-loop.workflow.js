@@ -21,6 +21,12 @@ const ROUND_CAP = (() => {
   return (Number.isInteger(v) && v >= 1 && v <= 10) ? v : 3
 })()
 const INFRA_RETRIES = 2          // extra reviewer attempts when ran:false (total 3 tries)
+// WATCHDOG RE-ATTACH BUDGET (2026-06-11): a review that outlives its first chunk returns
+// {pending, handle}; the loop re-attaches in bounded `await` chunks (~5-8 min each), so total
+// review time is unbounded by any single tool call. 6 chunks ≈ 40+ min of live, event-emitting
+// review — past that we abort the process rather than wait forever (idle deaths are killed
+// SCRIPT-side much earlier; this cap only catches alive-but-endless).
+const AWAIT_CAP = 6
 const TOKEN_TARGET_K = 12        // soft per-agent token target; runtime agent caps are the real backstop
 
 // Model routing. A cheap CLASSIFY pass (Phase 0) picks the THINK model by task tier, so a
@@ -482,6 +488,36 @@ Output the command's stdout VERBATIM as your entire reply — nothing before or 
 fences, no commentary. It is already JSON.`
 }
 
+// WATCHDOG plumbing (2026-06-11): codex now runs DETACHED (codex_review.sh start+await) and a
+// long review comes back as {pending:true, handle:"<watch dir>"} — the loop re-attaches with
+// thin `await` calls until a verdict lands or the budget runs out. The handle travels through
+// an agent's stdout, so it is validated against OUR deterministic layout before it is ever
+// interpolated into a command (audit F3 discipline: never cd/exec an unvalidated agent path).
+const okHandle = (h, rnd) => typeof h === 'string' && h.includes('/.camus/reviews/')
+  && h.endsWith(`-r${rnd}.watch`) && !h.includes('..') && !h.includes('"') && !h.includes('\n')
+function awaitPrompt(handle) {
+  return `You are a THIN reviewer attendant. A Codex review is still RUNNING detached; your ONLY
+job is to re-attach and return the script's stdout. Do NOT interpret, summarize, or reformat.
+
+Run EXACTLY this one command:
+  ${HB_TOUCH}${REVIEW_CMD} await ${JSON.stringify(handle)}
+
+Set the Bash tool's timeout PARAMETER to 600000 for this call. Do NOT wrap the command in
+\`timeout\`/\`gtimeout\`.
+
+Output the command's stdout VERBATIM as your entire reply — nothing before or after, no code
+fences, no commentary. It is already JSON.`
+}
+function abortPrompt(handle) {
+  return `THIN runner. Run EXACTLY this one command and output its stdout VERBATIM (it is JSON);
+no fences, no commentary:
+  ${HB_TOUCH}${REVIEW_CMD} abort ${JSON.stringify(handle)}`
+}
+// Honest codex-side spend, when the watchdog captured turn.completed usage. Log-only.
+const usageSuffix = (g) => (g && g.usage && typeof g.usage === 'object')
+  ? ` · codex ~${Math.round(((g.usage.input_tokens || 0)) / 1000)}k in/${g.usage.output_tokens || 0} out${g.usage.reasoning_output_tokens ? ` (${g.usage.reasoning_output_tokens} reasoning)` : ''}`
+  : ''
+
 let round = 0
 let reviewPassed = false
 let lastBlocking = []
@@ -548,10 +584,34 @@ while (round < ROUND_CAP) {
     // Label surfaces the REAL reviewer (Codex + this round's effort), not just the thin Haiku
     // runner that shells out to it (run feedback 2026-06-11: the TUI only showed Haiku, hiding
     // that the review is cross-vendor Codex at a dynamic effort).
-    const raw = await agent(reviewerPrompt(attempt), {
+    let raw = await agent(reviewerPrompt(attempt), {
       model: MODEL_RUNNER, phase: 'Review',
       label: `review:r${round} codex·${currentEffort}${attempt > 1 ? ` retry${attempt}` : ''}`,
     })
+    // WATCHDOG RE-ATTACH (2026-06-11): a long review outlives its first chunk and returns
+    // {pending, handle} — keep re-attaching while codex is alive and talking. Each await is a
+    // small, bounded call (the script kills on event-silence internally), so review depth is no
+    // longer capped by any tool timeout. A bad/foreign handle is INFRA, fail closed.
+    let pend = extractJsonObject(raw)
+    let awaits = 0
+    while (pend && pend.pending === true && awaits < AWAIT_CAP) {
+      if (!okHandle(pend.handle, round)) { raw = null; pend = null; break }
+      awaits++
+      log(`Round ${round}/${ROUND_CAP}: review still running (event ${pend.last_event_age != null ? pend.last_event_age + 's' : '?'} ago) — re-attaching (${awaits}/${AWAIT_CAP}).`)
+      raw = await agent(awaitPrompt(pend.handle), {
+        model: MODEL_RUNNER, phase: 'Review',
+        label: `review:r${round} codex·${currentEffort} await${awaits}`,
+      })
+      pend = extractJsonObject(raw)
+    }
+    if (pend && pend.pending === true) {
+      // Alive past the whole watch budget — abort the process (never leave a detached codex
+      // running unobserved) and let the infra path handle the round.
+      log(`Round ${round}/${ROUND_CAP}: review still running after ${AWAIT_CAP} re-attach chunks — aborting it (watch budget).`)
+      raw = okHandle(pend.handle, round)
+        ? await agent(abortPrompt(pend.handle), { model: MODEL_RUNNER, phase: 'Review', label: `review-abort:r${round}` })
+        : null
+    }
     gate = asGate(raw)
     if (gate.ran) break
     log(`Round ${round}/${ROUND_CAP}: reviewer infra failure (${gate.error}) — attempt ${attempt}/${INFRA_RETRIES + 1}.`)
@@ -566,7 +626,7 @@ while (round < ROUND_CAP) {
   // 3c: clean → done with review
   if (gate.clean === true) {
     reviewPassed = true
-    log(`Round ${round}/${ROUND_CAP} (review effort: ${currentEffort}): CLEAN (no priority≤2 findings)${tokSuffix()}.`)
+    log(`Round ${round}/${ROUND_CAP} (review effort: ${currentEffort}): CLEAN (no priority≤2 findings)${usageSuffix(gate)}${tokSuffix()}.`)
     break
   }
 
@@ -612,7 +672,7 @@ while (round < ROUND_CAP) {
     log(`Round ${round}/${ROUND_CAP}: ${lastBlocking.length} blocking finding(s) on the FINAL round — NOT dispatching a fix the loop cannot re-review; halting for the decision.`)
     break
   }
-  log(`Round ${round}/${ROUND_CAP} (review effort: ${currentEffort}): ${lastBlocking.length} blocking finding(s) — dispatching fix.`)
+  log(`Round ${round}/${ROUND_CAP} (review effort: ${currentEffort}): ${lastBlocking.length} blocking finding(s)${usageSuffix(gate)} — dispatching fix.`)
   // Escalate the FIX model if the cheap model is failing: round>=2 (first fix didn't clear review)
   // OR a priority-0 blocking finding is present. Monotonic, deterministic.
   if (!escalationFired && (round >= 2 || lastBlocking.some(b => b && b.priority === 0))) {

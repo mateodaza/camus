@@ -29,14 +29,20 @@ echo "new content" > "$WT/tracked.txt"
 echo "brand new module" > "$WT/newfile.ts"
 echo "junk" > "$WT/ignoredfile.txt"
 
-# fake codex: records the diff AS THE REVIEWER WOULD SEE IT (cwd = worktree), argv, stdin size
+# fake codex: records the diff AS THE REVIEWER WOULD SEE IT (cwd = worktree), argv, stdin size.
+# WATCHDOG CONTRACT (2026-06-11): real codex now runs detached with --json, so the verdict
+# travels via `-o <file>` (stdout is the event stream) — the spy honors -o and emits one
+# turn.completed event so usage extraction is exercised end-to-end.
 SPY="$ROOT/spy"; mkdir -p "$SPY" "$ROOT/bin"
 cat > "$ROOT/bin/codex" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$@" > "$SPY/args"
 git diff --name-only > "$SPY/seen_diff" 2>/dev/null
 wc -c < /dev/stdin | tr -d ' ' > "$SPY/stdin_bytes"
-printf '{"findings": [], "overall_correctness": "patch is correct"}'
+out=""; prev=""
+for a in "\$@"; do [ "\$prev" = "-o" ] && out="\$a"; prev="\$a"; done
+[ -n "\$out" ] && printf '{"findings": [], "overall_correctness": "patch is correct"}' > "\$out"
+printf '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}\n'
 EOF
 chmod +x "$ROOT/bin/codex"
 
