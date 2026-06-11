@@ -32,8 +32,13 @@ ok()   { printf '%s\n' "  ${GRN}✓${RST} $1"; }
 bad()  { printf '%s\n' "  ${RED}✗${RST} $1"; }
 step() { printf '%s\n' "${CYN}→${RST} $1"; }
 
-# Ignore Python/pytest caches — they're build artifacts, not part of the gate.
-EXCL=(--exclude=__pycache__ --exclude=.pytest_cache --exclude='pytest-cache-files-*' --exclude='*.pyc')
+# Ignore Python/pytest caches AND the gate's own test files — dev artifacts of this repo, not
+# part of the frozen runtime gate. (2026-06-11: new test_*.py files in the repo false-drifted
+# --check into exit 1 + "STALE" against a perfectly in-sync install; the gate manifest is the
+# runtime scripts only, so tests are excluded from BOTH the check and the installed copy.)
+EXCL=(--exclude=__pycache__ --exclude=.pytest_cache --exclude='pytest-cache-files-*' --exclude='*.pyc'
+      --exclude=.benchmarks --exclude=.npmignore
+      --exclude='test_*.py' --exclude='test_*.sh' --exclude='conftest.py')
 
 check() {
   local drift=0
@@ -111,8 +116,10 @@ step "Installing the skill (a frozen COPY, not a symlink — runs never read liv
 mkdir -p "$HOME/.claude/skills" "$HOME/.claude/workflows"
 rm -rf "$SKILL_DST"
 cp -r "$SKILL_SRC" "$SKILL_DST"
-# prune copied caches so the installed gate is clean
-find "$SKILL_DST" -type d \( -name __pycache__ -o -name '.pytest_cache' -o -name 'pytest-cache-files-*' \) -prune -exec rm -rf {} + 2>/dev/null || true
+# prune copied caches AND test files so the installed gate is runtime-only (matches EXCL above —
+# whatever the check ignores must not ship, or a fresh install vs an old one would diff anyway)
+find "$SKILL_DST" -type d \( -name __pycache__ -o -name '.pytest_cache' -o -name 'pytest-cache-files-*' -o -name '.benchmarks' \) -prune -exec rm -rf {} + 2>/dev/null || true
+find "$SKILL_DST" -type f \( -name 'test_*.py' -o -name 'test_*.sh' -o -name 'conftest.py' -o -name '*.pyc' -o -name '.npmignore' \) -delete 2>/dev/null || true
 skill_files="$(find "$SKILL_DST" -type f | wc -l | tr -d ' ')"
 ok "skill ${BOLD}camus${RST} → $SKILL_DST ${DIM}($skill_files files: playbook, review rubric, gate scripts)${RST}"
 
