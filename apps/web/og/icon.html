@@ -1,0 +1,33 @@
+<!doctype html>
+<!-- Source for the icon set (favicon.ico, apple-touch-icon.png). Regenerate (from og/):
+     CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+     # ONE large master, then Pillow downscales — macOS headless Chrome clamps small
+     # windows (≤~300px renders blank or zoom-cropped), so never screenshot small.
+     "$CHROME" --headless --screenshot=/tmp/icon-800.png --window-size=800,800 \
+       --hide-scrollbars --virtual-time-budget=3000 "$PWD/icon.html"
+     python3 -c "from PIL import Image; R = Image.Resampling; \
+       big = Image.open('/tmp/icon-800.png').convert('RGB'); \
+       big.resize((180,180), R.LANCZOS).save('../public/apple-touch-icon.png'); \
+       big.resize((256,256), R.LANCZOS).save('../public/favicon.ico', sizes=[(16,16),(32,32),(48,48)])"
+     The mark is the navbar logo (SiteNav.tsx), full bleed: the ridge runs unbroken
+     to the top-right corner (2026-06-10 — the old peak left a white triangle above
+     it that read as noise when small; the solid corner closes the icon, no frame
+     needed). Also lives as the data-URI favicon in app/layout.tsx — keep in sync. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; }
+  html, body { width: 100vw; height: 100vh; overflow: hidden; }
+  body { background: #FFFFFF; }
+  svg { width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+  <svg viewBox="0 170 400 400" xmlns="http://www.w3.org/2000/svg">
+    <rect x="0" y="170" width="400" height="400" fill="#FFFFFF"/>
+    <polygon points="-24,456 40,520 416,144 416,600 -24,600" fill="#0A0A0A"/>
+    <circle cx="190" cy="307" r="50" fill="#0A0A0A"/>
+  </svg>
+</body>
+</html>

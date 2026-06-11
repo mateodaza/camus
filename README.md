@@ -72,11 +72,12 @@ silently marked done. Every `done` carries its `commit_sha`.
   `~/.camus/worktrees/<repo>-<id>/`, never inside or beside your project. Once a task's
   branch is merged into the feat branch its worktree is removed (the branch is kept
   for audit); failed or paused tasks keep theirs for inspection.
-- **You can watch it — and grab the wheel.** `camus status` is a live, read-only
-  dashboard from any terminal: per-task board, the last 10 steps, recent review
-  rounds, tokens. `camus steer "<guidance>"` redirects the next task,
-  `camus steer --pause` halts gracefully at the next task boundary (resumable) —
-  notes are consumed once, at the run's safe redirect points.
+- **You can watch it — and grab the wheel.** `camus watch` is a live terminal
+  dashboard: per-task board, the last 10 steps, review rounds, and tokens,
+  auto-refreshing, with one-key steering — `p` pauses at the next task boundary
+  (resumable), `g` steers the next task, `c` clears a pending note. `camus status`
+  is the one-shot version; `camus steer "<guidance>"` scripts the same notes.
+  Notes are consumed once, at the run's safe redirect points.
 
 ## Layout
 

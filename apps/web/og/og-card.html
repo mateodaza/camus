@@ -1,0 +1,196 @@
+<!doctype html>
+<!-- Source for public/og.png (1200×630 social card). Regenerate with:
+     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+       --headless --screenshot=../public/og.png --window-size=1200,630 \
+       --hide-scrollbars --virtual-time-budget=8000 og-card.html
+     Mirrors the landing exactly: same palette (:root in globals.css), same faces
+     (EB Garamond / Archivo / JetBrains Mono), the hero lockup (Slope mark + serif
+     wordmark), the red CTA chip, and "the glare" cover study inlined on the right
+     (inlined so the card has no external asset dependency besides fonts). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400;1,500&family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=block" rel="stylesheet">
+<style>
+  :root {
+    /* the landing's palette (globals.css) */
+    --ink: #0A0A0A;
+    --paper: #FFFFFF;
+    --red: #E8584F;
+    --muted: #585858;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  /* The page scrolls normally so a human can inspect the whole card in any window;
+     only .card is fixed at 1200×630 (the headless screenshot crops to exactly that). */
+  body { background: #ddd; font-family: 'EB Garamond', Georgia, serif; }
+  .card { position: relative; width: 1200px; height: 630px; overflow: hidden; background: var(--paper); }
+
+  /* The cover panel: the-glare (400×600) at full card height, flush right. */
+  .cover { position: absolute; right: 0; top: 0; width: 420px; height: 630px; }
+  .cover svg { width: 420px; height: 630px; display: block; }
+
+  .col { position: absolute; left: 84px; top: 0; height: 100%; width: 660px; }
+
+  /* The navbar lockup (SiteNav .brand): the-climb mark + serif wordmark, scaled up.
+     Baseline-aligned optically: the mark's flat base sits ON the text baseline
+     (flex-end + a margin matching the 56px Garamond descender, ≈0.21em). */
+  .lockup { position: absolute; top: 60px; left: 0; display: flex; align-items: flex-end; gap: 24px; }
+  .lockup svg { width: 56px; height: 56px; display: block; margin-bottom: 12px; }
+  .lockup .wordmark {
+    font-family: 'EB Garamond', Georgia, serif;
+    font-weight: 500; font-size: 56px; line-height: 0.92; letter-spacing: -0.03em;
+    color: var(--ink);
+  }
+
+  .headline {
+    position: absolute; top: 216px; left: 0; width: 660px;
+    font-size: 78px; font-weight: 500; line-height: 1.04;
+    color: var(--ink); letter-spacing: -0.01em;
+  }
+  .headline em { font-style: italic; font-weight: 500; }
+
+  .sub {
+    position: absolute; top: 422px; left: 0;
+    font-family: 'Archivo', 'Helvetica Neue', sans-serif;
+    font-weight: 400; font-size: 28px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  /* The landing CTA chip: mono on red, white text (globals.css .cta). */
+  .cta {
+    position: absolute; bottom: 72px; left: 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 500; font-size: 22px;
+    background: var(--red); color: #fff;
+    padding: 15px 28px;
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+  <div class="cover"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 600" role="img" aria-label="A dark sun floating in a silent void, the glare built from half-square triangles">
+<rect x="0" y="0" width="400" height="600" fill="#FFFFFF"/>
+<rect x="0" y="0" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="50,50 25,50 50,25" fill="#FFFFFF"/>
+<rect x="0" y="50" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="50,100 25,100 50,75" fill="#FFFFFF"/>
+<rect x="0" y="100" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="50,150 25,150 50,125" fill="#FFFFFF"/>
+<rect x="0" y="150" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="50,200 25,200 50,175" fill="#FFFFFF"/>
+<rect x="0" y="200" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="50,200 25,200 50,225" fill="#FFFFFF"/>
+<rect x="0" y="250" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="50,250 25,250 50,275" fill="#FFFFFF"/>
+<rect x="0" y="300" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="50,300 25,300 50,325" fill="#FFFFFF"/>
+<rect x="0" y="350" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="50,350 25,350 50,375" fill="#FFFFFF"/>
+<rect x="0" y="400" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="50,400 25,400 50,425" fill="#FFFFFF"/>
+<rect x="0" y="450" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<rect x="0" y="500" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<rect x="0" y="550" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<rect x="50" y="0" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="100,50 75,50 100,25" fill="#FFFFFF"/>
+<rect x="50" y="50" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="100,100 75,100 100,75" fill="#FFFFFF"/>
+<polygon points="50,100 50,150 100,100" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="50,150 50,200 100,150" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="50,250 50,200 100,250" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="50,300 50,250 100,300" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="50,350 50,300 100,350" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<rect x="50" y="350" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="100,350 75,350 100,375" fill="#FFFFFF"/>
+<rect x="50" y="400" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="100,400 75,400 100,425" fill="#FFFFFF"/>
+<rect x="50" y="450" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<rect x="50" y="500" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<rect x="50" y="550" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<rect x="100" y="0" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="150,50 125,50 150,25" fill="#FFFFFF"/>
+<polygon points="100,50 100,100 150,50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="100,100 100,150 150,100" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="100,150 100,200 150,150" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="100,300 100,250 150,300" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="100,350 100,300 150,350" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="100,400 100,350 150,400" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<rect x="100" y="400" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="150,400 125,400 150,425" fill="#FFFFFF"/>
+<rect x="100" y="450" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="150,450 125,450 150,475" fill="#FFFFFF"/>
+<rect x="100" y="500" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<rect x="100" y="550" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="150,0 150,50 200,0" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="150,50 150,100 200,50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="150,400 150,350 200,400" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<rect x="150" y="400" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="200,400 175,400 200,425" fill="#FFFFFF"/>
+<rect x="150" y="450" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="200,450 175,450 200,475" fill="#FFFFFF"/>
+<rect x="150" y="500" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<rect x="150" y="550" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="200,0 200,50 250,0" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="200,50 200,100 250,50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="200,400 200,350 250,400" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="200,450 200,400 250,450" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<rect x="200" y="450" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="250,450 225,450 250,475" fill="#FFFFFF"/>
+<rect x="200" y="500" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="250,500 225,500 250,525" fill="#FFFFFF"/>
+<rect x="200" y="550" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="300,0 300,50 250,0" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="300,50 300,100 250,50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="300,400 300,350 250,400" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="300,450 300,400 250,450" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<rect x="250" y="450" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="250,450 275,450 250,475" fill="#FFFFFF"/>
+<rect x="250" y="500" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="250,500 275,500 250,525" fill="#FFFFFF"/>
+<rect x="250" y="550" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="350,0 350,50 300,0" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="350,50 350,100 300,50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="350,400 350,350 300,400" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<rect x="300" y="400" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="300,400 325,400 300,425" fill="#FFFFFF"/>
+<rect x="300" y="450" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="300,450 325,450 300,475" fill="#FFFFFF"/>
+<rect x="300" y="500" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<rect x="300" y="550" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<rect x="350" y="0" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="350,50 375,50 350,25" fill="#FFFFFF"/>
+<polygon points="400,50 400,100 350,50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="400,100 400,150 350,100" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="400,150 400,200 350,150" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="400,300 400,250 350,300" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="400,350 400,300 350,350" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<polygon points="400,400 400,350 350,400" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7" stroke-linejoin="miter"/>
+<rect x="350" y="400" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="350,400 375,400 350,425" fill="#FFFFFF"/>
+<rect x="350" y="450" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<polygon points="350,450 375,450 350,475" fill="#FFFFFF"/>
+<rect x="350" y="500" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<rect x="350" y="550" width="50" height="50" fill="#0A0A0A" stroke="#0A0A0A" stroke-width="0.7"/>
+<circle cx="252" cy="222" r="28" fill="#0A0A0A"/>
+</svg></div>
+
+  <div class="col">
+    <div class="lockup">
+      <!-- the navbar mark: a square crop of the-climb (SiteNav.tsx) -->
+      <svg viewBox="0 170 400 400" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <polygon points="-24,456 40,520 416,144 416,600 -24,600" fill="#0A0A0A"/>
+        <circle cx="190" cy="307" r="50" fill="#0A0A0A"/>
+      </svg>
+      <span class="wordmark">Camus</span>
+    </div>
+    <div class="headline">A coding loop that <em>proves</em> every change.</div>
+    <div class="sub">No agent should grade its own work.</div>
+    <div class="cta">npx camus-cli install</div>
+  </div>
+  </div>
+</body>
+</html>

@@ -27,14 +27,55 @@ const mono = JetBrains_Mono({
   display: 'swap',
 });
 
+// The navbar mark, full bleed (2026-06-10): the ridge runs unbroken to the top-right
+// corner — the solid corner closes the icon at small sizes (the old peak left a white
+// triangle above it that read as noise). Same artwork as og/icon.html — keep in sync.
 const FAVICON =
-  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 170 400 400'%3E%3Crect x='0' y='170' width='400' height='400' fill='%23ffffff'/%3E%3Cpolygon points='-24,456 40,520 360,200 416,256 416,600 -24,600' fill='%230A0A0A'/%3E%3Ccircle cx='190' cy='307' r='50' fill='%230A0A0A'/%3E%3C/svg%3E";
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 170 400 400'%3E%3Crect x='0' y='170' width='400' height='400' fill='%23ffffff'/%3E%3Cpolygon points='-24,456 40,520 416,144 416,600 -24,600' fill='%230A0A0A'/%3E%3Ccircle cx='190' cy='307' r='50' fill='%230A0A0A'/%3E%3C/svg%3E";
+
+// The production origin. Link previews (iMessage, WhatsApp, X, Slack, LinkedIn) require
+// ABSOLUTE og:image/canonical URLs — metadataBase resolves the relative paths below.
+// Override per-environment with NEXT_PUBLIC_SITE_URL (e.g. a preview deploy).
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://camus.sh';
+
+const TITLE = "Camus: autonomous coding that can't approve its own work";
+const DESCRIPTION =
+  'Camus runs a coding task from plan to verified commit, unattended. A competing model reviews every change. Your own tests have the final word.';
 
 export const metadata: Metadata = {
-  title: "Camus: autonomous coding that can't approve its own work",
-  description:
-    "Camus runs a coding task from plan to verified commit, unattended. A competing model reviews every change. Your own tests have the final word.",
-  icons: { icon: FAVICON },
+  metadataBase: new URL(SITE_URL),
+  title: TITLE,
+  description: DESCRIPTION,
+  alternates: { canonical: '/' },
+  openGraph: {
+    type: 'website',
+    url: '/',
+    siteName: 'Camus',
+    title: TITLE,
+    description: DESCRIPTION,
+    images: [
+      {
+        url: '/og.png',
+        width: 1200,
+        height: 630,
+        alt: 'Camus — a coding loop that proves every change. No agent should grade its own work.',
+      },
+    ],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: TITLE,
+    description: DESCRIPTION,
+    images: ['/og.png'],
+  },
+  icons: {
+    // SVG first (crisp at any size); .ico for legacy browsers and pinned tabs.
+    icon: [
+      { url: FAVICON, type: 'image/svg+xml' },
+      { url: '/favicon.ico', sizes: '48x48 32x32 16x16' },
+    ],
+    apple: '/apple-touch-icon.png',
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
