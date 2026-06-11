@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Reviewer agent runs this. Emits NORMALIZED gate JSON on stdout.
 # Cross-vendor: Codex (a different vendor) reviews Claude's change.
+# Since 0.2.6 this is the CODEX BACKEND behind the thin reviewer dispatcher (review.sh,
+# VELOCITY-DIRECTION §2): callers go through review.sh, which for the default backend execs
+# this script verbatim — every contract below is unchanged by the dispatcher.
 #
-# Usage:  codex_review.sh <worktree> [task-context] [round] [effort]   # start + first await
-#         codex_review.sh await <watch_dir>                            # re-attach to a pending review
-#         codex_review.sh abort <watch_dir>                            # kill it (watch budget exhausted)
+# Usage:  codex_review.sh <worktree> [task-context] [round] [effort] [scope]   # start + first await
+#         codex_review.sh await <watch_dir>                                    # re-attach to a pending review
+#         codex_review.sh abort <watch_dir>                                    # kill it (watch budget exhausted)
 #   effort = the per-call reasoning effort (medium|high|xhigh) the orchestrator picks; default medium.
+#   scope  = full|light (default full): light judges the diff primarily — see the scope block below.
 #
 # WATCHDOG (2026-06-11, docs/HARNESS-DIRECTION.md friction batch §3 — probed live on codex 0.137.0):
 # codex runs DETACHED with `--json` (events stream → events.jsonl) and `-o` (the schema-conformant
@@ -140,6 +144,26 @@ correct-looking diff that does NOT accomplish the stated task is an incomplete i
 $extra"
 fi
 
+# REVIEW SCOPE (arg 5 — 2026-06-11, VELOCITY-DIRECTION §2 lever (a); pairs with the `oneshot`
+# posture): `light` tells the reviewer to judge the DIFF primarily instead of auditing the
+# surrounding repository — agentic exploration beyond the diff is the known latency driver
+# after reasoning effort. Light narrows the FIELD OF VIEW, never the severity bar; a P0 in the
+# diff is still a P0. review-prompt.md stays untouched as the canonical FULL-scope prompt —
+# light is an appended instruction, so default behavior is byte-identical to before this knob
+# existed. Any value other than `light` (including typos) degrades to full, the conservative
+# direction — and the normalized value is what meta.json records, so the audit trail shows the
+# scope that actually RAN, not what was typed.
+scope="${5:-full}"
+[[ "$scope" == "light" ]] || scope="full"
+if [[ "$scope" == "light" ]]; then
+  prompt="$prompt
+
+## Review scope: LIGHT
+Judge the DIFF primarily. Read surrounding code only where the diff's correctness genuinely
+depends on it — do not audit the wider file or repository. Same severity bar (P0–P3), applied
+to a deliberately narrower field of view."
+fi
+
 # Fresh session each call (no resume) for reviewer independence.
 # stdin is /dev/null via review_watch (with an open non-TTY stdin codex prints "Reading
 # additional input from stdin..." and blocks on it, returning an empty verdict).
@@ -149,13 +173,40 @@ fi
 # per-call effort as arg 4 — medium for the cheap first pass, escalated to high/xhigh when the
 # change proves hard or critical. Default medium when unset (a bounded review doesn't need a
 # user's ambient xhigh, which burns 10k+ thinking tokens with no streaming — one feat cost
-# ~700k tokens). PRECEDENCE: an explicit CAMUS_CODEX_ARGS (user) wins over everything, else the
-# per-call arg-4 effort, else medium. The override only affects CAMUS's review effort (it can
+# ~700k tokens). PRECEDENCE: an explicit CAMUS_CODEX_ARGS (user) wins over the per-call arg-4
+# effort, else medium; the levers below are ADDITIVE and compose with either source. The
+# override only affects CAMUS's review effort (it can
 # lower OR raise it, e.g. force xhigh) — the user's interactive codex config is untouched.
 #   export CAMUS_CODEX_ARGS="-c model_reasoning_effort=xhigh"    # force a constant effort
 # (word-splitting is intentional: the var carries whole extra CLI args.)
 effort="${4:-medium}"
 codex_review_args="${CAMUS_CODEX_ARGS:--c model_reasoning_effort=$effort}"
+
+# ── Additive speed levers (2026-06-11, VELOCITY-DIRECTION §2) — both default-OFF: with the env
+# vars unset, the codex invocation is byte-identical to before they existed. They are appended
+# AFTER the args above, and codex resolves repeated flags last-wins (`-c key=value` and `-m`
+# alike) — so do NOT combine CAMUS_CODEX_LIGHT_MODEL with a `-m` pinned inside CAMUS_CODEX_ARGS
+# (on medium rounds the appended light model would silently win; pick ONE place to pin a model).
+#
+# LIGHT-MODEL LADDER (experiment 2 — VALIDATED LIVE 2026-06-11: `-m <light model>` works on this
+# ChatGPT-plan auth; a trivial schema'd reply returned in ~7.8s). Review is the gate, so the
+# ladder must never undercut escalation: the light model applies ONLY when the resolved effort
+# is `medium` (the cheap first pass). Escalated rounds (high/xhigh) exist to buy DEPTH — they
+# always run the user's full configured model. Recommended value: OpenAI's mini-tier codex model
+# (today that is gpt-5.4-mini — officially recommended for review-style work, ">2x faster, ~30%
+# of limits"). Intentionally NOT hardcoded: model names drift (house rule above) — the user pins
+# the value, camus pins the policy.
+if [[ -n "${CAMUS_CODEX_LIGHT_MODEL:-}" && "$effort" == "medium" ]]; then
+  codex_review_args="$codex_review_args -m $CAMUS_CODEX_LIGHT_MODEL"
+fi
+# SERVICE-TIER PIN (experiment 3 mechanism — the billing DECISION stays the user's): since
+# codex 0.124, eligible ChatGPT plans default to the FAST service tier (2.5x credit burn on
+# GPT-5.5). This pin makes the review lane's tier deliberate — e.g. CAMUS_CODEX_TIER=standard
+# keeps camus's bounded gate reviews off the premium meter — without touching the user's
+# interactive codex config, the same isolation promise the effort override makes above.
+if [[ -n "${CAMUS_CODEX_TIER:-}" ]]; then
+  codex_review_args="$codex_review_args -c service_tier=$CAMUS_CODEX_TIER"
+fi
 
 # Fresh watch dir per round (a retry of the same round starts clean — stale events would
 # poison idle detection and usage extraction).
@@ -165,10 +216,13 @@ mkdir -p "$watch_dir" 2>/dev/null || {
   printf '' | python3 "$here/adapter.py" from-codex --exit 1; exit 0; }
 last_file="$watch_dir/last.txt"
 # meta.json lets the await/abort forms recover audit identity without re-passing arguments
-# (and doubles as the handle-authenticity check above).
+# (and doubles as the handle-authenticity check above). Scope is recorded for the AUDIT TRAIL
+# only — the prompt already shipped at start, so an await re-attach never needs it, but the
+# trail must show what scope a round actually ran at.
 python3 -c 'import json,sys
-json.dump({"target_dir": sys.argv[2], "round": sys.argv[3], "effort": sys.argv[4]},
-          open(sys.argv[1], "w"), indent=2)' "$watch_dir/meta.json" "$target_dir" "$round" "$effort"
+json.dump({"target_dir": sys.argv[2], "round": sys.argv[3], "effort": sys.argv[4],
+           "scope": sys.argv[5]},
+          open(sys.argv[1], "w"), indent=2)' "$watch_dir/meta.json" "$target_dir" "$round" "$effort" "$scope"
 
 # Chunk by effort: medium reviews are short (and the orchestrator instructs a 360s tool timeout
 # for them — the chunk must FIT under it); high/xhigh get the full window under 600s.

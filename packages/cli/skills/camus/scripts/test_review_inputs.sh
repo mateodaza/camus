@@ -3,6 +3,9 @@
 # 2026-06-10: untracked new files were invisible to `git diff`, and an open stdin made
 # codex block and return empty verdicts). A fake `codex` on PATH records, from inside
 # the worktree at invocation time: the diff it would see, its argv, and its stdin size.
+# 2026-06-11 (VELOCITY-DIRECTION §2): also covers the additive levers (light model, service
+# tier, review scope) and the review.sh backend dispatcher (verbatim pass-through for codex,
+# fail-closed gate JSON for unknown backends).
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(mktemp -d)"
@@ -101,6 +104,69 @@ check "CAMUS_CODEX_ARGS overrides the arg-4 effort (xhigh wins)" \
 check "override wins: the arg-4 medium is NOT also added" \
   "no" "$(grep -qx 'model_reasoning_effort=medium' "$SPY/args" && echo yes || echo no)"
 unset CAMUS_CODEX_ARGS
+
+# ── Additive levers (2026-06-11, VELOCITY-DIRECTION §2): light model, tier, scope ────────────
+# light-model ladder: applies ONLY at medium effort (the cheap first pass); escalated rounds
+# always run the full configured model — escalation buys depth, the ladder must not undercut it.
+export CAMUS_CODEX_LIGHT_MODEL=fake-mini
+run_review >/dev/null || { echo "FAIL light-model review errored/hung"; exit 1; }
+check "light model used at default (medium) effort" \
+  "yes" "$(grep -qx 'fake-mini' "$SPY/args" && echo yes || echo no)"
+run_review_effort "xhigh" >/dev/null || { echo "FAIL light-model xhigh review errored/hung"; exit 1; }
+check "light model NOT used on escalated rounds (xhigh)" \
+  "no" "$(grep -qx 'fake-mini' "$SPY/args" && echo yes || echo no)"
+unset CAMUS_CODEX_LIGHT_MODEL
+
+# service-tier pin: additive -c flag, present only while CAMUS_CODEX_TIER is set
+export CAMUS_CODEX_TIER=standard
+run_review >/dev/null || { echo "FAIL tier review errored/hung"; exit 1; }
+check "service tier pinned when CAMUS_CODEX_TIER is set" \
+  "yes" "$(grep -qx 'service_tier=standard' "$SPY/args" && echo yes || echo no)"
+unset CAMUS_CODEX_TIER
+run_review >/dev/null || { echo "FAIL post-tier review errored/hung"; exit 1; }
+check "no service-tier flag when CAMUS_CODEX_TIER is unset" \
+  "no" "$(grep -q 'service_tier=' "$SPY/args" && echo yes || echo no)"
+
+# review scope (positional arg 5): light appends the narrowed-field instruction to the prompt
+# (the prompt rides in argv, so the spy's args file is exactly what the reviewer would read)
+run_review_scope() { # $1 = effort (arg 4), $2 = scope (arg 5)
+  python3 - "$R" "$here/codex_review.sh" "$WT" "$1" "$2" <<'PY'
+import subprocess, sys
+r = subprocess.run(["bash", sys.argv[2], sys.argv[3], "the task", "3", sys.argv[4], sys.argv[5]],
+                   cwd=sys.argv[1], capture_output=True, text=True, timeout=30)
+sys.stdout.write(r.stdout)
+PY
+}
+run_review_scope "medium" "light" >/dev/null || { echo "FAIL scope review errored/hung"; exit 1; }
+check "scope=light reaches the prompt (Review scope: LIGHT)" \
+  "yes" "$(grep -q 'Review scope: LIGHT' "$SPY/args" && echo yes || echo no)"
+check "scope recorded in watch meta.json (audit trail)" \
+  "light" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("scope",""))' "$ROOT/reviews/camus-wt-task-r3.watch/meta.json" 2>/dev/null)"
+run_review >/dev/null || { echo "FAIL default-scope review errored/hung"; exit 1; }
+check "default scope stays FULL (no light section in the prompt)" \
+  "no" "$(grep -q 'Review scope: LIGHT' "$SPY/args" && echo yes || echo no)"
+
+# ── Reviewer-backend dispatcher (review.sh): codex passes through VERBATIM; an unknown backend
+# fails CLOSED (ran:false gate JSON naming it, exit 0) — never a fallback, never a crash.
+run_dispatch() { # same happy-path invocation as run_review, but through the dispatcher
+  python3 - "$R" "$here/review.sh" "$WT" <<'PY'
+import subprocess, sys
+r = subprocess.run(["bash", sys.argv[2], sys.argv[3], "the task", "1"],
+                   cwd=sys.argv[1], capture_output=True, text=True, timeout=30)
+sys.stdout.write(r.stdout)
+PY
+}
+direct="$(run_review)" || { echo "FAIL direct review errored/hung"; exit 1; }
+dispatched="$(run_dispatch)" || { echo "FAIL dispatched review errored/hung"; exit 1; }
+check "dispatcher (no env) emits the identical normalized verdict" "$direct" "$dispatched"
+out="$(CAMUS_REVIEWER=gemini bash "$here/review.sh" "$WT" "the task" "1")"; rc=$?
+check "unknown backend exits 0 (gate JSON, not a crash)" "0" "$rc"
+check "unknown backend fails closed (ran:false, names it, empty findings)" \
+  "yes" "$(printf '%s' "$out" | python3 -c 'import json,sys
+g = json.load(sys.stdin)
+ok = (g["ran"] is False and g["clean"] is False and g["blocking"] == [] and g["nonblocking"] == []
+      and "gemini" in g["error"] and "codex" in g["error"])
+print("yes" if ok else "no")')"
 
 # commit.sh interplay: intent-to-add must not break staging or empty-detection
 out="$(bash "$here/commit.sh" "$WT" "camus: test")"
