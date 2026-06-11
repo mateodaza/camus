@@ -8,6 +8,10 @@
 #   ./install.sh --check     report drift between repo source and installed copies
 #                            (exit 0 = in sync, exit 1 = drifted / not installed)
 #
+# npm users reach the same code via `npx camus-cli install` / `npx camus-cli check`
+# (bin/camus.js is a thin dispatcher over this script) — user-facing guidance leads
+# with the npx form, since npm installs have no ./install.sh in front of them.
+#
 # Run --check before any auto-mode / feat run so you never run a stale gate.
 set -euo pipefail
 
@@ -38,7 +42,12 @@ step() { printf '%s\n' "${CYN}→${RST} $1"; }
 # runtime scripts only, so tests are excluded from BOTH the check and the installed copy.)
 EXCL=(--exclude=__pycache__ --exclude=.pytest_cache --exclude='pytest-cache-files-*' --exclude='*.pyc'
       --exclude=.benchmarks --exclude=.npmignore
-      --exclude='test_*.py' --exclude='test_*.sh' --exclude='conftest.py')
+      --exclude='test_*.py' --exclude='test_*.sh' --exclude='conftest.py'
+      # VERSION is the install-time stamp (written by the freeze step below) — it exists ONLY in
+      # the installed copy, so without this exclude every --check would false-drift on it (same
+      # reasoning as the runtime-manifest excludes above). --check only READS it, to name the
+      # drift DIRECTION in the failure message. (2026-06-11)
+      --exclude=VERSION)
 
 check() {
   local drift=0
@@ -80,7 +89,7 @@ if [[ "${1:-}" == "--auto-setup" ]]; then
   echo
   echo "  cd <your repo root>             # your own, trusted repo"
   echo "  git status                      # must be CLEAN (Preflight halts on a dirty tree)"
-  echo "  bash \"$here/install.sh\" --check  # gate must be in sync"
+  echo "  npx camus-cli check             # gate must be in sync (in-repo: bash \"$here/install.sh\" --check)"
   echo "  export CAMUS_REPO_ROOT=\"\$(pwd -P)\"  # REQUIRED: cd-immutable trust anchor for the target guard"
   echo "  export CAMUS_VERIFY_CMD='<type-check && test>'   # include TESTS, not just type-check"
   echo "  claude --permission-mode auto   # then invoke the camus-feat workflow"
@@ -103,7 +112,24 @@ if [[ "${1:-}" == "--check" ]]; then
   if [[ $rc -eq 0 ]]; then
     say "${GRN}${BOLD}installed == source${RST} ${DIM}(frozen, in sync — safe to run)${RST}"
   else
-    say "${RED}${BOLD}gate is STALE${RST} — run ${BOLD}./install.sh${RST} to re-sync BEFORE your next run"
+    # Direction-aware drift (2026-06-11): an OLDER CLI checking a NEWER installed gate must not
+    # say "re-install" — re-installing from this package would DOWNGRADE the gate. Compare the
+    # install-time stamp against this package's version and name the direction. No stamp
+    # (installs predating it) or a broken read falls back to plain STALE. python3 does the
+    # compare (audit P3 2026-06-11: `sort -V` is not portable — BSD/older-macOS sort lacks it,
+    # and the flag error silently fell into the wrong guidance; python3 is already the gate's
+    # hard dependency, so it is the one comparator that exists wherever the gate runs).
+    pkg_v="$(python3 -c "import json;print(json.load(open('$here/package.json'))['version'])" 2>/dev/null || true)"
+    inst_v=""
+    if [[ -f "$SKILL_DST/VERSION" ]]; then inst_v="$(head -n1 "$SKILL_DST/VERSION" 2>/dev/null || true)"; fi
+    gate_newer="$(python3 -c 'import re,sys
+def v(s): return [int(x) for x in re.findall(r"\d+", s)][:4] or [0]
+print("yes" if v(sys.argv[1]) > v(sys.argv[2]) else "no")' "$inst_v" "$pkg_v" 2>/dev/null || true)"
+    if [[ -n "$inst_v" && -n "$pkg_v" && "$gate_newer" == "yes" ]]; then
+      say "${RED}${BOLD}gate is NEWER than this CLI${RST} (gate v$inst_v, CLI v$pkg_v) — upgrade the CLI (${BOLD}npx camus-cli@latest${RST}) instead of re-installing, or you will DOWNGRADE the gate"
+    else
+      say "${RED}${BOLD}gate is STALE${RST} — run ${BOLD}npx camus-cli install${RST} ${DIM}(in-repo: bash install.sh)${RST} to re-sync BEFORE your next run"
+    fi
     exit 1
   fi
   exit 0
@@ -132,14 +158,23 @@ done
 ok "workflows ${BOLD}${wf_names% }${RST} → $WF_DIR_DST/"
 
 step "Freezing the gate (spec §12 — shasums prove the installed gate matches this install)"
+# Version stamp: one line at $SKILL_DST/VERSION so a later --check can tell WHICH side is old
+# (an older CLI vs a newer gate) instead of shouting STALE in both directions. python3, not
+# node, on purpose — the gate scripts already hard-require python3; node may be absent. (2026-06-11)
+pkg_version="$(python3 -c "import json;print(json.load(open('$here/package.json'))['version'])")"
+printf '%s\n' "$pkg_version" > "$SKILL_DST/VERSION"
+ok "version stamp ${BOLD}v$pkg_version${RST} → VERSION ${DIM}(drift-direction marker; excluded from the drift diff)${RST}"
+# The fingerprint shasums scripts/*.py + scripts/*.sh ONLY, so the skill-root VERSION file
+# cannot alter it — the stamp is metadata about the install, not gate behavior.
 fingerprint="$(shasum "$SKILL_DST"/scripts/*.py "$SKILL_DST"/scripts/*.sh | shasum | cut -c1-12)"
 ok "gate fingerprint ${BOLD}$fingerprint${RST} ${DIM}(combined sha over every gate script)${RST}"
 say "${DIM}$(shasum "$SKILL_DST"/scripts/*.py "$SKILL_DST"/scripts/*.sh | sed 's/^/    /')${RST}"
 
 say ""
 say "${BOLD}Next steps${RST}"
-say "  ${CYN}bash install.sh --check${RST}        verify installed == source before any run (stale gate = bad run)"
-say "  ${CYN}bash install.sh --auto-setup${RST}   one-time, optional: narrow auto-mode profile for unattended runs"
+say "  ${CYN}npx camus-cli check${RST}            verify installed == source before any run (stale gate = bad run)"
+say "  ${CYN}npx camus-cli auto-setup${RST}       one-time, optional: narrow auto-mode profile for unattended runs"
+say "  ${DIM}(from a repo checkout, bash install.sh --check / --auto-setup are the same entrypoints)${RST}"
 say "  ${CYN}/camus-loop \"<task>\"${RST}           one task — run from YOUR target repo's root"
 say "  ${CYN}/camus-feat${RST}                    an ordered task list as one feature, merged on a feat branch"
 say "  ${CYN}npx camus-cli watch${RST}            LIVE dashboard for a running feat — one-key pause/steer"

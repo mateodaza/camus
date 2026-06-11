@@ -11,8 +11,9 @@ workflows (`camus-loop` for one task, `camus-feat` for an ordered task list) ins
 alongside it; this file holds the *standard that keeps it honest*.
 
 See `CAMUS-SPEC.md` at the repo root for the full design and run-targets.
-**Install:** run `./install.sh` from the `camus/` staging dir (copies skill + workflows
-into `~/.claude`; `--check` detects source↔installed drift — run it before any auto/feat run).
+**Install:** `npx camus-cli install` (from a repo checkout: `./install.sh` in `packages/cli/`) —
+copies skill + workflows into `~/.claude`; `npx camus-cli check` detects source↔installed
+drift — run it before any auto/feat run.
 
 ## What this does
 
@@ -166,9 +167,9 @@ halting verify-clean, shippable code on a stale re-flag. Two behaviors:
 
 - **Target guard** (`_guard.sh`): every gate script binds to the caller's repo, `camus/*`
   branches, and `camus-wt-*` worktrees — fail-closed, 3 Codex review rounds, probe-verified.
-- **Auto mode, zero-click**: `install.sh --auto-setup` installs a narrow scoped profile
-  (egress trust for the Codex review + allow rules for the 5 gate scripts only). Proven
-  live: full feat runs with zero permission prompts.
+- **Auto mode, zero-click**: `npx camus-cli auto-setup` (in-repo: `install.sh --auto-setup`)
+  installs a narrow scoped profile (egress trust for the Codex review + allow rules for the
+  5 gate scripts only). Proven live: full feat runs with zero permission prompts.
 - **HITL policy dial**: `policy: autonomous | ask_on_ambiguity (default) | ask_on_major`.
   Plan phase rates clarity; `needs_human` halts the feat with a question; resume re-runs
   with the answer. Always-on **decisions log** lands in the report.

@@ -132,6 +132,13 @@ camus auto-setup     # only if check flagged the auto profile — re-runs migrat
 stale gate can never run silently. (0.2.0 upgraders: re-run `camus auto-setup` once — the
 trusted-context line changed for the new worktree home, and apply migrates the old line out.)
 
+### npx cache skew
+
+`npx camus-cli` can resolve a cached older version of the CLI — we have observed 0.2.0
+and 0.2.2 answering alternate invocations mid-feat. This is display-only: the gate in
+`~/.claude` is a frozen copy, so what your runs execute is unaffected. For a pinned CLI,
+use `npx camus-cli@latest` or install globally (`npm i -g camus-cli`).
+
 ## Run
 
 From your repo:
