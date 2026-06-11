@@ -189,9 +189,28 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   }
   {
     // verify RED → genuinely not done (verifyClean:false).
-    const { res } = await runLoop({ task: 't', roundCap: 5 }, { ...stuckBase, verify: J({ pass: false, failures: [{ stage: 'verify', log_tail: 'boom' }] }) })
+    const { res, calls } = await runLoop({ task: 't', roundCap: 5 }, { ...stuckBase, verify: J({ pass: false, failures: [{ stage: 'verify', log_tail: 'boom' }] }) })
     ok('S10b review_unresolved + verify RED → verifyClean false', res.status === 'review_unresolved' && res.verifyClean === false, res.status + '/' + res.verifyClean)
     ok('S10b note says genuinely not done', /genuinely not done/.test(res.note || ''))
+    ok('S10b red verify is NOT parked (nothing proven to protect)', !calls.includes('park'), calls.join(','))
+  }
+  // S21 (0.2.5 item 2): PARK verify-clean halts as commits — a review-flagged but verify-GREEN
+  // worktree is committed (labeled) before the halt, so proven work survives anything; land's
+  // empty-stage path finishes from there on accept. Parking is fail-soft, never a gate.
+  {
+    const { res, calls, prompts } = await runLoop({ task: 't', roundCap: 5 },
+      { ...stuckBase, verify: J({ pass: true, failures: [] }), park: J({ committed: true, sha: 'p4rk1234' }) })
+    ok('S21 verify-clean halt parks a commit', calls.includes('park'), calls.join(','))
+    ok('S21 park message is the labeled chore', !!prompts.park && prompts.park.includes('chore(camus): park') && prompts.park.includes('review-flagged, verify-green'))
+    ok('S21 parked sha surfaced on the halt', res.parkedSha === 'p4rk1234', res.parkedSha)
+    ok('S21 note says the work is parked', /PARKED as commit p4rk1234/.test(res.note || ''))
+  }
+  {
+    // a refused park must not change the halt — fail-soft, loudly named.
+    const { res } = await runLoop({ task: 't', roundCap: 5 },
+      { ...stuckBase, verify: J({ pass: true, failures: [] }), park: J({ committed: false, reason: 'git identity missing' }) })
+    ok('S21b park failure → halt unchanged + named', res.status === 'review_unresolved' && res.verifyClean === true && /Parking the work FAILED \(git identity missing\)/.test(res.note || ''), res.note)
+    ok('S21b no parkedSha claimed', !('parkedSha' in res))
   }
   // S11: confidence TREND (run feedback 2026-06-11) — a re-raised finding whose confidence FALLS
   // across rounds is flagged as likely-stale (lean ACCEPT); steady confidence leans REFINE.
@@ -363,6 +382,75 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('S14b no envFacts → no facts block in prompts', !!prompts.plan && !prompts.plan.includes('Environment facts'))
   }
 
+  // S15 (0.2.5 item 5): OSCILLATION — a finding that appears r1, vanishes r2, RETURNS r3 stops the
+  // loop early with oscillating:true ("the reviewer can't make up its mind"), instead of reading
+  // the flip-flop as progress and churning to the cap. Distinct findings per round dodge the
+  // consecutive-repeat (stuck) path; cap 5 proves the stop is the detector, not the cap.
+  {
+    let r15 = 0
+    const seq = ['A', 'B', 'A']
+    const osc = {
+      ...clsStd, ...planOf('clear', ''), implement: happyTail.implement, fix: '', ...cleanVerify,
+      review: () => { r15++; const t = seq[r15 - 1] || ('Z' + r15); return J({ ran: true, clean: false, blocking: [{ priority: 1, title: t, code_location: t.toLowerCase() + '.ts:1' }], nonblocking: [] }) },
+    }
+    const { res, calls } = await runLoop({ task: 't', roundCap: 5 }, osc)
+    ok('S15 returned-after-vanishing finding halts as oscillating', res.status === 'review_unresolved' && res.oscillating === true, res.status + '/' + res.oscillating)
+    ok('S15 stopped at round 3 of cap 5 (detector, not cap)', calls.filter((c) => c.startsWith('review')).length === 3, String(calls.filter((c) => c.startsWith('review')).length))
+    ok('S15 note names the oscillation', /oscillat/i.test(res.note || ''))
+    ok('S15 the returning finding surfaced for the human', Array.isArray(res.stuck) && res.stuck.length === 1 && res.stuck[0].title === 'A', JSON.stringify(res.stuck))
+  }
+  // S16 (fixlet 2026-06-11): NO FIX WITHOUT A CONFIRMATION ROUND — the final round's findings halt
+  // the loop; a fix the loop can't re-review is never dispatched (it once landed unreviewed and the
+  // halt report described an already-fixed worktree).
+  {
+    const { res, calls } = await runLoop({ task: 't', roundCap: 2 }, varyBlock())
+    ok('S16 fix dispatched only when a round remains to confirm it', calls.filter((c) => c.startsWith('fix')).length === 1, calls.join(','))
+    ok('S16 both review rounds ran', calls.filter((c) => c.startsWith('review')).length === 2)
+    ok('S16 → review_unresolved', res.status === 'review_unresolved', res.status)
+  }
+  // S17 (0.2.5 item 1): HEARTBEAT — under a feat (idSalt) every runner command and think prompt
+  // touches ~/.camus/feats/<featId>.hb first, so its mtime is a phase-boundary liveness signal.
+  // Standalone loops (no salt) must be byte-identical to before (no .hb anywhere).
+  {
+    const salt = 'feat123'
+    const hb = `touch "$HOME/.camus/feats/${salt}.hb"`
+    const stubs = {
+      ...clsStd, ...planOf('clear', ''),
+      implement: { worktree_path: wtPath('t', salt), branch: 'b', summary: 's', decisions: [] },
+      review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
+      commit: J({ committed: true, sha: 'abc' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [] }),
+    }
+    const { res, calls, prompts } = await runLoop({ task: 't', idSalt: salt }, stubs)
+    ok('S17 review command carries the heartbeat touch', (prompts[reviewLbl(calls, 1)] || '').includes(hb))
+    ok('S17 implement prompt carries the heartbeat line', !!prompts.implement && prompts.implement.includes(hb))
+    ok('S17 verify command carries the heartbeat touch', !!prompts.verify && prompts.verify.includes(hb))
+    ok('S17 commit command carries the heartbeat touch', !!prompts.commit && prompts.commit.includes(hb))
+    ok('S17 → done unchanged', res.status === 'done', res.status)
+  }
+  {
+    const { calls, prompts } = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail })
+    ok('S17b standalone (no idSalt) → no heartbeat anywhere', !(prompts[reviewLbl(calls, 1)] || '').includes('.hb') && !(prompts.implement || '').includes('.hb'))
+  }
+  // S19 (fixlet 2026-06-11): SIBLING-TASK CONTEXT — the feat's other-task briefs reach the review
+  // context AND the fix prompt as "owned elsewhere — don't flag / don't touch".
+  {
+    const SIB = '- other-task-abc [pending]: do the other thing'
+    const { calls, prompts } = await runLoop({ task: 't', siblingTasks: SIB }, { ...clsStd, ...planOf('clear', ''), ...blockP1 })
+    ok('S19 review ctx carries sibling lanes', (prompts[reviewLbl(calls, 1)] || '').includes('owned ELSEWHERE'))
+    ok('S19 fix prompt told hands-off siblings', !!prompts['fix:r1'] && prompts['fix:r1'].includes('owned ELSEWHERE'))
+  }
+  {
+    const { calls, prompts } = await runLoop({ task: 't' }, { ...clsStd, ...planOf('clear', ''), ...blockP1 })
+    ok('S19b no siblings → no sibling block', !(prompts[reviewLbl(calls, 1)] || '').includes('owned ELSEWHERE'))
+  }
+  // S20 (smoke 2026-06-11): the ambiguity-pause threshold — the plan prompt must escalate
+  // user-visible PRODUCT tradeoffs to "ambiguous" (the camello smoke's headline finding: a
+  // clear-looking task burned three rounds on a data-loss call a human answers in one line).
+  {
+    const { prompts } = await runLoop({ task: 't' }, { ...clsStd, ...planOf('clear', ''), ...happyTail })
+    ok('S20 plan prompt escalates product tradeoffs to ambiguous', !!prompts.plan && /USER-VISIBLE product tradeoff/.test(prompts.plan))
+  }
+
   // S7: worktree path contract (2026-06-10) — centralized out-of-tree home + fail-closed validation.
   {
     const { res, prompts } = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail })
@@ -416,6 +504,101 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const { loopArgs } = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
       [{ status: 'done', branch: 'b', decisions: [] }])
     ok('F15b no facts block → no envFacts key forwarded', !!loopArgs[0] && !('envFacts' in loopArgs[0]), JSON.stringify(loopArgs[0] && loopArgs[0].envFacts))
+  }
+  // F16 (0.2.5 item 5): an oscillating loop halt is surfaced AS oscillating at the feat level —
+  // the human's note must say "distrust the signal", not just "didn't converge".
+  {
+    const { res } = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
+      [{ status: 'review_unresolved', verifyClean: true, oscillating: true, stuck: [{ title: 'flip' }], blocking: [{ priority: 1, title: 'flip' }] }])
+    ok('F16 oscillating surfaced on the feat halt', res && res.oscillating === true)
+    ok('F16 note names the oscillation, not just non-convergence', /OSCILLATED/.test((res && res.note) || ''))
+  }
+  // F17 (fixlet 2026-06-11): SIBLING BRIEFS — each task's loop gets the OTHER tasks (with live
+  // status), never itself; single-task feats forward no key at all.
+  {
+    const sibFeat = 'SIB', sibTasks = ['task one', 'task two']
+    const s1 = taskIdOf(sibFeat, sibTasks, 'task one'), s2 = taskIdOf(sibFeat, sibTasks, 'task two')
+    const { loopArgs } = await runFeat({ feat: sibFeat, tasks: sibTasks }, featBase,
+      [{ status: 'done', branch: 'x', decisions: [] }, { status: 'done', branch: 'y', decisions: [] }])
+    ok('F17 task1 sees task2 as a sibling', !!loopArgs[0] && String(loopArgs[0].siblingTasks || '').includes(s2), JSON.stringify(loopArgs[0] && loopArgs[0].siblingTasks))
+    ok('F17 task2 sees task1 with its LIVE status', !!loopArgs[1] && String(loopArgs[1].siblingTasks || '').includes(`${s1} [done]`), JSON.stringify(loopArgs[1] && loopArgs[1].siblingTasks))
+    ok('F17 a task never lists itself', !!loopArgs[0] && !String(loopArgs[0].siblingTasks || '').includes(s1))
+  }
+  {
+    const { loopArgs } = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
+      [{ status: 'done', branch: 'b', decisions: [] }])
+    ok('F17b single-task feat → no siblingTasks key', !!loopArgs[0] && !('siblingTasks' in loopArgs[0]))
+  }
+  // F18 (0.2.5 item 4): TOKEN BUDGET CEILING — persisted cross-run spend ≥ budgetTokens halts
+  // needs_human at the task boundary BEFORE dispatching the next loop; under budget proceeds.
+  // resumeArgs must carry budgetTokens (the canonical-args discipline: a resumer that drops it
+  // would silently un-cap the run).
+  {
+    const bFeat = 'B', bTasks = ['task one', 'task two']
+    const b1 = taskIdOf(bFeat, bTasks, 'task one'), b2 = taskIdOf(bFeat, bTasks, 'task two')
+    const bid = featIdOf(bFeat, bTasks)
+    const prior = {
+      featId: bid, feat: bFeat, featBranch: 'camus/feat-' + bid, status: 'halted',
+      resumeArgs: { argsVersion: 1, feat: bFeat, tasks: bTasks, policy: 'ask_on_ambiguity', budgetTokens: 50000 },
+      tasks: [
+        { taskId: b1, spec: 'task one', dependsOn: [], status: 'done', branch: `camus/feat/${bid}/${b1}`, loopStatus: 'done', decisions: [], tokens: 90000 },
+        { taskId: b2, spec: 'task two', dependsOn: [], status: 'pending', branch: `camus/feat/${bid}/${b2}`, loopStatus: null },
+      ], events: [], eventSeq: 0,
+    }
+    const featR = { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(prior) } }
+    const over = await runFeat({ feat: bFeat, tasks: bTasks, budgetTokens: 50000 }, featR, [])
+    ok('F18 ceiling halts needs_human at the boundary', over.res && over.res.status === 'needs_human' && over.res.stage === 'budget', over.res && (over.res.status + '/' + over.res.stage))
+    ok('F18 no loop dispatched past the cap', over.workflowCalls === 0, String(over.workflowCalls))
+    ok('F18 spent vs budget surfaced for the human', over.res && over.res.spentTokens === 90000 && over.res.budgetTokens === 50000, over.res && JSON.stringify([over.res.spentTokens, over.res.budgetTokens]))
+    ok('F18 resumeArgs persists budgetTokens', !!over.stateJSON && over.stateJSON.resumeArgs.budgetTokens === 50000, over.stateJSON && JSON.stringify(over.stateJSON.resumeArgs))
+    const under = await runFeat({ feat: bFeat, tasks: bTasks, budgetTokens: 200000 }, featR,
+      [{ status: 'done', branch: `camus/feat/${bid}/${b2}`, decisions: [] }])
+    ok('F18b under budget → the next task runs', under.workflowCalls === 1 && under.res && under.res.status === 'done', under.res && under.res.status)
+  }
+  // F18c (audit P2 2026-06-11): the FINAL task's spend must hit the ceiling too — recheck after
+  // the last task, BEFORE integration, or a budget-blowing finale sails to a green "done".
+  {
+    let bc = 0
+    const budgetStub = { spent: () => (bc++ === 0 ? 0 : 90000) }   // tokensBefore=0, after=90000
+    const { res, calls } = await runFeat({ feat: 'F', tasks: ['only task'], budgetTokens: 50000 }, featBase,
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }], budgetStub)
+    ok('F18c final-task overspend halts before integration', res && res.status === 'needs_human' && res.stage === 'budget', res && (res.status + '/' + res.stage))
+    ok('F18c integration never ran past the cap', !calls.includes('env-recheck') && !calls.includes('integration-verify'), calls.join(','))
+    ok('F18c note says tasks merged but integration unearned', /integration verify has NOT run/.test((res && res.note) || ''))
+  }
+  // F19 (audit P2 2026-06-11): the FEAT's own long stretches heartbeat too — env doctors,
+  // baseline/integration verify, preflight, merge all touch ~/.camus/feats/<featId>.hb.
+  {
+    const fid = featIdOf('F', ['only task'])
+    const hb = `feats/${fid}.hb`
+    const { prompts } = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    const tid = taskIdOf('F', ['only task'], 'only task')
+    ok('F19 preflight heartbeats', (prompts.preflight || '').includes(hb))
+    ok('F19 env doctor heartbeats', (prompts['env-check'] || '').includes(hb))
+    ok('F19 baseline verify heartbeats', (prompts['baseline-verify'] || '').includes(hb))
+    ok('F19 merge heartbeats', (prompts['merge:' + tid] || '').includes(hb))
+    ok('F19 integration verify heartbeats', (prompts['integration-verify'] || '').includes(hb))
+  }
+  // F20 (audit P1 2026-06-11): a merged pause+answers note must NOT lose its payload — the
+  // boundary check consumed the file, so the engine re-queues the remainder (minus pause)
+  // before halting; a pause-only note re-queues nothing.
+  {
+    const tid = taskIdOf('F', ['only task'], 'only task')
+    const { res, calls, prompts } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, steer: J({ pause: true, answers: { [tid]: 'use adapter B' } }), 'steer-requeue': { written: true } },
+      [])
+    ok('F20 pause still halts', res && res.status === 'paused_by_user', res && res.status)
+    const rqLabel = 'steer-requeue:' + tid
+    ok('F20 remainder re-queued', calls.includes(rqLabel), calls.join(','))
+    ok('F20 re-queued note carries the answers, never the pause',
+      !!prompts[rqLabel] && prompts[rqLabel].includes('use adapter B') && !prompts[rqLabel].includes('"pause"'), prompts[rqLabel])
+    ok('F20 halt note says the payload survived', /RE-QUEUED/.test((res && res.note) || ''))
+  }
+  {
+    const { res, calls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, steer: J({ pause: true }) }, [])
+    ok('F20b pause-only note → no re-queue agent', res && res.status === 'paused_by_user' && !calls.some((c) => c.startsWith('steer-requeue')), calls.join(','))
   }
   {
     // F11: a verify-clean review_unresolved is surfaced as a DECISION, not a plain failure (2026-06-11).
@@ -680,13 +863,17 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F7e first task NOT steered', !!loopArgs[0] && !('humanAnswer' in loopArgs[0]), J(loopArgs[0]))
     ok('F7e later task got the targeted answer', !!loopArgs[1] && loopArgs[1].humanAnswer === 'pick B', J(loopArgs[1]))
   }
-  // F7f: a PRESENT-but-unparseable note must be surfaced in the run log, not silently dropped.
+  // F7f (fixlet 2026-06-11 UPGRADE of the 2026-06-10 loud-log): a PRESENT-but-unparseable steer
+  // note now HALTS the feat — a human countermand was consumed without being applied, and running
+  // past it re-opens exactly what it was written to prevent. needs_human → not auto-resumable.
   {
-    const { res, stateJSON } = await runFeat({ feat: 'F', tasks: ['only task'] },
+    const { res, stateJSON, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'] },
       { ...featBase, steer: 'totally not json' },
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F7f garbage note surfaced in run log', !!stateJSON && stateJSON.events.some((e) => /UNPARSEABLE/.test(e.msg)))
-    ok('F7f run proceeds', res && res.status === 'done', res && res.status)
+    ok('F7f run HALTS for the human (no silent drop)', res && res.status === 'needs_human' && res.stage === 'steer', res && (res.status + '/' + res.stage))
+    ok('F7f no task dispatched past the dropped guidance', workflowCalls === 0, String(workflowCalls))
+    ok('F7f note says nothing was applied + how to resume', /NOTHING was applied/.test((res && res.note) || '') && /re-run/i.test((res && res.note) || ''))
   }
 
   // F8: worktree cleanup contract — the headline "no more camus-wt-* litter" feature.

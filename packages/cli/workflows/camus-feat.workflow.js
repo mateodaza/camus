@@ -1,7 +1,7 @@
 export const meta = {
   name: 'camus-feat',
   description: 'Run an ordered task list as ONE feature through the Camus M1 gate: preflight → feat branch → env+baseline → per-task v2-lite loop (merge on done) → env re-check + integration verify → report. Linear only (no DAG/parallel/bisection).',
-  whenToUse: 'Drive a small ordered feat (2–3 tasks in M1) through v2-overnight M1. args = { feat: "<title>", tasks: ["task 1", "task 2", ...], targetPath?, policy?, answers? }. policy ∈ autonomous|ask_on_ambiguity(default)|ask_on_major controls when a task PAUSES for a human (status needs_human); on a resume after a pause, answers={ "<taskId>": "..." } threads the decision back in. Reuses camus-loop per task with feat-scoped branch identity. Launch FROM the target repo (cwd = repo root). Run `install.sh --check` yourself first — gate-freshness is a human step.',
+  whenToUse: 'Drive a small ordered feat (2–3 tasks in M1) through v2-overnight M1. args = { feat: "<title>", tasks: ["task 1", "task 2", ...], targetPath?, policy?, answers? }. policy ∈ autonomous|ask_on_ambiguity(default)|ask_on_major controls when a task PAUSES for a human (status needs_human); on a resume after a pause, answers={ "<taskId>": "..." } threads the decision back in. Reuses camus-loop per task with feat-scoped branch identity. Launch FROM the target repo (cwd = repo root). Run `npx camus-cli check` (or `bash install.sh --check` from the package) yourself first — gate-freshness is a human step.',
   phases: [
     { title: 'Preflight',    detail: 'Agent confirms the base working tree is CLEAN and reads any prior feat state (resume). Dirty → stop.' },
     { title: 'Feat branch',  detail: 'Agent cuts (or, on resume, checks out) camus/feat-<featId> from the current base branch.' },
@@ -44,6 +44,13 @@ const SKIP_PLAN = A.skipPlan === true   // opt-in; forwarded only when set (loop
 // Per-task review↔fix cap, forwarded UNCHANGED to every loop (the loop bounds it 1..10). Lets a
 // caller give a known-large feat more rounds to converge. Omit → the loop's default (3).
 const ROUND_CAP = Number.isInteger(A.roundCap) ? A.roundCap : null
+// TOKEN BUDGET CEILING (0.2.5 item 4): a per-feat output-token cap, checked at every task
+// BOUNDARY against the PERSISTED per-task totals (node.tokens survives resumes — the rollup is
+// cross-run, not this turn's pool). Past the cap the feat halts needs_human ("spent ~N of M —
+// raise budgetTokens or drop it to continue") instead of silently spending on. Honest-cost
+// framing applies: tokens are an estimate-adjacent counter, never an invoice. Invalid → ignored.
+const BUDGET_TOKENS = (typeof A.budgetTokens === 'number' && isFinite(A.budgetTokens) && A.budgetTokens > 0)
+  ? Math.floor(A.budgetTokens) : null
 // LAND list (run-5 fix 2026-06-11): taskIds whose worktree is ALREADY proven (review passed, or a
 // human ACCEPTED a verify-clean needs_decision halt). Those tasks run the loop in land mode —
 // commit → verify → merge, no re-plan/re-implement/re-review. The accept half of accept-vs-refine.
@@ -96,6 +103,14 @@ const featBranch = `camus/feat-${featId}`
 // branch (file `camus/feat-<id>`) and task branches (dir `camus/feat/<id>/`) coexist cleanly.
 const branchPrefix = `camus/feat/${featId}/`   // handed to camus-loop per task → camus/feat/<id>/<slug>-<id>
 
+// FEAT-LEVEL HEARTBEAT (audit P2 2026-06-11): the loop touches ~/.camus/feats/<featId>.hb per
+// task phase, but the feat's OWN long stretches — preflight, env doctors, baseline verify,
+// merge, integration verify — ran dark, so status/watch could show a stale heartbeat while the
+// runner was busy verifying. Same contract as the loop's HB_TOUCH; the mkdir keeps the FIRST
+// touch (preflight, before any persist has created ~/.camus/feats) from failing silently.
+// Wall-clock lives in the file's mtime, never in this script (Date is banned — resume determinism).
+const HB_TOUCH = `(mkdir -p "$HOME/.camus/feats" && touch "$HOME/.camus/feats/${featId}.hb") 2>/dev/null; `
+
 // Per-task identity, computed exactly as the loop will (ID_SALT=featId): taskId = <slug>-<id>.
 // slug truncation MUST be 40 here to match camus-loop's slugify, so this precomputed
 // branch is byte-identical to the one the loop creates (the id hash is truncation-independent).
@@ -134,6 +149,7 @@ const resumeArgs = {
   ...(MODEL_TIER ? { modelTier: MODEL_TIER } : {}),
   ...(SKIP_PLAN ? { skipPlan: true } : {}),
   ...(ROUND_CAP != null ? { roundCap: ROUND_CAP } : {}),
+  ...(BUDGET_TOKENS != null ? { budgetTokens: BUDGET_TOKENS } : {}),
   // land changes task behavior MATERIALLY (audit P1 2026-06-11): dropping it on a resume would
   // re-enter the full loop — the exact run-5 failure land exists to avoid. Snapshot, like answers.
   ...(LAND_TASKS.length ? { land: [...LAND_TASKS] } : {}),
@@ -349,7 +365,7 @@ Return {written:true}.`,
 phase('Preflight')
 const pf = await agent(
   `THIN preflight runner for a git repo. cd ${REPO_ARG}, then run and report (do NOT modify anything):
-1. \`git rev-parse --abbrev-ref HEAD\`  -> base (the current branch name)
+1. \`${HB_TOUCH}git rev-parse --abbrev-ref HEAD\`  -> base (the current branch name)
 2. \`git status --porcelain\`           -> clean is true ONLY if this prints NOTHING; dirtyFiles = number of lines
 3. \`cat ${STATE_PATH} 2>/dev/null || true\` -> stateRaw = the exact file contents, or "" if the file does not exist
 Return {clean, base, dirtyFiles, stateRaw}.`,
@@ -420,7 +436,7 @@ note(`Feat branch ${featBranch} ${fb.created ? 'created' : 'checked out (resume)
 // ── 3. ENV CHECK on the feat branch (fresh trees lack node_modules — mandatory) ─
 phase('Env+Baseline')
 const env = await agent(
-  `THIN env doctor. cd ${REPO_ARG}, then run EXACTLY:  ${ENV_CMD} ${REPO_ARG}
+  `THIN env doctor. cd ${REPO_ARG}, then run EXACTLY:  ${HB_TOUCH}${ENV_CMD} ${REPO_ARG}
 ready=true ONLY if it exits 0. Capture exitCode and the full stdout+stderr text in output (when not ready it lists what to fix, e.g. \`pnpm install\`). Do not interpret further.`,
   { model: MODEL_RUNNER, phase: 'Env+Baseline', label: 'env-check', schema: ENV_SCHEMA }
 )
@@ -443,7 +459,7 @@ if (!state.env.ready) {
 
 // ── 4. BASELINE VERIFY — base must be green before any task ───────────────────
 const baseRaw = await agent(
-  `THIN verifier. cd ${REPO_ARG}, then run EXACTLY:  ${VERIFY_CMD} ${REPO_ARG}
+  `THIN verifier. cd ${REPO_ARG}, then run EXACTLY:  ${HB_TOUCH}${VERIFY_CMD} ${REPO_ARG}
 Output the command's stdout VERBATIM as your entire reply (JSON {pass,failures,checks}). No fences, no commentary.`,
   { model: MODEL_RUNNER, phase: 'Env+Baseline', label: 'baseline-verify' }
 )
@@ -474,6 +490,21 @@ for (let i = 0; i < state.tasks.length; i++) {
   const n = `${i + 1}/${state.tasks.length}`
   if (node.status === 'done' || node.status === 'noop') { log(`Task ${n} "${node.taskId}" already ${node.status} (resume) — skipping.`); continue }
 
+  // ── BUDGET CEILING (0.2.5 item 4): checked at the BOUNDARY, against PERSISTED per-task totals
+  // (cross-run — node.tokens survives resumes; this turn's overhead is not double-counted). Past
+  // the cap: halt-and-ask. needs_human is NOT auto-resumable (F6), so a watchdog can't ping-pong
+  // a budget halt; the human re-runs with a higher budgetTokens (or drops it) to continue.
+  if (BUDGET_TOKENS != null) {
+    const featSpent = state.tasks.reduce((a, t) => a + (typeof t.tokens === 'number' ? t.tokens : 0), 0)
+    if (featSpent >= BUDGET_TOKENS) {
+      note(`Token budget reached before task ${n}: ~${Math.round(featSpent / 1000)}k persisted output tokens ≥ budgetTokens=${BUDGET_TOKENS}.`)
+      return finalize('needs_human', {
+        stage: 'budget', haltedTask: node.taskId, spentTokens: featSpent, budgetTokens: BUDGET_TOKENS,
+        note: `Spent ~${Math.round(featSpent / 1000)}k of the ${Math.round(BUDGET_TOKENS / 1000)}k output-token budget (persisted across runs — an estimate, not an invoice). Continue / stop here? Earlier merged tasks stay on ${featBranch}. To continue: re-run with a HIGHER budgetTokens (or without it); the resume skips done tasks.`,
+      })
+    }
+  }
+
   // ── HUMAN STEERING (`camus steer` → steer.py): a note at ~/.camus/steer/<featId>.json is
   // consumed at each task BOUNDARY — the clean, merged point where redirecting is safe. Live
   // mid-task injection is deliberately unsupported (the engine is a deterministic, resumable
@@ -485,7 +516,7 @@ for (let i = 0; i < state.tasks.length; i++) {
   // not survive a pause/resume (re-steer or pass answers explicitly on the re-run).
   const steerRaw = await agent(
     `THIN steer-check runner. A human may have left a steering note for this Camus run. Run EXACTLY, in order:
-1. \`cat ~/.camus/steer/${featId}.json 2>/dev/null || echo {}\` — capture the full output.
+1. \`${HB_TOUCH}cat ~/.camus/steer/${featId}.json 2>/dev/null || echo {}\` — capture the full output.
 2. \`rm -f ~/.camus/steer/${featId}.json\` — consume it (a note applies ONCE). If rm is refused, continue anyway.
 Return the captured output VERBATIM as your entire reply. No fences, no commentary.`,
     { model: MODEL_RUNNER, phase: 'Tasks', label: `steer:${node.taskId}` }
@@ -495,14 +526,46 @@ Return the captured output VERBATIM as your entire reply. No fences, no commenta
   // no-note case is exactly "{}" from the `|| echo {}`, so anything else that fails to parse
   // was a real note the human wrote — surface it loudly (review 2026-06-10).
   if (steerParsed == null && steerRaw != null && String(steerRaw).trim() !== '{}') {
-    note(`Task ${n}: a steer note was PRESENT but UNPARSEABLE — it was consumed and IGNORED. Re-issue it with \`camus steer\`.`)
+    // HALT, don't proceed (fixlet 2026-06-11 upgrade of the 2026-06-10 loud-log): a steer note is
+    // a human countermand — silently dropping one and running on re-opens exactly what it was
+    // written to prevent. The note is already consumed (the rm ran), so the halt message must say
+    // nothing was applied and ask for a re-issue. needs_human → not auto-resumable.
+    note(`Task ${n}: a steer note was PRESENT but UNPARSEABLE — halting; NOTHING was applied.`)
+    return finalize('needs_human', {
+      stage: 'steer', haltedTask: node.taskId,
+      note: `A steer note was present but could not be parsed before task ${n} — it was consumed (deleted) and NOTHING was applied. Halting rather than running past your guidance. Re-issue it (\`camus steer ...\`) and re-run the feat with the SAME args to resume from here.`,
+    })
   }
   const steer = steerParsed || {}
   if (steer.pause === true) {
+    // RE-QUEUE the rest of the note before halting (audit P1 2026-06-11): steer merges compose
+    // pause+answers into ONE note, but the cat/rm above already CONSUMED it — halting here would
+    // silently drop the answers/guidance riding alongside the pause. Write the remainder (minus
+    // pause) back to the steer path so the NEXT run's boundary check picks it up: pause fires
+    // once, the payload survives the pause. Fail-soft but LOUD: a failed re-queue is named in
+    // the halt note so the human knows to re-issue.
+    const remainder = {}
+    if (steer.answers && typeof steer.answers === 'object' && !Array.isArray(steer.answers)) remainder.answers = steer.answers
+    if (typeof steer.guidance === 'string' && steer.guidance.trim()) remainder.guidance = steer.guidance.trim()
+    let requeued = null
+    if (Object.keys(remainder).length) {
+      const rq = await agent(
+        `Persist a Camus steer note. Create the directory ~/.camus/steer if it does not exist, then write the following EXACT JSON (verbatim, byte-for-byte) to ~/.camus/steer/${featId}.json :
+
+${JSON.stringify(remainder, null, 2)}
+
+Return {written:true} once that file is on disk with exactly that content.`,
+        { model: MODEL_RUNNER, phase: 'Tasks', label: `steer-requeue:${node.taskId}`, schema: WRITTEN_SCHEMA }
+      )
+      requeued = !!(rq && rq.written)
+      note(requeued
+        ? `Task ${n}: the pause note also carried ${Object.keys(remainder).join('+')} — re-queued for the resume.`
+        : `⚠ Task ${n}: the pause note carried ${Object.keys(remainder).join('+')} but the re-queue FAILED — re-issue it with \`camus steer\` before resuming.`)
+    }
     note(`PAUSED by a human steer note before task ${n} ("${node.taskId}").`)
     return finalize('paused_by_user', {
       stage: 'task', haltedTask: node.taskId,
-      note: `A human paused the run (camus steer --pause) before task ${n}. Earlier merged tasks remain on ${featBranch}. Re-run the feat with the SAME args to continue from here (resume carries done tasks forward). If the re-run immediately pauses again, the note could not be deleted — \`camus steer --clear --feat ${featId}\` first.`,
+      note: `A human paused the run (camus steer --pause) before task ${n}. Earlier merged tasks remain on ${featBranch}. Re-run the feat with the SAME args to continue from here (resume carries done tasks forward).${requeued === true ? ' The answers/guidance that rode along with the pause were RE-QUEUED and will apply on the resume.' : (requeued === false ? ' WARNING: the answers/guidance riding with the pause could NOT be re-queued — re-issue them (`camus steer ...`) before resuming.' : '')} If the re-run immediately pauses again, the note could not be deleted — \`camus steer --clear --feat ${featId}\` first.`,
     })
   }
   if (steer.answers && typeof steer.answers === 'object' && !Array.isArray(steer.answers)) {
@@ -537,6 +600,11 @@ Return the captured output VERBATIM as your entire reply. No fences, no commenta
   // deliberate and cheap; identity/branch determinism is untouched.)
   const tokensBefore = spentTok()
 
+  // The OTHER tasks' one-line briefs (+ live status: done siblings read differently than pending
+  // ones), for the loop's review/fix prompts. Recomputed per task so statuses are current.
+  const siblingBriefs = state.tasks.filter((t) => t.taskId !== node.taskId)
+    .map((t) => `- ${t.taskId} [${t.status}]: ${brief(t.spec)}`).join('\n')
+
   // Reuse the PROVEN v2-lite loop verbatim (classify→plan→implement→codex-review↔fix→verify).
   // Feat-scope its identity so the task branch is namespaced under the feat, and its worktree
   // is cut from the CURRENT feat-branch HEAD (the main tree is on the feat branch).
@@ -554,6 +622,9 @@ Return the captured output VERBATIM as your entire reply. No fences, no commenta
       ...(landAuthorized ? { land: true } : {}),  // PROVEN accept decision → land; unproven → full loop
       ...(ANSWERS[node.taskId] ? { humanAnswer: String(ANSWERS[node.taskId]) } : {}),  // resume answer
       ...(ENV_FACTS ? { envFacts: ENV_FACTS } : {}),  // platform truths → loop agent prompts (advisory)
+      // SIBLING CONTEXT (fixlet 2026-06-11): the other tasks' briefs + statuses, so the per-task
+      // reviewer stops flagging sibling scope as "incomplete" and fix agents stay in their lane.
+      ...(siblingBriefs ? { siblingTasks: siblingBriefs } : {}),
       ...(TARGET ? { targetPath: TARGET } : {}),
     })
   } catch (e) {
@@ -607,8 +678,9 @@ Return the captured output VERBATIM as your entire reply. No fences, no commenta
     return finalize('halted', {
       stage: 'task', haltedTask: node.taskId, haltReason: node.loopStatus, loopResult: res || null,
       ...(verifyCleanHalt ? { verifyCleanDecision: true } : {}),
+      ...(res && res.oscillating ? { oscillating: true } : {}),
       note: verifyCleanHalt
-        ? `Task ${n} review did not converge, BUT deterministic verify (type-check / lint / tests) PASSES on its worktree — the code is shippable by the deterministic gate. This is a DECISION, not a failure: ${(res.stuck && res.stuck.length) ? 'a finding was re-raised after a fix (likely a stale re-flag). ' : ''}review the finding(s) in loopResult.blocking, then either ACCEPT (commit + merge ${node.branch} into ${featBranch} as-is) or REFINE (fix and re-run the feat). Tasks merged before this remain on ${featBranch}.`
+        ? `Task ${n} review did not converge, BUT deterministic verify (type-check / lint / tests) PASSES on its worktree — the code is shippable by the deterministic gate. This is a DECISION, not a failure: ${res.oscillating ? 'the reviewer OSCILLATED (a finding returned after vanishing for a round — an unstable signal to distrust, not a stable disagreement). ' : ((res.stuck && res.stuck.length) ? 'a finding was re-raised after a fix (likely a stale re-flag). ' : '')}review the finding(s) in loopResult.blocking, then either ACCEPT (commit + merge ${node.branch} into ${featBranch} as-is) or REFINE (fix and re-run the feat). Tasks merged before this remain on ${featBranch}.`
         : `Task ${n} did not reach "done" (${node.loopStatus}). Per M1, later tasks are NOT run on top of a failed one. Tasks merged before this remain on ${featBranch}. Retry idiom after fixing the cause: re-invoke the feat FRESH with the SAME args — the deterministic featId resumes from persisted state (done tasks skip, this task re-runs against its intact worktree). Do NOT resume the workflow journal (resumeFromRunId) past a gate/env fix: completed-but-failed agent calls replay their cached failure without re-running anything.`,
     })
   }
@@ -627,7 +699,7 @@ Return the captured output VERBATIM as your entire reply. No fences, no commenta
   }
   const mg = await agent(
     `THIN git merge runner. cd ${REPO_ARG}. Merge the completed task branch into the feat branch. Run EXACTLY, in order, and report what git actually did:
-1. \`git checkout ${JSON.stringify(featBranch)}\`
+1. \`${HB_TOUCH}git checkout ${JSON.stringify(featBranch)}\`
 2. \`git rev-parse HEAD\`  -> record as before
 3. \`git merge --no-ff ${JSON.stringify(mergeBranch)} -m ${JSON.stringify('camus(feat): merge ' + node.taskId)}\`
 4. \`git rev-parse HEAD\`  -> record as after
@@ -741,10 +813,25 @@ Return {merged, committed, alreadyUpToDate, priorMergeCommit, before, after, con
 }
 note(`All tasks processed${spentTok() != null ? ` — ~${Math.round(spentTok() / 1000)}k output tokens spent this turn` : ''}.`)
 
+// ── BUDGET RECHECK (audit P2 2026-06-11): the pre-task check can't see the FINAL task's spend —
+// a last task blowing the cap would otherwise sail into integration and finish green without the
+// promised halt. Same ceiling, one more boundary: after the last task, before integration. A
+// resume with a raised budget skips done tasks and passes straight through here to integration.
+if (BUDGET_TOKENS != null) {
+  const featSpent = state.tasks.reduce((a, t) => a + (typeof t.tokens === 'number' ? t.tokens : 0), 0)
+  if (featSpent >= BUDGET_TOKENS) {
+    note(`Token budget reached AFTER the final task: ~${Math.round(featSpent / 1000)}k ≥ budgetTokens=${BUDGET_TOKENS} — halting before integration.`)
+    return finalize('needs_human', {
+      stage: 'budget', spentTokens: featSpent, budgetTokens: BUDGET_TOKENS,
+      note: `Spent ~${Math.round(featSpent / 1000)}k of the ${Math.round(BUDGET_TOKENS / 1000)}k output-token budget (persisted across runs — an estimate, not an invoice). Every task is done/merged but integration verify has NOT run, so the feat is not "done" yet. Continue by re-running with a HIGHER budgetTokens (or without it) — done tasks skip straight to integration.`,
+    })
+  }
+}
+
 // ── 6. ENV RE-CHECK (tasks may have added deps) + FINAL INTEGRATION VERIFY ─────
 phase('Integration')
 const env2 = await agent(
-  `THIN env doctor. cd ${REPO_ARG}, then run EXACTLY:  ${ENV_CMD} ${REPO_ARG}
+  `THIN env doctor. cd ${REPO_ARG}, then run EXACTLY:  ${HB_TOUCH}${ENV_CMD} ${REPO_ARG}
 ready=true ONLY if it exits 0. Capture exitCode and full stdout+stderr in output.`,
   { model: MODEL_RUNNER, phase: 'Integration', label: 'env-recheck', schema: ENV_SCHEMA }
 )
@@ -758,7 +845,7 @@ if (!state.envRecheck.ready) {
   })
 }
 const intRaw = await agent(
-  `THIN verifier. cd ${REPO_ARG}, then run EXACTLY:  ${VERIFY_CMD} ${REPO_ARG}
+  `THIN verifier. cd ${REPO_ARG}, then run EXACTLY:  ${HB_TOUCH}${VERIFY_CMD} ${REPO_ARG}
 Output the command's stdout VERBATIM (JSON {pass,failures,checks}). No fences, no commentary.`,
   { model: MODEL_RUNNER, phase: 'Integration', label: 'integration-verify' }
 )

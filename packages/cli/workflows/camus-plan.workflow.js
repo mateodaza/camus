@@ -91,7 +91,7 @@ const CLARITY_SCHEMA = {
   required: ['clarity', 'ambiguities'],
   properties: {
     clarity: { type: 'string', enum: ['clear', 'design_decision', 'ambiguous'],
-      description: 'clear = exactly one sensible build. design_decision = a real tradeoff exists but a default can be chosen. ambiguous = genuinely under-specified; valid readings DIVERGE; must not be guessed.' },
+      description: 'clear = exactly one sensible build. design_decision = a real tradeoff exists but a default can be chosen. ambiguous = genuinely under-specified; valid readings DIVERGE; OR the approach embeds a user-visible product tradeoff (data loss/alteration, external behavior or contract change) the request does not decide — product calls are human calls; must not be guessed.' },
     ambiguities: {
       type: 'array',
       items: {
@@ -199,7 +199,11 @@ Repo grounding: ${JSON.stringify(repo)}${answersBlock}
 Rate clarity honestly:
 - "clear": exactly one sensible build.
 - "design_decision": a real tradeoff exists, but a sensible default can be chosen and recorded.
-- "ambiguous": genuinely under-specified — valid interpretations DIVERGE, or a wrong guess is costly.
+- "ambiguous": genuinely under-specified — valid interpretations DIVERGE, a wrong guess is costly, OR the
+  plausible approaches embed a USER-VISIBLE product tradeoff the request does not decide (e.g. silently
+  dropping/altering user-facing data, changing an external behavior/contract). A product call is a human
+  call (smoke 2026-06-11: a "clear"-looking improvement task burned three review rounds re-litigating
+  tail-truncation data loss that one human line settles).
 List ONLY genuine ambiguities (no busywork questions). Each gets a stable kebab id the human will answer under.${haveAnswers ? ' Since answers are provided, report "clear" unless a genuinely NEW divergence remains.' : ''}`,
   { model: THINK, phase: 'Clarify', label: 'clarify', schema: CLARITY_SCHEMA }
 )

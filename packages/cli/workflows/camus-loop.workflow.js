@@ -62,6 +62,13 @@ const HUMAN_ANSWER = (args && typeof args === 'object' && args.humanAnswer && St
 // across a journal resume (same args ⇒ same prompts ⇒ cache replay holds).
 const ENV_FACTS = (args && typeof args === 'object' && typeof args.envFacts === 'string' && args.envFacts.trim().slice(0, 1500)) || ''
 const envFactsBlock = ENV_FACTS ? `\nEnvironment facts (deterministic preflight — trust these, do not re-probe):\n${ENV_FACTS}\n` : ''
+// SIBLING-TASK CONTEXT (fixlet 2026-06-11): per-task codex review can't see the feat decomposition,
+// so it flags sibling tasks' surfaces as "incomplete" and fix agents bleed across task lanes. The
+// feat passes the OTHER tasks' briefs; the reviewer judges THIS diff against them and the fixer is
+// told hands-off. Advisory + bounded; standalone loops have none. Cheap mitigation ahead of the
+// 0.3-grade scope-bleed healing (HARNESS-DIRECTION item 6).
+const SIBLINGS = (args && typeof args === 'object' && typeof args.siblingTasks === 'string' && args.siblingTasks.trim().slice(0, 1200)) || ''
+const siblingsBlock = SIBLINGS ? `\n\n## Sibling tasks in this feat (owned ELSEWHERE — do not flag their scope as missing here, do not touch their files)\n${SIBLINGS}` : ''
 if (!TASK) throw new Error('camus-loop: no task in args (pass a string or {task, targetPath})')
 
 const softBudget = `Soft budget: aim to stay under ~${TOKEN_TARGET_K}k tokens. Be terse; do not over-explore.`
@@ -123,6 +130,16 @@ const WT_PARENT_EXPR = `$HOME/.camus/worktrees/$(basename "$(pwd -P)")-$(pwd -P 
 const WT_PARENT = `"${WT_PARENT_EXPR}"`
 const WT_DEST = `"${WT_PARENT_EXPR}/${WT_NAME}"`
 
+// HEARTBEAT (0.2.5 item 1 — "`running` must mean running"): under a feat (ID_SALT = featId) every
+// thin-runner command line and every think-phase prompt touches ~/.camus/feats/<featId>.hb FIRST,
+// so that file's MTIME is a phase-boundary liveness signal status/watch read with NO transcript
+// dependency (the 2026-06-11 smoke sat "state updated 19m ago" mid-task with no way to tell churn
+// from death). Wall-clock lives in the FILE's mtime, never in this script — Date is banned here
+// (resume determinism), which is exactly why the stamp is a side effect of the agents' shells.
+// Standalone loops (no salt) skip it: the .hb name is feat identity.
+const HB_TOUCH = ID_SALT ? `touch "$HOME/.camus/feats/${ID_SALT}.hb" 2>/dev/null; ` : ''
+const HB_LINE = ID_SALT ? `\nFirst, run \`touch "$HOME/.camus/feats/${ID_SALT}.hb"\` (liveness heartbeat — ignore any failure), then proceed.\n` : ''
+
 // ── Schemas (only where the script needs structured fields) ──────────────────
 const CLASSIFY_SCHEMA = {
   type: 'object',
@@ -141,7 +158,7 @@ const PLAN_SCHEMA = {
     plan: { type: 'string', description: 'Short ordered plan. What to change and why. No code.' },
     relevant_files: { type: 'array', items: { type: 'string' }, description: 'Files the change will touch.' },
     clarity: { type: 'string', enum: ['clear', 'design_decision', 'ambiguous'],
-      description: 'clear = exactly one obvious correct implementation. design_decision = a real non-trivial design choice with tradeoffs exists, though a sensible default can be picked. ambiguous = genuinely under-specified, valid interpretations DIVERGE, or the change is irreversible — must not be guessed.' },
+      description: 'clear = exactly one obvious correct implementation. design_decision = a real non-trivial design choice with tradeoffs exists, though a sensible default can be picked. ambiguous = genuinely under-specified, valid interpretations DIVERGE, the change is irreversible, OR the approach embeds a user-visible product tradeoff (data loss/alteration, external behavior or contract change) the task does not decide — product calls are human calls, must not be guessed.' },
     question: { type: 'string', description: 'If not clear: the single specific question/decision blocking a confident implementation. Else "".' },
     interpretations: { type: 'array', items: { type: 'string' }, description: 'If ambiguous: the divergent valid readings. Else [].' },
   },
@@ -232,7 +249,7 @@ if (LAND) {
   // path). No worktree → nothing to land → abort, never plan/implement under land.
   const wtRaw = await agent(
     `THIN land-path resolver. Run EXACTLY this one command and output ONLY its stdout (one absolute path), no commentary:
-  cd ${WT_DEST} && pwd
+  ${HB_TOUCH}cd ${WT_DEST} && pwd
 If the cd fails (directory does not exist), output exactly: MISSING`,
     { model: MODEL_RUNNER, phase: 'Commit', label: 'land-resolve' }
   )
@@ -244,7 +261,7 @@ If the cd fails (directory does not exist), output exactly: MISSING`,
   log(`Land mode: committing previously verified work in ${wt} — skipping plan/implement/review (deterministic verify still gates)${tokSuffix()}.`)
   const commitRaw = await agent(
     `THIN commit runner. Run EXACTLY this one command and output its stdout VERBATIM (JSON {committed, sha}); no fences, no commentary:
-  ${COMMIT_CMD} ${JSON.stringify(wt)} ${JSON.stringify('chore(camus): land ' + SLUG)}`,
+  ${HB_TOUCH}${COMMIT_CMD} ${JSON.stringify(wt)} ${JSON.stringify('chore(camus): land ' + SLUG)}`,
     { model: MODEL_RUNNER, phase: 'Commit', label: 'commit' }
   )
   const commitResult = extractJsonObject(commitRaw) || { committed: false, reason: 'unparseable' }
@@ -325,7 +342,7 @@ if (planSkipped) {
   log('Plan ran.')
   plan = await agent(
     `You are planning ONE Camus task. Do NOT write code in this phase.
-
+${HB_LINE}
 Task: ${TASK}
 ${targetLine}${envFactsBlock}${HUMAN_ANSWER ? `\n\nA human has ALREADY answered the open question for this task — treat it as DECIDED, do not re-raise it:\n${HUMAN_ANSWER}` : ''}
 
@@ -335,7 +352,11 @@ Read only the files needed to understand the change. Produce a short, ordered pl
 Then assess CLARITY honestly:
 - "clear": exactly one obvious correct implementation.
 - "design_decision": a real non-trivial design choice with tradeoffs exists, though a sensible default can be chosen.
-- "ambiguous": genuinely under-specified, valid interpretations diverge, or the change is irreversible — must not be guessed.
+- "ambiguous": genuinely under-specified, valid interpretations diverge, the change is irreversible — OR the
+  candidate approaches embed a USER-VISIBLE product tradeoff the task text does not decide (e.g. silently
+  dropping or altering user-facing data, changing an external behavior/contract). A product call is a human
+  call — must not be guessed. (Smoke 2026-06-11: "improve long-conversation handling" read as clear, then
+  three review rounds re-litigated tail-truncation data loss that one human line settles.)
 If not "clear", put the single blocking question in question (and, when ambiguous, the divergent readings in interpretations).${HUMAN_ANSWER ? ' Since the human already answered, report "clear" unless a genuinely NEW, different question arises.' : ''}
 ${softBudget}`,
     { model: thinkModel, phase: 'Plan', label: 'plan', schema: PLAN_SCHEMA }
@@ -371,7 +392,7 @@ const decisionGuidance = HUMAN_ANSWER
 phase('Implement')
 const impl = await agent(
   `Implement ONE Camus task in an ISOLATED git worktree so review/verify can run against it cleanly.
-
+${HB_LINE}
 Task: ${TASK}
 ${decisionGuidance}${envFactsBlock}
 Approved plan:
@@ -438,9 +459,9 @@ const REVIEW_TIMEOUT_MS = { medium: 360000, high: 600000, xhigh: 600000 }
 // must judge the diff against the same contract, or a human-overridden finding gets re-flagged
 // every round and the loop deadlocks at the round cap on by-design behavior (run feedback
 // 2026-06-11: onboarding best-effort guard re-flagged 3 rounds straight after the human decided it).
-const REVIEW_TASK_CTX = HUMAN_ANSWER
+const REVIEW_TASK_CTX = (HUMAN_ANSWER
   ? `${TASK}\n\n## Human decision (binding — already DECIDED, do not flag behavior that conforms to it)\n${HUMAN_ANSWER}`
-  : TASK
+  : TASK) + siblingsBlock
 
 function reviewerPrompt(attempt) {
   const backoff = attempt > 1
@@ -450,7 +471,7 @@ function reviewerPrompt(attempt) {
 the worktree and return its stdout. Do NOT interpret, summarize, re-judge, or reformat.
 
 ${backoff}Run EXACTLY this one command (the worktree path is the argument — do NOT cd, do NOT add anything else):
-  ${REVIEW_CMD} ${JSON.stringify(WT)} ${JSON.stringify(REVIEW_TASK_CTX)} ${round} ${currentEffort}
+  ${HB_TOUCH}${REVIEW_CMD} ${JSON.stringify(WT)} ${JSON.stringify(REVIEW_TASK_CTX)} ${round} ${currentEffort}
 
 Set the Bash tool's timeout PARAMETER to ${REVIEW_TIMEOUT_MS[currentEffort] || 600000} for this
 call — the review legitimately runs for minutes and the 2-minute default kills it mid-flight.
@@ -495,6 +516,13 @@ function findingKey(b) {
 }
 let priorKeys = new Set()
 let stuckFindings = null
+// OSCILLATION MEMORY (0.2.5 item 5): every keyable finding EVER seen this loop. `priorKeys` only
+// holds the last round, so a finding that appears r1, VANISHES r2, and RETURNS r3 looked brand-new
+// — the reviewer flip-flopping read as progress. A returned-after-vanishing finding (or, with it,
+// an effective verdict flip on the same location) stops the loop with `oscillating: true`: "the
+// reviewer can't make up its mind here" is a human decision, not three more rounds.
+let allSeenKeys = new Set()
+let oscillating = false
 // Confidence TREND (run feedback 2026-06-11): track each finding's confidence_score across rounds.
 // A finding whose confidence FALLS round-over-round is the reviewer losing conviction → most likely
 // a stale re-flag (lean accept); steady/rising → a consistent disagreement (lean refine). Used ONLY
@@ -553,7 +581,8 @@ while (round < ROUND_CAP) {
   // Stop early if a KEYABLE finding survived a fix (re-raised after being addressed last round) — let
   // a human resolve stale-re-flag vs real disagreement instead of burning the remaining rounds. The
   // confidence trend is attached so the human (and the halt note) can lean accept vs refine.
-  const repeatedKeys = lastBlocking.map(findingKey).filter((k) => k && priorKeys.has(k))
+  const keysNow = lastBlocking.map(findingKey).filter(Boolean)
+  const repeatedKeys = keysNow.filter((k) => priorKeys.has(k))
   if (repeatedKeys.length && round >= 2) {
     stuckFindings = lastBlocking.filter((b) => repeatedKeys.includes(findingKey(b)))
       .map((b) => ({ ...b, confidenceTrend: confTrend(confHistory[findingKey(b)]) }))
@@ -561,7 +590,28 @@ while (round < ROUND_CAP) {
     log(`Round ${round}/${ROUND_CAP}: ${stuckFindings.length} finding(s) survived a fix and were re-raised — stopping early for a human decision${falling ? ` (${falling} with FALLING reviewer confidence → likely stale)` : ''}.`)
     break
   }
-  priorKeys = new Set(lastBlocking.map(findingKey).filter(Boolean))
+  // OSCILLATION (0.2.5 item 5): seen before, NOT last round, back now — appears r1, vanishes r2,
+  // returns r3 (needs round ≥ 3 by construction). Disjoint from `repeated` above (that requires
+  // presence in the IMMEDIATELY prior round). Same early-stop discipline, different label: a
+  // flip-flopping reviewer is an unstable signal the human should distrust, not re-litigate.
+  const returnedKeys = keysNow.filter((k) => allSeenKeys.has(k) && !priorKeys.has(k))
+  if (returnedKeys.length) {
+    oscillating = true
+    stuckFindings = lastBlocking.filter((b) => returnedKeys.includes(findingKey(b)))
+      .map((b) => ({ ...b, confidenceTrend: confTrend(confHistory[findingKey(b)]) }))
+    log(`Round ${round}/${ROUND_CAP}: ${returnedKeys.length} finding(s) RETURNED after vanishing for a round — the reviewer is oscillating; stopping for a human decision.`)
+    break
+  }
+  keysNow.forEach((k) => allSeenKeys.add(k))
+  priorKeys = new Set(keysNow)
+  // NO FIX WITHOUT A CONFIRMATION ROUND (fixlet 2026-06-11): the loop once dispatched a fix on its
+  // FINAL round; it landed with no round left to re-review it, so the halt report described an
+  // already-fixed worktree and forced a full relaunch. If no round remains to confirm a fix, don't
+  // spend it — halt with the findings and let the decision (or a higher roundCap re-run) own it.
+  if (round >= ROUND_CAP) {
+    log(`Round ${round}/${ROUND_CAP}: ${lastBlocking.length} blocking finding(s) on the FINAL round — NOT dispatching a fix the loop cannot re-review; halting for the decision.`)
+    break
+  }
   log(`Round ${round}/${ROUND_CAP} (review effort: ${currentEffort}): ${lastBlocking.length} blocking finding(s) — dispatching fix.`)
   // Escalate the FIX model if the cheap model is failing: round>=2 (first fix didn't clear review)
   // OR a priority-0 blocking finding is present. Monotonic, deterministic.
@@ -581,10 +631,10 @@ while (round < ROUND_CAP) {
   await agent(
     `Fix the BLOCKING review findings below, in the EXISTING worktree. Do not refactor
 beyond what each finding requires. Do not touch P3 nits.
-
+${HB_LINE}
 Worktree: ${WT}
   cd ${JSON.stringify(WT)}
-${envFactsBlock}
+${envFactsBlock}${siblingsBlock}
 Blocking findings (Codex, priority ≤ 2):
 ${JSON.stringify(lastBlocking, null, 2)}
 
@@ -605,7 +655,7 @@ async function prepAndVerify(wt = WT) {
   const prepRaw = await agent(
     `THIN prep runner. Run EXACTLY this one command and output its stdout VERBATIM as your entire reply
 (JSON {prepped, ran, ...}); no fences, no commentary:
-  ${PREP_CMD} ${JSON.stringify(wt)}`,
+  ${HB_TOUCH}${PREP_CMD} ${JSON.stringify(wt)}`,
     { model: MODEL_RUNNER, phase: 'Prep', label: 'prep' }
   )
   const prepResult = extractJsonObject(prepRaw)
@@ -620,7 +670,7 @@ async function prepAndVerify(wt = WT) {
     `Run the Camus verification on the worktree and return its stdout JSON verbatim.
 
 Run EXACTLY this one command (the worktree path is the argument — do NOT cd, do NOT add anything else):
-  ${VERIFY_CMD} ${JSON.stringify(wt)}
+  ${HB_TOUCH}${VERIFY_CMD} ${JSON.stringify(wt)}
 
 Output the command's stdout VERBATIM as your entire reply (it is JSON {pass, failures}).
 No fences, no commentary.`,
@@ -645,9 +695,11 @@ if (!reviewPassed) {
   // probabilistic review was halting verify-clean, shippable code on a stale re-flag). A verify-clean
   // halt is a DECISION POINT, never a plain failure.
   const v = await prepAndVerify()
-  const why = stuckFindings
-    ? 'a finding was re-raised after a fix — stopped early rather than burning the rest of the rounds'
-    : `reached ROUND_CAP=${ROUND_CAP} with blocking findings still present`
+  const why = oscillating
+    ? 'a finding RETURNED after vanishing for a round — the reviewer is oscillating (an unstable signal, not a stable disagreement)'
+    : (stuckFindings
+      ? 'a finding was re-raised after a fix — stopped early rather than burning the rest of the rounds'
+      : `reached ROUND_CAP=${ROUND_CAP} with blocking findings still present`)
   // Confidence-trend hint disambiguates accept-vs-refine (only as guidance, never a gate).
   const falling = (stuckFindings || []).filter((s) => s.confidenceTrend && s.confidenceTrend.dir === 'falling')
   const confHint = stuckFindings
@@ -658,11 +710,33 @@ if (!reviewPassed) {
   const base = {
     status: 'review_unresolved', task: TASK, worktree: WT, branch: BRANCH, rounds: round,
     blocking: lastBlocking, stuck: stuckFindings || null,
+    ...(oscillating ? { oscillating: true } : {}),
     tier, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
   }
   if (v.ok === 'pass') {
-    return { ...base, verifyClean: true,
-      note: `Review did not converge (${why}) — BUT deterministic verify (type-check / lint / tests) PASSES on this worktree. This is likely a STALE RE-FLAG or a judgment impasse, NOT broken code. The deterministic gate says the work is shippable. DECIDE: accept (commit + merge the worktree as-is) or refine (address the finding below).${confHint}` }
+    // PARK (0.2.5 item 2 — kills the "trapped work" class): this worktree is verify-CLEAN but
+    // uncommitted, and an uncommitted halt is the fragile state run-4/5 thrashed on (anything
+    // that disturbs the worktree loses proven work). Commit it NOW as a labeled park so it
+    // survives everything; land's empty-stage path already knows how to finish from a committed
+    // worktree on accept. FAIL-SOFT: parking is protection, not a gate — a refused commit still
+    // halts as before, with the failure named so the human knows the work is unparked.
+    const parkRaw = await agent(
+      `THIN commit runner. Run EXACTLY this one command and output its stdout VERBATIM (JSON {committed, sha}); no fences, no commentary:
+  ${HB_TOUCH}${COMMIT_CMD} ${JSON.stringify(WT)} ${JSON.stringify('chore(camus): park ' + SLUG + ' (review-flagged, verify-green)')}`,
+      { model: MODEL_RUNNER, phase: 'Verify', label: 'park' }
+    )
+    const park = extractJsonObject(parkRaw) || { committed: false, reason: 'unparseable' }
+    const parkedSha = park.committed === true ? (park.sha || null) : null
+    const parkLine = park.committed === true
+      ? ` The work is PARKED as commit ${parkedSha} on ${BRANCH} (review-flagged, verify-green) — it survives even if the worktree is lost.`
+      : (park.reason === 'empty'
+        ? ` The work was already committed on ${BRANCH} — nothing to park.`
+        : ` ⚠ Parking the work FAILED (${park.reason || 'unknown'}) — the verify-clean diff is still UNCOMMITTED in the worktree; treat it gently until you accept or refine.`)
+    log(park.committed === true
+      ? `Parked verify-clean work as ${parkedSha} (review-flagged) — protected pending the accept/refine decision.`
+      : `Park attempt: ${park.reason || 'failed'} — halt proceeds regardless.`)
+    return { ...base, verifyClean: true, ...(parkedSha ? { parkedSha } : {}),
+      note: `Review did not converge (${why}) — BUT deterministic verify (type-check / lint / tests) PASSES on this worktree. This is likely a STALE RE-FLAG or a judgment impasse, NOT broken code. The deterministic gate says the work is shippable.${parkLine} DECIDE: accept (commit + merge the worktree as-is) or refine (address the finding below).${confHint}` }
   }
   if (v.ok === 'inconclusive') {
     return { ...base, verifyClean: null, failures: v.failures,
@@ -679,7 +753,7 @@ if (!reviewPassed) {
 phase('Commit')
 const commitRaw = await agent(
   `THIN commit runner. Run EXACTLY this one command and output its stdout VERBATIM (JSON {committed, sha}); no fences, no commentary:
-  ${COMMIT_CMD} ${JSON.stringify(WT)} ${JSON.stringify('chore(camus): ' + SLUG)}`,
+  ${HB_TOUCH}${COMMIT_CMD} ${JSON.stringify(WT)} ${JSON.stringify('chore(camus): ' + SLUG)}`,
   { model: MODEL_RUNNER, phase: 'Commit', label: 'commit' }
 )
 const commitResult = extractJsonObject(commitRaw) || { committed: false, reason: 'unparseable' }
