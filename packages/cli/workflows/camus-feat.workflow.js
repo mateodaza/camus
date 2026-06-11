@@ -889,6 +889,10 @@ Return {merged, committed, alreadyUpToDate, priorMergeCommit, before, after, con
       if (!(Array.isArray(node.decisions) && node.decisions.length && !(Array.isArray(res.decisions) && res.decisions.length))) {
         node.decisions = Array.isArray(res.decisions) ? res.decisions : []
       }
+      // Same effective-branch truth as the normal commit path (audit P3, third lane): the prior
+      // run's merge consumed mergeBranch — without this, merged[] falls back to the
+      // deterministic node.branch on exactly this resume.
+      if (mergeBranch !== node.branch) node.mergedBranch = mergeBranch
       await persistState('Tasks')
       note(`${node.status === 'done_with_findings' ? '◈' : '✓'} Task ${n} was ALREADY merged into ${featBranch} by a prior run that died before recording it (merge commit ${String(priorMerge).slice(0, 8)}) → recorded as ${node.status.toUpperCase()}, resuming.`)
       await removeTaskWorktree(node, res.worktree, n)   // merged — checkout no longer needed

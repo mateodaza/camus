@@ -758,6 +758,8 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F24c prior-merge evidence path restores done_with_findings too',
       !!r3.stateJSON && r3.stateJSON.tasks[0].status === 'done_with_findings' && r3.res && r3.res.status === 'done_with_findings',
       r3.stateJSON && r3.stateJSON.tasks[0].status + '/' + (r3.res && r3.res.status))
+    ok('F24c merged[] names the actually-merged branch on this lane too (audit P3, third lane)',
+      Array.isArray(r3.res.merged) && r3.res.merged[0] === 'camus/feat/x/only', JSON.stringify(r3.res && r3.res.merged))
   }
 
   // F18c (audit P2 2026-06-11): the FINAL task's spend must hit the ceiling too — recheck after
