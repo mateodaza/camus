@@ -38,9 +38,9 @@ const FAVICON =
 // Override per-environment with NEXT_PUBLIC_SITE_URL (e.g. a preview deploy).
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://camus.sh';
 
-const TITLE = "Camus: autonomous coding that can't approve its own work";
+const TITLE = 'Camus: autonomous coding that proves every change';
 const DESCRIPTION =
-  'Camus runs a coding task from plan to verified commit, unattended. A competing model reviews every change. Your own tests have the final word.';
+  'Camus runs a coding task from plan to verified commit, unattended. A competing model reviews every change, and your own tests have the final word.';
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),

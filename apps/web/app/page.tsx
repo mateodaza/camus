@@ -19,8 +19,8 @@ export default function Home() {
               <span className="tagline">A coding loop that proves every change.</span>
             </h1>
             <p className="hero-sub">
-              No agent grades its own work. A competing model reviews every change, and your own
-              tests have the final word.
+              A competing model reviews every change, and your own tests have the final word.
+              No agent grades its own work.
             </p>
             <div className="cta-row">
               <a className="cta" href="https://www.npmjs.com/package/camus-cli">npx camus-cli install</a>
@@ -72,11 +72,11 @@ export default function Home() {
             <Reveal>
               <div className="sec-head">
                 <div>
-                  <h2 className="sec-h2">No step approves its own work.</h2>
+                  <h2 className="sec-h2">Every change clears an outside reviewer.</h2>
                   <p className="sec-sub">
-                    An agent can&apos;t be accountable for its own work. Claude could run the whole
-                    loop and approve itself, so Camus pairs it with Codex, made by a competitor,
-                    whose verdict it can&apos;t override. The pairing is the point.
+                    Real accountability comes from outside. Claude could run the whole loop and sign
+                    off on itself, so Camus pairs it with Codex, made by a competitor, and abides by
+                    its verdict. The pairing is the point.
                   </p>
                 </div>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -104,7 +104,7 @@ export default function Home() {
               <Reveal className="ev">
                 <p className="ev-cap">
                   A clean review still has to clear the repo&apos;s own checks.{' '}
-                  <em>If no verifier runs, the run fails.</em>
+                  <em>A green run means real checks passed.</em>
                 </p>
                 <Artifact tone="dark" path="camus verify" label="A verification run">
 {`$ pnpm type-check     `}<span className="ok">ok</span>{`
@@ -139,7 +139,7 @@ $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
                 <div>
                   <h2 className="sec-h2">
                     Unattended,<br />
-                    <em>not unaccountable.</em>
+                    <em>and accountable.</em>
                   </h2>
                   <p className="sec-sub">
                     It stays quiet when that is safe, and asks a real question when a task is
@@ -166,7 +166,7 @@ $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
             <div className="evs">
               <Reveal className="ev">
                 <p className="ev-cap">
-                  When it genuinely cannot decide, it stops and asks you. <em>Your answer resumes the run.</em>
+                  When a call is genuinely ambiguous, it stops and asks you. <em>Your answer resumes the run.</em>
                 </p>
                 <Artifact path="~/.camus/reports/feat-9c2.json" label="A run paused for a human">
 {`  `}<span className="k">&quot;status&quot;</span>{`:   `}<span className="rej">&quot;needs_human&quot;</span>{`,
@@ -195,7 +195,7 @@ $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
             </Reveal>
             <Reveal>
               <div className="creed">
-                <p>It runs on two rival models, so nothing in the loop can approve its own work.</p>
+                <p>It runs on two rival models, so every change answers to an outside reviewer.</p>
                 <p>You decide how far it runs alone, and it logs every judgment call with the reasoning behind it.</p>
                 <p>It runs unwatched, so the checks are what let you trust a green run.</p>
               </div>
