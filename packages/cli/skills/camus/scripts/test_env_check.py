@@ -48,49 +48,49 @@ def test_required_node_none_when_unspecified():
 
 def test_node_major_mismatch_flagged():
     repo = _repo({".node-version": "22"})
-    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v18.4.0")
+    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v18.4.0", env={})
     assert any("node major mismatch" in i for i in issues)
 
 
 def test_node_match_ok():
     repo = _repo({".node-version": "22"})
-    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.5.0")
+    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.5.0", env={})
     assert not any("node" in i for i in issues)
 
 
 def test_node_range_constraint_satisfied_by_newer_major():
     # engines ">=20.6" is a range, not a pin — node 22 satisfies it (hive-mind false positive)
     repo = _repo({"package.json": '{"engines":{"node":">=20.6"}}'})
-    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.20.0")
+    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.20.0", env={})
     assert not any("node major mismatch" in i for i in issues)
 
 
 def test_node_range_constraint_still_flags_older_major():
     repo = _repo({"package.json": '{"engines":{"node":">=20.6"}}'})
-    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v18.4.0")
+    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v18.4.0", env={})
     assert any("node major mismatch" in i for i in issues)
 
 
 def test_node_compound_range_respects_upper_bound():
     # Audit 2026-06-11: ">=20.6 <21" must REJECT node 22 (the lower-bound shortcut was admitting it).
     repo = _repo({"package.json": '{"engines":{"node":">=20.6 <21"}}'})
-    assert any("node major mismatch" in i for i in E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.0.0"))
+    assert any("node major mismatch" in i for i in E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.0.0", env={}))
     # …and still ACCEPT an in-range major.
     repo2 = _repo({"package.json": '{"engines":{"node":">=20.6 <21"}}'})
-    assert not any("node major mismatch" in i for i in E.check_env(repo2, which=ALL_PRESENT, node_version=lambda: "v20.8.0"))
+    assert not any("node major mismatch" in i for i in E.check_env(repo2, which=ALL_PRESENT, node_version=lambda: "v20.8.0", env={}))
 
 
 def test_node_strict_lower_bound_is_exclusive():
     # Audit 2026-06-11 (P3): ">20 <22" must EXCLUDE node 20 (">" is strict, not ">=").
     repo = _repo({"package.json": '{"engines":{"node":">20 <22"}}'})
-    assert any("node major mismatch" in i for i in E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v20.0.0"))
+    assert any("node major mismatch" in i for i in E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v20.0.0", env={}))
     repo2 = _repo({"package.json": '{"engines":{"node":">20 <22"}}'})
-    assert not any("node major mismatch" in i for i in E.check_env(repo2, which=ALL_PRESENT, node_version=lambda: "v21.0.0"))
+    assert not any("node major mismatch" in i for i in E.check_env(repo2, which=ALL_PRESENT, node_version=lambda: "v21.0.0", env={}))
 
 
 def test_node_caret_constraint_requires_same_major():
     repo = _repo({"package.json": '{"engines":{"node":"^20.6"}}'})
-    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.0.0")
+    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.0.0", env={})
     assert any("node major mismatch" in i for i in issues)
 
 
@@ -98,30 +98,31 @@ def test_node_caret_constraint_requires_same_major():
 
 def test_deps_missing_flagged():
     repo = _repo({"package.json": '{"scripts":{"test":"vitest"}}', "pnpm-lock.yaml": ""})
-    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.0.0")
+    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.0.0", env={})
     assert any("node_modules missing" in i for i in issues)
 
 
 def test_deps_present_ok():
     repo = _repo({"package.json": '{"scripts":{"test":"vitest"}}', "pnpm-lock.yaml": "",
                   "node_modules/": ""})
-    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.0.0")
+    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.0.0", env={})
     assert not any("node_modules" in i for i in issues)
 
 
 # --- toolchain on PATH -----------------------------------------------------
 
 def test_missing_toolchain_flagged():
+    # Fixlet 2026-06-11: env={} (here and in every auto-detect check_env call) — without it a session-exported CAMUS_VERIFY_CMD leaks in via detect_checks, replaces the pnpm check with `bash -lc`, and fails this test spuriously.
     repo = _repo({"package.json": '{"scripts":{"test":"vitest"}}', "pnpm-lock.yaml": "",
                   "node_modules/": ""})
-    issues = E.check_env(repo, which=NONE_PRESENT, node_version=lambda: "v22.0.0")
+    issues = E.check_env(repo, which=NONE_PRESENT, node_version=lambda: "v22.0.0", env={})
     assert any("pnpm" in i and "not on PATH" in i for i in issues)
 
 
 def test_ready_when_all_good():
     repo = _repo({"package.json": '{"scripts":{"test":"vitest"}}', "pnpm-lock.yaml": "",
                   "node_modules/": "", ".node-version": "22"})
-    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.9.0")
+    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.9.0", env={})
     assert issues == []
 
 

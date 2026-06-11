@@ -54,8 +54,11 @@ usage: npx camus-cli <command>
                        steer "<guidance>"        steer the next task
                        steer --task <id> "<g>"   steer one specific task
                        steer --pause             halt there (resumable) · --show · --clear
+  reconcile [...]    landed a task's work BY HAND? tell camus, with evidence (no JSON surgery):
+                       reconcile <taskId> --commit <sha>   sha must be ON the feat branch
+                       options: --feat <id> · --repo <path> · --remove-worktree
   resume       list interrupted feat runs (canonical resumeArgs, JSON)
-  version      print version
+  version      print version (also -v / --version)
 
 per-run recipe (from your repo):
   npx camus-cli check
@@ -96,8 +99,12 @@ switch (cmd) {
   case 'steer':
     py('steer.py', rest);
     break;
+  case 'reconcile':
+    py('reconcile.py', rest);
+    break;
   case 'version':
   case 'v':
+  case '-v':   // the `--` strip above turns `--version` into `version`, but leaves `-v` alone
     console.log(pkg.version);
     break;
   case 'help':

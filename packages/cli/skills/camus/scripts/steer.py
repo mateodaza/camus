@@ -19,7 +19,9 @@ through the same audited channel as a needs_human answer (plan + implement conte
 a graceful, resumable halt. If no feat is running, the note would never be consumed — refused.
 Delivery is best-effort: the run consumes the note at its next task boundary and logs what it
 applied (watch `camus status`); steered answers apply to the CURRENT run only and do not
-survive a pause/resume.
+survive a pause/resume. Steers issued while a note is still pending MERGE into it instead of
+clobbering it (answers compose per-task with newest-per-key winning, guidance updates only when
+re-given, pause is sticky) — a multi-task steer is just repeated `--task` calls.
 """
 import argparse
 import json
@@ -109,6 +111,34 @@ def steer_path(base, feat_id):
     return os.path.join(base, "steer", "%s.json" % feat_id)
 
 
+def merge_notes(existing, new):
+    """Compose a follow-up steer INTO the pending note instead of clobbering it.
+
+    Fixlet 2026-06-11 ("steer/answers must fail loudly", second half): write_note used to
+    overwrite, so a second `--task` call silently dropped the first task's answer — a
+    multi-task steer was not expressible from the CLI. Merge rules:
+      answers  — map-merge: existing answers preserved, new keys added, same-key newest wins
+                 (the human's latest word on a task is the one that should land);
+      guidance — newest wins only when THIS invocation provides one; absent guidance in a
+                 follow-up must not erase what's already queued;
+      pause    — sticky-true: once you've asked the run to halt, a later answer/guidance
+                 steer must not silently un-pause it (un-pausing is `--clear` + re-steer).
+    Pure dict-in/dict-out (no I/O) so the semantics are testable without a filesystem.
+    isinstance guards: a hand-edited note that parses but has a non-map `answers` is
+    treated as having none rather than crashing the CLI mid-steer."""
+    merged = dict(existing)
+    ex_answers, new_answers = existing.get("answers"), new.get("answers")
+    if isinstance(ex_answers, dict) or isinstance(new_answers, dict):
+        answers = dict(ex_answers) if isinstance(ex_answers, dict) else {}
+        answers.update(new_answers if isinstance(new_answers, dict) else {})
+        merged["answers"] = answers
+    if new.get("guidance") is not None:
+        merged["guidance"] = new["guidance"]
+    if existing.get("pause") is True or new.get("pause") is True:
+        merged["pause"] = True
+    return merged
+
+
 def write_note(base, feat_id, note):
     path = steer_path(base, feat_id)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -118,6 +148,25 @@ def write_note(base, feat_id, note):
         json.dump(note, fh, indent=2)
         fh.write("\n")
     return path
+
+
+def write_note_merged(base, feat_id, note):
+    """Compose `note` with any PENDING note and write the result. Returns (path, warning|None).
+
+    Audit P1 2026-06-11: watch's keypress handlers called raw write_note, so an interactive
+    pause-then-guidance CLOBBERED the pending note despite the CLI's merge rules. This is the
+    one write path callers other than main() should use: parseable pending → merge_notes;
+    present-but-CORRUPT pending → replaced, with a warning string the caller must surface
+    (silently swallowing a lost steer is the exact failure the fixlet exists to kill)."""
+    path = steer_path(base, feat_id)
+    existing, problem = _read_json(path)
+    warning = None
+    if problem == "corrupt":
+        warning = ("pending note %s was not valid JSON — replaced; anything it carried must "
+                   "be re-issued" % path)
+    elif existing is not None:
+        note = merge_notes(existing, note)
+    return write_note(base, feat_id, note), warning
 
 
 def main(argv=None):
@@ -173,9 +222,28 @@ def main(argv=None):
         ap.print_help()
         return 1
 
+    # A pending note means an earlier steer hasn't been consumed yet — compose, don't clobber
+    # (fixlet 2026-06-11: a second `--task` call was silently dropping the first task's answer).
+    existing, problem = _read_json(path)
+    merged = False
+    if problem == "corrupt":
+        # Merging into garbage is impossible and silently replacing it would hide that an
+        # earlier steer was lost. Replace, but say so LOUDLY and name the file — the engine
+        # side halts on malformed notes (handled elsewhere); the CLI side must not be quieter.
+        print("steer: WARNING — pending note %s is not valid JSON; discarding it and writing "
+              "this note fresh (anything the old note carried must be re-issued)" % path,
+              file=sys.stderr)
+    elif existing is not None:
+        note = merge_notes(existing, note)
+        merged = True
+
     write_note(args.dir, feat_id, note)
     print("steer note for %s written → applied at the next task boundary:" % feat_id)
     print("  %s" % json.dumps(note))
+    if merged:
+        answers = note.get("answers")
+        n = len(answers) if isinstance(answers, dict) else 0
+        print("merged with the pending note%s" % (" (%d answer(s) total)" % n if n else ""))
     print("(change your mind: `camus steer --clear` · watch: `camus status`)")
     return 0
 

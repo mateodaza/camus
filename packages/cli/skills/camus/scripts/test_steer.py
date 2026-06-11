@@ -4,7 +4,7 @@
 import json
 import os
 import tempfile
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 
 import steer as ST
@@ -150,6 +150,114 @@ def test_show_reports_corrupt_note():
         _write_raw(os.path.join(base, "steer", "f1.json"), "not json at all")
         with redirect_stdout(StringIO()):
             assert ST.main(["--show", "--dir", base]) == 1
+
+
+# --- merge, don't clobber (fixlet 2026-06-11) -------------------------------
+# A second steer before the note is consumed must COMPOSE with the pending one:
+# answers map-merge (newest-per-key wins), guidance updates only when re-given,
+# pause is sticky-true. Clobbering silently dropped the first --task answer.
+
+def test_second_task_steer_merges_answers():
+    with tempfile.TemporaryDirectory() as base:
+        _feat(base, "f1")
+        assert ST.main(["keep the old API", "--task", "task-a", "--dir", base]) == 0
+        buf = StringIO()
+        with redirect_stdout(buf):
+            assert ST.main(["drop the cache", "--task", "task-b", "--dir", base]) == 0
+        assert _note(base, "f1")["answers"] == {"task-a": "keep the old API",
+                                                "task-b": "drop the cache"}
+        assert "merged with the pending note (2 answer(s) total)" in buf.getvalue()
+
+
+def test_same_task_answer_newest_wins():
+    with tempfile.TemporaryDirectory() as base:
+        _feat(base, "f1")
+        assert ST.main(["first thought", "--task", "task-a", "--dir", base]) == 0
+        with redirect_stdout(StringIO()):
+            assert ST.main(["actually, do this", "--task", "task-a", "--dir", base]) == 0
+        assert _note(base, "f1")["answers"] == {"task-a": "actually, do this"}
+
+
+def test_pause_sticky_across_follow_up_steers():
+    # Once the human asked for a halt, a later answer/guidance steer must NOT un-pause —
+    # un-pausing is an explicit --clear + re-steer, never a side effect.
+    with tempfile.TemporaryDirectory() as base:
+        _feat(base, "f1")
+        assert ST.main(["--pause", "--dir", base]) == 0
+        with redirect_stdout(StringIO()):
+            assert ST.main(["answer while paused", "--task", "task-a", "--dir", base]) == 0
+        note = _note(base, "f1")
+        assert note["pause"] is True
+        assert note["answers"] == {"task-a": "answer while paused"}
+
+
+def test_guidance_updates_only_when_regiven():
+    # A --task follow-up carries no guidance — the queued guidance must survive it;
+    # a guidance follow-up DOES carry one — newest wins.
+    with tempfile.TemporaryDirectory() as base:
+        _feat(base, "f1")
+        assert ST.main(["use adapter B", "--dir", base]) == 0
+        with redirect_stdout(StringIO()):
+            assert ST.main(["keep the old API", "--task", "task-a", "--dir", base]) == 0
+        note = _note(base, "f1")
+        assert note["guidance"] == "use adapter B"
+        assert note["answers"] == {"task-a": "keep the old API"}
+        with redirect_stdout(StringIO()):
+            assert ST.main(["use adapter C", "--dir", base]) == 0
+        assert _note(base, "f1")["guidance"] == "use adapter C"
+
+
+def test_unparseable_pending_note_replaced_with_loud_warning():
+    # Can't merge into garbage; replacing silently would hide that an earlier steer was lost.
+    # The warning must name the file so the human can see what was discarded.
+    with tempfile.TemporaryDirectory() as base:
+        _feat(base, "f1")
+        note_path = os.path.join(base, "steer", "f1.json")
+        _write_raw(note_path, '{"answers": {"task-a": "trunc')
+        err = StringIO()
+        with redirect_stdout(StringIO()), redirect_stderr(err):
+            assert ST.main(["fresh guidance", "--dir", base]) == 0
+        note = _note(base, "f1")
+        assert note["guidance"] == "fresh guidance"
+        assert "answers" not in note            # garbage was discarded, not resurrected
+        assert "WARNING" in err.getvalue() and note_path in err.getvalue()
+
+
+def test_integration_pending_feat_refuses_steer():
+    # Audit P2 follow-up (2026-06-11): a fully-reconciled feat (all tasks done by hand, integration
+    # verify still owed) has NO task boundary left to consume a note — steer must refuse it the
+    # same way it refuses done/halted feats.
+    with tempfile.TemporaryDirectory() as base:
+        _feat(base, "f1", status="integration_pending")
+        err = StringIO()
+        with redirect_stderr(err):
+            assert ST.main(["go faster", "--feat", "f1", "--dir", base]) == 1
+        assert "not running" in err.getvalue()
+        assert _note(base, "f1") is None
+
+
+# --- write_note_merged: the one write path for non-CLI callers (audit P1 2026-06-11) -------
+
+def test_write_note_merged_composes_with_pending():
+    # watch's keypresses go through here — same merge rules as the CLI, so an interactive
+    # pause no longer clobbers queued answers (the audit's exact sequence).
+    with tempfile.TemporaryDirectory() as base:
+        _feat(base, "f1")
+        ST.write_note(base, "f1", {"answers": {"task-a": "keep it"}})
+        _, warn = ST.write_note_merged(base, "f1", {"pause": True})
+        assert warn is None
+        note = _note(base, "f1")
+        assert note["pause"] is True and note["answers"] == {"task-a": "keep it"}
+
+
+def test_write_note_merged_replaces_corrupt_with_warning():
+    with tempfile.TemporaryDirectory() as base:
+        _feat(base, "f1")
+        note_path = ST.steer_path(base, "f1")
+        _write_raw(note_path, "not json")
+        _, warn = ST.write_note_merged(base, "f1", {"guidance": "go"})
+        assert warn is not None and "re-issued" in warn
+        assert _note(base, "f1")["guidance"] == "go"
 
 
 # --- stdlib runner (no pytest required) ------------------------------------
