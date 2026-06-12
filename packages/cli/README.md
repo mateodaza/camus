@@ -328,6 +328,15 @@ Then `/camus-feat` with your task list (add `posture:"oneshot"` for one-review s
 on work you trust), or `/camus-loop <one task>`. The feature report lands in
 `~/.camus/reports/<featId>.json`. The branch is left for you to merge.
 
+`camus retro` reads that history back, read-only — never a model call, never a write.
+It prints a one-liner per feat (status, posture, task count, tokens), aggregates
+(status/posture mix, review-rounds, per-task token p50/p90), and a few evidence-gated
+observations: each needs at least three supporting data points and cites them inline,
+otherwise it prints `insufficient data (N runs)` rather than guess from a thin pile. Add
+`--json` to emit just the aggregate for a script. The report schema has shifted across
+versions, so every field is optional — older reports without posture or token counts still
+read cleanly.
+
 ## Tests
 
 Pure stdlib, no network, no dependencies. 656 assertions across 19 suites:
