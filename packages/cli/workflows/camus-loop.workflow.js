@@ -918,11 +918,20 @@ ${VERIFY_OATH}`,
   // HEAD BINDING (design review 2026-06-12, run-6 follow-through): the porcelain snapshot can't
   // see edit→COMMIT→rerun — that leaves a clean tree, a green verdict, and a review-bypassing
   // commit on the branch. verify.py names the HEAD it certified; when the caller knows which sha
-  // the gate sealed, any divergence is an integrity failure, never a verdict. Checked before
-  // inconclusive: a head that isn't the sealed one certifies nothing either way.
-  if (expectedHead && typeof verify.head === 'string' && verify.head && verify.head !== expectedHead) {
-    return { ok: 'fail', stage: 'verify', failures: [{ stage: 'integrity', kind: 'head_mismatch',
-      log_tail: `verify certified HEAD ${verify.head} but the gate sealed ${expectedHead} — the branch moved between commit and verify` }] }
+  // the gate sealed, a GREEN must name exactly that sha. A green with NO head is fail-CLOSED
+  // (publish audit P2: accepting an unnamed green re-opens the run-6 hole — a fabricated
+  // {pass:true} relay simply omits the field). REDs and inconclusives pass through un-bound:
+  // binding gates what may be BELIEVED, not what may be reported.
+  if (expectedHead && verify.pass === true) {
+    const certified = (typeof verify.head === 'string' && verify.head) ? verify.head : null
+    if (!certified) {
+      return { ok: 'fail', stage: 'verify', failures: [{ stage: 'integrity', kind: 'head_missing',
+        log_tail: `verify reported GREEN without naming the HEAD it certified — the gate sealed ${expectedHead}; an unnamed green proves nothing about it` }] }
+    }
+    if (certified !== expectedHead) {
+      return { ok: 'fail', stage: 'verify', failures: [{ stage: 'integrity', kind: 'head_mismatch',
+        log_tail: `verify certified HEAD ${certified} but the gate sealed ${expectedHead} — the branch moved between commit and verify` }] }
+    }
   }
   if (verify.inconclusive) return { ok: 'inconclusive', stage: 'verify', failures: verify.failures || [] }
   return { ok: verify.pass === true ? 'pass' : 'fail', stage: 'verify', failures: verify.failures || [] }

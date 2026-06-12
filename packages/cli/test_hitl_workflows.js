@@ -92,7 +92,8 @@ const happyTail = {
   review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
   commit: J({ committed: true, sha: 'abc123' }),
   prep: J({ prepped: true, ran: [] }),
-  verify: J({ pass: true, failures: [] }),
+  // head names the sha happyTail's commit stub seals — head-bound greens (publish audit P2).
+  verify: J({ pass: true, failures: [], head: 'abc123' }),
 }
 const cls = { classify: { tier: 'trivial', reason: 'x' } }
 // Ask-gate tests must NOT be trivial: a trivial tier SKIPS planning (clarity forced to 'clear'),
@@ -184,7 +185,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   const parkOk = { park: J({ committed: true, sha: 'p4rk1234' }) }
   {
     // verify GREEN on a non-converged review → DECISION POINT (verifyClean:true), not a plain failure.
-    const { res, calls } = await runLoop({ task: 't', roundCap: 5 }, { ...stuckBase, ...parkOk, verify: J({ pass: true, failures: [] }) })
+    const { res, calls } = await runLoop({ task: 't', roundCap: 5 }, { ...stuckBase, ...parkOk, verify: J({ pass: true, failures: [], head: 'p4rk1234' }) })
     ok('S10a review_unresolved + verify GREEN → verifyClean true', res.status === 'review_unresolved' && res.verifyClean === true, res.status + '/' + res.verifyClean)
     ok('S10a verify actually ran on the halt (ground truth consulted)', calls.includes('verify'))
     ok('S10a park precedes verify (seal, then certify)', calls.indexOf('park') < calls.indexOf('verify'), calls.join(','))
@@ -206,7 +207,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // the NOTE carries it.
   {
     const { res, calls, prompts } = await runLoop({ task: 't', roundCap: 5 },
-      { ...stuckBase, verify: J({ pass: true, failures: [] }), park: J({ committed: true, sha: 'p4rk1234' }) })
+      { ...stuckBase, verify: J({ pass: true, failures: [], head: 'p4rk1234' }), park: J({ committed: true, sha: 'p4rk1234' }) })
     ok('S21 verify-clean halt parks a commit', calls.includes('park'), calls.join(','))
     ok('S21 park message is the labeled chore (no verdict claimed pre-verify)',
       !!prompts.park && prompts.park.includes('chore(camus): park') && prompts.park.includes('(review-flagged)') && !prompts.park.includes('verify-green'))
@@ -295,7 +296,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     'land-resolve': wtPath('t'),
     commit: J({ committed: true, sha: 'land1' }),
     prep: J({ prepped: true, ran: [] }),
-    verify: J({ pass: true, failures: [] }),
+    verify: J({ pass: true, failures: [], head: 'land1' }),
   }
   {
     const { res, calls } = await runLoop({ task: 't', land: true }, landStubs)
@@ -444,7 +445,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       ...clsStd, ...planOf('clear', ''),
       implement: { worktree_path: wtPath('t', salt), branch: 'b', summary: 's', decisions: [] },
       review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
-      commit: J({ committed: true, sha: 'abc' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [] }),
+      commit: J({ committed: true, sha: 'abc' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'abc' }),
     }
     const { res, calls, prompts } = await runLoop({ task: 't', idSalt: salt }, stubs)
     ok('S17 review command carries the heartbeat touch', (prompts[reviewLbl(calls, 1)] || '').includes(hb))
@@ -485,7 +486,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     let r22 = 0
     const stubs = {
       ...clsStd, ...planOf('clear', ''), implement: happyTail.implement, ...cleanVerify,
-      commit: J({ committed: true, sha: 'abc123' }),
+      commit: J({ committed: true, sha: 'abc123' }), verify: J({ pass: true, failures: [], head: 'abc123' }),
       review: () => { r22++; return r22 <= 2 ? J({ pending: true, handle, last_event_age: 12 }) : J({ ran: true, clean: true, blocking: [], nonblocking: [] }) },
     }
     const { res, calls, prompts } = await runLoop({ task: 't' }, stubs)
@@ -516,7 +517,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     let rc = 0
     const stubs = {
       ...clsStd, ...planOf('clear', ''), implement: happyTail.implement, ...cleanVerify,
-      commit: J({ committed: true, sha: 'abc123' }),
+      commit: J({ committed: true, sha: 'abc123' }), verify: J({ pass: true, failures: [], head: 'abc123' }),
       review: () => { rc++; return rc === 1 ? J({ pending: true, handle, last_event_age: 4 }) : J({ ran: true, clean: true, blocking: [], nonblocking: [] }) },
     }
     const { res, calls } = await runLoop({ task: 't' }, stubs)
@@ -543,7 +544,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const calls2 = []
     await fn({ task: 't' }, makeAgent({ ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
       review: J({ ran: true, clean: true, blocking: [], nonblocking: [], usage: { input_tokens: 15655, output_tokens: 900, reasoning_output_tokens: 4000 } }),
-      commit: J({ committed: true, sha: 'abc123' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [] }) }, calls2),
+      commit: J({ committed: true, sha: 'abc123' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'abc123' }) }, calls2),
       () => {}, (m) => logs.push(m), async () => { throw new Error('no workflow') }, undefined)
     ok('S22d codex usage in the clean-round log', logs.some((m) => /codex ~16k in\/900 out \(4000 reasoning\)/.test(m)), logs.filter((m) => /CLEAN/.test(m)).join(' | '))
   }
@@ -561,7 +562,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const stubs = {
       ...clsStd, ...planOf('clear', ''), implement: happyTail.implement, fix: '',
       review: J({ ran: true, clean: false, blocking: [finding], nonblocking: [] }),
-      commit: J({ committed: true, sha: 'one5h0t' }), ...cleanVerify,
+      commit: J({ committed: true, sha: 'one5h0t' }), ...cleanVerify, verify: J({ pass: true, failures: [], head: 'one5h0t' }),
     }
     const { res, calls } = await runLoop({ task: 't', posture: 'oneshot', roundCap: 5 }, stubs)
     ok('S23b oneshot blocking → done_with_findings', res.status === 'done_with_findings', res.status)
@@ -598,7 +599,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
       review: J({ ran: true, clean: false, blocking: [finding], nonblocking: [] }),
       fix: { resolutions: [{ title: 'edge case', resolution: 're-exported the symbol from the original module' }] },
-      commit: J({ committed: true, sha: 'c1' }), ...cleanVerify,
+      commit: J({ committed: true, sha: 'c1' }), ...cleanVerify, verify: J({ pass: true, failures: [], head: 'c1' }),
     }
     const { res, prompts } = await runLoop({ task: 't', posture: 'oneshot' }, stubs)
     ok('S24 claimed resolution attached to the verbatim finding', res.status === 'done_with_findings' && res.findings[0].claimedResolution === 're-exported the symbol from the original module', JSON.stringify(res.findings))
@@ -618,7 +619,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       ...clsStd, ...planOf('clear', ''),
       implement: { worktree_path: wtPath('t', salt), branch: 'b', summary: 's', decisions: [] },
       review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
-      commit: J({ committed: true, sha: 'c1' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [] }),
+      commit: J({ committed: true, sha: 'c1' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'c1' }),
     }
     const clean = await runLoop({ task: 't', idSalt: salt }, { ...base25, containment: '' })
     ok('S25a clean main tree → done, containment checked', clean.res.status === 'done' && clean.calls.includes('containment:implement'), clean.res.status + ' ' + clean.calls.join(','))
@@ -711,7 +712,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     'env-check': { ready: true, exitCode: 0, output: 'ok' },
     'baseline-verify': J({ pass: true, failures: [] }),
     'env-recheck': { ready: true, exitCode: 0, output: 'ok' },
-    'integration-verify': J({ pass: true, failures: [] }),
+    'integration-verify': J({ pass: true, failures: [], head: featMerge.after }),   // a bound green must name the proven tip
     merge: featMerge,
     'merge-receipt': J(featMerge),
     'merge-head': featMerge.after,   // live branch tip sits exactly where the receipt says
@@ -898,7 +899,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     // (c) crash AFTER the merge → already-up-to-date + prior-merge-commit evidence → same restore.
     const upToDateMerge = { merged: true, committed: false, alreadyUpToDate: true, priorMergeCommit: 'deadbeef', before: 'aaa', after: 'aaa' }
     const r3 = await runFeat({ feat: 'F', tasks: ['only task'], posture: 'oneshot' },
-      { ...featResume, merge: upToDateMerge, 'merge-receipt': J(upToDateMerge), 'merge-head': upToDateMerge.after },
+      { ...featResume, merge: upToDateMerge, 'merge-receipt': J(upToDateMerge), 'merge-head': upToDateMerge.after, 'integration-verify': J({ pass: true, failures: [], head: upToDateMerge.after }) },
       [{ status: 'done', branch: 'camus/feat/x/only', commit_sha: 'land1', landed: true, decisions: [] }])
     ok('F24c prior-merge evidence path restores done_with_findings too',
       !!r3.stateJSON && r3.stateJSON.tasks[0].status === 'done_with_findings' && r3.res && r3.res.status === 'done_with_findings',
@@ -1178,6 +1179,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       ...featBase,
       preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(mid) },
       merge: crashedMerge, 'merge-receipt': J(crashedMerge), 'merge-head': crashedMerge.after,
+      'integration-verify': J({ pass: true, failures: [], head: crashedMerge.after }),
     }
     const r3 = await runFeat({ feat: 'F', tasks: ['only task'] }, featCrashed,
       [{ status: 'done', branch: 'camus/feat/x/only', commit_sha: null, landed: true, decisions: [] }])
@@ -1191,6 +1193,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       ...featBase,
       preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(mid) },
       merge: emptyMerge, 'merge-receipt': J(emptyMerge), 'merge-head': emptyMerge.after,
+      'integration-verify': J({ pass: true, failures: [], head: emptyMerge.after }),
     }
     const r4 = await runFeat({ feat: 'F', tasks: ['only task'] }, featEmpty,
       [{ status: 'done', branch: 'camus/feat/x/only', commit_sha: null, landed: true, decisions: [] }])
@@ -1304,6 +1307,24 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       lpBad.res.status === 'verify_failed' && JSON.stringify(lpBad.res.failures || []).includes('head_mismatch'), lpBad.res.status)
     const lpGood = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail, verify: J({ pass: true, failures: [], head: 'abc123' }) })
     ok('F35j loop verify green on the sealed head → done', lpGood.res.status === 'done', lpGood.res.status)
+    // F35k/l (publish audit P2): a sealed green with NO head is fail-CLOSED — accepting an
+    // unnamed green re-opens the run-6 hole (a fabricated {pass:true} simply omits the field).
+    const lpNoHead = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail, verify: J({ pass: true, failures: [] }) })
+    ok('F35k loop GREEN without a head, sha sealed → verify_failed with head_missing',
+      lpNoHead.res.status === 'verify_failed' && JSON.stringify(lpNoHead.res.failures || []).includes('head_missing'), lpNoHead.res.status)
+    const r7 = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, 'integration-verify': J({ pass: true, failures: [] }) }, loopDone)
+    ok('F35l feat integration GREEN without a head, merges ran → refused (integration_integrity)',
+      r7.res && r7.res.status === 'feat_integration_failed' && r7.res.stage === 'integration_integrity' && /without naming/.test(r7.res.note || ''), r7.res && (r7.res.status + '/' + r7.res.stage))
+    // F35m (publish audit P1): priorMergeCommit is VERDICT-BEARING (the crash-after-merge
+    // evidence) — a relay flipping the receipt's empty evidence to a fabricated sha would turn
+    // a true no-op into done; it must halt as a receipt mismatch instead.
+    const noopTruth = { merged: true, committed: false, alreadyUpToDate: true, before: 'x', after: 'x', priorMergeCommit: '' }
+    const fabricated = { ...noopTruth, priorMergeCommit: 'fabr1cated' }
+    const r8 = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, merge: fabricated, 'merge-receipt': J(noopTruth), 'merge-head': 'x' }, loopDone)
+    ok('F35m fabricated priorMergeCommit vs receipt → halt, never done',
+      r8.res && r8.res.status === 'feat_integration_failed' && r8.res.stage === 'merge_receipt' && /priorMergeCommit/.test(r8.res.note || ''), r8.res && (r8.res.status + '/' + r8.res.stage))
   }
   {
     const { res } = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,

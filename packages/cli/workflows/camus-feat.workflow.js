@@ -985,7 +985,11 @@ receipt file — any divergence halts the whole feat as a contract violation.`,
         : (typeof expectLive === 'string' && expectLive && liveHead !== expectLive)
           ? `the live feat branch is at ${liveHead} but merge.sh's receipt says ${rcpt.merged === true ? `the merge ended at ${rcpt.after}` : `the aborted merge left ${rcpt.before}`} — the repo moved OFF-SCRIPT after the script's verdict`
           : null
-      rcptDiff = ['merged', 'committed', 'before', 'after', 'alreadyUpToDate'].filter((k) => rcpt[k] !== undefined && rcpt[k] !== mg[k])
+      // priorMergeCommit included (publish audit 2026-06-12, P1): it is VERDICT-BEARING — the
+      // crash-after-merge evidence path trusts it to upgrade already-up-to-date into done. Left
+      // uncompared, a relay flipping null → a fabricated sha turns a true no-op into done while
+      // matching the receipt on every other field.
+      rcptDiff = ['merged', 'committed', 'before', 'after', 'alreadyUpToDate', 'priorMergeCommit'].filter((k) => rcpt[k] !== undefined && rcpt[k] !== mg[k])
     }
     if (!rcpt || stateViolation || rcptDiff.length) {
       node.status = 'ready_to_merge'   // the proven work stands; the MERGE is what's unresolved
@@ -1219,16 +1223,21 @@ ${VERIFY_OATH}`,
 const intV = asVerify(intRaw)
 state.integration = intV
 // HEAD BINDING (design review 2026-06-12): a green must prove exactly what state it certified.
-// verify.py names the HEAD it ran against; when merges ran THIS run, that head must be the last
-// receipt-proven branch tip — anything else means the branch moved between the proven merge and
-// the verify (an off-script mutation, or a verifier certifying the wrong tree), and the green
-// is refused. Both sides guarded: older gates' verify output has no `head`, and a no-merge
-// resume has no in-run expectation (a human commit on the feat branch is legitimate there).
-if (typeof intV.head === 'string' && intV.head && lastMergeHead && intV.head !== lastMergeHead) {
-  return finalize('feat_integration_failed', {
-    stage: 'integration_integrity',
-    note: `Integration verify certified HEAD ${intV.head}, but the last receipt-proven merge left ${featBranch} at ${lastMergeHead} — the branch moved between the merge and the verify, so this verdict does not certify the merged state. Inspect \`git log -3 ${featBranch}\`; if an unauthorized commit sits on top, \`git reset --hard ${lastMergeHead}\` restores the proven tip, then re-run the feat with the SAME args.`,
-  })
+// verify.py names the HEAD it ran against; when merges ran THIS run, a GREEN must name the last
+// receipt-proven branch tip — a different head means the branch moved between the proven merge
+// and the verify (an off-script mutation, or a verifier certifying the wrong tree), and a green
+// with NO head at all is fail-CLOSED (publish audit P2: accepting an unnamed green re-opens the
+// run-6 hole — a fabricated {pass:true} relay simply omits the field). A no-merge resume has no
+// in-run expectation (a human commit on the feat branch is legitimate there), and RED verdicts
+// pass through un-bound: binding gates what may be BELIEVED, not what may be reported.
+if (lastMergeHead && intV.pass === true) {
+  const certified = (typeof intV.head === 'string' && intV.head) ? intV.head : null
+  if (certified !== lastMergeHead) {
+    return finalize('feat_integration_failed', {
+      stage: 'integration_integrity',
+      note: `Integration verify ${certified ? `certified HEAD ${certified}` : 'reported GREEN without naming the HEAD it certified'}, but the last receipt-proven merge left ${featBranch} at ${lastMergeHead} — ${certified ? 'the branch moved between the merge and the verify, so' : 'an unnamed green proves nothing about the merged state, so'} this verdict is refused. Inspect \`git log -3 ${featBranch}\`; if an unauthorized commit sits on top, \`git reset --hard ${lastMergeHead}\` restores the proven tip, then re-run the feat with the SAME args.`,
+    })
+  }
 }
 if (intV.pass === true) {
   const noopTasks = state.tasks.filter((t) => t.status === 'noop').map((t) => t.taskId)

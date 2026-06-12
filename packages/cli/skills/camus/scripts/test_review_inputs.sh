@@ -220,6 +220,12 @@ check "commit gate still commits after intent-to-add" \
   "yes" "$(printf '%s' "$out" | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin)["committed"] else "no")')"
 check "new file actually committed" \
   "yes" "$(git -C "$WT" ls-tree -r --name-only HEAD | grep -qx 'newfile.ts' && echo yes || echo no)"
+# FULL sha contract (publish audit 2026-06-12, P1): the emitted sha is the expectedHead the
+# workflows bind verify to; verify.py names full HEADs, so a --short sha false-fails every
+# head-bound verify. The sha must be byte-identical to rev-parse HEAD (40 hex).
+check "commit gate emits the FULL HEAD sha (head-binding contract)" \
+  "$(git -C "$WT" rev-parse HEAD)" \
+  "$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
 
 # ── commit gate honesty (git audit 2026-06-12) ────────────────────────────────────────────────
 # P1: a failing `git add -A` stages NOTHING (all-or-nothing) — falling through to the empty-index

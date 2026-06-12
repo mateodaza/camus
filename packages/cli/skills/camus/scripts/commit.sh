@@ -51,7 +51,10 @@ if git diff --cached --quiet; then
 else
   # --no-verify kept for older-git belt; hooksPath above is the real cover (see why there).
   if "${GATE_GIT[@]}" commit -q --no-verify -m "$msg"; then
-    printf '{"committed": true, "sha": "%s"}\n' "$(git rev-parse --short HEAD)"
+    # FULL sha, never --short (publish audit 2026-06-12, P1): this sha is the expectedHead the
+    # workflows bind verify to, and verify.py names full HEADs — a short sha false-fails every
+    # head-bound verify on exact-string compare. Displays may shorten; the contract never does.
+    printf '{"committed": true, "sha": "%s"}\n' "$(git rev-parse HEAD)"
   else
     printf '{"committed": false, "reason": "commit_failed"}\n'
   fi
