@@ -1,8 +1,21 @@
 # Camus 0.3 — Roadmap
 
 Consolidated from VELOCITY-DIRECTION.md, HARNESS-DIRECTION.md, and the 0.2.5 smoke/audit
-arc (2026-06-12). 0.2.x stays claude+codex only; everything here is 0.3 scope. Items are
-ordered by decided-ness, not by build order.
+arc (2026-06-12). Items are ordered by decided-ness, not by build order.
+
+## Release split (decided 2026-06-12)
+
+Version by the promise: **patch when the promise gets keeper, minor when the promise
+changes.** The 0.2.x promise — claude+codex only, `full|oneshot`, a fixed report status
+vocabulary — is edited by items 1 and 2 below, so they are the 0.3.0. Everything additive
+ships earlier as **0.2.6** and flows automatically to `^0.2` users (npm refuses 0.3.0 on
+a `^0.2` range — correct: identity changes deserve a deliberate upgrade).
+
+- **0.2.6 (additive, soak-friendly):** the SOURCE-BOUND REFERENCES plan standard (already
+  on main), `camus retro` (item 5), runtime canary (item 3), codex-resume recovery (item 4).
+- **0.3.0 (the promise changes):** postures bookend/forward + final-review statuses +
+  plan-review contract & launch-time materialization (item 1), opt-in multi-model backends
+  behind the benchmark gate (item 2), re-review salvage (item 6 — depends on bookend).
 
 ## The design law every item must satisfy
 
