@@ -26,6 +26,14 @@ plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep �
   reviewer. Without it, nothing gets approved.
 - **node ≥ 18**, **python3**, **git**. The gate scripts are pure stdlib.
 - A repo you trust. The verifier runs that repo's own build and test commands.
+- **Git means LOCAL git only — GitHub is never involved.** No remote, no account, no
+  push (camus never pushes; merge and publish stay yours). If your project folder
+  isn't a repo yet, the entry fee is ten seconds and fully offline:
+  `git init && git add -A && git commit -m baseline`. It is not ceremony — the diff
+  is what the cross-vendor reviewer judges, the worktree is the isolation, merge-on-
+  done is the rollback, and commits are why crashed runs resume instead of leaving
+  your files in an unknown state. A mode that "just edits files and reports success"
+  would be an agent grading its own homework — the exact thing camus exists to refuse.
 
 ## Why you can trust a green run
 

@@ -888,6 +888,15 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F26b budget pause persists stage + question on the state', !!stateJSON && stateJSON.stage === 'budget' && /budget/i.test(stateJSON.question || ''), stateJSON && (stateJSON.stage + ' / ' + stateJSON.question))
   }
 
+  // F29 (product question 2026-06-12): a non-git directory gets a CRISP refusal naming the
+  // local-only entry fee — previously it flailed into a misleading dirty_tree halt.
+  {
+    const { res, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, preflight: { clean: false, base: 'NOT_A_REPO', dirtyFiles: 0, stateRaw: '' } }, [])
+    ok('F29 non-git dir → not_a_git_repo, nothing runs', res && res.status === 'not_a_git_repo' && workflowCalls === 0, res && res.status)
+    ok('F29 note names the local entry fee + no GitHub', /git init && git add -A/.test((res && res.note) || '') && /no GitHub/.test((res && res.note) || ''), res && res.note)
+  }
+
   // F27 (live smoke run-2, 2026-06-12): the NOOP RESCUE — "no_changes" with unmerged commits on
   // the task branch is a prior run's PROVEN work (a collision the agent improvised around),
   // never a no-op. The feat re-enters the task as an auto-land in the SAME run.

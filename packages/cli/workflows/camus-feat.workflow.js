@@ -397,13 +397,25 @@ Return {written:true}.`,
 phase('Preflight')
 const pf = await agent(
   `THIN preflight runner for a git repo. cd ${REPO_ARG}, then run and report (do NOT modify anything):
-1. \`${HB_TOUCH}git rev-parse --abbrev-ref HEAD\`  -> base (the current branch name)
+1. \`${HB_TOUCH}git rev-parse --abbrev-ref HEAD\`  -> base (the current branch name).
+   If this FAILS with "not a git repository", return base: "NOT_A_REPO" (clean: false, dirtyFiles: 0) and skip step 2.
 2. \`git status --porcelain\`           -> clean is true ONLY if this prints NOTHING; dirtyFiles = number of lines
 3. \`cat ${STATE_PATH} 2>/dev/null || true\` -> stateRaw = the exact file contents, or "" if the file does not exist
 Return {clean, base, dirtyFiles, stateRaw}.`,
   { model: MODEL_RUNNER, phase: 'Preflight', label: 'preflight', schema: PREFLIGHT_SCHEMA }
 )
 if (!pf) return finalize('infra_error', { stage: 'preflight', note: 'preflight agent returned nothing' })
+// NOT A GIT REPO (product question 2026-06-12): without git there is no bounded diff for the
+// cross-vendor reviewer, no isolation worktree, no merge-on-done rollback, no commit-backed
+// resume, no self-audit — i.e. none of the properties that make a green run trustworthy.
+// Refuse with the ten-second, fully-LOCAL entry fee named — previously this flailed into a
+// misleading `dirty_tree` ("uncommitted changes" in a folder with no git at all).
+if (pf.base === 'NOT_A_REPO') {
+  return finalize('not_a_git_repo', {
+    stage: 'preflight',
+    note: `This directory is not a git repository, and the camus gate is built on git: the diff is what the cross-vendor reviewer judges, the worktree is the isolation, merge-on-done is the rollback, commits are the resume. Entry fee (~10 seconds, fully LOCAL — no GitHub, no remote, no account, nothing is ever pushed):\n  git init && git add -A && git commit -m "baseline"\nThen re-run the feat with the same args.`,
+  })
+}
 state.base = pf.base || null
 if (!pf.clean) {
   return finalize('dirty_tree', {
