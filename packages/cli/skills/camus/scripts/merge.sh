@@ -19,11 +19,21 @@
 #   {"merged": bool, "committed": bool, "alreadyUpToDate": bool,
 #    "priorMergeCommit": "<sha>"|null, "before": "<sha>"|null, "after": "<sha>"|null,
 #    "conflict": bool, "error": "<text>"|null}
+#   (+ "receiptError": "<text>" ONLY when the receipt write failed — see emit())
 # Booleans are ALWAYS present; SHAs are null only when their step never ran; a failed merge
 # is ABORTED unconditionally (the no-merge-in-progress error is deliberately ignored) so no
 # MERGE_HEAD residue survives; error carries git's output VERBATIM (first ~300 chars) —
 # run-5's second finding: discarding the real error text turned a permission denial into a
 # fictional "branch missing" diagnosis.
+# RECEIPT (live smoke run-6, 2026-06-12): every verdict is ALSO written — BEFORE it is printed —
+# to ${CAMUS_MERGE_DIR:-$HOME/.camus/merges}/<taskId>.json, taskId = the LAST whitespace-
+# separated token of the message (always "camus(feat): merge <taskId>"), with the full message
+# riding inside as "msg" so the reader can sanity-match. The receipt is the script's testimony:
+# run-6's merge runner abandoned the script's conflict verdict, hand-merged, and relayed
+# success — the workflow now cross-checks the relay against this file via a second stakeless
+# reader, so a defecting relay is DETECTABLE by construction. Receipt-writing is best-effort BY
+# DESIGN: a write failure must NOT change the verdict — it appends "receiptError" to the stdout
+# JSON instead, so the workflow knows why no receipt exists.
 set -uo pipefail
 
 feat_branch="${1:?usage: merge.sh <feat-branch> <task-branch> <message>}"
@@ -34,19 +44,36 @@ msg="${3:?usage: merge.sh <feat-branch> <task-branch> <message>}"
 # contract violation, so the script makes omission impossible. Empty string → null for the
 # SHA/prior fields; the error text rides stdin (bytes → utf-8 with replacement) so arbitrary
 # git output (quotes, newlines, non-UTF8 paths) is JSON-escaped robustly and capped at ~300.
+# The receipt (run-6 testimony, see header) is written HERE, before the verdict is printed:
+# because every verdict — success, conflict, guard refusal — exits through this one function,
+# a verdict without a receipt is impossible by construction, not by discipline. A failed
+# write (unwritable dir, underivable taskId) only appends "receiptError"; never the verdict.
 emit() { # $1 merged $2 committed $3 alreadyUpToDate $4 conflict $5 prior $6 before $7 after $8 error
   printf '%s' "$8" | M_MERGED="$1" M_COMMITTED="$2" M_UPTODATE="$3" M_CONFLICT="$4" \
-    M_PRIOR="$5" M_BEFORE="$6" M_AFTER="$7" python3 -c '
+    M_PRIOR="$5" M_BEFORE="$6" M_AFTER="$7" M_MSG="$msg" \
+    M_RDIR="${CAMUS_MERGE_DIR:-${HOME:-}/.camus/merges}" python3 -c '
 import json, os, sys
 b = lambda k: os.environ[k] == "true"
 s = lambda k: os.environ[k] or None
 err = sys.stdin.buffer.read().decode("utf-8", "replace")
-print(json.dumps({
+v = {
     "merged": b("M_MERGED"), "committed": b("M_COMMITTED"),
     "alreadyUpToDate": b("M_UPTODATE"), "priorMergeCommit": s("M_PRIOR"),
     "before": s("M_BEFORE"), "after": s("M_AFTER"),
     "conflict": b("M_CONFLICT"), "error": err[:300] if err else None,
-}))'
+}
+msg = os.environ["M_MSG"]
+try:
+    task = (msg.split() or [""])[-1]
+    if not task or "/" in task:
+        raise ValueError("no usable taskId in message %r" % msg[:80])
+    rdir = os.environ["M_RDIR"]
+    os.makedirs(rdir, exist_ok=True)
+    with open(os.path.join(rdir, task + ".json"), "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(dict(v, msg=msg)) + "\n")
+except Exception as exc:
+    v["receiptError"] = ("receipt not written: %s" % exc)[:300]
+print(json.dumps(v))'
   exit 0
 }
 

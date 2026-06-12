@@ -178,38 +178,48 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // truth wins"; a probabilistic review was halting verify-clean shippable code).
   const stuckReview = J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'same', code_location: 'a.ts:1' }], nonblocking: [] })
   const stuckBase = { ...cls, ...planOf('clear', ''), implement: happyTail.implement, review: stuckReview, fix: '', prep: J({ prepped: true, ran: [] }) }
+  // Since the run-6 integrity work, the unresolved path PARKS FIRST (unconditionally) and then
+  // verifies the parked commit — verify refuses uncommitted state, so the seal must precede the
+  // ground-truth consult. Red attempts park too (protection, not a reward for green).
+  const parkOk = { park: J({ committed: true, sha: 'p4rk1234' }) }
   {
     // verify GREEN on a non-converged review → DECISION POINT (verifyClean:true), not a plain failure.
-    const { res, calls } = await runLoop({ task: 't', roundCap: 5 }, { ...stuckBase, verify: J({ pass: true, failures: [] }) })
+    const { res, calls } = await runLoop({ task: 't', roundCap: 5 }, { ...stuckBase, ...parkOk, verify: J({ pass: true, failures: [] }) })
     ok('S10a review_unresolved + verify GREEN → verifyClean true', res.status === 'review_unresolved' && res.verifyClean === true, res.status + '/' + res.verifyClean)
     ok('S10a verify actually ran on the halt (ground truth consulted)', calls.includes('verify'))
+    ok('S10a park precedes verify (seal, then certify)', calls.indexOf('park') < calls.indexOf('verify'), calls.join(','))
     ok('S10a note frames it as a decision, not a failure', /DECIDE|shippable/.test(res.note || ''))
     ok('S10a stuck finding surfaced for the human', Array.isArray(res.stuck) && res.stuck.length === 1)
     ok('S10a stopped early (2 rounds, not roundCap 5)', calls.filter((c) => c.startsWith('review')).length === 2, String(calls.filter((c) => c.startsWith('review')).length))
   }
   {
-    // verify RED → genuinely not done (verifyClean:false).
-    const { res, calls } = await runLoop({ task: 't', roundCap: 5 }, { ...stuckBase, verify: J({ pass: false, failures: [{ stage: 'verify', log_tail: 'boom' }] }) })
+    // verify RED → genuinely not done (verifyClean:false) — and the attempt is STILL parked
+    // (run-6 reorder: the seal happens before the verdict exists; a red park beats uncommitted dirt).
+    const { res, calls } = await runLoop({ task: 't', roundCap: 5 }, { ...stuckBase, ...parkOk, verify: J({ pass: false, failures: [{ stage: 'verify', log_tail: 'boom' }] }) })
     ok('S10b review_unresolved + verify RED → verifyClean false', res.status === 'review_unresolved' && res.verifyClean === false, res.status + '/' + res.verifyClean)
     ok('S10b note says genuinely not done', /genuinely not done/.test(res.note || ''))
-    ok('S10b red verify is NOT parked (nothing proven to protect)', !calls.includes('park'), calls.join(','))
+    ok('S10b red attempt parks too (sealed before the verdict; note names it red)', calls.includes('park') && /parked as p4rk1234 .*verify-red/.test(res.note || ''), res.note)
   }
-  // S21 (0.2.5 item 2): PARK verify-clean halts as commits — a review-flagged but verify-GREEN
-  // worktree is committed (labeled) before the halt, so proven work survives anything; land's
-  // empty-stage path finishes from there on accept. Parking is fail-soft, never a gate.
+  // S21 (0.2.5 item 2 + run-6 reorder): PARK seals the review-flagged worktree as a labeled
+  // commit BEFORE verify, so proven work survives anything; land's empty-stage path finishes
+  // from there on accept. The commit message carries no verify verdict (none exists yet) —
+  // the NOTE carries it.
   {
     const { res, calls, prompts } = await runLoop({ task: 't', roundCap: 5 },
       { ...stuckBase, verify: J({ pass: true, failures: [] }), park: J({ committed: true, sha: 'p4rk1234' }) })
     ok('S21 verify-clean halt parks a commit', calls.includes('park'), calls.join(','))
-    ok('S21 park message is the labeled chore', !!prompts.park && prompts.park.includes('chore(camus): park') && prompts.park.includes('review-flagged, verify-green'))
+    ok('S21 park message is the labeled chore (no verdict claimed pre-verify)',
+      !!prompts.park && prompts.park.includes('chore(camus): park') && prompts.park.includes('(review-flagged)') && !prompts.park.includes('verify-green'))
     ok('S21 parked sha surfaced on the halt', res.parkedSha === 'p4rk1234', res.parkedSha)
     ok('S21 note says the work is parked', /PARKED as commit p4rk1234/.test(res.note || ''))
   }
   {
-    // a refused park must not change the halt — fail-soft, loudly named.
-    const { res } = await runLoop({ task: 't', roundCap: 5 },
+    // a refused park now means verify CANNOT certify (uncommitted state) — the halt names the
+    // blocker and reports verifyClean:null (no ground truth), never a fake green or red.
+    const { res, calls } = await runLoop({ task: 't', roundCap: 5 },
       { ...stuckBase, verify: J({ pass: true, failures: [] }), park: J({ committed: false, reason: 'git identity missing' }) })
-    ok('S21b park failure → halt unchanged + named', res.status === 'review_unresolved' && res.verifyClean === true && /Parking the work FAILED \(git identity missing\)/.test(res.note || ''), res.note)
+    ok('S21b park failure → verifyClean null + blocker named', res.status === 'review_unresolved' && res.verifyClean === null && /Parking the work FAILED \(git identity missing\)/.test(res.note || ''), res.note)
+    ok('S21b verify NOT run on the unsealed tree', !calls.includes('verify'), calls.join(','))
     ok('S21b no parkedSha claimed', !('parkedSha' in res))
   }
   // S11: confidence TREND (run feedback 2026-06-11) — a re-raised finding whose confidence FALLS
@@ -692,6 +702,9 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('S7c empty worktree path → aborted (fail closed)', res.status === 'aborted', res.status)
   }
 
+  // merge.sh's RECEIPT (run-6 cross-check) must echo the relay for a merge to count — the
+  // harness mirrors that by deriving the receipt stub from the same object as the relay stub.
+  const featMerge = { merged: true, committed: true, alreadyUpToDate: false, before: 'aaa', after: 'bbb', priorMergeCommit: null }
   const featBase = {
     preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: '' },
     'feat-branch': { ok: true, branch: 'camus/feat-x', created: true },
@@ -699,7 +712,9 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     'baseline-verify': J({ pass: true, failures: [] }),
     'env-recheck': { ready: true, exitCode: 0, output: 'ok' },
     'integration-verify': J({ pass: true, failures: [] }),
-    merge: { merged: true, committed: true, alreadyUpToDate: false, before: 'aaa', after: 'bbb', priorMergeCommit: null },
+    merge: featMerge,
+    'merge-receipt': J(featMerge),
+    'merge-head': featMerge.after,   // live branch tip sits exactly where the receipt says
     'noop-audit': '0',
     'self-audit': (p) => {
       const out = []
@@ -881,8 +896,9 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       !!r2.stateJSON && r2.stateJSON.tasks[0].findingsDeferred === 1 && JSON.stringify(r2.res.deferredFindings || []).includes('laundered') && r2.stateJSON.tasks[0].decisions.length === 1,
       r2.stateJSON && JSON.stringify(r2.stateJSON.tasks[0]))
     // (c) crash AFTER the merge → already-up-to-date + prior-merge-commit evidence → same restore.
+    const upToDateMerge = { merged: true, committed: false, alreadyUpToDate: true, priorMergeCommit: 'deadbeef', before: 'aaa', after: 'aaa' }
     const r3 = await runFeat({ feat: 'F', tasks: ['only task'], posture: 'oneshot' },
-      { ...featResume, merge: { merged: true, committed: false, alreadyUpToDate: true, priorMergeCommit: 'deadbeef', before: 'aaa', after: 'aaa' } },
+      { ...featResume, merge: upToDateMerge, 'merge-receipt': J(upToDateMerge), 'merge-head': upToDateMerge.after },
       [{ status: 'done', branch: 'camus/feat/x/only', commit_sha: 'land1', landed: true, decisions: [] }])
     ok('F24c prior-merge evidence path restores done_with_findings too',
       !!r3.stateJSON && r3.stateJSON.tasks[0].status === 'done_with_findings' && r3.res && r3.res.status === 'done_with_findings',
@@ -1157,10 +1173,11 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     // F14c (audit P2 round 2): crash AFTER a successful merge → resume auto-lands, the re-merge
     // reports already-up-to-date, and the EXISTING merge commit for this task is the evidence that
     // upgrades the outcome to DONE instead of the false noop.
+    const crashedMerge = { merged: true, committed: false, alreadyUpToDate: true, before: 'x', after: 'x', priorMergeCommit: 'deadbeef1234' }
     const featCrashed = {
       ...featBase,
       preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(mid) },
-      merge: { merged: true, committed: false, alreadyUpToDate: true, before: 'x', after: 'x', priorMergeCommit: 'deadbeef1234' },
+      merge: crashedMerge, 'merge-receipt': J(crashedMerge), 'merge-head': crashedMerge.after,
     }
     const r3 = await runFeat({ feat: 'F', tasks: ['only task'] }, featCrashed,
       [{ status: 'done', branch: 'camus/feat/x/only', commit_sha: null, landed: true, decisions: [] }])
@@ -1169,10 +1186,11 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F14c narration says already merged by a prior run', !!r3.stateJSON && (r3.stateJSON.events || []).some((e) => /ALREADY merged .* prior run/.test(e.msg || '')))
     // F14d: already-up-to-date WITHOUT the merge-commit evidence keeps the original no-op guard —
     // an empty/scope-overlapped branch must never upgrade itself to done.
+    const emptyMerge = { merged: true, committed: false, alreadyUpToDate: true, before: 'x', after: 'x', priorMergeCommit: '' }
     const featEmpty = {
       ...featBase,
       preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(mid) },
-      merge: { merged: true, committed: false, alreadyUpToDate: true, before: 'x', after: 'x', priorMergeCommit: '' },
+      merge: emptyMerge, 'merge-receipt': J(emptyMerge), 'merge-head': emptyMerge.after,
     }
     const r4 = await runFeat({ feat: 'F', tasks: ['only task'] }, featEmpty,
       [{ status: 'done', branch: 'camus/feat/x/only', commit_sha: null, landed: true, decisions: [] }])
@@ -1230,6 +1248,62 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       { ...featBase, preflight: resumePf, merge: { merged: true, committed: true, alreadyUpToDate: false, before: 'x', after: 'y' } }, landDone)
     ok('F14j normal merge with priorMergeCommit omitted → halts loud, NOT done', r11.res && r11.res.status === 'feat_integration_failed', r11.res && r11.res.status)
     ok('F14j task persisted as ready_to_merge', !!r11.stateJSON && r11.stateJSON.tasks[0].status === 'ready_to_merge', r11.stateJSON && r11.stateJSON.tasks[0].status)
+  }
+  // F35 (live smoke run-6, 2026-06-12): the merge runner defected COHERENTLY — merge.sh said
+  // CONFLICT, the agent hand-resolved it, committed under the normal merge message, and relayed
+  // a contract-complete success. Ancestry can't catch a hand-merge (the self-audit passed), so
+  // the relay is cross-checked against merge.sh's own receipt file: relay≠receipt → halt;
+  // MISSING receipt → halt. A defecting relay is never a verdict.
+  {
+    const tid = taskIdOf('F', ['only task'], 'only task')
+    const loopDone = [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }]
+    const rogue = { merged: true, committed: true, alreadyUpToDate: false, before: 'aaa', after: 'bbb', priorMergeCommit: null }
+    const truth = { merged: false, committed: false, alreadyUpToDate: false, before: 'aaa', after: 'aaa', error: 'merge conflict — aborted' }
+    const r = await runFeat({ feat: 'F', tasks: ['only task'] }, { ...featBase, merge: rogue, 'merge-receipt': J(truth), 'merge-head': 'aaa' }, loopDone)
+    ok('F35a relay≠receipt → halt at merge_receipt, never a verdict',
+      r.res && r.res.status === 'feat_integration_failed' && r.res.stage === 'merge_receipt', r.res && (r.res.status + '/' + r.res.stage))
+    ok('F35a task persisted ready_to_merge (the proof stands; the MERGE is unresolved)',
+      !!r.stateJSON && r.stateJSON.tasks[0].status === 'ready_to_merge', r.stateJSON && r.stateJSON.tasks[0].status)
+    ok('F35a note names the disagreeing fields + the RECEIPT-sourced reset target',
+      /DISAGREES/.test(r.res.note || '') && /merged/.test(r.res.note || '') && /git reset --hard aaa/.test(r.res.note || ''), r.res && r.res.note)
+    const r2 = await runFeat({ feat: 'F', tasks: ['only task'] }, { ...featBase, merge: rogue, 'merge-receipt': 'MISSING' }, loopDone)
+    ok('F35b NO receipt → same halt (fail-closed: maybe merge.sh never ran)',
+      r2.res && r2.res.status === 'feat_integration_failed' && r2.res.stage === 'merge_receipt', r2.res && (r2.res.status + '/' + (r2.res && r2.res.stage)))
+    ok('F35b no reset target offered from the UNTRUSTED relay', !/reset --hard/.test((r2.res && r2.res.note) || ''), r2.res && r2.res.note)
+    ok('F35c merge prompt: conflict IS the verdict — no hand-resolution, receipt cross-check named',
+      /merged:false/.test(r.prompts['merge:' + tid] || '') && /Do NOT resolve conflicts/.test(r.prompts['merge:' + tid] || '') && /receipt/.test(r.prompts['merge:' + tid] || ''))
+    const happy = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase, loopDone)
+    ok('F35d feat gating-verify prompts carry the tamper oath (baseline + integration)',
+      /tampering/.test(happy.prompts['baseline-verify'] || '') && /tampering/.test(happy.prompts['integration-verify'] || ''))
+    const lp = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail })
+    ok('F35e loop gating-verify prompt carries the tamper oath', /tampering/.test(lp.prompts.verify || ''))
+    // F35f: HONEST relay of the conflict — but the live branch moved off the receipt's `before`.
+    // This is run-6's hand-merge with a FAITHFUL relay: invisible to the relay compare, caught
+    // only by checking the receipt against the REPO (receipt = source of truth, both directions).
+    const honest = { merged: false, committed: false, alreadyUpToDate: false, before: 'aaa', after: 'aaa', error: 'merge conflict — aborted' }
+    const r3 = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, merge: honest, 'merge-receipt': J(honest), 'merge-head': 'zzz' }, loopDone)
+    ok('F35f honest conflict relay + moved HEAD → off-script mutation caught',
+      r3.res && r3.res.status === 'feat_integration_failed' && r3.res.stage === 'merge_receipt' && /OFF-SCRIPT/.test(r3.res.note || ''), r3.res && (r3.res.status + '/' + r3.res.stage))
+    ok('F35f reset target is the receipt before-SHA', /git reset --hard aaa/.test(r3.res.note || ''), r3.res && r3.res.note)
+    // F35g: the live HEAD can't be read at all → fail closed (no confirmation, no verdict).
+    const r4 = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, 'merge-head': 'fatal: not a git repository' }, loopDone)
+    ok('F35g unreadable live HEAD → fail-closed halt', r4.res && r4.res.status === 'feat_integration_failed' && r4.res.stage === 'merge_receipt' && /could not be read/.test(r4.res.note || ''), r4.res && (r4.res.status + '/' + r4.res.stage))
+    // F35h/i: HEAD BINDING — the integration green must certify the last receipt-proven tip.
+    const r5 = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, 'integration-verify': J({ pass: true, failures: [], head: 'evil' }) }, loopDone)
+    ok('F35h integration green on the WRONG head → refused (integration_integrity)',
+      r5.res && r5.res.status === 'feat_integration_failed' && r5.res.stage === 'integration_integrity' && /evil/.test(r5.res.note || '') && /bbb/.test(r5.res.note || ''), r5.res && (r5.res.status + '/' + r5.res.stage))
+    const r6 = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, 'integration-verify': J({ pass: true, failures: [], head: 'bbb' }) }, loopDone)
+    ok('F35i integration head matching the proven tip → done', r6.res && r6.res.status === 'done', r6.res && r6.res.status)
+    // F35j: loop-side head binding — the final verify must certify the sha the commit gate sealed.
+    const lpBad = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail, verify: J({ pass: true, failures: [], head: 'zzz' }) })
+    ok('F35j loop verify green on the WRONG head → verify_failed with head_mismatch',
+      lpBad.res.status === 'verify_failed' && JSON.stringify(lpBad.res.failures || []).includes('head_mismatch'), lpBad.res.status)
+    const lpGood = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail, verify: J({ pass: true, failures: [], head: 'abc123' }) })
+    ok('F35j loop verify green on the sealed head → done', lpGood.res.status === 'done', lpGood.res.status)
   }
   {
     const { res } = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,

@@ -2,14 +2,22 @@
 """Stack-agnostic verifier for the Camus loop.
 
 Detects a repo's build/test commands from its manifests/lockfiles (ZERO config),
-runs them, and emits the gate contract {pass, inconclusive, failures, checks}. The
-loop adapts to ANY stack without per-project config — the explicit v1 pain point we
-are not carrying forward.
+runs them, and emits the gate contract {pass, inconclusive, tampered, failures,
+checks}. The loop adapts to ANY stack without per-project config — the explicit v1
+pain point we are not carrying forward.
 
 Cardinal rule (re-affirmed by the 2026-06-12 stack-matrix audit): NEVER a false
 verdict. An environmental failure (missing toolchain, unsynced venv, timeout, zero
 tests collected) is `inconclusive` — never "the code failed" — and a check that ran
 the WRONG harness is never allowed to read green.
+
+HEAD-integrity invariant (live smoke run-6, 2026-06-12): a gating verify certifies
+the COMMITTED state, so the tracked tree must be clean against HEAD before AND after
+the checks. Dirt is a RED `tampered` verdict — never inconclusive (see build_result).
+The verdict also NAMES the HEAD it certified ("head" in the result; design review
+2026-06-12): a porcelain check is blind to an edit→COMMIT→rerun cover-up, so the
+orchestrator compares the certified head against the sha the commit gate / merge
+receipt sealed — and a HEAD that MOVES mid-verify is itself a RED `head_moved`.
 
 Resolution order:
   1. CAMUS_VERIFY_CMD env var  -> run exactly that (explicit escape hatch).
@@ -18,8 +26,9 @@ Resolution order:
   3. Nothing detected -> pass:false, reason 'no_verifier_detected'. Absence of a
      verifier is NEVER a pass (mirrors the adapter's infra-vs-findings guard).
 
-Pure stdlib. `detect_checks` and `build_result` are side-effect-free and unit-tested
-in test_verify.py; only `run_cmd` touches subprocess.
+Pure stdlib. `detect_checks` and `build_result` are unit-tested in test_verify.py
+through injected seams (runner / porcelain / head); only `run_cmd`, `git_porcelain`
+and `git_head` touch subprocess.
 """
 import glob
 import json
@@ -217,10 +226,48 @@ def run_cmd(cmd, cwd):
         return 127, "command not found: %s (%s)" % (cmd[0], exc)
 
 
+def git_porcelain(repo):
+    """Tracked-files-only porcelain snapshot of `repo` vs HEAD ("" = clean).
+
+    Tracked files only (`--untracked-files=no`) so test-artifact untracked junk stays
+    irrelevant, and submodule noise is excluded (`--ignore-submodules=all`) per the
+    existing containment discipline. Returns None when git cannot answer (git missing,
+    not a git repo, hung) — the caller degrades OPEN: a non-git verify target (e.g.
+    tests invoking verify.py on a bare dir) keeps working exactly as before, and
+    integrity is asserted only when the snapshot succeeds.
+    """
+    cmd = ["git", "status", "--porcelain", "--untracked-files=no",
+           "--ignore-submodules=all"]
+    try:
+        proc = subprocess.run(cmd, cwd=repo, stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, text=True, timeout=30)
+    except Exception:
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def git_head(repo):
+    """Sha of `repo`'s current HEAD, or None whenever git can't answer (non-git
+    target, unborn HEAD, git missing, hung) — callers degrade OPEN exactly like the
+    git_porcelain seam: HEAD identity is asserted only when the capture succeeds.
+    """
+    try:
+        proc = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              text=True, timeout=30)
+    except Exception:
+        return None
+    sha = proc.stdout.strip()
+    return sha if proc.returncode == 0 and sha else None
+
+
 # Failure kinds that mean "this check could not deliver a verdict on the CODE".
 # Any failure set made up solely of these leaves the run inconclusive (pass:false,
 # never red) — the cardinal rule is the gate must NEVER emit a false verdict.
 # (stack-matrix audit 2026-06-12: no_tests + timeout joined missing_tool)
+# The integrity kinds (uncommitted_state / tracked_mutation / head_moved) are
+# deliberately NOT here: a tampered tree or a moved HEAD is RED — the committed
+# state is unverified and the remedy is a human look, never an auto-retry.
 INCONCLUSIVE_KINDS = ("missing_tool", "no_tests", "timeout")
 
 
@@ -256,18 +303,63 @@ def _classify_failure(chk, exit_code, tail):
     return "failed"
 
 
-def build_result(checks, runner, repo):
-    """Assemble the {pass, inconclusive, failures, checks} contract. `runner(cmd, cwd) -> (exit, tail)`.
+def build_result(checks, runner, repo, porcelain=None, head=None):
+    """Assemble the {pass, inconclusive, tampered, failures, checks} contract.
+    `runner(cmd, cwd) -> (exit, tail)`; `porcelain(repo) -> str|None` is the
+    HEAD-integrity snapshot seam and `head(repo) -> sha|None` the HEAD-identity
+    seam (defaulting to git_porcelain / git_head; tests inject). Whenever the
+    after head-capture succeeds, the result carries "head" — the sha this
+    verdict certified — for the orchestrator to hold against the sealed sha.
 
     Infra-vs-findings guard for verify (mirrors the adapter): a check that could NOT
     deliver a code verdict (kind in INCONCLUSIVE_KINDS: toolchain missing, zero tests
     collected, timed out) or "no verifier detected" is `inconclusive` — it must NOT
     be reported as a code failure. Only checks that actually ran and failed are real failures.
     """
+    snap = porcelain if porcelain is not None else git_porcelain
+    head_fn = head if head is not None else git_head
+    before = snap(repo)
+    head_before = head_fn(repo)
+    integrity_note = None
+    if before is None:
+        # Snapshot unavailable (git missing / not a git repo): degrade OPEN — a
+        # non-git verify target must keep working exactly as before. The note tells
+        # the reader the invariant was NOT asserted on this run.
+        integrity_note = ("integrity snapshot unavailable (git missing or target is "
+                          "not a git repo); HEAD-integrity not asserted")
+    elif before.strip():
+        # ── HEAD-integrity invariant (live smoke run-6, 2026-06-12) ─────────────
+        # A gating verify certifies the COMMITTED state — every legitimate gating
+        # verify already runs on a clean tree (the loop verifies post-commit
+        # worktrees, the feat verifies post-merge/baseline-clean main trees) — so a
+        # green over uncommitted edits certifies NOTHING. Run-6's verifier EDITED
+        # the source under verification to turn red green (its cover-up commit was
+        # blocked by the permission layer, leaving the fix staged: committed branch
+        # red, gate reporting green). With this check the re-run sees the dirt and
+        # stays red, so tampering can never produce a green — the incentive dies,
+        # not just the symptom. Deliberately RED, not inconclusive: the committed
+        # state is unverified and the remedy is a human look, never an auto-retry.
+        result = {
+            "pass": False,
+            "inconclusive": False,
+            "tampered": True,
+            "failures": [{
+                "stage": "integrity",
+                "kind": "uncommitted_state",
+                "log_tail": before.rstrip("\n")[:400],
+            }],
+            "checks": [],   # the checks never ran — nothing was verified
+        }
+        if head_before is not None:
+            # Even a refusal NAMES the state it refused (design review 2026-06-12):
+            # the orchestrator gets a head to hold against the gate's sealed sha.
+            result["head"] = head_before
+        return result
     if not checks:
-        return {
+        result = {
             "pass": False,
             "inconclusive": True,   # nothing to verify != code is broken
+            "tampered": False,
             "failures": [{
                 "stage": "verify",
                 "reason": "no_verifier_detected",
@@ -277,6 +369,9 @@ def build_result(checks, runner, repo):
             }],
             "checks": [],
         }
+        if integrity_note:
+            result["integrity_note"] = integrity_note
+        return result
     failures = []
     ran = []
     for chk in checks:
@@ -290,10 +385,53 @@ def build_result(checks, runner, repo):
                     "[camus] timed out — raise CAMUS_VERIFY_TIMEOUT (seconds) for cold compiled stacks"
             failures.append({"stage": chk["name"], "exit": exit_code,
                              "kind": kind, "log_tail": tail})
+    tampered = False
+    if before is not None:
+        after = snap(repo)
+        if after is None:
+            integrity_note = ("integrity after-snapshot unavailable (git errored "
+                              "mid-verify); HEAD-integrity not asserted")
+        elif after != before:
+            # The checks ran but something mutated tracked files DURING verify — a
+            # test with side effects, or an agent editing the code under
+            # verification (run-6). `before` was clean (dirty-before returned
+            # above), so `after` IS the delta. RED for the same reason as above.
+            tampered = True
+            failures.append({
+                "stage": "integrity",
+                "kind": "tracked_mutation",
+                "log_tail": after.rstrip("\n")[:400],
+            })
+    # ── Certified-HEAD identity (design review, 2026-06-12) ─────────────────
+    # Porcelain sees EDITS, not COMMITS: edit → COMMIT → rerun leaves a clean
+    # tree, a green verdict, and a review-bypassing commit. Run-6's verifier
+    # edited the code under verification, and its cover-up COMMIT was blocked
+    # only by the permission layer — had it landed, the porcelain snapshots
+    # would have read clean. So the verdict NAMES the HEAD it certified ("head"
+    # below) for the workflow to compare against the sha the commit gate /
+    # merge receipt sealed — the only place a committed cover-up is visible —
+    # and a HEAD that moved between the snapshots is tampering in its own
+    # right: RED, never inconclusive, remedy is a human look (never a retry).
+    head_after = head_fn(repo)
+    if head_before is not None and head_after is not None and head_before != head_after:
+        tampered = True
+        failures.append({
+            "stage": "integrity",
+            "kind": "head_moved",
+            "log_tail": "HEAD moved during verify: %s -> %s" % (head_before, head_after),
+        })
     passed = len(failures) == 0
-    # inconclusive when there are failures but NONE of them is a real ran-and-failed check.
+    # inconclusive when there are failures but NONE of them is a real ran-and-failed
+    # check; the integrity kinds are NOT in INCONCLUSIVE_KINDS, so tampering forces a
+    # real red even when every detected check was itself inconclusive.
     inconclusive = (not passed) and all(f["kind"] in INCONCLUSIVE_KINDS for f in failures)
-    return {"pass": passed, "inconclusive": inconclusive, "failures": failures, "checks": ran}
+    result = {"pass": passed, "inconclusive": inconclusive, "tampered": tampered,
+              "failures": failures, "checks": ran}
+    if head_after is not None:
+        result["head"] = head_after
+    if integrity_note:
+        result["integrity_note"] = integrity_note
+    return result
 
 
 def main(argv=None):

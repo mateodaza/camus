@@ -128,6 +128,15 @@ it believes itself:
   one-line cleanup, real prior work gets landed by the resume.
 - A **crash between commit and merge** restores the task's true verdict on resume, so
   proven work lands mechanically instead of being re-implemented.
+- A **merge receipt** cross-checks every merge report against the verdict `merge.sh`
+  wrote to disk as it computed it. A runner that hand-resolves a conflict the script
+  refused — and relays success — produces a divergence the feat halts on, with the
+  receipt's pre-merge SHA as the reset target. Ancestry checks can't catch a hand-merge;
+  the script's own testimony can.
+- A **verify integrity snapshot** makes a gating verify certify the *committed* state:
+  any tracked-file change present before or appearing during verification turns the
+  verdict red with the files named. An agent that "fixes" the code under verification
+  can no longer buy a green — tampering became worthless, not just detectable.
 
 ## Review postures
 

@@ -39,6 +39,10 @@ plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep �
 - **The gate catches its own drops.** A containment guard halts agents that leak edits
   into your main tree, a "no-op" with unmerged commits is rescued into an auto-land,
   and a crash between commit and merge restores the true verdict on resume.
+- **The gate doesn't trust its own runners either.** Every merge report is cross-checked
+  against the receipt `merge.sh` wrote as it computed the verdict, and a gating verify
+  goes red if any tracked file changed around it — so a runner that hand-resolves a
+  refused conflict, or "fixes" the code under verification, buys a halt, not a green.
 - **Gate-owned git runs hookless and unsigned**, so repo hooks and forced signing
   cannot abort unattended commits — and Camus never pushes, by construction.
 

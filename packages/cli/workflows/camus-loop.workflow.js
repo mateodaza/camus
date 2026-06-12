@@ -45,6 +45,14 @@ const SKILL_SCRIPTS = '"$HOME/.claude/skills/camus/scripts"'
 // that the gate JSON contract holds.
 const REVIEW_CMD = `bash ${SKILL_SCRIPTS}/review.sh`
 const VERIFY_CMD = `bash ${SKILL_SCRIPTS}/verify.sh`
+// Appended to the gating-verify prompt (live smoke run-6, 2026-06-12, feat-side finding applied
+// loop-wide): a thin verifier EDITED the code under verification to turn red green and relayed
+// pass:true. verify.py now snapshots tracked-file porcelain before/after and reports any dirt as
+// a RED integrity failure — the clause states that fact so the incentive to "help" dies.
+const VERIFY_OATH = `A RED result is a SUCCESSFUL run of this command — return it verbatim and STOP.
+Do NOT edit, stage, commit, or "fix" ANYTHING, and do NOT re-run after changing files: the script
+snapshots the tree and reports any tracked-file change as tampering (RED), so remediation can never
+turn this green — it only destroys the evidence a human needs.`
 const PREP_CMD = `bash ${SKILL_SCRIPTS}/prep.sh`     // make a fresh worktree runnable before verify
 const COMMIT_CMD = `bash ${SKILL_SCRIPTS}/commit.sh` // commit reviewed work so the branch isn't empty
 // Gate-owned git MUTATIONS live in allowlisted scripts (live smoke run-5, 2026-06-12): the
@@ -324,7 +332,10 @@ If the cd fails (directory does not exist), output exactly: MISSING`,
   log(commitResult.committed === true
     ? `Committed previously verified work (${landSha}) to ${BRANCH}.`
     : 'Land mode: stage was empty — the work was already committed on the branch; proceeding to verify.')
-  const v = await prepAndVerify(wt)
+  // Head-bound when this run made the commit; on an empty stage the proven sha lives only on the
+  // branch (a prior run's commit) and there is no in-run expectation to bind — verify's internal
+  // integrity invariants (clean tree, stable HEAD) still hold.
+  const v = await prepAndVerify(wt, landSha)
   if (v.ok === 'inconclusive') {
     return { status: 'verify_inconclusive', task: TASK, worktree: wt, branch: BRANCH, rounds: 0, landed: true, failures: v.failures,
       note: 'Land mode committed, but deterministic verify could not RUN (env not ready — see failures). Fix the environment and re-run with land:true.' }
@@ -876,7 +887,7 @@ if (ID_SALT && fixesRan) {
 // is judged against deterministic ground truth before it's ever reported (Fix 2026-06-11).
 // `wt` defaults to the implement-phase WT at CALL time (default params evaluate lazily, so the
 // land path — where WT is never initialized — can pass its own resolved path without TDZ).
-async function prepAndVerify(wt = WT) {
+async function prepAndVerify(wt = WT, expectedHead = null) {
   phase('Prep')
   const prepRaw = await agent(
     `THIN prep runner. Run EXACTLY this one command and output its stdout VERBATIM as your entire reply
@@ -899,10 +910,20 @@ Run EXACTLY this one command (the worktree path is the argument — do NOT cd, d
   ${HB_TOUCH}${VERIFY_CMD} ${JSON.stringify(wt)}
 
 Output the command's stdout VERBATIM as your entire reply (it is JSON {pass, failures}).
-No fences, no commentary.`,
+No fences, no commentary.
+${VERIFY_OATH}`,
     { model: MODEL_RUNNER, phase: 'Verify', label: 'verify' }
   )
   const verify = asVerify(verifyRaw)
+  // HEAD BINDING (design review 2026-06-12, run-6 follow-through): the porcelain snapshot can't
+  // see edit→COMMIT→rerun — that leaves a clean tree, a green verdict, and a review-bypassing
+  // commit on the branch. verify.py names the HEAD it certified; when the caller knows which sha
+  // the gate sealed, any divergence is an integrity failure, never a verdict. Checked before
+  // inconclusive: a head that isn't the sealed one certifies nothing either way.
+  if (expectedHead && typeof verify.head === 'string' && verify.head && verify.head !== expectedHead) {
+    return { ok: 'fail', stage: 'verify', failures: [{ stage: 'integrity', kind: 'head_mismatch',
+      log_tail: `verify certified HEAD ${verify.head} but the gate sealed ${expectedHead} — the branch moved between commit and verify` }] }
+  }
   if (verify.inconclusive) return { ok: 'inconclusive', stage: 'verify', failures: verify.failures || [] }
   return { ok: verify.pass === true ? 'pass' : 'fail', stage: 'verify', failures: verify.failures || [] }
 }
@@ -923,7 +944,26 @@ if (!reviewPassed && !oneshotFindings) {
   // — "deterministic ground truth wins" — consult VERIFY before reporting (Fix 2026-06-11: a
   // probabilistic review was halting verify-clean, shippable code on a stale re-flag). A verify-clean
   // halt is a DECISION POINT, never a plain failure.
-  const v = await prepAndVerify()
+  //
+  // PARK FIRST, verify the park (run-6 integrity follow-through, 2026-06-12): verify now refuses
+  // uncommitted state — a green over dirt certifies nothing — so the park (protection since the
+  // 0.2.5 trapped-work fix) moves AHEAD of the verify and becomes unconditional: seal the diff as
+  // a labeled commit, then let verify certify THAT sha, head-bound. Verify-red work parks too:
+  // the branch is camus/*, never auto-merged from this status, and a red park still beats the
+  // uncommitted thrash of runs 4–5. The park message no longer claims a verify verdict (it is
+  // written before one exists); the NOTE carries the verdict.
+  const parkRaw = await agent(
+    `THIN commit runner. Run EXACTLY this one command and output its stdout VERBATIM (JSON {committed, sha}); no fences, no commentary:
+  ${HB_TOUCH}${COMMIT_CMD} ${JSON.stringify(WT)} ${JSON.stringify('chore(camus): park ' + SLUG + ' (review-flagged)')}`,
+    { model: MODEL_RUNNER, phase: 'Verify', label: 'park' }
+  )
+  const park = extractJsonObject(parkRaw) || { committed: false, reason: 'unparseable' }
+  const parkedSha = park.committed === true ? (park.sha || null) : null
+  const parkFailed = park.committed !== true && park.reason !== 'empty'
+  log(park.committed === true
+    ? `Parked the review-flagged attempt as ${parkedSha} — sealed before the ground-truth verify.`
+    : (parkFailed ? `Park attempt FAILED (${park.reason || 'unknown'}) — the diff is uncommitted; verify cannot certify it.`
+      : 'Park: stage was empty — the attempt was already committed on the branch.'))
   const why = oscillating
     ? 'a finding RETURNED after vanishing for a round — the reviewer is oscillating (an unstable signal, not a stable disagreement)'
     : (stuckFindings
@@ -942,37 +982,28 @@ if (!reviewPassed && !oneshotFindings) {
     ...(oscillating ? { oscillating: true } : {}),
     tier, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
   }
+  if (parkFailed) {
+    // No seal → no certifiable state: verify would (rightly) refuse the uncommitted tree, and a
+    // refusal must not masquerade as code-red. Halt with the blocker named instead.
+    return { ...base, verifyClean: null,
+      note: `Review did not converge (${why}). Parking the work FAILED (${park.reason || 'unknown'}) — the diff is UNCOMMITTED in the worktree, and verify will not certify uncommitted state (integrity invariant), so there is no ground-truth verdict. Treat the worktree gently; fix the commit blocker and re-run, or accept/refine manually. Finding(s) below.${confHint}` }
+  }
+  // Head-bound to the park when THIS run sealed it; an empty stage means a prior run's commit
+  // already holds the work (no in-run expectation — the internal invariants still apply).
+  const v = await prepAndVerify(WT, parkedSha)
   if (v.ok === 'pass') {
-    // PARK (0.2.5 item 2 — kills the "trapped work" class): this worktree is verify-CLEAN but
-    // uncommitted, and an uncommitted halt is the fragile state run-4/5 thrashed on (anything
-    // that disturbs the worktree loses proven work). Commit it NOW as a labeled park so it
-    // survives everything; land's empty-stage path already knows how to finish from a committed
-    // worktree on accept. FAIL-SOFT: parking is protection, not a gate — a refused commit still
-    // halts as before, with the failure named so the human knows the work is unparked.
-    const parkRaw = await agent(
-      `THIN commit runner. Run EXACTLY this one command and output its stdout VERBATIM (JSON {committed, sha}); no fences, no commentary:
-  ${HB_TOUCH}${COMMIT_CMD} ${JSON.stringify(WT)} ${JSON.stringify('chore(camus): park ' + SLUG + ' (review-flagged, verify-green)')}`,
-      { model: MODEL_RUNNER, phase: 'Verify', label: 'park' }
-    )
-    const park = extractJsonObject(parkRaw) || { committed: false, reason: 'unparseable' }
-    const parkedSha = park.committed === true ? (park.sha || null) : null
-    const parkLine = park.committed === true
+    const parkLine = parkedSha
       ? ` The work is PARKED as commit ${parkedSha} on ${BRANCH} (review-flagged, verify-green) — it survives even if the worktree is lost.`
-      : (park.reason === 'empty'
-        ? ` The work was already committed on ${BRANCH} — nothing to park.`
-        : ` ⚠ Parking the work FAILED (${park.reason || 'unknown'}) — the verify-clean diff is still UNCOMMITTED in the worktree; treat it gently until you accept or refine.`)
-    log(park.committed === true
-      ? `Parked verify-clean work as ${parkedSha} (review-flagged) — protected pending the accept/refine decision.`
-      : `Park attempt: ${park.reason || 'failed'} — halt proceeds regardless.`)
+      : ` The work was already committed on ${BRANCH} — nothing to park.`
     return { ...base, verifyClean: true, ...(parkedSha ? { parkedSha } : {}),
       note: `Review did not converge (${why}) — BUT deterministic verify (type-check / lint / tests) PASSES on this worktree. This is likely a STALE RE-FLAG or a judgment impasse, NOT broken code. The deterministic gate says the work is shippable.${parkLine} DECIDE: accept (commit + merge the worktree as-is) or refine (address the finding below).${confHint}` }
   }
   if (v.ok === 'inconclusive') {
-    return { ...base, verifyClean: null, failures: v.failures,
-      note: `Review did not converge (${why}); deterministic verify could NOT run (env not ready — ${v.stage}). Fix the environment to get the ground-truth verdict, then decide accept vs refine. Finding(s) below.${confHint}` }
+    return { ...base, verifyClean: null, failures: v.failures, ...(parkedSha ? { parkedSha } : {}),
+      note: `Review did not converge (${why}); deterministic verify could NOT run (env not ready — ${v.stage}). Fix the environment to get the ground-truth verdict, then decide accept vs refine.${parkedSha ? ` The attempt is parked as ${parkedSha} on ${BRANCH}.` : ''} Finding(s) below.${confHint}` }
   }
-  return { ...base, verifyClean: false, failures: v.failures,
-    note: `Review did not converge (${why}) AND deterministic verify did NOT pass — the code is genuinely not done. Finding(s) + verify failures below.` }
+  return { ...base, verifyClean: false, failures: v.failures, ...(parkedSha ? { parkedSha } : {}),
+    note: `Review did not converge (${why}) AND deterministic verify did NOT pass — the code is genuinely not done.${parkedSha ? ` The attempt is parked as ${parkedSha} on ${BRANCH} (review-flagged, verify-red).` : ''} Finding(s) + verify failures below.` }
 }
 
 // ── Phase 3.4: COMMIT GATE — the reviewed change MUST land on the branch, or the merge ships
@@ -1008,8 +1039,9 @@ log(`Committed reviewed work (${COMMIT_SHA}) to ${BRANCH}${tokSuffix()}.`)
 // ── Phase 3.5 + 4: PREP + VERIFY (deterministic ground truth — final, non-negotiable gate) ─
 // Runs after review passes + commit (review/fix don't need deps). A clean review does NOT override
 // a failing verify; an env that can't run is verify_inconclusive (NOT code-red — the run-1 false
-// negative was `turbo` missing in a fresh worktree).
-const verdict = await prepAndVerify()
+// negative was `turbo` missing in a fresh worktree). Head-bound to the sha the commit gate just
+// sealed: the green must certify exactly that commit.
+const verdict = await prepAndVerify(WT, COMMIT_SHA)
 if (verdict.ok === 'inconclusive') {
   return {
     status: 'verify_inconclusive', task: TASK, worktree: WT, branch: BRANCH, rounds: round,

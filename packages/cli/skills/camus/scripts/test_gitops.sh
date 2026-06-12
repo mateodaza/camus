@@ -6,8 +6,10 @@
 # identity, never the developer's hooks/signing). Covers: the guard fences (camus-only names,
 # CAMUS_REPO_ROOT anchor), verbatim-stderr errors (run-5: a discarded error text became a
 # fictional diagnosis), hostile hooks + forced signing (the in-script -c flags must win), the
-# already-up-to-date prior-merge probe, and the conflict-abort invariant (no MERGE_HEAD
-# residue). Run:  bash test_gitops.sh
+# already-up-to-date prior-merge probe, the conflict-abort invariant (no MERGE_HEAD residue),
+# and the merge RECEIPT (run-6: the runner abandoned the script's conflict verdict and relayed
+# success — the receipt is the script's own testimony, cross-checked by the workflow).
+# Run:  bash test_gitops.sh
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(mktemp -d)"
@@ -40,6 +42,21 @@ jone() { printf '%s' "$1" | python3 -c 'import json,sys; json.load(sys.stdin)' >
 # close the command substitution)
 has()    { case "$1" in *"$2"*) echo yes ;; *) echo no ;; esac; }
 starts() { case "$1" in "$2"*)  echo yes ;; *) echo no ;; esac; }
+# receipt-vs-stdout cross-check: the receipt file's PARSED verdict fields must equal the
+# captured stdout's, field by field — the workflow's defection detector relies on exactly this.
+rmatch() { # $1 = stdout json, $2 = receipt path → yes/no
+  printf '%s' "$1" | python3 -c '
+import json, sys
+out = json.load(sys.stdin)
+try:
+    with open(sys.argv[1]) as fh:
+        rec = json.load(fh)
+except Exception:
+    print("no"); raise SystemExit
+fields = ("merged", "committed", "alreadyUpToDate", "priorMergeCommit",
+          "before", "after", "conflict", "error")
+print("yes" if all(rec.get(f) == out.get(f) for f in fields) else "no")' "$2"
+}
 
 # hostile hooks: every hook a checkout or merge commit would run, all failing
 HOOKS="$ROOT/hooks"; mkdir -p "$HOOKS"
@@ -113,6 +130,10 @@ out="$( cd "$R" && CAMUS_REPO_ROOT="$R" bash "$here/wt.sh" create camus/feat/g/a
 check "create: CAMUS_REPO_ROOT + matching cwd accepted" true "$(jget "$out" ok)"
 
 # ════ merge.sh ════════════════════════════════════════════════════════════════════════════════
+# Receipts (run-6): every verdict is also written to $CAMUS_MERGE_DIR/<taskId>.json. Pointed at
+# a test dir so the suite never touches the real ~/.camus/merges — and since the default would
+# be $HOME, every receipt assertion below doubles as proof the CAMUS_MERGE_DIR override is honored.
+RDIR="$ROOT/merges"; export CAMUS_MERGE_DIR="$RDIR"
 M="$ROOT/mrepo"; mkdir -p "$M"
 ( cd "$M" && git init -q && printf 'line1\nline2\n' > f.txt && git add -A && git -c commit.gpgsign=false commit -qm base \
   && git checkout -qb camus/feat-m \
@@ -134,6 +155,12 @@ check "merge: before != after" yes "$([ "$(jget "$out" before)" != "$(jget "$out
 check "merge: after == the real feat tip" "$(git -C "$M" rev-parse camus/feat-m)" "$(jget "$out" after)"
 check "merge: the merge commit carries the message" "$MSG1" "$(git -C "$M" log -1 --format=%s camus/feat-m)"
 first_merge_sha="$(git -C "$M" rev-parse camus/feat-m)"
+# the receipt: written BEFORE the verdict was printed, taskId = last token of the message
+check "receipt: written on success (taskId t1 from the message's last token)" yes \
+  "$([ -f "$RDIR/t1.json" ] && echo yes || echo no)"
+check "receipt: success fields match stdout exactly" yes "$(rmatch "$out" "$RDIR/t1.json")"
+check "receipt: carries the full message for sanity-matching" "$MSG1" "$(jget "$(cat "$RDIR/t1.json")" msg)"
+check "receipt: no receiptError on stdout when the write succeeded" null "$(jget "$out" receiptError)"
 
 # already-up-to-date re-merge → priorMergeCommit found via the fixed-string grep
 out="$(run_merge camus/feat-m camus/feat/m/t1 "$MSG1")"
@@ -142,6 +169,7 @@ check "re-merge: committed false" false "$(jget "$out" committed)"
 check "re-merge: alreadyUpToDate" true "$(jget "$out" alreadyUpToDate)"
 check "re-merge: before == after" yes "$([ "$(jget "$out" before)" = "$(jget "$out" after)" ] && echo yes || echo no)"
 check "re-merge: priorMergeCommit = the first merge's sha" "$first_merge_sha" "$(jget "$out" priorMergeCommit)"
+check "re-merge: receipt overwritten — testimony tracks the LATEST run" yes "$(rmatch "$out" "$RDIR/t1.json")"
 
 # CONFLICT: two branches touch the same line; the abort must leave NO merge in progress
 ( cd "$M" && git checkout -q camus/feat-m \
@@ -155,6 +183,11 @@ check "conflict: before = feat tip, after null" yes \
   "$([ "$(jget "$out" before)" = "$(git -C "$M" rev-parse camus/feat-m)" ] && [ "$(jget "$out" after)" = null ] && echo yes || echo no)"
 check "conflict: ABORTED — no MERGE_HEAD residue" no "$([ -f "$(git -C "$M" rev-parse --git-dir)/MERGE_HEAD" ] && echo yes || echo no)"
 check "conflict: ABORTED — working tree clean" "" "$(git -C "$M" status --porcelain)"
+# the run-6 defection point: the runner relayed "success" over THIS verdict — the receipt is
+# the conflict's surviving testimony, so a hand-merge relay can no longer pass the cross-check
+check "conflict: receipt written too" yes "$([ -f "$RDIR/t2.json" ] && echo yes || echo no)"
+check "conflict: receipt fields match stdout exactly" yes "$(rmatch "$out" "$RDIR/t2.json")"
+check "conflict: receipt records conflict true" true "$(jget "$(cat "$RDIR/t2.json")" conflict)"
 
 # hostile hooks: failing post-checkout (rc-poisons the checkout) + failing pre-merge-commit /
 # prepare-commit-msg (abort the merge commit) — the in-script hookless -c must beat them all
@@ -191,6 +224,7 @@ ok = (g["merged"] is False and g["committed"] is False and g["alreadyUpToDate"] 
       and g["conflict"] is False and g["priorMergeCommit"] is None
       and g["before"] is None and g["after"] is None and g["error"].startswith("guard refused"))
 print("yes" if ok else "no")')"
+check "guard: a refusal leaves a receipt too (every emit is testimony)" yes "$(rmatch "$out" "$RDIR/t1.json")"
 out="$(run_merge camus/feat-m main "$MSG1")"
 check "guard: non-camus TASK branch refused" false "$(jget "$out" merged)"
 check "guard: refusals never moved HEAD" "$cur" "$(git -C "$M" rev-parse --abbrev-ref HEAD)"
@@ -202,6 +236,34 @@ check "checkout failure: error is git's verbatim text (names the branch)" yes \
   "$(has "$(jget "$out" error)" camus/feat-missing)"
 check "checkout failure: all SHAs null" yes \
   "$([ "$(jget "$out" before)" = null ] && [ "$(jget "$out" after)" = null ] && echo yes || echo no)"
+
+# ── receipts: dir override, default lane, unwritable-dir degrade (run-6) ──────────────────────
+# All merges below are idempotent re-merges of t1 (already up to date), so the verdict is
+# deterministic and only the receipt plumbing varies.
+
+# explicit per-call CAMUS_MERGE_DIR override into a dir that does not exist yet (mkdir -p lane)
+out="$( cd "$M" && CAMUS_MERGE_DIR="$ROOT/merges-alt/deep" bash "$here/merge.sh" camus/feat-m camus/feat/m/t1 "$MSG1" )"
+check "receipt override: lands in the per-call CAMUS_MERGE_DIR (mkdir -p'd)" yes \
+  "$([ -f "$ROOT/merges-alt/deep/t1.json" ] && echo yes || echo no)"
+check "receipt override: fields match stdout exactly" yes "$(rmatch "$out" "$ROOT/merges-alt/deep/t1.json")"
+
+# default lane: CAMUS_MERGE_DIR empty → $HOME/.camus/merges (HOME pointed at a sandbox;
+# git still reads the isolated GIT_CONFIG_GLOBAL, so only the receipt path changes)
+out="$( cd "$M" && CAMUS_MERGE_DIR= HOME="$ROOT/fakehome" bash "$here/merge.sh" camus/feat-m camus/feat/m/t1 "$MSG1" )"
+check "receipt default: empty CAMUS_MERGE_DIR falls back to \$HOME/.camus/merges" yes \
+  "$([ -f "$ROOT/fakehome/.camus/merges/t1.json" ] && echo yes || echo no)"
+
+# unwritable receipt dir: best-effort BY DESIGN — the verdict must not change; stdout
+# explains the missing receipt via receiptError so the workflow knows why
+RO="$ROOT/ro"; mkdir -p "$RO"; chmod a-w "$RO"
+out="$( cd "$M" && CAMUS_MERGE_DIR="$RO/sub" bash "$here/merge.sh" camus/feat-m camus/feat/m/t1 "$MSG1" )"
+chmod u+w "$RO"
+check "unwritable receipt dir: stdout still exactly one JSON object" yes "$(jone "$out")"
+check "unwritable receipt dir: verdict unchanged (merged true)" true "$(jget "$out" merged)"
+check "unwritable receipt dir: verdict unchanged (alreadyUpToDate true)" true "$(jget "$out" alreadyUpToDate)"
+check "unwritable receipt dir: receiptError present and explains" yes \
+  "$(has "$(jget "$out" receiptError)" "receipt not written")"
+check "unwritable receipt dir: no receipt file appeared" no "$([ -e "$RO/sub" ] && echo yes || echo no)"
 
 echo
 echo "$pass passed, $fail failed"

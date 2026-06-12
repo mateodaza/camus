@@ -5,10 +5,15 @@ Pure stdlib:
     python3 -m pytest -q          # also works
 
 Tests detection across stacks, the CAMUS_VERIFY_CMD override, the fail-loud
-no-verifier case, and result assembly with an injected runner (no real
-pnpm/cargo/forge needed).
+no-verifier case, result assembly with an injected runner (no real
+pnpm/cargo/forge needed), the run-6 HEAD-integrity invariant with an
+injected porcelain snapshot, and the certified-HEAD identity (injected head
+seam: head naming, head_moved, degrade-open) — plus real-git lanes that skip
+when git is absent.
 """
 import os
+import shutil
+import subprocess
 import tempfile
 import verify
 
@@ -329,6 +334,243 @@ def test_tsconfig_with_include_keeps_the_tsc_lane():
     repo = _repo({"package.json": '{"name":"x"}', "package-lock.json": "{}",
                   "tsconfig.json": '{"include": ["src"], "references": [{"path": "./pkg"}]}'})
     assert _names(verify.detect_checks(repo, {})) == ["node:tsc"]
+
+
+# --- HEAD-integrity invariant (live smoke run-6, 2026-06-12) ----------------
+# Run-6's verifier EDITED the code under verification to turn red green; the
+# committed branch stayed red while the gate reported green. A gating verify
+# certifies the COMMITTED state, so tracked-file dirt before or after the checks
+# is a RED tampered verdict — never inconclusive, never auto-retried.
+
+def test_dirty_before_is_red_and_checks_never_run():
+    calls = []
+
+    def runner(cmd, cwd):
+        calls.append(cmd)
+        return (0, "")
+
+    checks = [{"name": "node:test", "cmd": ["pnpm", "test"]}]
+    result = verify.build_result(
+        checks, runner, "/tmp",
+        porcelain=lambda repo: " M src/app.py\nM  lib/core.py\n")
+    assert result["pass"] is False
+    assert result["inconclusive"] is False     # RED: remedy is a human look, not a retry
+    assert result["tampered"] is True
+    assert calls == []                         # the checks never ran
+    assert result["checks"] == []
+    assert len(result["failures"]) == 1
+    f = result["failures"][0]
+    assert f["stage"] == "integrity" and f["kind"] == "uncommitted_state"
+    assert "src/app.py" in f["log_tail"] and "lib/core.py" in f["log_tail"]
+
+
+def test_mutation_during_checks_is_red_tracked_mutation():
+    # clean before, dirty after: the checks DID run (and even passed), but something
+    # mutated tracked files mid-verify — a green here would certify tampered state.
+    snaps = iter(["", " M src/code.py\n"])
+    checks = [{"name": "a", "cmd": ["x"]}]
+    result = verify.build_result(checks, lambda cmd, cwd: (0, ""), "/tmp",
+                                 porcelain=lambda repo: next(snaps))
+    assert result["pass"] is False
+    assert result["inconclusive"] is False
+    assert result["tampered"] is True
+    f = result["failures"][0]
+    assert f["stage"] == "integrity" and f["kind"] == "tracked_mutation"
+    assert "src/code.py" in f["log_tail"]      # the delta lines are named
+    assert [c["name"] for c in result["checks"]] == ["a"]   # checks recorded as ran
+
+
+def test_mutation_plus_inconclusive_checks_is_still_red():
+    # missing_tool alone would be inconclusive — tampering must force a real red.
+    snaps = iter(["", " M f.py\n"])
+    checks = [{"name": "a", "cmd": ["x"]}]
+    result = verify.build_result(checks, lambda cmd, cwd: (127, "not found"), "/tmp",
+                                 porcelain=lambda repo: next(snaps))
+    assert result["pass"] is False
+    assert result["inconclusive"] is False
+    assert result["tampered"] is True
+    assert {f["kind"] for f in result["failures"]} == {"missing_tool", "tracked_mutation"}
+
+
+def test_clean_before_and_after_is_untampered_green():
+    checks = [{"name": "a", "cmd": ["x"]}]
+    result = verify.build_result(checks, lambda cmd, cwd: (0, ""), "/tmp",
+                                 porcelain=lambda repo: "")
+    assert result["pass"] is True
+    assert result["tampered"] is False
+    assert result["failures"] == []
+    assert "integrity_note" not in result
+
+
+def test_integrity_kinds_are_never_inconclusive():
+    assert "uncommitted_state" not in verify.INCONCLUSIVE_KINDS
+    assert "tracked_mutation" not in verify.INCONCLUSIVE_KINDS
+
+
+def test_snapshot_unavailable_degrades_open_with_note():
+    # porcelain seam answering None = git couldn't answer → integrity NOT asserted,
+    # behavior otherwise unchanged, and the result says why no assertion happened.
+    checks = [{"name": "a", "cmd": ["x"]}]
+    result = verify.build_result(checks, lambda cmd, cwd: (0, ""), "/tmp",
+                                 porcelain=lambda repo: None)
+    assert result["pass"] is True
+    assert result["tampered"] is False
+    assert all(f.get("stage") != "integrity" for f in result["failures"])
+    assert "HEAD-integrity not asserted" in result["integrity_note"]
+
+
+def test_non_git_target_behaves_as_today():
+    # the REAL default snapshot on a bare dir: git answers "not a repo" → None →
+    # degrade open (this is the lane every pre-existing /tmp-based test rides).
+    repo = _repo({"README.md": "x"})
+    assert verify.git_porcelain(repo) is None
+    checks = [{"name": "a", "cmd": ["x"]}]
+    result = verify.build_result(checks, lambda cmd, cwd: (0, ""), repo)
+    assert result["pass"] is True
+    assert result["tampered"] is False
+
+
+def test_untracked_only_dirt_is_clean_real_git():
+    # --untracked-files=no: test-artifact junk must NOT read as tampering, while a
+    # tracked edit must go red WITHOUT running the checks. Real git end-to-end.
+    if not shutil.which("git"):
+        return   # no git in this env: the degrade-open lane above is the behavior
+    repo = _repo({"tracked.txt": "v1"})
+    env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+
+    def git(*args):
+        return subprocess.run(
+            ("git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t",
+             "-c", "commit.gpgsign=false") + args,
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+    assert git("init", "-q").returncode == 0
+    assert git("add", "-A").returncode == 0
+    assert git("commit", "-qm", "base").returncode == 0
+    with open(os.path.join(repo, "junk.log"), "w", encoding="utf-8") as fh:
+        fh.write("test artifact")
+    assert verify.git_porcelain(repo) == ""      # untracked-only = clean
+    checks = [{"name": "a", "cmd": ["x"]}]
+    result = verify.build_result(checks, lambda cmd, cwd: (0, ""), repo)
+    assert result["pass"] is True and result["tampered"] is False
+    # now a tracked edit — the default-seam wiring must refuse to verify it
+    with open(os.path.join(repo, "tracked.txt"), "w", encoding="utf-8") as fh:
+        fh.write("v2")
+    result = verify.build_result(checks, lambda cmd, cwd: (0, "never ran"), repo)
+    assert result["pass"] is False and result["tampered"] is True
+    assert result["failures"][0]["kind"] == "uncommitted_state"
+    assert "tracked.txt" in result["failures"][0]["log_tail"]
+
+
+# --- certified-HEAD identity (design review, 2026-06-12) --------------------
+# Porcelain catches EDITS; edit→COMMIT→rerun leaves a clean tree and a green
+# verdict (run-6's cover-up commit was blocked only by the permission layer).
+# So verify NAMES the HEAD it certified — "head" in the result, compared
+# upstream against the sha the commit gate / merge receipt sealed — and a HEAD
+# that moves DURING verify is a RED head_moved in its own right.
+
+def _real_git_repo(files):
+    """git-init'd temp repo for the head lanes; (None, None) when git is absent
+    (callers skip, mirroring test_untracked_only_dirt_is_clean_real_git)."""
+    if not shutil.which("git"):
+        return None, None
+    repo = _repo(files)
+    env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+
+    def git(*args):
+        return subprocess.run(
+            ("git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t",
+             "-c", "commit.gpgsign=false") + args,
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+    assert git("init", "-q").returncode == 0
+    return repo, git
+
+
+def test_head_emitted_on_git_target_matches_rev_parse():
+    # real git end-to-end: the verdict names the committed sha it certified.
+    repo, git = _real_git_repo({"tracked.txt": "v1"})
+    if repo is None:
+        return   # no git in this env: the degrade-open lanes below are the behavior
+    assert git("add", "-A").returncode == 0
+    assert git("commit", "-qm", "base").returncode == 0
+    sha = git("rev-parse", "HEAD").stdout.strip()
+    assert verify.git_head(repo) == sha
+    checks = [{"name": "a", "cmd": ["x"]}]
+    result = verify.build_result(checks, lambda cmd, cwd: (0, ""), repo)
+    assert result["pass"] is True and result["tampered"] is False
+    assert result["head"] == sha
+
+
+def test_unborn_head_degrades_open_real_git():
+    # `git rev-parse HEAD` can't answer before the first commit → None → HEAD
+    # identity not asserted, behavior otherwise unchanged, no head key.
+    repo, git = _real_git_repo({"f.txt": "x"})
+    if repo is None:
+        return
+    assert verify.git_head(repo) is None
+    checks = [{"name": "a", "cmd": ["x"]}]
+    result = verify.build_result(checks, lambda cmd, cwd: (0, ""), repo)
+    assert result["pass"] is True and result["tampered"] is False
+    assert "head" not in result
+
+
+def test_head_moved_during_verify_is_red_tampered():
+    # edit→COMMIT mid-verify: the tree reads clean, but the HEAD under
+    # certification changed — RED head_moved, never inconclusive.
+    heads = iter(["aaaa111", "bbbb222"])
+    checks = [{"name": "a", "cmd": ["x"]}]
+    result = verify.build_result(checks, lambda cmd, cwd: (0, ""), "/tmp",
+                                 porcelain=lambda repo: "",
+                                 head=lambda repo: next(heads))
+    assert result["pass"] is False
+    assert result["inconclusive"] is False
+    assert result["tampered"] is True
+    assert len(result["failures"]) == 1
+    f = result["failures"][0]
+    assert f["stage"] == "integrity" and f["kind"] == "head_moved"
+    assert "aaaa111" in f["log_tail"] and "bbbb222" in f["log_tail"]
+    assert [c["name"] for c in result["checks"]] == ["a"]   # checks recorded as ran
+    assert result["head"] == "bbbb222"                      # the after-head is named
+    assert "head_moved" not in verify.INCONCLUSIVE_KINDS
+
+
+def test_head_moved_composes_with_tracked_mutation():
+    # both integrity channels can fire on one run (a commit AND leftover dirt).
+    snaps = iter(["", " M f.py\n"])
+    heads = iter(["aaaa111", "bbbb222"])
+    checks = [{"name": "a", "cmd": ["x"]}]
+    result = verify.build_result(checks, lambda cmd, cwd: (0, ""), "/tmp",
+                                 porcelain=lambda repo: next(snaps),
+                                 head=lambda repo: next(heads))
+    assert result["pass"] is False and result["tampered"] is True
+    assert result["inconclusive"] is False
+    assert {f["kind"] for f in result["failures"]} == {"tracked_mutation", "head_moved"}
+
+
+def test_non_git_target_emits_no_head_key():
+    # the REAL default seam on a bare dir: rev-parse can't answer → no head key,
+    # behavior exactly as before.
+    repo = _repo({"README.md": "x"})
+    assert verify.git_head(repo) is None
+    checks = [{"name": "a", "cmd": ["x"]}]
+    result = verify.build_result(checks, lambda cmd, cwd: (0, ""), repo)
+    assert result["pass"] is True and result["tampered"] is False
+    assert "head" not in result
+
+
+def test_dirty_before_short_circuit_still_emits_head():
+    # the refusal names the state it refused: the orchestrator can hold even a
+    # tampered verdict against the sha the gate sealed.
+    checks = [{"name": "a", "cmd": ["x"]}]
+    result = verify.build_result(
+        checks, lambda cmd, cwd: (0, "never ran"), "/tmp",
+        porcelain=lambda repo: " M src/app.py\n",
+        head=lambda repo: "cafe420")
+    assert result["pass"] is False and result["tampered"] is True
+    assert result["failures"][0]["kind"] == "uncommitted_state"
+    assert result["checks"] == []
+    assert result["head"] == "cafe420"
 
 
 # --- stdlib runner ---------------------------------------------------------

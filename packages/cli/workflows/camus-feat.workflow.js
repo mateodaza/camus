@@ -22,6 +22,17 @@ const MERGE_CMD = `bash ${SKILL}/merge.sh`           // <feat> <task> <msg> -> t
                                                      // computed in-script (hookless/unsigned inside the
                                                      // allowlisted script — run-5 classifier finding)
 const MODEL_RUNNER = 'haiku'                         // thin shell runners — no judgment to apply
+// Appended to every gating-verify prompt (live smoke run-6, 2026-06-12): the integration
+// verifier EDITED the code under verification to turn red green, left the fix staged when the
+// permission layer blocked its commit, and relayed pass:true — the gate certified a green the
+// committed branch doesn't have. The prompt alone doesn't constrain (run-6's said "run EXACTLY");
+// verify.py now snapshots tracked-file porcelain before/after and reports any dirt as a RED
+// integrity failure, so this clause states a fact, not a plea: remediation can no longer
+// produce a green.
+const VERIFY_OATH = `A RED result is a SUCCESSFUL run of this command — return it verbatim and STOP.
+Do NOT edit, stage, commit, or "fix" ANYTHING, and do NOT re-run after changing files: the script
+snapshots the tree and reports any tracked-file change as tampering (RED), so remediation can never
+turn this green — it only destroys the evidence a human needs.`
 
 // ── Args: { feat, tasks: [...ordered], targetPath? } ─────────────────────────
 // Tolerate a JSON-encoded string (some callers stringify args); parse it back to an object.
@@ -610,7 +621,8 @@ if (!state.env.ready) {
 // ── 4. BASELINE VERIFY — base must be green before any task ───────────────────
 const baseRaw = await agent(
   `THIN verifier. cd ${REPO_ARG}, then run EXACTLY:  ${HB_TOUCH}${VERIFY_CMD} ${REPO_ARG}
-Output the command's stdout VERBATIM as your entire reply (JSON {pass,failures,checks}). No fences, no commentary.`,
+Output the command's stdout VERBATIM as your entire reply (JSON {pass,failures,checks}). No fences, no commentary.
+${VERIFY_OATH}`,
   { model: MODEL_RUNNER, phase: 'Env+Baseline', label: 'baseline-verify' }
 )
 const baseV = asVerify(baseRaw)
@@ -635,6 +647,13 @@ note(`Baseline green on ${featBranch}. Running ${state.tasks.length} task(s) str
 
 // ── 5. TASKS — sequential; reuse camus-loop; merge on done; halt on first non-done ─
 phase('Tasks')
+// The branch tip certified by the LAST receipt-proven merge of THIS run — the integration
+// verify is bound to it (head binding, design review 2026-06-12). Deliberately in-memory, never
+// persisted: on a resume where no merges run, the feat branch may legitimately carry a HUMAN
+// commit (e.g. a hand-reconciled integration fix) — binding across runs would false-alarm on
+// exactly that; the integration report still NAMES the head it certified via verify's own
+// `head` field.
+let lastMergeHead = null
 for (let i = 0; i < state.tasks.length; i++) {
   const node = state.tasks[i]
   const n = `${i + 1}/${state.tasks.length}`
@@ -916,9 +935,76 @@ If the branch does not exist git errors — output that error line verbatim.`,
   const mg = await agent(
     `THIN merge runner. cd ${REPO_ARG}. Run EXACTLY this one command (it performs the merge and prints ONE JSON object):
   ${HB_TOUCH}${MERGE_CMD} ${JSON.stringify(featBranch)} ${JSON.stringify(mergeBranch)} ${JSON.stringify('camus(feat): merge ' + node.taskId)}
-Return the printed JSON's fields EXACTLY as the script computed them — every field verbatim, no re-judging, no omissions.`,
+Return the printed JSON's fields EXACTLY as the script computed them — every field verbatim, no re-judging, no omissions.
+If the JSON says merged:false (e.g. a conflict), that IS the verdict — return it AS-IS and STOP.
+Do NOT resolve conflicts, do NOT run git merge/add/commit yourself, do NOT edit files: the script
+already left the repo safely aborted, and your report is cross-checked against the script's own
+receipt file — any divergence halts the whole feat as a contract violation.`,
     { model: MODEL_RUNNER, phase: 'Tasks', label: `merge:${node.taskId}`, schema: MERGE_SCHEMA }
   )
+  // RECEIPT CROSS-CHECK (live smoke run-6 + design review, 2026-06-12). "Thin runner" cannot
+  // mean "trusted to only run the script" — run-6's merge runner defected COHERENTLY: merge.sh
+  // correctly reported a conflict, the runner hand-resolved it, committed under the normal merge
+  // message, and relayed a contract-complete success. Ancestry can't catch that (the postflight
+  // self-audit passed — a hand-merge satisfies rev-list like any merge). So the script leaves
+  // PROOF and the orchestrator verifies it mechanically:
+  //   1. merge.sh writes its verdict JSON to a receipt file at the single emission point; a
+  //      stakeless reader echoes it back. The receipt — not the relay — is the source of truth.
+  //   2. The receipt is checked against the REPO, not just the relay: if merge.sh said conflict
+  //      but the live branch HEAD moved off the receipt's `before` (or, on success, off `after`),
+  //      a runner mutated git off-script even though its relay was honest — invisible to the
+  //      relay compare, and the lane that also closes the stale-receipt gap (an old receipt's
+  //      SHAs can't match the live branch).
+  //   3. Relay≠receipt is a defection, never a verdict.
+  // Fail-closed throughout: a MISSING receipt halts (merge.sh never ran, or its receipt write
+  // failed — stdout's receiptError says which), and an unreadable live HEAD halts too. This runs
+  // BEFORE the merged:false lane so an honest-conflict relay still gets its repo-state check.
+  if (mg) {
+    const rcptRaw = await agent(
+      `THIN receipt reader. Run EXACTLY this one command and output its stdout VERBATIM (one JSON object, or the word MISSING); no fences, no commentary:
+  cat "\${CAMUS_MERGE_DIR:-$HOME/.camus/merges}/${node.taskId}.json" 2>/dev/null || echo MISSING`,
+      { model: MODEL_RUNNER, phase: 'Tasks', label: `merge-receipt:${node.taskId}` }
+    )
+    const rcpt = extractJsonObject(rcptRaw)
+    let liveHead = null
+    let stateViolation = null
+    let rcptDiff = []
+    if (rcpt) {
+      const liveRaw = await agent(
+        `THIN git runner. cd ${REPO_ARG}. Run EXACTLY this one command and output ONLY its stdout (one commit SHA), no commentary:
+  git rev-parse ${JSON.stringify(featBranch)}`,
+        { model: MODEL_RUNNER, phase: 'Tasks', label: `merge-head:${node.taskId}` }
+      )
+      // Comparison value only (never a command arg) — screen out error lines, keep any
+      // single-token SHA shape.
+      const lh = String(liveRaw || '').trim()
+      liveHead = /^[0-9a-z._-]{1,64}$/i.test(lh) ? lh : null
+      const expectLive = rcpt.merged === true ? rcpt.after : rcpt.before
+      stateViolation = !liveHead
+        ? 'the live feat-branch HEAD could not be read to confirm the receipt'
+        : (typeof expectLive === 'string' && expectLive && liveHead !== expectLive)
+          ? `the live feat branch is at ${liveHead} but merge.sh's receipt says ${rcpt.merged === true ? `the merge ended at ${rcpt.after}` : `the aborted merge left ${rcpt.before}`} — the repo moved OFF-SCRIPT after the script's verdict`
+          : null
+      rcptDiff = ['merged', 'committed', 'before', 'after', 'alreadyUpToDate'].filter((k) => rcpt[k] !== undefined && rcpt[k] !== mg[k])
+    }
+    if (!rcpt || stateViolation || rcptDiff.length) {
+      node.status = 'ready_to_merge'   // the proven work stands; the MERGE is what's unresolved
+      await persistState('Tasks')
+      // Only a receipt-sourced SHA may be offered as a reset target — mg.* is the very report
+      // that just failed the cross-check.
+      const resetTo = rcpt && typeof (rcpt.merged === true ? rcpt.after : rcpt.before) === 'string' && (rcpt.merged === true ? rcpt.after : rcpt.before).trim()
+        ? (rcpt.merged === true ? rcpt.after : rcpt.before) : null
+      const what = !rcpt ? 'MISSING receipt' : (stateViolation ? 'REPO STATE off the receipt' : `RELAY MISMATCH (${rcptDiff.join(', ')})`)
+      note(`Task ${n}: MERGE INTEGRITY — ${what}. The runner's report is not merge.sh's proven verdict; refusing it and halting.`)
+      return finalize('feat_integration_failed', {
+        stage: 'merge_receipt', haltedTask: node.taskId,
+        note: `Merge integrity check for ${node.taskId} failed: ${!rcpt ? 'NO receipt from merge.sh (the script may never have run, or its receipt write failed — the runner transcript\'s receiptError says which)' : (stateViolation || `the runner's relay DISAGREES with merge.sh's own receipt on: ${rcptDiff.join(', ')}`)} — a defecting runner may have mutated the repo by hand. Inspect \`git log -3 ${featBranch}\`${resetTo ? `; if an unauthorized commit sits on top, \`git reset --hard ${resetTo}\` restores the receipt's proven HEAD` : ''}. Then re-run the feat with the SAME args — the task is still ready_to_merge and the merge retries idempotently.`,
+      })
+    }
+    // The receipt is proven against relay AND repo — record the certified branch tip so the
+    // integration verify can be bound to it (head binding; see the integration phase).
+    if (typeof rcpt.after === 'string' && rcpt.after) lastMergeHead = rcpt.after
+  }
   if (!mg || !mg.merged) {
     node.status = 'merge_failed'
     note(`Task ${n}: merging ${mergeBranch} into ${featBranch} FAILED (${(mg && mg.error) || 'unknown'}) — halting.`)
@@ -1126,11 +1212,24 @@ if (!state.envRecheck.ready) {
 }
 const intRaw = await agent(
   `THIN verifier. cd ${REPO_ARG}, then run EXACTLY:  ${HB_TOUCH}${VERIFY_CMD} ${REPO_ARG}
-Output the command's stdout VERBATIM (JSON {pass,failures,checks}). No fences, no commentary.`,
+Output the command's stdout VERBATIM (JSON {pass,failures,checks}). No fences, no commentary.
+${VERIFY_OATH}`,
   { model: MODEL_RUNNER, phase: 'Integration', label: 'integration-verify' }
 )
 const intV = asVerify(intRaw)
 state.integration = intV
+// HEAD BINDING (design review 2026-06-12): a green must prove exactly what state it certified.
+// verify.py names the HEAD it ran against; when merges ran THIS run, that head must be the last
+// receipt-proven branch tip — anything else means the branch moved between the proven merge and
+// the verify (an off-script mutation, or a verifier certifying the wrong tree), and the green
+// is refused. Both sides guarded: older gates' verify output has no `head`, and a no-merge
+// resume has no in-run expectation (a human commit on the feat branch is legitimate there).
+if (typeof intV.head === 'string' && intV.head && lastMergeHead && intV.head !== lastMergeHead) {
+  return finalize('feat_integration_failed', {
+    stage: 'integration_integrity',
+    note: `Integration verify certified HEAD ${intV.head}, but the last receipt-proven merge left ${featBranch} at ${lastMergeHead} — the branch moved between the merge and the verify, so this verdict does not certify the merged state. Inspect \`git log -3 ${featBranch}\`; if an unauthorized commit sits on top, \`git reset --hard ${lastMergeHead}\` restores the proven tip, then re-run the feat with the SAME args.`,
+  })
+}
 if (intV.pass === true) {
   const noopTasks = state.tasks.filter((t) => t.status === 'noop').map((t) => t.taskId)
   const realMerges = state.tasks.filter((t) => t.status === 'done' || t.status === 'done_with_findings').length
