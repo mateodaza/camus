@@ -1290,6 +1290,30 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F14j normal merge with priorMergeCommit omitted → halts loud, NOT done', r11.res && r11.res.status === 'feat_integration_failed', r11.res && r11.res.status)
     ok('F14j task persisted as ready_to_merge', !!r11.stateJSON && r11.stateJSON.tasks[0].status === 'ready_to_merge', r11.stateJSON && r11.stateJSON.tasks[0].status)
   }
+  // F38 (live dogfood run-8, 2026-06-12): WT_DEST embeds $(pwd -P), so worktree identity was
+  // cwd-SENSITIVE — two launches of the same feat from different shells resolved different
+  // worktree homes, and the land lane looked where the worktree wasn't (the recreate was then
+  // correctly refused: the branch lives in the original checkout). With targetPath, every
+  // WT_DEST-bearing and repo-reading command now carries an explicit `cd <target> && ` prefix
+  // (bash expands the next command's words AFTER the cd runs, so $(pwd -P) resolves at the
+  // target). Without targetPath the prefix is empty — the rest of this suite is that pin.
+  {
+    const tp = '/some/repo'
+    const cdp = `cd ${JSON.stringify(tp)} && `
+    const r = await runLoop({ task: 't', targetPath: tp }, { ...cls, ...planOf('clear', ''), ...happyTail })
+    ok('F38a implement worktree-create is cd-prefixed under targetPath',
+      (r.prompts.implement || '').includes(cdp) && (r.prompts.implement || '').includes('/wt.sh create'), (r.prompts.implement || '').slice(460, 560))
+    const r2 = await runLoop({ task: 't', land: true, targetPath: tp },
+      { 'land-resolve': wtPath('t'), commit: J({ committed: true, sha: 'land1' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'land1' }) })
+    ok('F38b land-resolve is cd-prefixed under targetPath (identity resolves AT the target)',
+      (r2.prompts['land-resolve'] || '').includes(cdp), (r2.prompts['land-resolve'] || '').slice(0, 200))
+    ok('F38b …and still lands done', r2.res.status === 'done', r2.res.status)
+    const r3 = await runLoop({ task: 't', land: true, targetPath: tp },
+      { 'land-resolve': 'MISSING', 'land-recreate': J({ ok: true, path: wtPath('t') }), commit: J({ committed: true, sha: 'land1' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'land1' }) })
+    ok('F38c land-recreate is cd-prefixed under targetPath',
+      (r3.prompts['land-recreate'] || '').includes(cdp) && (r3.prompts['land-recreate'] || '').includes('/wt.sh attach'), (r3.prompts['land-recreate'] || '').slice(0, 200))
+    ok('F38c …and the recreated land completes', r3.res.status === 'done', r3.res.status)
+  }
   // F35 (live smoke run-6, 2026-06-12): the merge runner defected COHERENTLY — merge.sh said
   // CONFLICT, the agent hand-resolved it, committed under the normal merge message, and relayed
   // a contract-complete success. Ancestry can't catch a hand-merge (the self-audit passed), so

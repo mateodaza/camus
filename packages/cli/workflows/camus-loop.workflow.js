@@ -64,6 +64,16 @@ const WT_CMD = `bash ${SKILL_SCRIPTS}/wt.sh`         // worktree create (impleme
 // args may be a bare string or {task, targetPath}
 const TASK = typeof args === 'string' ? args : (args && args.task) || ''
 const TARGET = (args && typeof args === 'object' && args.targetPath) || ''
+// REPO_CD (live dogfood run-8, 2026-06-12): WT_DEST embeds $(pwd -P), so every command that
+// carries it — or that reads the repo (containment, collision probes) — must run at a
+// DETERMINISTIC directory, not whatever cwd the runner inherited. Two launches of the same feat
+// from different shells resolved two different worktree homes: the land lane looked where the
+// worktree wasn't, and the recreate was (correctly) refused because the branch lives in the
+// original one. With targetPath, every such command is prefixed `cd <target> && `; without it
+// the prefix is empty and the documented contract (launch from the repo root) governs unchanged.
+// In a `cmd1 && cmd2` list bash expands cmd2's words AFTER cmd1 runs, so the $(pwd -P) inside
+// WT_DEST resolves at the target, which is the entire point.
+const REPO_CD = TARGET ? `cd ${JSON.stringify(TARGET)} && ` : ''
 // Identity composability: a caller (e.g. the M1 feat-runner) can feat-scope this task's branch
 // and worktree by passing branchPrefix (default 'camus/') and idSalt (default '' = standalone).
 const BRANCH_PREFIX = (args && typeof args === 'object' && args.branchPrefix) || 'camus/'
@@ -288,7 +298,7 @@ if (LAND) {
   // path). No worktree → nothing to land → abort, never plan/implement under land.
   const wtRaw = await agent(
     `THIN land-path resolver. Run EXACTLY this one command and output ONLY its stdout (one absolute path), no commentary:
-  ${HB_TOUCH}cd ${WT_DEST} && pwd
+  ${HB_TOUCH}${REPO_CD}cd ${WT_DEST} && pwd
 If the cd fails (directory does not exist), output exactly: MISSING`,
     { model: MODEL_RUNNER, phase: 'Commit', label: 'land-resolve' }
   )
@@ -303,7 +313,7 @@ If the cd fails (directory does not exist), output exactly: MISSING`,
     // gate-owned mutation.
     const reRaw = await agent(
       `THIN land-worktree recreator. The land worktree is missing but the task branch holds the proven work. Run EXACTLY this one command and output its stdout VERBATIM (one JSON object); no fences, no commentary:
-  ${HB_TOUCH}${WT_CMD} attach ${BRANCH} ${WT_DEST}`,
+  ${HB_TOUCH}${REPO_CD}${WT_CMD} attach ${BRANCH} ${WT_DEST}`,
       { model: MODEL_RUNNER, phase: 'Commit', label: 'land-recreate' }
     )
     const reJ = extractJsonObject(reRaw)
@@ -471,7 +481,7 @@ Files in scope: ${plan.relevant_files.join(', ') || (planSkipped ? 'discover the
 Steps:
 1. From the repo root, run EXACTLY this one command and NOTHING ELSE (it creates the new branch
    from the current HEAD and prints ONE JSON object):
-     ${WT_CMD} create ${BRANCH} ${WT_DEST}
+     ${REPO_CD}${WT_CMD} create ${BRANCH} ${WT_DEST}
    If the JSON says "ok": false, STOP IMMEDIATELY — do NOT improvise any git commands (no
    \`worktree add\`, no checkout: attaching a previous attempt's branch silently reuses its
    commits and corrupts the run — live smoke 2026-06-12). Return worktree_path "FAILED" with
@@ -503,8 +513,8 @@ if (claimed.startsWith('FAILED')) {
   // ZERO commits of its own. Telling the human "prior work exists, resume lands it" would wedge
   // them forever (the resume lanes land nothing). One deterministic probe tells the two apart.
   const cntRaw = await agent(
-    `THIN git runner. Run EXACTLY this one command from the CURRENT directory (do NOT cd) and output ONLY its stdout (a number, or git's error line verbatim):
-  ${HB_TOUCH}git rev-list --count HEAD..${JSON.stringify(BRANCH)} --`,
+    `THIN git runner. Run EXACTLY this one command and output ONLY its stdout (a number, or git's error line verbatim); do NOT cd anywhere else:
+  ${HB_TOUCH}${REPO_CD}git rev-list --count HEAD..${JSON.stringify(BRANCH)} --`,
     { model: MODEL_RUNNER, phase: 'Implement', label: 'collision-audit' }
   )
   const cntText = String(cntRaw == null ? '' : cntRaw).trim()
@@ -542,8 +552,8 @@ log(`Implemented in worktree ${WT} (branch ${BRANCH})${tokSuffix()}.`)
 // surfaces it.
 async function containmentLeak(phaseName) {
   const raw = await agent(
-    `THIN containment check. Run EXACTLY this one command from the CURRENT directory (the repo root — do NOT cd) and output its stdout VERBATIM as your entire reply (it may be EMPTY — then reply with nothing):
-  ${HB_TOUCH}git status --porcelain --ignore-submodules=all`,
+    `THIN containment check. Run EXACTLY this one command and output its stdout VERBATIM as your entire reply (it may be EMPTY — then reply with nothing); do NOT cd anywhere else:
+  ${HB_TOUCH}${REPO_CD}git status --porcelain --ignore-submodules=all`,
     { model: MODEL_RUNNER, phase: 'Review', label: `containment:${phaseName}` }
   )
   const dirt = String(raw == null ? '' : raw).trim()
