@@ -769,7 +769,8 @@ Return {written:true} once that file is on disk with exactly that content.`,
 If the branch does not exist git errors — output that error line verbatim.`,
       { model: MODEL_RUNNER, phase: 'Tasks', label: `noop-audit:${node.taskId}` }
     )
-    const unmerged = parseInt(String(unmergedRaw == null ? '' : unmergedRaw).trim(), 10)
+    const unmergedText = String(unmergedRaw == null ? '' : unmergedRaw).trim()
+    const unmerged = /^\d+$/.test(unmergedText) ? parseInt(unmergedText, 10) : null
     if (Number.isInteger(unmerged) && unmerged > 0) {
       note(`⚠ Task ${n}: loop said no_changes BUT ${node.branch} holds ${unmerged} unmerged commit(s) — a prior run's proven work. Re-entering as AUTO-LAND, not a no-op.`)
       node.status = 'ready_to_merge'
@@ -777,6 +778,16 @@ If the branch does not exist git errors — output that error line verbatim.`,
       await persistState('Tasks')
       i--   // re-enter THIS task: the landResume lane picks it up immediately
       continue
+    }
+    if (unmerged === null) {
+      node.status = 'failed'
+      await persistState('Tasks')
+      note(`Task ${n}: no_changes could not be disambiguated — branch ancestry audit returned no usable count, so refusing to record a no-op.`)
+      return finalize('infra_error', {
+        stage: 'noop_audit', haltedTask: node.taskId,
+        noopAuditOutput: unmergedText.slice(0, 1000),
+        note: `The loop returned no_changes, but Camus could not verify whether ${node.branch} still holds unmerged commits (noop-audit output was not a non-negative integer). Missing ancestry evidence must not become a no-op. Fix the git/audit issue and re-run the feat with the SAME args.`,
+      })
     }
     // A genuinely empty diff (no branch, or branch fully merged). Not a failure — flag as a
     // NO-OP and CONTINUE (don't merge an empty branch, don't halt the feat).
@@ -1019,8 +1030,8 @@ if (BUDGET_TOKENS != null) {
 // work sat unmerged on its branch (a collision became a "noop"). Deterministic ancestry check —
 // every completed task's branch must hold ZERO commits outside feat history (noop included:
 // a no-op with unmerged commits is a contradiction). POSITIVE evidence (a count > 0) halts as
-// self_audit_failed, never done; a branch the runner could not report is WARNED loudly but does
-// not halt (an unreadable audit must not kill a good feat — the count lines are the evidence).
+// self_audit_failed, never done; missing/ERROR evidence is infra, also never done. The count
+// lines are the proof, and a green report without that proof is another false-green.
 // This is the product absorbing the failure mode: the check a human (or the nearest Claude
 // session) did by hand after the fact, now run by the gate before it reports anything.
 const auditedTasks = state.tasks.filter((t) => t.status === 'done' || t.status === 'done_with_findings' || t.status === 'noop')
@@ -1053,7 +1064,14 @@ Run \`${HB_TOUCH}true\` first (heartbeat; ignore failures).`,
       note: `The postflight self-audit found ${violations.length} completed task(s) whose branch holds commits NOT merged into ${featBranch}: ${violations.map((v) => `${v.taskId} (${v.status}, ${v.unmergedCommits} commit(s) on ${v.branch})`).join('; ')}. The feat must NOT read done. For each: if the work is proven (a prior run reviewed+verified it), flip the task to ready_to_merge and re-run — the auto-land lane merges it; otherwise re-run the task through the full loop after clearing the branch.`,
     })
   }
-  if (unreadable.length) note(`⚠ Self-audit could not read ${unreadable.length} branch(es) (${unreadable.join(', ')}) — ancestry NOT verified for them.`)
+  if (unreadable.length) {
+    note(`✗ SELF-AUDIT INCONCLUSIVE: could not read ${unreadable.length} completed task branch(es) — ancestry NOT verified, refusing to report done.`)
+    return finalize('infra_error', {
+      stage: 'self_audit', unreadableBranches: unreadable,
+      selfAuditOutput: String(auditRaw == null ? '' : auditRaw).slice(0, 2000),
+      note: `The postflight self-audit could not verify ancestry for ${unreadable.length} completed task branch(es): ${unreadable.join(', ')}. Missing ancestry evidence must not become a green feat. Fix the git/audit issue and re-run with the SAME args; done tasks skip and the self-audit retries before integration.`,
+    })
+  }
   else log('Self-audit clean: every completed task branch is fully merged into feat history.')
 }
 

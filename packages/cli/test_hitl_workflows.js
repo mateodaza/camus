@@ -43,7 +43,7 @@ function makeAgent(scripts, calls, capture) {
       ;(capture.states = capture.states || []).push(p)   // …and EVERY persist, for intermediate-state assertions
     }
     const s = (label in scripts) ? scripts[label] : scripts[key(label)]
-    return typeof s === 'function' ? s() : s
+    return typeof s === 'function' ? s(p, opts) : s
   }
 }
 async function runLoop(args, scripts, budget) {
@@ -662,6 +662,17 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     'env-recheck': { ready: true, exitCode: 0, output: 'ok' },
     'integration-verify': J({ pass: true, failures: [] }),
     merge: { merged: true, committed: true, alreadyUpToDate: false, before: 'aaa', after: 'bbb', priorMergeCommit: null },
+    'noop-audit': '0',
+    'self-audit': (p) => {
+      const out = []
+      let inBranches = false
+      for (const line of String(p || '').split('\n')) {
+        if (line.includes('Nothing else.')) { inBranches = true; continue }
+        if (inBranches && line.trim().startsWith('Run `')) break
+        if (inBranches && line.trim()) out.push(`${line.trim()} 0`)
+      }
+      return out.join('\n')
+    },
     report: { written: true }, state: { written: true },
   }
   {
@@ -917,6 +928,15 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       [{ status: 'no_changes', worktree: wtPath('only task') }])
     ok('F27b genuinely empty → noop unchanged', r.workflowCalls === 1 && !!r.stateJSON && r.stateJSON.tasks[0].status === 'noop' && r.res && r.res.status === 'done_with_noops', r.res && r.res.status)
   }
+  {
+    // Missing evidence must not become a no-op: if the branch-count audit is malformed, halt before
+    // the feat can report done_with_noops.
+    const r = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, 'noop-audit': 'fatal: bad revision' },
+      [{ status: 'no_changes', worktree: wtPath('only task') }])
+    ok('F27c malformed noop-audit → infra halt, NOT noop/done', r.res && r.res.status === 'infra_error' && r.res.stage === 'noop_audit', r.res && (r.res.status + '/' + r.res.stage))
+    ok('F27c integration never runs past missing noop evidence', !r.calls.includes('integration-verify'), r.calls.join(','))
+  }
   // F28 (live smoke run-2): POSTFLIGHT SELF-AUDIT — positive evidence of unmerged commits on a
   // completed task's branch halts as self_audit_failed; the feat must never read done over it.
   {
@@ -929,6 +949,13 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       { ...featBase, 'self-audit': 'b 0' },
       [{ status: 'done', branch: 'b', decisions: [] }])
     ok('F28b ancestry clean → done, audit logged', clean.res && clean.res.status === 'done', clean.res && clean.res.status)
+  }
+  {
+    const bad = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, 'self-audit': 'I did not run git rev-list' },
+      [{ status: 'done', branch: 'b', decisions: [] }])
+    ok('F28c malformed self-audit → infra halt, never done', bad.res && bad.res.status === 'infra_error' && bad.res.stage === 'self_audit', bad.res && (bad.res.status + '/' + bad.res.stage))
+    ok('F28c integration never runs past missing self-audit evidence', !bad.calls.includes('integration-verify'), bad.calls.join(','))
   }
 
   // F18c (audit P2 2026-06-11): the FINAL task's spend must hit the ceiling too — recheck after
