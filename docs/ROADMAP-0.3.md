@@ -40,6 +40,13 @@ they detach from their source at write time, the source moves, and both repos st
 green while the system splits. The reviewer flags any cross-repo prose-of-code as a
 blocking finding.
 
+The mechanical half: **launch-time materialization**. A plan task may declare external
+references (`{path, repo, mode: literal|test-table}`); the feat resolves them at
+PREFLIGHT — reading the live bytes the moment the run starts and injecting them into
+the task text — so "paste at launch" stops depending on a human remembering. In-repo
+freshness needs no new phase (each task already re-plans and implements against the
+live worktree); this exists solely for content the worktree cannot open by design.
+
 ## 2. Opt-in multi-model review backends (decided)
 
 Backends other than codex, opt-in, never silently routed. The seam already exists:
