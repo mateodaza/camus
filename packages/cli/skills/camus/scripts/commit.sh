@@ -20,16 +20,37 @@ if ! cd "$dir" 2>/dev/null; then
   printf '{"committed": false, "reason": "bad_worktree"}\n'
   exit 0
 fi
-git add -A
+# Gate-owned git mutations run HOOKLESS and UNSIGNED (git audit 2026-06-12):
+#   -c core.hooksPath=/dev/null — --no-verify only skips pre-commit/commit-msg; a failing
+#     prepare-commit-msg still ABORTS the commit (rc=1, verified), and post-commit still FIRES
+#     (a repo's post-commit push hook would egress camus branches — the never-push invariant
+#     must not be violable by target-repo config). Repo hooks target HUMAN commits; the gate's
+#     review ran before this and verify re-runs the repo's checks right after.
+#   -c commit.gpgsign=false — forced signing with a TTY/agent-bound key kills unattended commits
+#     (rc=128 "failed to write commit object", verified); signing machine-generated gate commits
+#     with the user's key unattended would be worse than not signing them.
+GATE_GIT=(git -c core.hooksPath=/dev/null -c commit.gpgsign=false)
+# The add's exit code IS a verdict input (git audit 2026-06-12, P1): a failing LFS clean filter
+# or an index.lock race stages NOTHING (all-or-nothing, rc=128, verified) — falling through to
+# the empty-index check would report "empty" → a false no_changes → a false NOOP that even the
+# branch-ancestry audits can't see (no commit ever exists to count).
+if ! "${GATE_GIT[@]}" add -A; then
+  printf '{"committed": false, "reason": "add_failed"}\n'
+  exit 0
+fi
+# Embedded repo guard (git audit 2026-06-12, P3): an agent cloning a repo INSIDE the worktree
+# would commit a dangling 160000 gitlink with no .gitmodules — every future clone gets a broken
+# phantom submodule. Refuse with a named reason; a LEGIT submodule change updates .gitmodules.
+if git diff --cached --diff-filter=A --raw | grep -q ' 160000 ' \
+   && ! git diff --cached --name-only | grep -qx '.gitmodules'; then
+  printf '{"committed": false, "reason": "embedded_repo"}\n'
+  exit 0
+fi
 if git diff --cached --quiet; then
   printf '{"committed": false, "reason": "empty"}\n'
 else
-  # --no-verify: repo hooks target HUMAN commits and break unattended ones — commitlint rejects
-  # non-conventional types, lint-staged mutates the tree mid-commit, staged-only doc-sync hooks
-  # demand unrelated files (run feedback 2026-06-11: husky commit-msg failed every camus commit
-  # in hive-mind). The gate's own review ran BEFORE this and verify.sh re-runs the repo's
-  # deterministic checks right AFTER — hooks add no safety here, only nondeterminism.
-  if git commit -q --no-verify -m "$msg"; then
+  # --no-verify kept for older-git belt; hooksPath above is the real cover (see why there).
+  if "${GATE_GIT[@]}" commit -q --no-verify -m "$msg"; then
     printf '{"committed": true, "sha": "%s"}\n' "$(git rev-parse --short HEAD)"
   else
     printf '{"committed": false, "reason": "commit_failed"}\n'

@@ -427,11 +427,13 @@ Steps:
 1. From the repo root, run EXACTLY these two commands and NOTHING ELSE. Do NOT change any
    path or argument — the new branch is created from the current HEAD:
      mkdir -p ${WT_PARENT}
-     git worktree add -b ${BRANCH} ${WT_DEST}
+     git -c core.hooksPath=/dev/null worktree add -b ${BRANCH} ${WT_DEST}
+   (hooksPath is deliberate, git audit 2026-06-12: a repo's post-checkout hook — husky — can fail
+   in a fresh worktree without node_modules and abort or rc-poison the add.)
    If EITHER command fails, STOP IMMEDIATELY — do NOT improvise alternatives (no \`worktree add\`
    without -b, no checkout of an existing branch: attaching a previous attempt's branch silently
    reuses its commits and corrupts the run — live smoke 2026-06-12). Return worktree_path
-   "FAILED" with git's error as the summary.
+   "FAILED" with git's COMPLETE error text as the summary.
 2. Get the worktree's ABSOLUTE path: run \`cd ${WT_DEST} && pwd\` and use its output as worktree_path.
 3. Make the change ONLY inside that worktree. Stay within the planned files unless the
    plan clearly requires touching an adjacent file.
@@ -454,9 +456,22 @@ const claimed = (impl && typeof impl.worktree_path === 'string') ? impl.worktree
 // under a feat the resume lanes (ready_to_merge / proven merge_failed / the noop rescue) land the
 // prior work; standalone, the human merges or deletes the branch.
 if (claimed.startsWith('FAILED')) {
+  // Disambiguate the collision before advising (git audit 2026-06-12, P2): `worktree add -b` is
+  // NON-ATOMIC — a failing post-checkout hook or smudge filter can leave the BRANCH behind with
+  // ZERO commits of its own. Telling the human "prior work exists, resume lands it" would wedge
+  // them forever (the resume lanes land nothing). One deterministic probe tells the two apart.
+  const cntRaw = await agent(
+    `THIN git runner. Run EXACTLY this one command from the CURRENT directory (do NOT cd) and output ONLY its stdout (a number, or git's error line verbatim):
+  ${HB_TOUCH}git rev-list --count HEAD..${JSON.stringify(BRANCH)} --`,
+    { model: MODEL_RUNNER, phase: 'Implement', label: 'collision-audit' }
+  )
+  const cnt = parseInt(String(cntRaw == null ? '' : cntRaw).trim(), 10)
+  const residue = Number.isInteger(cnt) && cnt === 0
   return { status: 'infra_error', task: TASK, branch: BRANCH, rounds: 0,
     error: `worktree/branch collision: ${claimed}`,
-    note: `Implement could not create ${BRANCH} / its worktree — a previous attempt's work already exists there (${(impl && impl.summary) || 'no git error captured'}). Under a feat, re-run with the SAME args: the resume lanes land proven prior work. Standalone: merge or delete the branch, then re-run.` }
+    note: residue
+      ? `Implement could not create ${BRANCH} / its worktree — the branch exists but holds NO commits of its own: empty residue of a previously failed worktree add (or a name collision with one of your refs — git's error: ${(impl && impl.summary) || 'not captured'}). Delete it and re-run:\n  git branch -D ${BRANCH}`
+      : `Implement could not create ${BRANCH} / its worktree — a previous attempt's work exists there${Number.isInteger(cnt) ? ` (${cnt} commit(s))` : ''} (${(impl && impl.summary) || 'no git error captured'}). Under a feat, re-run with the SAME args: the resume lanes land proven prior work. Standalone: merge or delete the branch, then re-run.` }
 }
 if (!claimed || !claimed.endsWith(WT_NAME)) {
   return { status: 'aborted', stage: 'implement', task: TASK, plan,
@@ -474,10 +489,15 @@ log(`Implemented in worktree ${WT} (branch ${BRANCH})${tokSuffix()}.`)
 // the human's). Feat-scoped only (ID_SALT): a standalone loop on a deliberately-dirty repo is
 // the user's own working style, not a breach. NOTE: a repo whose TESTS dirty the tree will trip
 // this — that was always merge-fatal; now it fails early with the files named.
+// --ignore-submodules=all (git audit 2026-06-12, P2): a merged submodule-pointer bump leaves a
+// PERMANENT ` M sub` in porcelain (merge never updates the submodule workdir) — without the flag
+// every later task false-fires this guard and the feat wedges. Documented blind spot: an agent
+// editing ONLY a submodule pointer in the main tree goes unseen here; the merge step still
+// surfaces it.
 async function containmentLeak(phaseName) {
   const raw = await agent(
     `THIN containment check. Run EXACTLY this one command from the CURRENT directory (the repo root — do NOT cd) and output its stdout VERBATIM as your entire reply (it may be EMPTY — then reply with nothing):
-  ${HB_TOUCH}git status --porcelain`,
+  ${HB_TOUCH}git status --porcelain --ignore-submodules=all`,
     { model: MODEL_RUNNER, phase: 'Review', label: `containment:${phaseName}` }
   )
   const dirt = String(raw == null ? '' : raw).trim()

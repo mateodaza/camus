@@ -398,8 +398,9 @@ phase('Preflight')
 const pf = await agent(
   `THIN preflight runner for a git repo. cd ${REPO_ARG}, then run and report (do NOT modify anything):
 1. \`${HB_TOUCH}git rev-parse --abbrev-ref HEAD\`  -> base (the current branch name).
-   If this FAILS with "not a git repository", return base: "NOT_A_REPO" (clean: false, dirtyFiles: 0) and skip step 2.
-2. \`git status --porcelain\`           -> clean is true ONLY if this prints NOTHING; dirtyFiles = number of lines
+   If this FAILS with "not a git repository", return base: "NOT_A_REPO" (clean: false, dirtyFiles: 0) and skip steps 1b-2.
+1b. \`git rev-parse --verify -q HEAD >/dev/null\` — if THIS fails (a repo with ZERO commits), return base: "UNBORN" (clean: false, dirtyFiles: 0) and skip step 2.
+2. \`git status --porcelain --ignore-submodules=all\`  -> clean is true ONLY if this prints NOTHING; dirtyFiles = number of lines
 3. \`cat ${STATE_PATH} 2>/dev/null || true\` -> stateRaw = the exact file contents, or "" if the file does not exist
 Return {clean, base, dirtyFiles, stateRaw}.`,
   { model: MODEL_RUNNER, phase: 'Preflight', label: 'preflight', schema: PREFLIGHT_SCHEMA }
@@ -413,13 +414,33 @@ if (!pf) return finalize('infra_error', { stage: 'preflight', note: 'preflight a
 if (pf.base === 'NOT_A_REPO') {
   return finalize('not_a_git_repo', {
     stage: 'preflight',
-    note: `This directory is not a git repository, and the camus gate is built on git: the diff is what the cross-vendor reviewer judges, the worktree is the isolation, merge-on-done is the rollback, commits are the resume. Entry fee (~10 seconds, fully LOCAL — no GitHub, no remote, no account, nothing is ever pushed):\n  git init && git add -A && git commit -m "baseline"\nThen re-run the feat with the same args.`,
+    note: `This directory is not a git repository, and the camus gate is built on git: the diff is what the cross-vendor reviewer judges, the worktree is the isolation, merge-on-done is the rollback, commits are the resume. Entry fee (~10 seconds, fully LOCAL — no GitHub, no remote, no account, nothing is ever pushed):\n  git init && git add -A && git commit --allow-empty -m "baseline"\nThen re-run the feat with the same args.`,
+  })
+}
+// UNBORN repo (git audit 2026-06-12, P3): `git init` with zero commits — rev-parse prints "HEAD"
+// to stdout while erroring, `worktree add` infers --orphan, and the guard then refuses mid-loop
+// after implement already paid. Refuse up front; note that an empty dir's `git add -A && commit`
+// produces exactly this state, so the recipe carries --allow-empty.
+if (pf.base === 'UNBORN') {
+  return finalize('unborn_repo', {
+    stage: 'preflight',
+    note: 'This repository has no commits yet — the gate needs a baseline commit to diff against, branch from, and roll back to. Make one (an empty dir needs --allow-empty):\n  git add -A && git commit --allow-empty -m "baseline"\nThen re-run the feat with the same args.',
+  })
+}
+// DETACHED HEAD (git audit 2026-06-12, P3): rev-parse prints literal "HEAD" with rc=0, and the
+// feat would silently cut its branch from the parked commit — every downstream "base" claim
+// would be incoherent. A detached launch is almost always an accident (bisect, checkout <sha>);
+// refusing is cheaper than a wrong baseline.
+if (pf.base === 'HEAD') {
+  return finalize('detached_head', {
+    stage: 'preflight',
+    note: 'HEAD is detached — the feat would be cut from the parked commit, not a branch. Check out the branch you mean to build on (e.g. `git checkout main`) and re-run.',
   })
 }
 state.base = pf.base || null
 if (!pf.clean) {
   return finalize('dirty_tree', {
-    note: `Base working tree has ${pf.dirtyFiles} uncommitted change(s). Commit or stash before running the feat — Camus will not run on a dirty tree.`,
+    note: `Base working tree has ${pf.dirtyFiles} uncommitted change(s). Commit or stash before running the feat — Camus will not run on a dirty tree. (If the lines name a SUBMODULE, the pointer is stale rather than edited: \`git submodule update --init\` clears it.)`,
   })
 }
 // Resume: carry forward tasks already marked done in the prior state (already merged into the
@@ -870,9 +891,9 @@ If the branch does not exist git errors — output that error line verbatim.`,
   }
   const mg = await agent(
     `THIN git merge runner. cd ${REPO_ARG}. Merge the completed task branch into the feat branch. Run EXACTLY, in order, and report what git actually did:
-1. \`${HB_TOUCH}git checkout ${JSON.stringify(featBranch)}\`
+1. \`${HB_TOUCH}git -c core.hooksPath=/dev/null checkout ${JSON.stringify(featBranch)}\`
 2. \`git rev-parse HEAD\`  -> record as before
-3. \`git merge --no-ff ${JSON.stringify(mergeBranch)} -m ${JSON.stringify('camus(feat): merge ' + node.taskId)}\`
+3. \`git -c core.hooksPath=/dev/null -c commit.gpgsign=false merge --no-ff ${JSON.stringify(mergeBranch)} -m ${JSON.stringify('camus(feat): merge ' + node.taskId)}\`
 4. \`git rev-parse HEAD\`  -> record as after
 5. ONLY IF git printed "Already up to date.": \`git log ${JSON.stringify(featBranch)} --grep ${JSON.stringify('camus(feat): merge ' + node.taskId)} --format=%H -n 1\` -> record the SHA (or empty) as priorMergeCommit
 Report:
@@ -882,7 +903,8 @@ Report:
 - priorMergeCommit: ALWAYS include this field — the step-5 SHA if one was found, else null (also null when step 5 did not apply). Omitting it is a contract violation. (Distinguishes "this task was ALREADY merged by a prior run" from "the branch never had anything to merge".)
 - before, after: the two HEAD SHAs (null only if that step never ran).
 ALWAYS include EVERY field above — booleans are always determinable; use null only for a SHA you could not obtain. An omitted field is a contract violation.
-On a CONFLICT: run \`git merge --abort\`, set merged=false, conflict=true, put the conflicting files in error. Never touch the base branch (${JSON.stringify(state.base)}).
+If the merge FAILS for ANY reason — conflict, hook, signing, anything: run \`git merge --abort\` (ignore its error when no merge is in progress; a half-merge left behind poisons every later run as a dirty tree — git audit 2026-06-12), set merged=false (conflict=true only for a real conflict), put git's failure text in error. Never touch the base branch (${JSON.stringify(state.base)}).
+(The -c flags above are deliberate: a repo's post-checkout hook can return rc=1 on a SUCCESSFUL checkout, a pre-merge-commit hook aborts the merge leaving MERGE_HEAD behind, and forced commit signing with a TTY-bound key kills unattended merge commits — gate-owned mutations run hookless and unsigned.)
 Return {merged, committed, alreadyUpToDate, priorMergeCommit, before, after, conflict, error}.`,
     { model: MODEL_RUNNER, phase: 'Tasks', label: `merge:${node.taskId}`, schema: MERGE_SCHEMA }
   )

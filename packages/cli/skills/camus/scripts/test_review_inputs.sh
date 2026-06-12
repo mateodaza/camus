@@ -203,6 +203,41 @@ check "commit gate still commits after intent-to-add" \
 check "new file actually committed" \
   "yes" "$(git -C "$WT" ls-tree -r --name-only HEAD | grep -qx 'newfile.ts' && echo yes || echo no)"
 
+# ── commit gate honesty (git audit 2026-06-12) ────────────────────────────────────────────────
+# P1: a failing `git add -A` stages NOTHING (all-or-nothing) — falling through to the empty-index
+# check reported "empty" → false no_changes → a false NOOP no ancestry audit can see. The lock
+# file is the cheap deterministic way to make add fail (an IDE/background-git race in the wild).
+echo "post-lock change" > "$WT/tracked.txt"
+WT_GITDIR="$(git -C "$WT" rev-parse --git-dir)"
+touch "$WT_GITDIR/index.lock"
+out="$(bash "$here/commit.sh" "$WT" "camus: locked")"
+rm -f "$WT_GITDIR/index.lock"
+check "failed add reports add_failed, never a false empty" \
+  "add_failed" "$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("reason","?"))')"
+
+# P3: an agent cloning a repo INSIDE the worktree must not commit a dangling gitlink (a phantom
+# submodule with no .gitmodules breaks every future clone). Refused with a named reason.
+mkdir -p "$WT/vendor/embedded" && (cd "$WT/vendor/embedded" && git init -q && echo x > f && gitq add -A && gitq -c commit.gpgsign=false commit -qm inner)
+out="$(bash "$here/commit.sh" "$WT" "camus: gitlink")"
+check "embedded repo refused with a named reason" \
+  "embedded_repo" "$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("reason","?"))')"
+rm -rf "$WT/vendor"
+git -C "$WT" reset -q   # unstage the refused attempt so nothing leaks into later checks
+
+# Hookless + unsigned: a prepare-commit-msg hook that aborts (rc=1) and forced gpg signing with a
+# bogus key must BOTH be bypassed — gate commits are machine-generated (--no-verify alone covers
+# neither: verified live in the audit).
+mkdir -p "$ROOT/hooks" && printf '#!/bin/sh\nexit 1\n' > "$ROOT/hooks/prepare-commit-msg" && chmod +x "$ROOT/hooks/prepare-commit-msg"
+git -C "$WT" config core.hooksPath "$ROOT/hooks"
+git -C "$WT" config commit.gpgsign true
+git -C "$WT" config user.signingkey /nonexistent-key
+git -C "$WT" config gpg.format ssh
+echo "hooked change" > "$WT/tracked.txt"
+out="$(bash "$here/commit.sh" "$WT" "camus: hooked")"
+check "commit survives hostile prepare-commit-msg + forced signing" \
+  "yes" "$(printf '%s' "$out" | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin)["committed"] else "no")')"
+git -C "$WT" config --unset core.hooksPath; git -C "$WT" config --unset commit.gpgsign
+
 echo
 echo "$pass passed, $fail failed"
 exit $((fail > 0 ? 1 : 0))

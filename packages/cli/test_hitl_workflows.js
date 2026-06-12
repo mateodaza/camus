@@ -596,6 +596,9 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     }
     const clean = await runLoop({ task: 't', idSalt: salt }, { ...base25, containment: '' })
     ok('S25a clean main tree → done, containment checked', clean.res.status === 'done' && clean.calls.includes('containment:implement'), clean.res.status + ' ' + clean.calls.join(','))
+    // git audit 2026-06-12: a merged submodule-pointer bump leaves permanent ` M sub` porcelain —
+    // the guard must ignore submodule noise or every later task false-fires.
+    ok('S25a2 containment ignores submodule noise', (clean.prompts['containment:implement'] || '').includes('--ignore-submodules=all'))
     const leaky = await runLoop({ task: 't', idSalt: salt }, { ...base25, containment: ' M packages/x.ts\n?? packages/new.ts' })
     ok('S25b implement leak → infra halt naming the phase', leaky.res.status === 'infra_error' && leaky.res.containment === 'implement', leaky.res.status + '/' + leaky.res.containment)
     ok('S25b note names the leaked paths + recovery', /packages\/x\.ts/.test(leaky.res.note) && /diff them against the task worktree/.test(leaky.res.note))
@@ -625,11 +628,23 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // FAILED path surfaces as a collision infra error pointing at the resume lanes.
   {
     const stubs = { ...clsStd, ...planOf('clear', ''),
-      implement: { worktree_path: 'FAILED', branch: 'b', summary: "fatal: a branch named 'camus/x' already exists" } }
+      implement: { worktree_path: 'FAILED', branch: 'b', summary: "fatal: a branch named 'camus/x' already exists" },
+      'collision-audit': '2' }
     const { res, prompts } = await runLoop({ task: 't' }, stubs)
     ok('S26 declared collision → infra_error naming the cause', res.status === 'infra_error' && /collision/.test(res.error || ''), res.status + ' ' + res.error)
-    ok('S26 note points at the resume lanes', /resume lanes land proven prior work/.test(res.note || ''))
+    ok('S26 prior-work collision (commits>0) → resume-lane advice', /resume lanes land proven prior work/.test(res.note || '') && /2 commit/.test(res.note || ''), res.note)
     ok('S26 implement prompt forbids improvising around failures', !!prompts.implement && prompts.implement.includes('do NOT improvise alternatives'))
+    ok('S26 worktree add runs hookless (post-checkout hooks can rc-poison)', !!prompts.implement && prompts.implement.includes('-c core.hooksPath=/dev/null worktree add -b'))
+  }
+  {
+    // git audit 2026-06-12 (P2): `worktree add -b` is NON-ATOMIC — a hook/smudge failure leaves an
+    // EMPTY branch behind. The old advice ("resume lands prior work") would wedge forever; the
+    // collision audit disambiguates and names the one-line cleanup.
+    const stubs = { ...clsStd, ...planOf('clear', ''),
+      implement: { worktree_path: 'FAILED', branch: 'b', summary: 'fatal: post-checkout hook failed' },
+      'collision-audit': '0' }
+    const { res } = await runLoop({ task: 't' }, stubs)
+    ok('S26b empty-residue collision → branch -D advice, never the resume-lane lie', /empty residue/.test(res.note || '') && /git branch -D/.test(res.note || '') && !/resume lanes land proven/.test(res.note || ''), res.note)
   }
 
   // S7: worktree path contract (2026-06-10) — centralized out-of-tree home + fail-closed validation.
@@ -905,7 +920,32 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const { res, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'] },
       { ...featBase, preflight: { clean: false, base: 'NOT_A_REPO', dirtyFiles: 0, stateRaw: '' } }, [])
     ok('F29 non-git dir → not_a_git_repo, nothing runs', res && res.status === 'not_a_git_repo' && workflowCalls === 0, res && res.status)
-    ok('F29 note names the local entry fee + no GitHub', /git init && git add -A/.test((res && res.note) || '') && /no GitHub/.test((res && res.note) || ''), res && res.note)
+    ok('F29 note names the local entry fee + no GitHub', /git init && git add -A/.test((res && res.note) || '') && /no GitHub/.test((res && res.note) || '') && /--allow-empty/.test((res && res.note) || ''), res && res.note)
+  }
+  // F30/F31 (git audit 2026-06-12): unborn repos (zero commits — worktree add infers --orphan,
+  // the guard then refuses MID-loop after implement paid) and detached HEADs (the feat would cut
+  // from the parked commit) are refused AT PREFLIGHT with the exact remedy.
+  {
+    const { res, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, preflight: { clean: false, base: 'UNBORN', dirtyFiles: 0, stateRaw: '' } }, [])
+    ok('F30 unborn repo → refused with --allow-empty baseline recipe', res && res.status === 'unborn_repo' && workflowCalls === 0 && /--allow-empty/.test(res.note || ''), res && res.status)
+  }
+  {
+    const { res, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, preflight: { clean: true, base: 'HEAD', dirtyFiles: 0, stateRaw: '' } }, [])
+    ok('F31 detached HEAD → refused, names the checkout remedy', res && res.status === 'detached_head' && workflowCalls === 0 && /git checkout/.test(res.note || ''), res && res.status)
+  }
+  // F32 (git audit 2026-06-12): gate-owned git mutations run HOOKLESS and UNSIGNED — the merge
+  // runner's commands carry the -c flags and the abort-on-ANY-failure instruction (a half-merge
+  // left behind poisons every later run as dirty_tree).
+  {
+    const tid = taskIdOf('F', ['only task'], 'only task')
+    const { prompts } = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
+      [{ status: 'done', branch: 'b', decisions: [] }])
+    const mp = prompts['merge:' + tid] || ''
+    ok('F32 merge checkout + merge run hookless/unsigned', mp.includes('-c core.hooksPath=/dev/null checkout') && mp.includes('-c core.hooksPath=/dev/null -c commit.gpgsign=false merge --no-ff'), mp.slice(0, 160))
+    ok('F32 abort on ANY failed merge, not just conflicts', mp.includes('If the merge FAILS for ANY reason'))
+    ok('F32 preflight porcelain ignores submodule noise', (prompts.preflight || '').includes('--ignore-submodules=all'))
   }
 
   // F27 (live smoke run-2, 2026-06-12): the NOOP RESCUE — "no_changes" with unmerged commits on
