@@ -341,6 +341,12 @@ If git refuses (dirty, locked, or already gone): do NOT force and do NOT delete 
 
 async function finalize(status, extra = {}) {
   state.status = status
+  // FEAT-LEVEL pauses must reach the BOARD (smoke 2026-06-12): the posture pause's question only
+  // lived in the report, so status rendered a generic — and wrong-shaped — task-answers hint.
+  // Persist the question + stage on the state itself; status.py renders the right ask and the
+  // right resume shape per stage (posture | budget | steer | task).
+  if (typeof extra.question === 'string' && extra.question) state.question = extra.question
+  if (typeof extra.stage === 'string' && extra.stage) state.stage = extra.stage
   const report = {
     featId, feat: FEAT, featBranch, base: state.base, status,
     env: state.env, baseline: state.baseline, envRecheck: state.envRecheck, integration: state.integration,
@@ -429,7 +435,13 @@ if (prior && Array.isArray(prior.tasks)) {
   for (const node of state.tasks) {
     const p = priorById.get(node.taskId)
     if (p && p.status === 'needs_decision') PROVEN_DECISION.add(node.taskId)
-    if (p && p.status === 'ready_to_merge') {
+    // merge_failed WITH a proven verdict joins the same lane (smoke 2026-06-12): the work is
+    // committed + verified on the task branch and only the merge is missing — the merge agent's
+    // refusal (e.g. a dirty main tree) is retryable once the human clears the cause. Without
+    // this, the only resume was a full re-loop that collides on the existing branch/worktree.
+    const provenButUnmerged = p && p.status === 'merge_failed'
+      && (p.provenStatus === 'done' || p.provenStatus === 'done_with_findings')
+    if (p && (p.status === 'ready_to_merge' || provenButUnmerged)) {
       PROVEN_READY.add(node.taskId)
       // Carry the crash-window stash (audit P1 2026-06-11) so the post-auto-land status can be
       // restored to the loop's REAL verdict — land mode itself only ever says plain done.
@@ -486,11 +498,15 @@ Rules (conservative by construction):
 - ANY task that looks complex, cross-cutting, architectural, or ambiguous → "full". Speed
   postures are for work you are CONFIDENT about; uncertainty buys MORE review, not less.
 - "oneshot" only when ALL tasks are clearly trivial/standard with small, well-scoped diffs.
-- When unsure → "full".`,
+- When unsure → "full".
+- The why: ONE plain prose sentence, no trailing period, no identifiers or camelCase tokens
+  (it is quoted verbatim to a human).`,
     { model: MODEL_RUNNER, phase: 'Preflight', label: 'posture-rec', schema: POSTURE_REC_SCHEMA }
   )
   const recommended = (rec && rec.posture === 'oneshot') ? 'oneshot' : 'full'
-  const why = (rec && rec.why) || 'no rationale returned — defaulting conservative'
+  // Strip any trailing period/space: the why is composed into sentences below, and a why that
+  // arrives with its own period printed ".." in the field (smoke nit 2026-06-12).
+  const why = ((rec && rec.why) || 'no rationale returned — defaulting conservative').replace(/[.\s]+$/, '')
   if (recommended === 'full') {
     POSTURE = 'full'
     log(`Posture: full (recommended default — ${why}).`)
@@ -590,6 +606,7 @@ for (let i = 0; i < state.tasks.length; i++) {
       note(`Token budget reached before task ${n}: ~${Math.round(featSpent / 1000)}k persisted output tokens ≥ budgetTokens=${BUDGET_TOKENS}.`)
       return finalize('needs_human', {
         stage: 'budget', haltedTask: node.taskId, spentTokens: featSpent, budgetTokens: BUDGET_TOKENS,
+        question: `Token budget reached (~${Math.round(featSpent / 1000)}k of ${Math.round(BUDGET_TOKENS / 1000)}k, before task ${n}) — continue with a higher budgetTokens, or stop here?`,
         note: `Spent ~${Math.round(featSpent / 1000)}k of the ${Math.round(BUDGET_TOKENS / 1000)}k output-token budget (persisted across runs — an estimate, not an invoice). Continue / stop here? Earlier merged tasks stay on ${featBranch}. To continue: re-run with a HIGHER budgetTokens (or without it); the resume skips done tasks.`,
       })
     }
@@ -623,6 +640,7 @@ Return the captured output VERBATIM as your entire reply. No fences, no commenta
     note(`Task ${n}: a steer note was PRESENT but UNPARSEABLE — halting; NOTHING was applied.`)
     return finalize('needs_human', {
       stage: 'steer', haltedTask: node.taskId,
+      question: `A steer note before task ${n} was unparseable and was consumed UNAPPLIED — re-issue your guidance, then re-run.`,
       note: `A steer note was present but could not be parsed before task ${n} — it was consumed (deleted) and NOTHING was applied. Halting rather than running past your guidance. Re-issue it (\`camus steer ...\`) and re-run the feat with the SAME args to resume from here.`,
     })
   }
@@ -956,6 +974,7 @@ if (BUDGET_TOKENS != null) {
     note(`Token budget reached AFTER the final task: ~${Math.round(featSpent / 1000)}k ≥ budgetTokens=${BUDGET_TOKENS} — halting before integration.`)
     return finalize('needs_human', {
       stage: 'budget', spentTokens: featSpent, budgetTokens: BUDGET_TOKENS,
+      question: `Token budget reached (~${Math.round(featSpent / 1000)}k of ${Math.round(BUDGET_TOKENS / 1000)}k, after the final task) — integration verify has NOT run; continue with a higher budgetTokens?`,
       note: `Spent ~${Math.round(featSpent / 1000)}k of the ${Math.round(BUDGET_TOKENS / 1000)}k output-token budget (persisted across runs — an estimate, not an invoice). Every task is done/merged but integration verify has NOT run, so the feat is not "done" yet. Continue by re-running with a HIGHER budgetTokens (or without it) — done tasks skip straight to integration.`,
     })
   }

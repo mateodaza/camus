@@ -564,6 +564,62 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('S23f review command routes through review.sh (backend dispatcher)', (prompts[reviewLbl(calls, 1)] || '').includes('/review.sh'), (prompts[reviewLbl(calls, 1)] || '').slice(0, 200))
   }
 
+  // S24 (smoke 2026-06-12): ONESHOT carries the fix agent's CLAIMED resolution per finding —
+  // a reader must be able to tell addressed-unreviewed from untouched. Claims, never verdicts.
+  {
+    const finding = { priority: 1, title: 'edge case', code_location: 'a.ts:1' }
+    const stubs = {
+      ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+      review: J({ ran: true, clean: false, blocking: [finding], nonblocking: [] }),
+      fix: { resolutions: [{ title: 'edge case', resolution: 're-exported the symbol from the original module' }] },
+      commit: J({ committed: true, sha: 'c1' }), ...cleanVerify,
+    }
+    const { res, prompts } = await runLoop({ task: 't', posture: 'oneshot' }, stubs)
+    ok('S24 claimed resolution attached to the verbatim finding', res.status === 'done_with_findings' && res.findings[0].claimedResolution === 're-exported the symbol from the original module', JSON.stringify(res.findings))
+    ok('S24 fix prompt demands per-finding resolutions under oneshot', !!prompts['fix:r1'] && prompts['fix:r1'].includes('return resolutions[]'))
+  }
+  {
+    const { prompts } = await runLoop({ task: 't' }, { ...clsStd, ...planOf('clear', ''), ...blockP1 })
+    ok('S24b full posture fix prompt does NOT ask for resolution claims', !(prompts['fix:r1'] || '').includes('return resolutions[]'))
+  }
+
+  // S25 (smoke 2026-06-12, the headline): WORKTREE CONTAINMENT — under a feat (idSalt), the
+  // main repo tree is checked after implement and after any fix; dirt = a leak, halted LOUDLY
+  // at the phase that caused it. Standalone loops (user's own working style) are never checked.
+  {
+    const salt = 'feat123'
+    const base25 = {
+      ...clsStd, ...planOf('clear', ''),
+      implement: { worktree_path: wtPath('t', salt), branch: 'b', summary: 's', decisions: [] },
+      review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
+      commit: J({ committed: true, sha: 'c1' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [] }),
+    }
+    const clean = await runLoop({ task: 't', idSalt: salt }, { ...base25, containment: '' })
+    ok('S25a clean main tree → done, containment checked', clean.res.status === 'done' && clean.calls.includes('containment:implement'), clean.res.status + ' ' + clean.calls.join(','))
+    const leaky = await runLoop({ task: 't', idSalt: salt }, { ...base25, containment: ' M packages/x.ts\n?? packages/new.ts' })
+    ok('S25b implement leak → infra halt naming the phase', leaky.res.status === 'infra_error' && leaky.res.containment === 'implement', leaky.res.status + '/' + leaky.res.containment)
+    ok('S25b note names the leaked paths + recovery', /packages\/x\.ts/.test(leaky.res.note) && /diff them against the task worktree/.test(leaky.res.note))
+  }
+  {
+    // fix-phase leak: clean after implement, dirty after the fix ran (full posture, cap 2).
+    const salt = 'feat123'
+    let c25 = 0
+    const stubs = {
+      ...clsStd, ...planOf('clear', ''),
+      implement: { worktree_path: wtPath('t', salt), branch: 'b', summary: 's', decisions: [] },
+      review: (() => { let r = 0; return () => { r++; return J({ ran: true, clean: false, blocking: [{ priority: 1, title: 't' + r, code_location: 'f.ts:' + r }], nonblocking: [] }) } })(),
+      fix: '', containment: () => (++c25 === 1 ? '' : ' M lib/leaked.ts'),
+      prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [] }),
+    }
+    const { res } = await runLoop({ task: 't', idSalt: salt, roundCap: 2 }, stubs)
+    ok('S25c fix leak caught post-loop, named as the fix phase', res.status === 'infra_error' && res.containment === 'fix', res.status + '/' + res.containment)
+  }
+  {
+    // standalone (no idSalt): even a would-be-dirty tree is never checked — not a breach.
+    const { res, calls } = await runLoop({ task: 't' }, { ...clsStd, ...planOf('clear', ''), ...happyTail, containment: ' M anything.ts' })
+    ok('S25d standalone loop → containment never runs', res.status === 'done' && !calls.some((c) => c.startsWith('containment')), calls.join(','))
+  }
+
   // S7: worktree path contract (2026-06-10) — centralized out-of-tree home + fail-closed validation.
   {
     const { res, prompts } = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail })
@@ -760,6 +816,64 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       r3.stateJSON && r3.stateJSON.tasks[0].status + '/' + (r3.res && r3.res.status))
     ok('F24c merged[] names the actually-merged branch on this lane too (audit P3, third lane)',
       Array.isArray(r3.res.merged) && r3.res.merged[0] === 'camus/feat/x/only', JSON.stringify(r3.res && r3.res.merged))
+  }
+
+  // F25 (smoke 2026-06-12): merge_failed WITH a proven verdict joins the auto-land lane — the
+  // work is committed+verified on the task branch; once the human clears the merge blocker, a
+  // plain re-run lands it mechanically instead of re-looping into a branch collision.
+  {
+    const finding = { priority: 2, title: 'deferred edge', code_location: 'b.ts:2' }
+    const tid = taskIdOf('F', ['only task'], 'only task')
+    const fid = featIdOf('F', ['only task'])
+    const prior = {
+      featId: fid, feat: 'F', featBranch: 'camus/feat-' + fid, status: 'feat_integration_failed',
+      resumeArgs: { argsVersion: 1, feat: 'F', tasks: ['only task'], policy: 'ask_on_ambiguity', posture: 'oneshot' },
+      tasks: [{ taskId: tid, spec: 'only task', dependsOn: [], status: 'merge_failed', branch: `camus/feat/${fid}/${tid}`,
+        loopStatus: 'done_with_findings', provenStatus: 'done_with_findings', findingsDeferred: 1, deferredFindings: [finding], decisions: [{ what: 'W', why: 'Y' }] }],
+      events: [], eventSeq: 0,
+    }
+    const featR = { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(prior) } }
+    const r1 = await runFeat({ feat: 'F', tasks: ['only task'], posture: 'oneshot' }, featR,
+      [{ status: 'done', branch: `camus/feat/${fid}/${tid}`, commit_sha: 'land1', landed: true, decisions: [] }])
+    ok('F25 proven merge_failed → auto-land forwarded', !!(r1.loopArgs[0] && r1.loopArgs[0].land === true), JSON.stringify(r1.loopArgs[0] && r1.loopArgs[0].land))
+    ok('F25 verdict + findings restored through the land', r1.res && r1.res.status === 'done_with_findings' && JSON.stringify(r1.res.deferredFindings || []).includes('deferred edge'), r1.res && r1.res.status)
+  }
+  {
+    // merge_failed WITHOUT a proven verdict (died pre-review) → full loop, exactly as before.
+    const tid = taskIdOf('F', ['only task'], 'only task')
+    const fid = featIdOf('F', ['only task'])
+    const prior = {
+      featId: fid, feat: 'F', featBranch: 'camus/feat-' + fid, status: 'feat_integration_failed',
+      resumeArgs: { argsVersion: 1, feat: 'F', tasks: ['only task'], policy: 'ask_on_ambiguity' },
+      tasks: [{ taskId: tid, spec: 'only task', dependsOn: [], status: 'merge_failed', branch: `camus/feat/${fid}/${tid}`, loopStatus: 'infra_error', decisions: [] }],
+      events: [], eventSeq: 0,
+    }
+    const featR = { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(prior) } }
+    const r2 = await runFeat({ feat: 'F', tasks: ['only task'] }, featR, [{ status: 'done', branch: 'b', decisions: [] }])
+    ok('F25b unproven merge_failed → full loop (no land)', !!(r2.loopArgs[0] && !('land' in r2.loopArgs[0])) && r2.res && r2.res.status === 'done', JSON.stringify(r2.loopArgs[0]))
+  }
+  // F26 (smoke 2026-06-12): feat-level pauses reach the BOARD — finalize persists question+stage
+  // on the state; the rec-why's trailing period is stripped (no more "defensible.. Review").
+  {
+    const { res, stateJSON } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, 'posture-rec': { posture: 'oneshot', why: 'all tasks trivial.' } }, [])
+    ok('F26 posture pause persists question + stage on the state', !!stateJSON && stateJSON.stage === 'posture' && /all tasks trivial/.test(stateJSON.question || ''), stateJSON && (stateJSON.stage + ' / ' + stateJSON.question))
+    ok('F26 trailing period stripped — no doubled period anywhere', !/\.\./.test((res && res.question) || '') && !/\.\./.test((stateJSON && stateJSON.question) || ''), res && res.question)
+  }
+  {
+    const bTasks = ['task one', 'task two']
+    const b1 = taskIdOf('B', bTasks, 'task one'), bid = featIdOf('B', bTasks)
+    const prior = {
+      featId: bid, feat: 'B', featBranch: 'camus/feat-' + bid, status: 'halted',
+      resumeArgs: { argsVersion: 1, feat: 'B', tasks: bTasks, policy: 'ask_on_ambiguity', budgetTokens: 50000 },
+      tasks: [
+        { taskId: b1, spec: 'task one', dependsOn: [], status: 'done', branch: 'x', loopStatus: 'done', decisions: [], tokens: 90000 },
+        { taskId: taskIdOf('B', bTasks, 'task two'), spec: 'task two', dependsOn: [], status: 'pending', branch: 'y', loopStatus: null },
+      ], events: [], eventSeq: 0,
+    }
+    const featR = { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(prior) } }
+    const { stateJSON } = await runFeat({ feat: 'B', tasks: bTasks, budgetTokens: 50000 }, featR, [])
+    ok('F26b budget pause persists stage + question on the state', !!stateJSON && stateJSON.stage === 'budget' && /budget/i.test(stateJSON.question || ''), stateJSON && (stateJSON.stage + ' / ' + stateJSON.question))
   }
 
   // F18c (audit P2 2026-06-11): the FINAL task's spend must hit the ceiling too — recheck after

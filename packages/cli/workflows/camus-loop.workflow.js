@@ -452,6 +452,33 @@ if (!claimed || !claimed.endsWith(WT_NAME)) {
 const WT = claimed
 log(`Implemented in worktree ${WT} (branch ${BRANCH})${tokSuffix()}.`)
 
+// WORKTREE CONTAINMENT GUARD (smoke 2026-06-12): BOTH think-agents leaked draft edits into the
+// MAIN repo tree (implement at 07:54, fix at 08:04 — caught two phases later as a confusing
+// merge refusal). "Edit only in the worktree" was prompt text, not a guard. Under a feat the
+// main tree is guaranteed CLEAN at task start (preflight demands it; merges commit), so ANY
+// porcelain output mid-task is a breach — an agent leak, or a human editing mid-run, both
+// merge-fatal. Halt LOUDLY at the phase that caused it; never auto-discard (the dirt could be
+// the human's). Feat-scoped only (ID_SALT): a standalone loop on a deliberately-dirty repo is
+// the user's own working style, not a breach. NOTE: a repo whose TESTS dirty the tree will trip
+// this — that was always merge-fatal; now it fails early with the files named.
+async function containmentLeak(phaseName) {
+  const raw = await agent(
+    `THIN containment check. Run EXACTLY this one command from the CURRENT directory (the repo root — do NOT cd) and output its stdout VERBATIM as your entire reply (it may be EMPTY — then reply with nothing):
+  ${HB_TOUCH}git status --porcelain`,
+    { model: MODEL_RUNNER, phase: 'Review', label: `containment:${phaseName}` }
+  )
+  const dirt = String(raw == null ? '' : raw).trim()
+  return (!dirt || dirt === '(empty)') ? null : dirt
+}
+if (ID_SALT) {
+  const leak = await containmentLeak('implement')
+  if (leak) {
+    return { status: 'infra_error', task: TASK, worktree: WT, branch: BRANCH, rounds: 0, containment: 'implement',
+      error: 'worktree containment breach: the implement agent leaked edits into the MAIN repo tree',
+      note: `The implement phase modified the MAIN repo tree — it must only touch its worktree. Leaked paths:\n${leak}\nIf these are agent strays, diff them against the task worktree (${WT}) and discard; if they are YOUR mid-run edits, commit or stash them. Then re-run the feat with the SAME args. The worktree itself is untouched.` }
+  }
+}
+
 // ── Phase 3: REVIEW ↔ FIX loop (ROUND_CAP rounds) ────────────────────────────
 // Reviewer is THIN: it runs the script and echoes raw stdout. No schema, no
 // re-judging. The SCRIPT parses the JSON and branches.
@@ -548,7 +575,27 @@ let lastBlocking = []
 let infraAbort = null
 // ONESHOT (VELOCITY §1): the single review's blocking findings, preserved VERBATIM for the
 // honest report — they were fixed once and never re-reviewed, and the result must say so.
+// Per-finding CLAIMED resolutions (smoke 2026-06-12, the spec's audit-P2(b) half we first
+// shipped without): the fix agent reports what it did for each finding, so a report reader can
+// tell "addressed-unreviewed" from "untouched" — claims, clearly labeled, never verdicts.
+const FIX_RESOLUTIONS_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['resolutions'],
+  properties: {
+    resolutions: {
+      type: 'array',
+      items: {
+        type: 'object', additionalProperties: false, required: ['title', 'resolution'],
+        properties: {
+          title: { type: 'string', description: 'the finding title, VERBATIM as given' },
+          resolution: { type: 'string', description: 'one sentence: what you changed for it (or why no change was needed)' },
+        },
+      },
+    },
+  },
+}
 let oneshotFindings = null
+let oneshotResolutions = null
+let fixesRan = false
 if (POSTURE === 'oneshot') {
   log(`Posture: ONESHOT — one review, one repair, verify decides${ROUND_CAP !== 3 ? ` (roundCap=${ROUND_CAP} is ignored under oneshot)` : ''}. Review scope: light (diff-primary).`)
 }
@@ -726,7 +773,8 @@ while (round < ROUND_CAP) {
       log(`Escalation triggered by ${why} (already on ${fixModel}).`)
     }
   }
-  await agent(
+  fixesRan = true
+  const fixOut = await agent(
     `Fix the BLOCKING review findings below, in the EXISTING worktree. Do not refactor
 beyond what each finding requires. Do not touch P3 nits.
 ${HB_LINE}
@@ -736,11 +784,29 @@ ${envFactsBlock}${siblingsBlock}
 Blocking findings (Codex, priority ≤ 2):
 ${JSON.stringify(lastBlocking, null, 2)}
 
-Apply the minimal correct fix for each. Do not run review or verify — the loop owns that.
+Apply the minimal correct fix for each. Do not run review or verify — the loop owns that.${POSTURE === 'oneshot' ? `
+Then return resolutions[]: for EACH finding (title VERBATIM), one sentence on what you changed
+— or why no change was needed. Nobody re-reviews this fix (oneshot posture), so your claims
+ship next to the findings in the report, clearly labeled as claims.` : ''}
 ${softBudget}`,
-    { model: fixModel, phase: 'Fix', label: `fix:r${round}` }
+    { model: fixModel, phase: 'Fix', label: `fix:r${round}`, ...(POSTURE === 'oneshot' ? { schema: FIX_RESOLUTIONS_SCHEMA } : {}) }
   )
-  if (POSTURE === 'oneshot') break   // one repair, no re-review — the posture's whole contract
+  if (POSTURE === 'oneshot') {
+    oneshotResolutions = (fixOut && Array.isArray(fixOut.resolutions)) ? fixOut.resolutions : null
+    break   // one repair, no re-review — the posture's whole contract
+  }
+}
+
+// Post-fix containment (smoke 2026-06-12): the fix agent was the SECOND leaker — same guard,
+// run once after the loop whenever any fix dispatched. Checked BEFORE the unresolved/commit
+// paths on purpose: a leak poisons the NEXT task's merge even when this task halts.
+if (ID_SALT && fixesRan) {
+  const leak = await containmentLeak('fix')
+  if (leak) {
+    return { status: 'infra_error', task: TASK, worktree: WT, branch: BRANCH, rounds: round, containment: 'fix',
+      error: 'worktree containment breach: the fix agent leaked edits into the MAIN repo tree',
+      note: `The fix phase modified the MAIN repo tree — it must only touch its worktree. Leaked paths:\n${leak}\nIf these are agent strays, diff them against the task worktree (${WT}) and discard; if they are YOUR mid-run edits, commit or stash them. Then re-run the feat with the SAME args.` }
+  }
 }
 
 // Deterministic PREP + VERIFY (type-check / lint / tests) on the worktree. Returns a verdict
@@ -897,10 +963,17 @@ if (verdict.ok === 'pass') {
     // HONEST-REPORT SEMANTICS (VELOCITY §1 audit P2): `done` is reserved for review-clean. The
     // work is merged-ready and deterministically GREEN, but the single review's findings got ONE
     // unreviewed fix pass — the human reads them, severity-sorted and verbatim, before shipping.
+    // Findings ride verbatim + each carries the fix agent's CLAIMED resolution when one matched
+    // by title (smoke 2026-06-12: without these, a reader can't tell addressed-unreviewed from
+    // untouched — the field is named claimedResolution because nobody verified it).
+    const findingsOut = oneshotFindings.map((f) => {
+      const m = (oneshotResolutions || []).find((r) => r && r.title === (f && f.title))
+      return m ? { ...f, claimedResolution: m.resolution } : f
+    })
     return {
       status: 'done_with_findings', task: TASK, worktree: WT, branch: BRANCH, commit_sha: COMMIT_SHA,
       rounds: round, summary: impl.summary, decisions: Array.isArray(impl.decisions) ? impl.decisions : [],
-      findings: oneshotFindings, findingsDeferred: oneshotFindings.length, resolution: 'fixed_unreviewed',
+      findings: findingsOut, findingsDeferred: findingsOut.length, resolution: 'fixed_unreviewed',
       tier, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
       note: `Oneshot posture: the single review found ${oneshotFindings.length} blocking finding(s); ONE fix pass ran and was NOT re-reviewed (the posture's contract). Deterministic verify PASSES and the change is committed. NOT review-clean — read the findings (verbatim in this result) before shipping.`,
     }
