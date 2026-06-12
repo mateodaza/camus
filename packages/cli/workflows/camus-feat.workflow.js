@@ -857,11 +857,18 @@ If the branch does not exist git errors — output that error line verbatim.`,
     // persist it as a DISTINCT status (audit 2026-06-11 — it was persisted as `failed` and rendered
     // ✗, contradicting the "decision, not failure" note) so status.py shows it as a decision.
     const verifyCleanHalt = res && res.status === 'review_unresolved' && res.verifyClean === true
-    node.status = verifyCleanHalt ? 'needs_decision' : 'failed'
+    // A failed LAND attempt must not destroy the PROOF (live smoke run-4, 2026-06-12): an
+    // aborted/infra land means the MECHANICAL step failed — the proven commits on the branch
+    // didn't change. Downgrading to `failed` here erased ready_to_merge, so the next resume
+    // re-looped into a branch collision instead of retrying the (fixable) land. Keep the lane.
+    const landAbort = landAuthorized && res && (res.status === 'aborted' || res.status === 'infra_error')
+    node.status = verifyCleanHalt ? 'needs_decision' : (landAbort ? 'ready_to_merge' : 'failed')
     await persistState('Tasks')
     note(verifyCleanHalt
       ? `⚠ Task ${n} did not converge in review, BUT deterministic verify PASSES — a decision (accept vs refine), not a failure.`
-      : `Task ${n} HALTED the feat — loop returned "${node.loopStatus}".`)
+      : (landAbort
+        ? `⚠ Task ${n}: the LAND attempt failed mechanically (${node.loopStatus}) — the task stays ready_to_merge (the proven work on its branch is untouched); fix the cause and re-run to retry the land.`
+        : `Task ${n} HALTED the feat — loop returned "${node.loopStatus}".`))
     return finalize('halted', {
       stage: 'task', haltedTask: node.taskId, haltReason: node.loopStatus, loopResult: res || null,
       ...(verifyCleanHalt ? { verifyCleanDecision: true } : {}),
@@ -1091,7 +1098,7 @@ Run \`${HB_TOUCH}true\` first (heartbeat; ignore failures).`,
     note(`✗ SELF-AUDIT FAILED: ${violations.length} task branch(es) hold commits NOT in feat history — work the gate reported on is not actually merged.`)
     return finalize('self_audit_failed', {
       stage: 'self_audit', violations,
-      note: `The postflight self-audit found ${violations.length} completed task(s) whose branch holds commits NOT merged into ${featBranch}: ${violations.map((v) => `${v.taskId} (${v.status}, ${v.unmergedCommits} commit(s) on ${v.branch})`).join('; ')}. The feat must NOT read done. For each: if the work is proven (a prior run reviewed+verified it), flip the task to ready_to_merge and re-run — the auto-land lane merges it; otherwise re-run the task through the full loop after clearing the branch.`,
+      note: `The postflight self-audit found ${violations.length} completed task(s) whose branch holds commits NOT merged into ${featBranch}: ${violations.map((v) => `${v.taskId} (${v.status}, ${v.unmergedCommits} commit(s) on ${v.branch})`).join('; ')}. The feat must NOT read done. For each: if the work is proven (a prior run reviewed+verified it), run \`camus land <taskId>\` and re-run — the auto-land lane merges it; otherwise re-run the task through the full loop after clearing the branch.`,
     })
   }
   if (unreadable.length) {

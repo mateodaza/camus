@@ -322,6 +322,20 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const { res } = await runLoop({ task: 't', land: true }, { ...landStubs, 'land-resolve': '/tmp/evil-dir' })
     ok('S12f land refuses an unvalidated worktree path', res.status === 'aborted' && res.stage === 'land', res.status)
   }
+  // S27 (live smoke run-4, 2026-06-12): the work's durable home is the BRANCH — a missing land
+  // worktree is recreated FROM the branch (the noop path legitimately removes checkouts while
+  // the proven commits survive). Recreate-impossible stays an honest abort naming the branch.
+  {
+    const { res, calls, prompts } = await runLoop({ task: 't', land: true },
+      { ...landStubs, 'land-resolve': 'MISSING', 'land-recreate': wtPath('t') })
+    ok('S27 missing worktree → recreated from the branch → landed done', res.status === 'done' && calls.includes('land-recreate'), res.status + ' ' + calls.join(','))
+    ok('S27 recreate attaches the existing branch, hookless', !!prompts['land-recreate'] && prompts['land-recreate'].includes('-c core.hooksPath=/dev/null worktree add') && !prompts['land-recreate'].includes(' -b '), (prompts['land-recreate'] || '').slice(0, 160))
+  }
+  {
+    const { res } = await runLoop({ task: 't', land: true },
+      { ...landStubs, 'land-resolve': 'MISSING', 'land-recreate': 'FAILED' })
+    ok('S27b recreate impossible → honest abort naming the branch', res.status === 'aborted' && /could not recreate one from/.test(res.note || ''), res.note)
+  }
 
   // S9: DYNAMIC review reasoning effort (run feedback 2026-06-11) — the orchestrator passes a
   // per-round effort (arg 4 of the review command) that scales with stakes. effortOf reads it
@@ -909,6 +923,24 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const r2 = await runFeat({ feat: 'F', tasks: ['only task'] }, featR, [{ status: 'done', branch: 'b', decisions: [] }])
     ok('F25b unproven merge_failed → full loop (no land)', !!(r2.loopArgs[0] && !('land' in r2.loopArgs[0])) && r2.res && r2.res.status === 'done', JSON.stringify(r2.loopArgs[0]))
   }
+  // F34 (live smoke run-4, 2026-06-12): a MECHANICALLY failed land (aborted/infra) must not
+  // destroy the proof — the branch's commits didn't change. Downgrading to `failed` erased
+  // ready_to_merge and sent the next resume into a full-loop branch collision.
+  {
+    const tid = taskIdOf('F', ['only task'], 'only task')
+    const fid = featIdOf('F', ['only task'])
+    const prior = {
+      featId: fid, feat: 'F', featBranch: 'camus/feat-' + fid, status: 'halted',
+      resumeArgs: { argsVersion: 1, feat: 'F', tasks: ['only task'], policy: 'ask_on_ambiguity' },
+      tasks: [{ taskId: tid, spec: 'only task', dependsOn: [], status: 'ready_to_merge', provenStatus: 'done_with_findings', branch: `camus/feat/${fid}/${tid}`, loopStatus: 'done_with_findings', decisions: [] }],
+      events: [], eventSeq: 0,
+    }
+    const featR = { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(prior) } }
+    const { res, stateJSON } = await runFeat({ feat: 'F', tasks: ['only task'] }, featR,
+      [{ status: 'aborted', stage: 'land', landed: false, note: 'no worktree' }])
+    ok('F34 failed land preserves ready_to_merge (the proof survives)', !!stateJSON && stateJSON.tasks[0].status === 'ready_to_merge', stateJSON && stateJSON.tasks[0].status)
+    ok('F34 halt note says retry the land, not re-loop', res && res.status === 'halted' && !!stateJSON && (stateJSON.events || []).some((e) => /stays ready_to_merge/.test(e.msg || '')), res && res.status)
+  }
   // F26 (smoke 2026-06-12): feat-level pauses reach the BOARD — finalize persists question+stage
   // on the state; the rec-why's trailing period is stripped (no more "defensible.. Review").
   {
@@ -1004,6 +1036,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       [{ status: 'done', branch: 'b', decisions: [] }])
     ok('F28 unmerged completed work → self_audit_failed, never done', over.res && over.res.status === 'self_audit_failed', over.res && over.res.status)
     ok('F28 violation named with branch + count', !!over.res && Array.isArray(over.res.violations) && over.res.violations[0].unmergedCommits === 2 && over.res.violations[0].branch === 'b', JSON.stringify(over.res && over.res.violations))
+    ok('F28c remedy names camus land, never state surgery', /camus land/.test((over.res && over.res.note) || ''), over.res && over.res.note)
     const clean = await runFeat({ feat: 'F', tasks: ['only task'] },
       { ...featBase, 'self-audit': 'b 0' },
       [{ status: 'done', branch: 'b', decisions: [] }])

@@ -276,10 +276,30 @@ if (LAND) {
 If the cd fails (directory does not exist), output exactly: MISSING`,
     { model: MODEL_RUNNER, phase: 'Commit', label: 'land-resolve' }
   )
-  const wt = String(wtRaw || '').trim().split('\n').pop().trim()
+  let wt = String(wtRaw || '').trim().split('\n').pop().trim()
   if (!wt || wt === 'MISSING' || !wt.endsWith(WT_NAME)) {
-    return { status: 'aborted', stage: 'land', task: TASK, branch: BRANCH, landed: false,
-      note: `Land mode found no existing worktree at ${WT_DEST}${wt && wt !== 'MISSING' ? ` (resolver returned "${wt}")` : ''} — nothing to land. Land never plans/implements/reviews; re-run WITHOUT land:true to do the work.` }
+    // RECREATE FROM THE BRANCH (live smoke run-4, 2026-06-12): the work's durable home is the
+    // BRANCH — the worktree was always just a checkout, and lanes legitimately remove it (the
+    // noop path did here) while the proven commits survive. A missing checkout must not abort a
+    // land. NOTE the deliberate contrast: attaching an existing branch is exactly what the
+    // implement agent is FORBIDDEN to improvise (a fresh task needs a fresh base) and exactly
+    // right here, where reusing the branch's commits IS the point. Hookless like every
+    // gate-owned mutation.
+    const reRaw = await agent(
+      `THIN land-worktree recreator. The land worktree is missing but the task branch holds the proven work. Run EXACTLY these commands in order and output ONLY the final pwd (one absolute path), no commentary:
+  mkdir -p ${WT_PARENT}
+  ${HB_TOUCH}git -c core.hooksPath=/dev/null worktree add ${WT_DEST} ${JSON.stringify(BRANCH)}
+  cd ${WT_DEST} && pwd
+If ANY command fails, output exactly: FAILED`,
+      { model: MODEL_RUNNER, phase: 'Commit', label: 'land-recreate' }
+    )
+    const re = String(reRaw || '').trim().split('\n').pop().trim()
+    if (!re || re === 'FAILED' || !re.endsWith(WT_NAME)) {
+      return { status: 'aborted', stage: 'land', task: TASK, branch: BRANCH, landed: false,
+        note: `Land mode found no worktree at ${WT_DEST} AND could not recreate one from ${BRANCH} (branch missing, empty, or already checked out elsewhere). Nothing to land — if the branch holds proven work, inspect it (git log ${BRANCH}); otherwise re-run WITHOUT land:true to do the work through the full loop.` }
+    }
+    wt = re
+    log(`Land mode: worktree was gone — recreated it from ${BRANCH} (the commits are the work; the checkout is scaffolding).`)
   }
   log(`Land mode: committing previously verified work in ${wt} — skipping plan/implement/review (deterministic verify still gates)${tokSuffix()}.`)
   const commitRaw = await agent(

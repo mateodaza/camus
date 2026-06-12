@@ -57,6 +57,12 @@ usage: npx camus-cli <command>
   reconcile [...]    landed a task's work BY HAND? tell camus, with evidence (no JSON surgery):
                        reconcile <taskId> --commit <sha>   sha must be ON the feat branch
                        options: --feat <id> · --repo <path> · --remove-worktree
+  land [...]         a halt stranded PROVEN work (merge_failed/noop/failed)? authorize the
+                     auto-land lane — no more state surgery:
+                       land <taskId>             flips it to ready_to_merge; git must show
+                                                 unmerged commits on the task branch
+                       options: --proven done|done_with_findings · --feat <id> · --repo <path>
+                               · --reason "<why>"   — then re-run the feat with the SAME args
   resume       list interrupted feat runs (canonical resumeArgs, JSON)
   version      print version (also -v / --version)
 
@@ -101,6 +107,9 @@ switch (cmd) {
     break;
   case 'reconcile':
     py('reconcile.py', rest);
+    break;
+  case 'land':
+    py('land.py', rest);
     break;
   case 'version':
   case 'v':
