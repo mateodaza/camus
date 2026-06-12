@@ -29,7 +29,7 @@ plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep �
 - **Git means LOCAL git only — GitHub is never involved.** No remote, no account, no
   push (camus never pushes; merge and publish stay yours). If your project folder
   isn't a repo yet, the entry fee is ten seconds and fully offline:
-  `git init && git add -A && git commit -m baseline`. It is not ceremony — the diff
+  `git init && git add -A && git commit --allow-empty -m baseline`. It is not ceremony — the diff
   is what the cross-vendor reviewer judges, the worktree is the isolation, merge-on-
   done is the rollback, and commits are why crashed runs resume instead of leaving
   your files in an unknown state. A mode that "just edits files and reports success"
@@ -44,6 +44,31 @@ command exists — even one trivial test — then `git init && git add -A && git
 From the second change onward, every edit runs through the loop. An empty repo halts
 honestly as `env_not_ready` ("nothing to verify ≠ code is broken"), never as a fake
 green: a gate with no floor would just be an agent grading its own work again.
+
+### Supported stacks
+
+The verifier auto-detects these with zero config. Anything else halts as an honest
+`inconclusive` (never a fake red or green) — one `CAMUS_VERIFY_CMD` line makes it
+first-class:
+
+| Stack | Zero-config verify | Recipe when not |
+| --- | --- | --- |
+| Node (pnpm / yarn / npm) | yes — `test`/typecheck scripts, or `tsc --noEmit` | — |
+| Bun | yes — via `bun run test` (the package's script, not Bun's built-in runner) | — |
+| Python, flat layout | yes — pytest (+ mypy/pyright if configured); `uv.lock` repos run through `uv run` | env-managed (poetry/pipenv/conda): `CAMUS_VERIFY_CMD="uv run pytest -q"` or `"poetry install --sync -q && poetry run pytest -q"` |
+| Rust / Go / Foundry | yes — check/build + test | raise `CAMUS_VERIFY_TIMEOUT` (seconds) for cold compiled builds |
+| Make | yes — when a literal `test:` target exists (Makefile/GNUmakefile) | `CAMUS_VERIFY_CMD="make ci"` |
+| JVM (Gradle / Maven) | no — inconclusive | `./gradlew test` / `mvn -q test` |
+| Ruby | no — inconclusive | `bundle install --quiet && bundle exec rspec` |
+| PHP | no — inconclusive | `composer install -q && vendor/bin/phpunit` |
+| Elixir | no — inconclusive | `mix deps.get && mix test` |
+| Swift | no — inconclusive | `swift test` |
+| CMake | no — inconclusive | `cmake -B build -S . && cmake --build build && ctest --test-dir build` |
+| Deno | no — inconclusive | `deno test` |
+| .NET | no — inconclusive | `dotnet test` |
+| Docker-only | no — inconclusive | `docker compose run --rm app <test cmd>` — the daemon must be up |
+| Godot / Unity | no — verify via headless runners | e.g. `godot --headless -s addons/gut/gut_cmdln.gd`; out-of-tree worktrees avoid editor rescans (a design win) |
+| Bare scripts | no | `CAMUS_VERIFY_CMD="./scripts/test.sh"` |
 
 ## Why you can trust a green run
 

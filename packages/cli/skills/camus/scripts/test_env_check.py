@@ -47,13 +47,15 @@ def test_required_node_none_when_unspecified():
 # --- node version mismatch -------------------------------------------------
 
 def test_node_major_mismatch_flagged():
-    repo = _repo({".node-version": "22"})
+    # package.json in the fixture: since the stack-matrix audit (2026-06-12, F15) the
+    # node requirement is only enforced when node evidence exists. Assertion unchanged.
+    repo = _repo({".node-version": "22", "package.json": "{}"})
     issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v18.4.0", env={})
     assert any("node major mismatch" in i for i in issues)
 
 
 def test_node_match_ok():
-    repo = _repo({".node-version": "22"})
+    repo = _repo({".node-version": "22", "package.json": "{}"})   # F15: node evidence
     issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.5.0", env={})
     assert not any("node" in i for i in issues)
 
@@ -169,7 +171,8 @@ def test_node_probed_directly_when_autodetect():
 
 def test_node_probe_runs_in_repo_cwd():
     # #3 P2: probe must run with cwd=repo so .nvmrc/fnm/asdf/direnv pick the node verify will
-    repo = _repo({".node-version": "22", "README.md": "x"})
+    # (package.json added 2026-06-12: F15 requires node evidence before the probe fires)
+    repo = _repo({".node-version": "22", "package.json": "{}", "README.md": "x"})
     assert _record_probe_context(repo, {})["cwd"] == repo
 
 
@@ -249,6 +252,82 @@ def test_facts_block_printed_by_main(capsys=None):
     out = buf.getvalue()
     assert rc == 0, out
     assert "[env-facts]\nplatform: testbox\n[/env-facts]" in out, out
+
+
+# --- stack-matrix audit 2026-06-12 ------------------------------------------
+# F13 (bun text lockfile), F15 (stray .nvmrc in non-node repos), F2c (env-managed
+# python: probe that the SYSTEM python3 can import pytest before verify burns a run).
+
+def test_bun_text_lockfile_counts_for_deps_check():
+    # F13: bun >=1.2 writes bun.lock (text); only bun.lockb was recognized, so a cold
+    # bun worktree dodged the "node_modules missing" guard.
+    repo = _repo({"package.json": '{"scripts":{"test":"vitest"}}', "bun.lock": ""})
+    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.0.0", env={})
+    assert any("node_modules missing" in i for i in issues)
+
+
+def test_stray_nvmrc_in_non_node_repo_not_enforced():
+    # F15: a docs-tooling leftover (.nvmrc in a Rust repo) was a false NOT-READY even
+    # though verify never touches node there.
+    repo = _repo({".nvmrc": "18\n", "Cargo.toml": "[package]"})
+    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.0.0", env={})
+    assert issues == []
+
+
+def test_nvmrc_still_enforced_with_package_json():
+    repo = _repo({".nvmrc": "18\n", "package.json": "{}"})
+    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.0.0", env={})
+    assert any("node major mismatch" in i for i in issues)
+
+
+def test_nvmrc_still_enforced_under_override():
+    # a CAMUS_VERIFY_CMD override is opaque — it MAY run node (the run-1 v12 bug), so
+    # the stray-version-file skip must NOT apply when an override is set.
+    repo = _repo({".nvmrc": "22\n", "Cargo.toml": "[package]"})
+    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v12.0.0",
+                         env={"CAMUS_VERIFY_CMD": "cargo test"})
+    assert any("node major mismatch" in i for i in issues)
+
+
+def _fake_run(rc, calls=None):
+    """Injectable stand-in for subprocess.run in the import-pytest probe."""
+    import types
+
+    def run(cmd, **kw):
+        if calls is not None:
+            calls.append(cmd)
+        return types.SimpleNamespace(returncode=rc)
+    return run
+
+
+def test_bare_python3_unimportable_pytest_names_venv_and_recipes():
+    # F2c: poetry/pipenv/conda repo — the venv has pytest, the system python3 doesn't.
+    # The issue must name the venv problem and the CAMUS_VERIFY_CMD recipes.
+    repo = _repo({"pyproject.toml": "[tool.poetry]\n"})
+    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.0.0",
+                         env={}, run=_fake_run(1))
+    venv = [i for i in issues if "import pytest" in i]
+    assert venv, issues
+    assert "uv run pytest -q" in venv[0]
+    assert "poetry install --sync -q && poetry run pytest -q" in venv[0]
+
+
+def test_bare_python3_importable_pytest_is_ready():
+    repo = _repo({"pyproject.toml": "[tool.poetry]\n"})
+    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.0.0",
+                         env={}, run=_fake_run(0))
+    assert not any("import pytest" in i for i in issues)
+
+
+def test_uv_repo_skips_the_system_python_probe():
+    # uv.lock repos verify via `uv run pytest` (worktree-proof) — the system-python3
+    # probe must not fire at all.
+    calls = []
+    repo = _repo({"pyproject.toml": "[project]\n", "uv.lock": ""})
+    issues = E.check_env(repo, which=ALL_PRESENT, node_version=lambda: "v22.0.0",
+                         env={}, run=_fake_run(1, calls))
+    assert calls == []
+    assert not any("import pytest" in i for i in issues)
 
 
 # --- stdlib runner ---------------------------------------------------------

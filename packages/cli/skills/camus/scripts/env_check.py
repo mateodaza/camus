@@ -20,6 +20,9 @@ import sys
 
 import verify  # same dir; checks the exact commands the verifier will run
 
+# argv[0]s that mean a detected check actually runs node tooling (audit 2026-06-12, F15).
+_NODE_TOOLING = ("node", "npm", "npx", "pnpm", "yarn", "bun", "bunx")
+
 
 def required_node(repo):
     for fn in (".node-version", ".nvmrc"):
@@ -92,10 +95,11 @@ def _detect_node_version(login_shell=False, cwd=None):
         return None
 
 
-def check_env(repo, which=None, node_version=None, env=None):
+def check_env(repo, which=None, node_version=None, env=None, run=None):
     """Return a list of issue strings (empty = ready).
-    `which`, `node_version`, `env` are injectable for tests."""
+    `which`, `node_version`, `env`, `run` are injectable for tests."""
     which = which or shutil.which
+    run = run or subprocess.run
     env = env if env is not None else os.environ
 
     issues = []
@@ -108,8 +112,17 @@ def check_env(repo, which=None, node_version=None, env=None):
         isinstance(c.get("cmd"), list) and c["cmd"][:2] == ["bash", "-lc"] for c in checks
     )
 
-    # node version (only if the repo declares one) — probed in verify's execution context
-    req = required_node(repo)
+    # node version (only if the repo declares one) — probed in verify's execution context.
+    # Stack-matrix audit 2026-06-12 (F15): a stray .nvmrc in a non-Node repo (docs-tooling
+    # leftover in Rust/Python trees) was a false NOT-READY — only enforce when node is
+    # actually in play: package.json present, a detected check that runs node tooling, or a
+    # CAMUS_VERIFY_CMD override (opaque: it MAY run node — the run-1 v12 bug — so stay strict).
+    node_in_play = (
+        os.path.exists(os.path.join(repo, "package.json"))
+        or uses_login_shell
+        or any(c["cmd"][0] in _NODE_TOOLING for c in checks)
+    )
+    req = required_node(repo) if node_in_play else None
     if req is not None:
         actual = node_version() if node_version else _detect_node_version(uses_login_shell, cwd=repo)
         if actual is None:
@@ -119,13 +132,32 @@ def check_env(repo, which=None, node_version=None, env=None):
             issues.append("node major mismatch: repo wants %s, found %s%s "
                           "(fix nvm/fnm/.bash_profile before running)" % (req, actual, ctx))
 
-    # node deps installed
+    # node deps installed — bun.lock added 2026-06-12 (stack-matrix audit, F13):
+    # bun ≥1.2 writes the text lockfile, leaving bun.lockb behind only on old repos.
     if os.path.exists(os.path.join(repo, "package.json")):
         has_lock = any(os.path.exists(os.path.join(repo, f)) for f in
-                       ("pnpm-lock.yaml", "yarn.lock", "package-lock.json", "bun.lockb"))
+                       ("pnpm-lock.yaml", "yarn.lock", "package-lock.json",
+                        "bun.lockb", "bun.lock"))
         if has_lock and not os.path.isdir(os.path.join(repo, "node_modules")):
             issues.append("node_modules missing — run the project's install "
                           "(e.g. `pnpm install`) before verify can run")
+
+    # env-managed python (stack-matrix audit 2026-06-12, F2c): when detection fell back
+    # to bare `python3 -m pytest`, prove the SYSTEM python3 can even import pytest. In
+    # poetry/pipenv/conda repos it usually can't (the venv has pytest, python3 doesn't),
+    # so verify would burn its run on "No module named pytest". Name the fix up front.
+    if any(c["cmd"][:3] == ["python3", "-m", "pytest"] for c in checks):
+        try:
+            probe_ok = run(["python3", "-c", "import pytest"], capture_output=True,
+                           text=True, cwd=repo, timeout=15).returncode == 0
+        except Exception:
+            probe_ok = True   # python3 itself absent is already flagged by the PATH loop below
+        if not probe_ok:
+            issues.append(
+                "python checks detected but `python3 -c \"import pytest\"` fails — verify "
+                "would run the SYSTEM python3, not this repo's managed venv "
+                "(poetry/pipenv/conda). Set CAMUS_VERIFY_CMD, e.g. `uv run pytest -q` or "
+                "`poetry install --sync -q && poetry run pytest -q`")
 
     # verifier toolchain resolvable (reuse the checks resolved above)
     for chk in checks:
