@@ -7,14 +7,16 @@ without you watching: Claude writes the code, Codex (a competing model) reviews
 every change, and your repo's own type-check and tests have the final word. Nothing in
 the loop, Claude included, can approve itself. The pairing is the point.
 
-It runs as two Claude Code workflows plus a skill: `/camus-loop` takes one task,
-`/camus-feat` takes an ordered task list and ships it as one feature branch with a
-report. Formerly Nightcrawler v2; v1 remains archived at [mateodaza/nightcrawler](https://github.com/mateodaza/nightcrawler).
+It runs as three Claude Code workflows plus a skill: `/camus-plan` turns a raw
+request into a quality-gated task list, `/camus-loop` takes one task, and `/camus-feat`
+ships an ordered task list as one feature branch with a report. Formerly Nightcrawler
+v2; v1 remains archived at [mateodaza/nightcrawler](https://github.com/mateodaza/nightcrawler).
 Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMUS-SPEC.md).
 
 ```
 plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep → verify
-       loops while P0/P1/P2 findings remain, round cap 3
+       full posture: loops while P0/P1/P2 findings remain, round cap 3
+       oneshot posture: one review, one repair, no re-review — verify still decides
 ```
 
 ## Requirements
@@ -77,6 +79,13 @@ verbatim. Claude never re-judges the verdict. Each round starts a fresh Codex se
 so old findings get re-raised instead of politely dropped. Every round is also written
 to `~/.camus/reviews/`. If that file is missing, the review binary never ran.
 
+**Review depth is judged by liveness, not a stopwatch.** Codex runs detached behind an
+event-stream watchdog: a review counts as alive while it emits events, and silence past
+`CAMUS_REVIEW_IDLE_S` (default 360s) gets it killed and retried as infra. Long honest
+reviews re-attach in bounded chunks, so no tool timeout caps review depth anymore. Each
+round also logs Codex's own token usage and keeps a full event-stream audit dir
+alongside the verdict file.
+
 **Tests are the last word.** A clean review does not ship code that fails
 `type-check` or `test`. The verifier auto-detects the stack (node, python, rust, go,
 foundry, make) or uses `CAMUS_VERIFY_CMD`. If it finds no verifier at all, that is a
@@ -90,6 +99,60 @@ loud failure, not a pass.
 **Work provably lands.** After review passes, a commit gate stages and commits the
 worktree. Nothing staged means `no_changes`; the task is reported as a no-op, never
 silently marked done. Every `done` carries its `commit_sha`.
+
+**It refuses bad ground, and names the remedy.** Preflight halts on a directory that
+is not a repo yet (the ten-second local-only entry fee above, `--allow-empty` included),
+on a repo with zero commits, on a detached HEAD, and on a dirty tree — with a hint when
+the "dirt" is just a stale submodule pointer. Every refusal prints the exact commands
+that clear it.
+
+**Gate-owned git runs hookless and unsigned.** Repo hooks and forced signing can abort
+unattended commits and merges — and a post-commit push hook could have exfiltrated
+branches. Camus never pushes, and now no target-repo config can make it. Failed staging
+is an infra error, never a fake no-op. An embedded repo is refused rather than committed
+as a broken gitlink, and submodule pointer noise cannot wedge a run.
+
+### The gate catches its own drops
+
+A task can fail in ways that look like success, so the feat runner audits itself before
+it believes itself:
+
+- A **containment guard** halts any task whose agents leaked edits into your main repo
+  tree, naming the files and the phase. Nothing is auto-discarded — the dirt could be yours.
+- A **postflight self-audit** proves every completed task's branch is actually in feat
+  history before the feat may report done. Missing ancestry evidence halts loud instead
+  of becoming a green feat.
+- A **"no-op" with unmerged commits** on its branch is recognized as a prior run's proven
+  work and rescued into an auto-land, never dropped.
+- A **branch collision** is disambiguated before advice is given: empty residue gets a
+  one-line cleanup, real prior work gets landed by the resume.
+- A **crash between commit and merge** restores the task's true verdict on resume, so
+  proven work lands mechanically instead of being re-implemented.
+
+## Review postures
+
+`posture: full (default) | oneshot` on `camus-feat` and `camus-loop` sets the cadence
+of the probabilistic review — never the gate's presence. Deterministic verify is
+unskippable in every posture.
+
+`full` is the loop above: review ↔ fix rounds until clean or the cap (`roundCap`,
+default 3). A finding that survives its own fix halts the loop early — that is a stale
+flag or a real disagreement, and both deserve a human, not more rounds.
+
+`oneshot` trades review depth for speed on work you are confident about: one review,
+automatically narrowed to a diff-primary "light" scope (same severity bar, narrower
+field of view), then blocking findings get one fix pass with no re-review, and verify
+decides. The trade is priced honestly: a fixed-but-unreviewed task reports
+`done_with_findings`, carrying the findings verbatim plus the fix agent's per-finding
+`claimedResolution` — claims, never verdicts, because nobody re-checked the fix.
+"Review clean" stays reserved for an actual clean verdict, and a feat holding any such
+task ends `done_with_findings` itself: ◈ on the board, never plain done.
+
+Selection is one contract: an explicit `posture` is used verbatim and never re-asked.
+Absent one, a classifier recommends from the task briefs — asking policies confirm a
+speed posture once (`needs_human`), while `autonomous` applies `full|oneshot` and puts
+the choice on the record. `bookend` and `forward` land in 0.3; until then they are
+rejected loudly, never silently downgraded.
 
 ## Autonomy controls
 
@@ -107,14 +170,37 @@ silently marked done. Every `done` carries its `commit_sha`.
 - **It asks when it should.** `policy: autonomous | ask_on_ambiguity (default) |
   ask_on_major`. A genuinely ambiguous task halts with a question (`needs_human`);
   resuming with your answer re-runs just that task.
+- **A stalled review is a decision, not a failure.** When review will not converge but
+  your type-check and tests are green, the task halts as `needs_decision`: the
+  deterministic gate says shippable, the probabilistic one is stuck, and that call is
+  yours. Accepting is one flag — `land: ["<taskId>"]` — and the proven worktree commits,
+  verifies, and merges with nothing re-implemented.
 - **Decisions are reported.** Every judgment call the implementer makes (say,
   widening a parameter type) lands in the report with the reason and the rejected
   alternative. You review decisions, not just diffs.
 - **Models are routed, then escalated.** A cheap classify pass sends trivial tasks to
   Sonnet and the rest to Opus. If review findings persist past round 2, or any P0
   appears, the fix model escalates automatically. Override with `model:` or `modelTier:`.
+- **Spending has a ceiling.** `budgetTokens` on `camus-feat` is checked at every task
+  boundary, and once more after the final task before integration, against per-task
+  totals that persist across resumes. Past the cap the run halts as a question —
+  continue with a higher budget, or stop here — never a silent overrun.
+- **Costs are stated honestly.** `camus watch` prices the Claude side of a live run at
+  the published API rate card, labeled as an estimate, never an invoice. The Codex
+  review settles in your ChatGPT plan credits, and Camus does not fabricate a dollar
+  figure for it.
 - **Interrupted runs resume.** `camus resume` lists interrupted feats with their
   exact original arguments. Finished tasks skip; the unfinished one re-runs.
+- **Hand-landed work is recorded, with git as the witness.** `camus reconcile <taskId>
+  --commit <sha>` marks a task you finished yourself — refused unless that commit
+  actually exists on the feat branch. Reconciling the last open task sets the feat
+  `integration_pending`, so a re-run still finishes with the integration verify;
+  reconcile never fakes a done.
+- **Stranded proven work has a command, not a JSON edit.** When a halt names a task
+  whose branch holds reviewed, unmerged commits (a self-audit catch, a blocked merge),
+  `camus land <taskId>` authorizes the auto-land lane — refused unless the branch
+  really holds unmerged work, recorded on the audit trail with your reason. The next
+  re-run merges it mechanically; deterministic verify still gates.
 - **Gate scripts are fenced in.** Every script checks it is operating on the calling
   repo, a `camus/*` branch, and a `camus-wt-*` worktree. Anything else is rejected.
 - **Your project folder stays clean.** Task worktrees live under
@@ -127,31 +213,53 @@ silently marked done. Every `done` carries its `commit_sha`.
   (resumable), `g` steers the next task, `c` clears a pending note. `camus status`
   is the one-shot version; `camus steer "<guidance>"` scripts the same notes.
   Notes are consumed once, at the run's safe redirect points.
+- **"Running" must mean running.** Every phase touches a heartbeat file under
+  `~/.camus/feats/`, so `status` and `watch` show `last heartbeat Xs ago` and warn
+  loudly when a "running" feat has been quiet for over 10 minutes. The board also names
+  the active posture in its header, counts the findings each ◈ task deferred to you,
+  and keeps a token rollup that survives resumes. Pause hints are shaped to their
+  stage — a posture pause says resume with `posture:"…"`, a budget pause names
+  `budgetTokens`.
 - **Review speed: prune codex's MCP servers.** Every review spawns a fresh
   `codex exec`, which initializes every MCP server in `~/.codex/config.toml` —
   including ones that fail auth or spawn through `npx`. On a measured setup,
   disabling unused servers cut trivial-call wall time ~35% and silenced startup
   errors (the token cost of MCP tool definitions is small — the win is latency
-  and noise). Disable per server, which leaves the rest of your codex setup alone:
+  and noise). Set `CAMUS_CODEX_DISABLE_MCP="<id>,<id>"`, or `all`, to disable them
+  for the review lane only: a review needs the repo, not your toolbelt, and your
+  interactive codex config stays untouched. It works per server because blanking
+  the whole table does not — codex config tables merge. Details in the levers
+  table below.
 
-  ```toml
-  [mcp_servers.<name>]
-  enabled = false
-  ```
+## Environment levers
 
-  (`-c mcp_servers.<name>.enabled=false` works per-invocation too; overriding the
-  whole table with `mcp_servers={}` does NOT — config tables merge.)
+One reference for every knob. Each defaults off or safe, so with none set the gate
+runs exactly as documented above. The codex levers touch only Camus's review
+invocation; your interactive codex config is never modified.
+
+| Variable | What it does | Default |
+| --- | --- | --- |
+| `CAMUS_VERIFY_CMD` | the verify command when auto-detection misses your stack — include tests, not only types | auto-detected |
+| `CAMUS_VERIFY_TIMEOUT` | seconds before a verify run is killed; raise for cold compiled builds | `600` |
+| `CAMUS_PREP_TIMEOUT` | seconds for dependency prep in a fresh worktree | `600` |
+| `CAMUS_CODEX_ARGS` | extra codex CLI args; replaces the dynamic-effort default — the levers below exist so you rarely need this | dynamic effort |
+| `CAMUS_CODEX_TIER` | pin the review lane's service tier (e.g. `standard` — eligible plans default to fast at 2.5x credits) | unset |
+| `CAMUS_CODEX_LIGHT_MODEL` | a cheaper model for medium-effort rounds only; escalated rounds always run your full model | unset |
+| `CAMUS_CODEX_DISABLE_MCP` | comma-separated server ids, or `all` — disable MCP servers for the review lane only | unset |
+| `CAMUS_REVIEW_IDLE_S` | event-silence seconds before the watchdog kills a hung review (retried as infra) | `360` |
+| `CAMUS_REVIEW_DIR` | where review verdicts and event-stream audit dirs land | `~/.camus/reviews` |
 
 ## Layout
 
 ```
 camus/
-  bin/camus.js            # CLI; dispatches to install.sh, adds no logic of its own
+  bin/camus.js            # CLI; thin dispatcher over install.sh + the gate scripts
   install.sh              # install / check / auto-setup / env-check
   merge_settings.py       # permission-profile merger (preserves your settings)
   workflows/
     camus-loop.workflow.js   # one task
     camus-feat.workflow.js   # ordered task list as one feature
+    camus-plan.workflow.js   # raw request → quality-gated task list (optional pre-step)
   skills/camus/
     SKILL.md              # severity model, hard rules, run surface
     review-prompt.md      # Codex's audit persona and completeness check
@@ -207,12 +315,13 @@ export CAMUS_VERIFY_CMD="pnpm type-check && pnpm test"   # include tests, not on
 claude --permission-mode auto
 ```
 
-Then `/camus-feat` with your task list, or `/camus-loop <one task>`. The feature
-report lands in `~/.camus/reports/<featId>.json`. The branch is left for you to merge.
+Then `/camus-feat` with your task list (add `posture:"oneshot"` for one-review speed
+on work you trust), or `/camus-loop <one task>`. The feature report lands in
+`~/.camus/reports/<featId>.json`. The branch is left for you to merge.
 
 ## Tests
 
-Pure stdlib, no network, no dependencies. 163 assertions across 9 suites:
+Pure stdlib, no network, no dependencies. 656 assertions across 19 suites:
 
 ```bash
 npm test    # or run the suites individually under skills/camus/scripts/

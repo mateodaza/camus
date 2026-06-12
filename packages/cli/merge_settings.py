@@ -68,7 +68,11 @@ SUPERSEDED_ENV_LINES = [
 
 # Only the deterministic gate scripts — never a broad command class.
 _GATE_SCRIPTS = [
-    ("bash", "codex_review.sh"),
+    ("bash", "review.sh"),        # the reviewer-backend dispatcher (VELOCITY §2) — the loop's
+                                  # REVIEW_CMD since 0.2.5; without this rule every review (and
+                                  # every watchdog await/abort re-attach) re-prompts in auto mode
+                                  # (README-overhaul grounding pass, 2026-06-12)
+    ("bash", "codex_review.sh"),  # kept: the backend itself, for direct/legacy invocations
     ("bash", "verify.sh"),
     ("bash", "prep.sh"),
     ("bash", "commit.sh"),
