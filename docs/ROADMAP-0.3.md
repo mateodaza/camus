@@ -31,6 +31,15 @@ full gate — same honest-report discipline as oneshot's `done_with_findings` /
 classifier-recommends-human-confirms; autonomous-on-record routing only behind the
 benchmark gate (below).
 
+The plan-review contract gains a **stale-reference rule** (field incident, 2026-06-12,
+hive-mind/scraper): a plan task that references behavior in a repo the runner cannot
+open must carry either literal bytes materialized AT LAUNCH ("paste at run time" — the
+plan-layer head-binding) or an executable contract to port (an ACCEPT/REJECT test
+table), never an English walkthrough of code. Prose paraphrases are unverified relays:
+they detach from their source at write time, the source moves, and both repos stay
+green while the system splits. The reviewer flags any cross-repo prose-of-code as a
+blocking finding.
+
 ## 2. Opt-in multi-model review backends (decided)
 
 Backends other than codex, opt-in, never silently routed. The seam already exists:
