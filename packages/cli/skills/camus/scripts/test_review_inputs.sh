@@ -150,7 +150,25 @@ check "sanitization: \$(evil) never reaches argv" \
   "no" "$(grep -q 'evil' "$SPY/args" && echo yes || echo no)"
 check "sanitization: token with a space never reaches argv" \
   "no" "$(grep -q 'bad' "$SPY/args" && echo yes || echo no)"
-unset CAMUS_CODEX_DISABLE_MCP
+# "all" (2026-06-12): ids come from the config's [mcp_servers.X] headers — nested tables like
+# [mcp_servers.X.env] must NOT produce a token, and the charset filter still applies.
+export CODEX_HOME="$ROOT/codexhome"; mkdir -p "$CODEX_HOME"
+cat > "$CODEX_HOME/config.toml" <<'TOML'
+model = "gpt-x"
+[mcp_servers.figma]
+url = "https://example.com"
+[mcp_servers.perplexity]
+command = "npx"
+[mcp_servers.perplexity.env]
+KEY = "v"
+TOML
+export CAMUS_CODEX_DISABLE_MCP=all
+run_review >/dev/null || { echo "FAIL mcp-all review errored/hung"; exit 1; }
+check "all: every configured server disabled" \
+  "yes" "$(grep -qx 'mcp_servers.figma.enabled=false' "$SPY/args" && grep -qx 'mcp_servers.perplexity.enabled=false' "$SPY/args" && echo yes || echo no)"
+check "all: nested tables never produce a token" \
+  "no" "$(grep -q 'mcp_servers.env' "$SPY/args" && echo yes || echo no)"
+unset CAMUS_CODEX_DISABLE_MCP CODEX_HOME
 run_review >/dev/null || { echo "FAIL post-mcp review errored/hung"; exit 1; }
 check "no enabled=false flags when CAMUS_CODEX_DISABLE_MCP is unset" \
   "no" "$(grep -q 'enabled=false' "$SPY/args" && echo yes || echo no)"

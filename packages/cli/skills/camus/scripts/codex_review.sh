@@ -226,8 +226,16 @@ fi
 #     handle-validation charset discipline, minus `.` (a dot would shift the TOML key path).
 #     Whitespace around commas is trimmed; anything else (empty tokens included) is silently
 #     skipped.
-if [[ -n "${CAMUS_CODEX_DISABLE_MCP:-}" ]]; then
-  _mcp_rest="${CAMUS_CODEX_DISABLE_MCP},"          # trailing comma: every token ends with one
+#   - "all" (2026-06-12): a codex REVIEW needs the repo and a shell, never the user's toolbelt —
+#     so the common case deserves one word. The ids come from the config itself (the [mcp_servers.X]
+#     headers, same charset filter applied), since blanking the table is the thing that doesn't work.
+_mcp_list="${CAMUS_CODEX_DISABLE_MCP:-}"
+if [[ "$_mcp_list" == "all" ]]; then
+  _codex_cfg="${CODEX_HOME:-$HOME/.codex}/config.toml"
+  _mcp_list="$([ -f "$_codex_cfg" ] && sed -n 's/^[[:space:]]*\[mcp_servers\.\([A-Za-z0-9_-]*\)\].*/\1/p' "$_codex_cfg" | tr '\n' ',' || true)"
+fi
+if [[ -n "$_mcp_list" ]]; then
+  _mcp_rest="${_mcp_list},"                        # trailing comma: every token ends with one
   while [[ -n "$_mcp_rest" ]]; do
     _mcp_id="${_mcp_rest%%,*}"; _mcp_rest="${_mcp_rest#*,}"
     _mcp_id="${_mcp_id#"${_mcp_id%%[![:space:]]*}"}"   # trim leading whitespace
