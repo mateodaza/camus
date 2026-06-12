@@ -14,15 +14,32 @@ burned rounds, and a crash at any point resumes without redoing proven work.
 
 It runs as three Claude Code workflows plus a skill: `/camus-plan` turns a raw
 request into a quality-gated task list, `/camus-loop` takes one task, and `/camus-feat`
-ships an ordered task list as one feature branch with a report. Formerly Nightcrawler
-v2; v1 remains archived at [mateodaza/nightcrawler](https://github.com/mateodaza/nightcrawler).
-Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMUS-SPEC.md).
+ships an ordered task list as one feature branch with a report.
 
 ```
 plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep → verify
        full posture: loops while P0/P1/P2 findings remain, round cap 3
        oneshot posture: one review, one repair, no re-review — verify still decides
 ```
+
+## Try it
+
+You need [Claude Code](https://code.claude.com) and the [Codex CLI](https://github.com/openai/codex)
+(`codex login`) — the cross-vendor pairing is the product, so both halves are required.
+
+```bash
+npm i -g camus-cli
+camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
+camus check          # exit 0 = installed matches the package
+cd your-repo && claude
+# then, inside Claude Code:
+/camus-loop {"task": "your task, with an acceptance criterion the tests can judge"}
+```
+
+The run ends in a report, never a shrug: `done` is earned by a clean review plus your
+own tests; anything less arrives as a named halt with the remedy in the note
+(`camus status` shows the board). Budget guidance, postures, and every env lever:
+[`packages/cli/README.md`](packages/cli/README.md).
 
 ## Makes it work
 
@@ -105,3 +122,8 @@ Camus is for code you already trust. The verifier executes the repo's own build 
 test commands; on an untrusted repo that is remote code execution. Never run it as
 root. Camus may improve itself only through tasks that pass its own gates. It never
 touches its runner, skill, verifier, schemas, or permissions during a run.
+
+---
+
+Full design: [`CAMUS-SPEC.md`](CAMUS-SPEC.md). Formerly Nightcrawler v2; v1 remains
+archived at [mateodaza/nightcrawler](https://github.com/mateodaza/nightcrawler).
