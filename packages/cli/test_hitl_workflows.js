@@ -620,6 +620,18 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('S25d standalone loop → containment never runs', res.status === 'done' && !calls.some((c) => c.startsWith('containment')), calls.join(','))
   }
 
+  // S26 (live smoke run-2, 2026-06-12): a worktree/branch COLLISION must be declared, not
+  // improvised around — the implement prompt forbids alternative git commands, and a declared
+  // FAILED path surfaces as a collision infra error pointing at the resume lanes.
+  {
+    const stubs = { ...clsStd, ...planOf('clear', ''),
+      implement: { worktree_path: 'FAILED', branch: 'b', summary: "fatal: a branch named 'camus/x' already exists" } }
+    const { res, prompts } = await runLoop({ task: 't' }, stubs)
+    ok('S26 declared collision → infra_error naming the cause', res.status === 'infra_error' && /collision/.test(res.error || ''), res.status + ' ' + res.error)
+    ok('S26 note points at the resume lanes', /resume lanes land proven prior work/.test(res.note || ''))
+    ok('S26 implement prompt forbids improvising around failures', !!prompts.implement && prompts.implement.includes('do NOT improvise alternatives'))
+  }
+
   // S7: worktree path contract (2026-06-10) — centralized out-of-tree home + fail-closed validation.
   {
     const { res, prompts } = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail })
@@ -874,6 +886,40 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const featR = { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(prior) } }
     const { stateJSON } = await runFeat({ feat: 'B', tasks: bTasks, budgetTokens: 50000 }, featR, [])
     ok('F26b budget pause persists stage + question on the state', !!stateJSON && stateJSON.stage === 'budget' && /budget/i.test(stateJSON.question || ''), stateJSON && (stateJSON.stage + ' / ' + stateJSON.question))
+  }
+
+  // F27 (live smoke run-2, 2026-06-12): the NOOP RESCUE — "no_changes" with unmerged commits on
+  // the task branch is a prior run's PROVEN work (a collision the agent improvised around),
+  // never a no-op. The feat re-enters the task as an auto-land in the SAME run.
+  {
+    const tid = taskIdOf('F', ['only task'], 'only task')
+    const r = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, 'noop-audit': '3' },
+      [{ status: 'no_changes', worktree: wtPath('only task') },
+       { status: 'done', branch: 'camus/feat/x/only', commit_sha: 'land1', landed: true, decisions: [] }])
+    ok('F27 unmerged commits → rescue re-enters as auto-land', r.workflowCalls === 2 && !!(r.loopArgs[1] && r.loopArgs[1].land === true), 'calls=' + r.workflowCalls + ' land=' + JSON.stringify(r.loopArgs[1] && r.loopArgs[1].land))
+    ok('F27 rescued task ends merged-done, feat done', !!r.stateJSON && r.stateJSON.tasks[0].status === 'done' && r.res && r.res.status === 'done', r.stateJSON && r.stateJSON.tasks[0].status)
+    ok('F27 the rescue is loud in the run log', !!r.stateJSON && (r.stateJSON.events || []).some((e) => /unmerged commit\(s\) — a prior run's proven work/.test(e.msg || '')))
+  }
+  {
+    // zero unmerged commits → a GENUINE no-op, exactly the old behavior.
+    const r = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, 'noop-audit': '0' },
+      [{ status: 'no_changes', worktree: wtPath('only task') }])
+    ok('F27b genuinely empty → noop unchanged', r.workflowCalls === 1 && !!r.stateJSON && r.stateJSON.tasks[0].status === 'noop' && r.res && r.res.status === 'done_with_noops', r.res && r.res.status)
+  }
+  // F28 (live smoke run-2): POSTFLIGHT SELF-AUDIT — positive evidence of unmerged commits on a
+  // completed task's branch halts as self_audit_failed; the feat must never read done over it.
+  {
+    const over = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, 'self-audit': 'b 2' },
+      [{ status: 'done', branch: 'b', decisions: [] }])
+    ok('F28 unmerged completed work → self_audit_failed, never done', over.res && over.res.status === 'self_audit_failed', over.res && over.res.status)
+    ok('F28 violation named with branch + count', !!over.res && Array.isArray(over.res.violations) && over.res.violations[0].unmergedCommits === 2 && over.res.violations[0].branch === 'b', JSON.stringify(over.res && over.res.violations))
+    const clean = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, 'self-audit': 'b 0' },
+      [{ status: 'done', branch: 'b', decisions: [] }])
+    ok('F28b ancestry clean → done, audit logged', clean.res && clean.res.status === 'done', clean.res && clean.res.status)
   }
 
   // F18c (audit P2 2026-06-11): the FINAL task's spend must hit the ceiling too — recheck after

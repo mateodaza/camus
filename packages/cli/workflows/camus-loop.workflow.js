@@ -428,6 +428,10 @@ Steps:
    path or argument — the new branch is created from the current HEAD:
      mkdir -p ${WT_PARENT}
      git worktree add -b ${BRANCH} ${WT_DEST}
+   If EITHER command fails, STOP IMMEDIATELY — do NOT improvise alternatives (no \`worktree add\`
+   without -b, no checkout of an existing branch: attaching a previous attempt's branch silently
+   reuses its commits and corrupts the run — live smoke 2026-06-12). Return worktree_path
+   "FAILED" with git's error as the summary.
 2. Get the worktree's ABSOLUTE path: run \`cd ${WT_DEST} && pwd\` and use its output as worktree_path.
 3. Make the change ONLY inside that worktree. Stay within the planned files unless the
    plan clearly requires touching an adjacent file.
@@ -445,6 +449,15 @@ if (!impl) return { status: 'aborted', stage: 'implement', task: TASK, plan }
 // computed; otherwise refuse. Empty also refuses (fail closed): the centralized destination
 // depends on $HOME + the repo basename, so the script has no deterministic absolute fallback.
 const claimed = (impl && typeof impl.worktree_path === 'string') ? impl.worktree_path : ''
+// Declared collision (smoke 2026-06-12): the agent followed the STOP instruction — the branch or
+// worktree already exists from a previous attempt. Surface it as exactly that, not a vague abort:
+// under a feat the resume lanes (ready_to_merge / proven merge_failed / the noop rescue) land the
+// prior work; standalone, the human merges or deletes the branch.
+if (claimed.startsWith('FAILED')) {
+  return { status: 'infra_error', task: TASK, branch: BRANCH, rounds: 0,
+    error: `worktree/branch collision: ${claimed}`,
+    note: `Implement could not create ${BRANCH} / its worktree — a previous attempt's work already exists there (${(impl && impl.summary) || 'no git error captured'}). Under a feat, re-run with the SAME args: the resume lanes land proven prior work. Standalone: merge or delete the branch, then re-run.` }
+}
 if (!claimed || !claimed.endsWith(WT_NAME)) {
   return { status: 'aborted', stage: 'implement', task: TASK, plan,
     note: `Implement agent returned ${claimed ? `an unexpected worktree path (${claimed})` : 'no worktree path'}; expected an absolute path ending in "${WT_NAME}". Refusing to cd/exec into it.` }

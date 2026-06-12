@@ -744,12 +744,34 @@ Return {written:true} once that file is on disk with exactly that content.`,
   if (tokensBefore != null && tokensAfter != null) node.tokens = Math.max(0, tokensAfter - tokensBefore)
 
   if (res && res.status === 'no_changes') {
-    // The loop committed nothing (empty implement, or the change was already present). Not a
-    // failure — flag as a NO-OP and CONTINUE (don't merge an empty branch, don't halt the feat).
+    // NO-OP RESCUE (live smoke run-2, 2026-06-12): "nothing to commit" is AMBIGUOUS — an empty
+    // diff also happens when the implement agent improvised around a `worktree add -b` branch
+    // collision by ATTACHING the existing task branch, whose tip already holds a prior run's
+    // committed (and reviewed) work. That run laundered a proven extraction into a "noop" while
+    // the feat reported done. Disambiguate with git, not vibes: commits on the task branch that
+    // are NOT in feat history mean this is UNMERGED PROVEN WORK → re-enter this task as an
+    // auto-land (same lane as ready_to_merge) instead of recording a no-op.
+    const unmergedRaw = await agent(
+      `THIN git runner. cd ${REPO_ARG}. Run EXACTLY this one command and output ONLY its stdout (a number, or an error line):
+  ${HB_TOUCH}git rev-list --count ${JSON.stringify(featBranch)}..${JSON.stringify(node.branch)} --
+If the branch does not exist git errors — output that error line verbatim.`,
+      { model: MODEL_RUNNER, phase: 'Tasks', label: `noop-audit:${node.taskId}` }
+    )
+    const unmerged = parseInt(String(unmergedRaw == null ? '' : unmergedRaw).trim(), 10)
+    if (Number.isInteger(unmerged) && unmerged > 0) {
+      note(`⚠ Task ${n}: loop said no_changes BUT ${node.branch} holds ${unmerged} unmerged commit(s) — a prior run's proven work. Re-entering as AUTO-LAND, not a no-op.`)
+      node.status = 'ready_to_merge'
+      PROVEN_READY.add(node.taskId)
+      await persistState('Tasks')
+      i--   // re-enter THIS task: the landResume lane picks it up immediately
+      continue
+    }
+    // A genuinely empty diff (no branch, or branch fully merged). Not a failure — flag as a
+    // NO-OP and CONTINUE (don't merge an empty branch, don't halt the feat).
     node.status = 'noop'
     node.noop = true
     await persistState('Tasks')
-    note(`Task ${n}: loop returned no_changes (nothing to commit) → recorded as NO-OP, continuing.`)
+    note(`Task ${n}: loop returned no_changes (nothing to commit; branch audit found no unmerged work) → recorded as NO-OP, continuing.`)
     await removeTaskWorktree(node, res.worktree, n)   // empty diff — the checkout adds nothing
     continue
   }
@@ -978,6 +1000,49 @@ if (BUDGET_TOKENS != null) {
       note: `Spent ~${Math.round(featSpent / 1000)}k of the ${Math.round(BUDGET_TOKENS / 1000)}k output-token budget (persisted across runs — an estimate, not an invoice). Every task is done/merged but integration verify has NOT run, so the feat is not "done" yet. Continue by re-running with a HIGHER budgetTokens (or without it) — done tasks skip straight to integration.`,
     })
   }
+}
+
+// ── POSTFLIGHT SELF-AUDIT (live smoke run-2, 2026-06-12) ──────────────────────
+// The gate must catch its own drops: run-2 reported done while a task's reviewed, committed
+// work sat unmerged on its branch (a collision became a "noop"). Deterministic ancestry check —
+// every completed task's branch must hold ZERO commits outside feat history (noop included:
+// a no-op with unmerged commits is a contradiction). POSITIVE evidence (a count > 0) halts as
+// self_audit_failed, never done; a branch the runner could not report is WARNED loudly but does
+// not halt (an unreadable audit must not kill a good feat — the count lines are the evidence).
+// This is the product absorbing the failure mode: the check a human (or the nearest Claude
+// session) did by hand after the fact, now run by the gate before it reports anything.
+const auditedTasks = state.tasks.filter((t) => t.status === 'done' || t.status === 'done_with_findings' || t.status === 'noop')
+if (auditedTasks.length) {
+  const auditRaw = await agent(
+    `THIN git runner. cd ${REPO_ARG} (the tree is on the feat branch). For EACH branch listed below, run:
+  git rev-list --count HEAD..<branch> --
+Output EXACTLY one line per branch: <branch> <count>   (or: <branch> ERROR if git errors). Nothing else.
+${auditedTasks.map((t) => '  ' + (t.mergedBranch || t.branch)).join('\n')}
+Run \`${HB_TOUCH}true\` first (heartbeat; ignore failures).`,
+    { model: MODEL_RUNNER, phase: 'Integration', label: 'self-audit' }
+  )
+  const counts = {}
+  for (const line of String(auditRaw == null ? '' : auditRaw).split('\n')) {
+    const m = line.trim().match(/^(\S+)\s+(\d+|ERROR)$/)
+    if (m) counts[m[1]] = m[2]
+  }
+  const violations = []
+  const unreadable = []
+  for (const t of auditedTasks) {
+    const b = t.mergedBranch || t.branch
+    const c = counts[b]
+    if (c === undefined || c === 'ERROR') unreadable.push(b)
+    else if (parseInt(c, 10) > 0) violations.push({ taskId: t.taskId, status: t.status, branch: b, unmergedCommits: parseInt(c, 10) })
+  }
+  if (violations.length) {
+    note(`✗ SELF-AUDIT FAILED: ${violations.length} task branch(es) hold commits NOT in feat history — work the gate reported on is not actually merged.`)
+    return finalize('self_audit_failed', {
+      stage: 'self_audit', violations,
+      note: `The postflight self-audit found ${violations.length} completed task(s) whose branch holds commits NOT merged into ${featBranch}: ${violations.map((v) => `${v.taskId} (${v.status}, ${v.unmergedCommits} commit(s) on ${v.branch})`).join('; ')}. The feat must NOT read done. For each: if the work is proven (a prior run reviewed+verified it), flip the task to ready_to_merge and re-run — the auto-land lane merges it; otherwise re-run the task through the full loop after clearing the branch.`,
+    })
+  }
+  if (unreadable.length) note(`⚠ Self-audit could not read ${unreadable.length} branch(es) (${unreadable.join(', ')}) — ancestry NOT verified for them.`)
+  else log('Self-audit clean: every completed task branch is fully merged into feat history.')
 }
 
 // ── 6. ENV RE-CHECK (tasks may have added deps) + FINAL INTEGRATION VERIFY ─────
