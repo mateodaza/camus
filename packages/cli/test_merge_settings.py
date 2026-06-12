@@ -6,7 +6,8 @@
 Covers: fresh creation carries $defaults + both env lines; narrow gate-script allow rules added;
 NO defaultMode written; broad shell/PM rules never emitted; existing keys preserved; existing env
 appended without disturbing the user's $defaults choice; idempotency; malformed-input refusal;
-and the CLI --apply/--check round-trip against a temp settings file.
+the review.sh dispatcher rule + the legacy five-script profile upgrade path; and the CLI
+--apply/--check round-trip against a temp settings file.
 """
 import copy
 import json
@@ -57,6 +58,31 @@ def test_allow_rules_match_workflow_command_shape():
     for runner, name in M._GATE_SCRIPTS:
         literal = 'Bash(%s "$HOME/.claude/skills/camus/scripts"/%s *)' % (runner, name)
         assert literal in rules, "missing literal-$HOME rule for " + name
+
+
+def test_review_dispatcher_rule_present():
+    # The loop's REVIEW_CMD is the backend dispatcher review.sh — every review form
+    # (start / watchdog await / abort) shares this command prefix. If it falls out of
+    # _GATE_SCRIPTS, every review round re-prompts under auto mode and unattended runs break.
+    assert ("bash", "review.sh") in M._GATE_SCRIPTS
+    assert 'Bash(bash "$HOME/.claude/skills/camus/scripts"/review.sh *)' in M.allow_rules()
+
+
+def test_legacy_five_script_profile_reads_partial_and_upgrades():
+    # An install made before review.sh joined the allowlist has rules for the original five
+    # scripts only. has_profile() must read it as INCOMPLETE — that is what makes
+    # `install.sh --check` report the profile as MISSING/partial so an upgrader re-runs
+    # auto-setup — and --apply must append exactly the missing review.sh pair, no dupes.
+    # NB: the filter needs the '/' — 'review.sh' is a substring of 'codex_review.sh'.
+    legacy_allow = [r for r in M.allow_rules() if '/review.sh' not in r]
+    assert len(legacy_allow) == len(M.allow_rules()) - 2
+    settings = {"autoMode": {"environment": [M.DEFAULTS] + list(M.ENV_LINES)},
+                "permissions": {"allow": list(legacy_allow)}}
+    assert M.has_profile(settings) is False
+    out = M.apply(copy.deepcopy(settings))
+    assert M.has_profile(out) is True
+    for rule in M.allow_rules():
+        assert out["permissions"]["allow"].count(rule) == 1
 
 
 def test_preserves_all_other_settings():

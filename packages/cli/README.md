@@ -163,7 +163,7 @@ rejected loudly, never silently downgraded.
   has an adversarial reviewer score the plan. It writes a plan file you review and edit,
   then run with `camus-feat`. Better plans converge in fewer review rounds.
 - **Zero-click runs.** `camus auto-setup` installs a narrow permission profile: one
-  egress trust line for the review diff, plus allow rules for the five gate scripts.
+  egress trust line for the review diff, plus allow rules for the six gate scripts.
   Not `bypassPermissions`, no broad shell access. The runner agents' routine git
   plumbing is approved by Claude Code's auto-mode classifier; the profile and the
   classifier together are what make runs prompt-free.

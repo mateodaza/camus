@@ -8,10 +8,11 @@ The profile is deliberately NARROW (per the 2026-06-09 cross-vendor review):
   2. autoMode.environment += a local-only context line (Camus operates on local worktrees
      and `camus/feat...` branches, writes run state under ~/.camus, runs its own gate scripts;
      it does NOT push/deploy/migrate/publish — human merge & publish stay the boundary).
-  3. permissions.allow += narrow rules for ONLY the installed gate scripts (codex_review.sh,
-     verify.sh, prep.sh, commit.sh, env_check.py). NOT broad `Bash(git:*)` / `Bash(pnpm:*)` —
-     auto mode already auto-approves local working-dir edits + declared dep installs, and broad
-     shell/PM rules are either risky or dropped in auto mode (narrow rules carry over).
+  3. permissions.allow += narrow rules for ONLY the installed gate scripts (review.sh,
+     codex_review.sh, verify.sh, prep.sh, commit.sh, env_check.py). NOT broad `Bash(git:*)` /
+     `Bash(pnpm:*)` — auto mode already auto-approves local working-dir edits + declared dep
+     installs, and broad shell/PM rules are either risky or dropped in auto mode (narrow rules
+     carry over).
 
 Explicitly does NOT set `permissions.defaultMode` — that is a global toggle and too broad for an
 installer. The user enters auto mode PER RUN with `claude --permission-mode auto`.

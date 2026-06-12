@@ -194,7 +194,7 @@ The metering boundary is **interactive vs `claude -p`/SDK** — *not* GUI-vs-hea
       SKILL.md            # playbook: severity model, hard rules, run surface
       sev.schema.json     # Codex output schema (priority 0–3 + verdict)
       review-prompt.md    # cross-vendor audit persona + completeness check
-      scripts/            # 5 gate scripts + _guard.sh + adapter + preflight tools
+      scripts/            # 6 gate scripts + _guard.sh + adapter + preflight tools
   workflows/
     camus-loop.workflow.js   # single task: the closed loop
     camus-feat.workflow.js   # M1 feat runner (calls camus-loop per task)
@@ -249,8 +249,8 @@ the loop's gates. Keep both.
 - Building / inspecting the generated workflow → `default` or `acceptEdits`. Keep clicking.
 - Trusted unattended run → `auto` mode **plus the installed narrow profile**. The source of
   truth is `install.sh --auto-setup` (which runs `merge_settings.py`): one egress-trust line
-  for the Codex review diff plus allow rules for exactly the **5 gate scripts**
-  (`codex_review.sh`, `verify.sh`, `prep.sh`, `commit.sh`, `env_check.py`) in literal-`$HOME`
+  for the Codex review diff plus allow rules for exactly the **6 gate scripts**
+  (`review.sh`, `codex_review.sh`, `verify.sh`, `prep.sh`, `commit.sh`, `env_check.py`) in literal-`$HOME`
   and expanded forms — no broad `Bash(*)` rules, `$defaults` preserved. Do not hand-author
   this profile from the spec. Never use `bypassPermissions` on a real repo (no injection
   protection).
