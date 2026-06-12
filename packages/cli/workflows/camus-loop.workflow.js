@@ -278,6 +278,9 @@ function asVerify(raw) {
 // (it already passed, or a human accepted a verify-clean review_unresolved halt); deterministic
 // verify remains the unskippable arbiter — landing is mechanical, shipping is still earned.
 const LAND = !!(args && typeof args === 'object' && args.land === true)
+// The sha the ORIGINAL proof certified (feat state's provenCommit, publish audit round-2):
+// when the land's stage is empty, this is the only honest expectation for the bound verify.
+const LAND_EXPECT = (LAND && args && typeof args.expectHead === 'string' && args.expectHead.trim()) ? args.expectHead.trim() : ''
 if (LAND) {
   phase('Commit')
   // Resolve the EXISTING worktree at the same deterministic destination implement would have
@@ -332,10 +335,14 @@ If the cd fails (directory does not exist), output exactly: MISSING`,
   log(commitResult.committed === true
     ? `Committed previously verified work (${landSha}) to ${BRANCH}.`
     : 'Land mode: stage was empty — the work was already committed on the branch; proceeding to verify.')
-  // Head-bound when this run made the commit; on an empty stage the proven sha lives only on the
-  // branch (a prior run's commit) and there is no in-run expectation to bind — verify's internal
-  // integrity invariants (clean tree, stable HEAD) still hold.
-  const v = await prepAndVerify(wt, landSha)
+  // BINDING PRECEDENCE (publish audit round-2 P1 — the empty-stage land believed unbound
+  // greens): fresh seal (this run's commit) > the ORIGINAL proof's sha (feat state, via
+  // args.expectHead) > the live tip commit.sh read under trust (legacy states with no recorded
+  // proof). The middle case is the auditor's scenario made fail-closed: a task-branch tip that
+  // moved past the proof now FAILS the bound verify (head_mismatch names both shas) instead of
+  // being believed and merged.
+  const liveTip = (typeof commitResult.sha === 'string' && commitResult.sha) ? commitResult.sha : null
+  const v = await prepAndVerify(wt, landSha || LAND_EXPECT || liveTip)
   if (v.ok === 'inconclusive') {
     return { status: 'verify_inconclusive', task: TASK, worktree: wt, branch: BRANCH, rounds: 0, landed: true, failures: v.failures,
       note: 'Land mode committed, but deterministic verify could not RUN (env not ready — see failures). Fix the environment and re-run with land:true.' }

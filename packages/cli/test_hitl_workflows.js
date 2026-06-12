@@ -318,10 +318,32 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   }
   {
     // Already-committed worktree (empty stage) → proceed to verify, done with null sha (run died
-    // after commit last time — the branch tip IS the landed work).
-    const { res, calls } = await runLoop({ task: 't', land: true }, { ...landStubs, commit: J({ committed: false, reason: 'empty' }) })
+    // after commit last time — the branch tip IS the landed work). Since publish audit round-2,
+    // commit.sh names the live tip on empty and the verify is BOUND to it — the green must
+    // certify that exact tip.
+    const { res, calls } = await runLoop({ task: 't', land: true },
+      { ...landStubs, commit: J({ committed: false, reason: 'empty', sha: 't1pl1ve' }), verify: J({ pass: true, failures: [], head: 't1pl1ve' }) })
     ok('S12d land + empty stage → still done (already committed)', res.status === 'done' && res.commit_sha === null, res.status + '/' + res.commit_sha)
     ok('S12d verify still ran', calls.includes('verify'))
+    // F36a (publish audit round-2 P1): the empty-stage land no longer believes unbound greens.
+    const noHead = await runLoop({ task: 't', land: true },
+      { ...landStubs, commit: J({ committed: false, reason: 'empty', sha: 't1pl1ve' }), verify: J({ pass: true, failures: [] }) })
+    ok('F36a empty-stage land + unnamed green → verify_failed (head_missing)',
+      noHead.res.status === 'verify_failed' && JSON.stringify(noHead.res.failures || []).includes('head_missing'), noHead.res.status)
+    // F36b: expectHead (the ORIGINAL proof) outranks the live tip — a task-branch tip that moved
+    // past the proof fails CLOSED with both shas named, never believed and merged.
+    const moved = await runLoop({ task: 't', land: true, expectHead: 'pr00f' },
+      { ...landStubs, commit: J({ committed: false, reason: 'empty', sha: 't1pmoved' }), verify: J({ pass: true, failures: [], head: 't1pmoved' }) })
+    ok('F36b tip moved past the proven commit → verify_failed naming both shas',
+      moved.res.status === 'verify_failed' && JSON.stringify(moved.res.failures || []).includes('pr00f') && JSON.stringify(moved.res.failures || []).includes('t1pmoved'), moved.res.status)
+    // …and a tip still AT the proof verifies green through the same binding.
+    const held = await runLoop({ task: 't', land: true, expectHead: 'pr00f' },
+      { ...landStubs, commit: J({ committed: false, reason: 'empty', sha: 'pr00f' }), verify: J({ pass: true, failures: [], head: 'pr00f' }) })
+    ok('F36b tip still at the proven commit → done', held.res.status === 'done', held.res.status)
+    // Legacy gate shape (no sha on empty, no recorded proof) stays unbound — never a regression
+    // for old states; verify's internal invariants still apply.
+    const legacy = await runLoop({ task: 't', land: true }, { ...landStubs, commit: J({ committed: false, reason: 'empty' }) })
+    ok('F36c legacy empty (no sha, no proof) → unbound, still done', legacy.res.status === 'done', legacy.res.status)
   }
   {
     // A real commit failure under land is still an INFRA error, never silently skipped.
@@ -882,11 +904,13 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F24a proof persist stashes provenStatus + findings BEFORE the merge',
       !!mid && mid.tasks[0].provenStatus === 'done_with_findings' && mid.tasks[0].findingsDeferred === 1 && JSON.stringify(mid.tasks[0].deferredFindings).includes('laundered'),
       mid && JSON.stringify(mid.tasks[0]))
+    ok('F24a …and the proof\'s sha (publish audit round-2: the auto-land binds verify to it)',
+      !!mid && mid.tasks[0].provenCommit === 'c1', mid && mid.tasks[0].provenCommit)
     // (b) crash BEFORE the merge → resume auto-lands (land returns plain done) → verdict restored.
     const tid = taskIdOf('F', ['only task'], 'only task')
     const prior = JSON.parse(JSON.stringify(r1.stateJSON))
     prior.status = 'running'
-    prior.tasks[0] = { ...prior.tasks[0], status: 'ready_to_merge', provenStatus: 'done_with_findings', findingsDeferred: 1, deferredFindings: [finding], decisions: [{ what: 'W', why: 'Y' }] }
+    prior.tasks[0] = { ...prior.tasks[0], status: 'ready_to_merge', provenStatus: 'done_with_findings', provenCommit: 'pr00f', findingsDeferred: 1, deferredFindings: [finding], decisions: [{ what: 'W', why: 'Y' }] }
     const featResume = { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(prior) } }
     const r2 = await runFeat({ feat: 'F', tasks: ['only task'], posture: 'oneshot' }, featResume,
       [{ status: 'done', branch: 'camus/feat/x/only', commit_sha: 'land1', landed: true, decisions: [] }])
@@ -896,6 +920,8 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F24b findings + decisions survive the land (empty land decisions do not clobber)',
       !!r2.stateJSON && r2.stateJSON.tasks[0].findingsDeferred === 1 && JSON.stringify(r2.res.deferredFindings || []).includes('laundered') && r2.stateJSON.tasks[0].decisions.length === 1,
       r2.stateJSON && JSON.stringify(r2.stateJSON.tasks[0]))
+    ok('F24b auto-land carries expectHead = the proven sha (publish audit round-2)',
+      !!(r2.loopArgs[0] && r2.loopArgs[0].land === true && r2.loopArgs[0].expectHead === 'pr00f'), JSON.stringify(r2.loopArgs[0] && { land: r2.loopArgs[0].land, expectHead: r2.loopArgs[0].expectHead }))
     // (c) crash AFTER the merge → already-up-to-date + prior-merge-commit evidence → same restore.
     const upToDateMerge = { merged: true, committed: false, alreadyUpToDate: true, priorMergeCommit: 'deadbeef', before: 'aaa', after: 'aaa' }
     const r3 = await runFeat({ feat: 'F', tasks: ['only task'], posture: 'oneshot' },

@@ -501,6 +501,8 @@ if (prior && Array.isArray(prior.tasks)) {
       // Carry the crash-window stash (audit P1 2026-06-11) so the post-auto-land status can be
       // restored to the loop's REAL verdict — land mode itself only ever says plain done.
       if (p.provenStatus) node.provenStatus = p.provenStatus
+      // …and the proof's sha (publish audit round-2): the auto-land binds verify to it.
+      if (typeof p.provenCommit === 'string' && p.provenCommit) node.provenCommit = p.provenCommit
       if (p.findingsDeferred != null) node.findingsDeferred = p.findingsDeferred
       if (Array.isArray(p.deferredFindings)) node.deferredFindings = p.deferredFindings
       if (Array.isArray(p.decisions) && p.decisions.length) node.decisions = p.decisions
@@ -790,7 +792,10 @@ Return {written:true} once that file is on disk with exactly that content.`,
       ...(MODEL_TIER ? { modelTier: MODEL_TIER } : {}),
       ...(SKIP_PLAN ? { skipPlan: true } : {}),       // opt-in; loop honors only under policy:autonomous
       ...(ROUND_CAP != null ? { roundCap: ROUND_CAP } : {}),   // per-task review-round budget
-      ...(landAuthorized ? { land: true } : {}),  // PROVEN accept decision → land; unproven → full loop
+      // PROVEN accept decision → land; unproven → full loop. expectHead anchors the land's
+      // verify to the sha the original proof certified (publish audit round-2): an empty-stage
+      // land on a tip that moved past the proof fails CLOSED instead of being believed.
+      ...(landAuthorized ? { land: true, ...(typeof node.provenCommit === 'string' && node.provenCommit ? { expectHead: node.provenCommit } : {}) } : {}),
       ...(ANSWERS[node.taskId] ? { humanAnswer: String(ANSWERS[node.taskId]) } : {}),  // resume answer
       ...(ENV_FACTS ? { envFacts: ENV_FACTS } : {}),  // platform truths → loop agent prompts (advisory)
       ...(POSTURE !== 'full' ? { posture: POSTURE } : {}),  // review cadence (VELOCITY §1); full = loop default
@@ -913,7 +918,16 @@ If the branch does not exist git errors — output that error line verbatim.`,
   // LAUNDER review debt into a clean-looking done on resume.
   // A LANDED result is mechanical (commit→verify only) — it must never overwrite the verdict
   // the original run stashed here; only a real loop run owns provenStatus.
-  if (!res.landed) node.provenStatus = res.status
+  if (!res.landed) {
+    node.provenStatus = res.status
+    // PROVEN COMMIT (publish audit round-2, 2026-06-12): the sha this proof certifies. The
+    // auto-land binds its verify to it (loop args.expectHead) — without the anchor, an
+    // empty-stage land believes whatever tip the task branch carries, even one that moved
+    // past the proof. Same ownership rule as provenStatus: a mechanical land never writes it.
+    const proofSha = (typeof res.commit_sha === 'string' && res.commit_sha) ? res.commit_sha
+      : ((typeof res.parkedSha === 'string' && res.parkedSha) ? res.parkedSha : null)
+    if (proofSha) node.provenCommit = proofSha
+  }
   if (res.status === 'done_with_findings') {
     node.findingsDeferred = res.findingsDeferred || (Array.isArray(res.findings) ? res.findings.length : 0)
     if (Array.isArray(res.findings)) node.deferredFindings = res.findings

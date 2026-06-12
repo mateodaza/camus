@@ -47,7 +47,12 @@ if git diff --cached --diff-filter=A --raw | grep -q ' 160000 ' \
   exit 0
 fi
 if git diff --cached --quiet; then
-  printf '{"committed": false, "reason": "empty"}\n'
+  # The live tip the empty stage sits on (publish audit round-2, 2026-06-12): an empty stage in
+  # land mode means the work is a PRIOR commit — the workflow binds verify to the original
+  # proof's sha when the feat recorded one, and to this trusted live read as the fallback, so an
+  # already-committed land can never believe an unnamed or fabricated green. 2>/dev/null: an
+  # unborn HEAD (can't happen on a guarded camus branch, belt only) degrades to "" → unbound.
+  printf '{"committed": false, "reason": "empty", "sha": "%s"}\n' "$(git rev-parse HEAD 2>/dev/null || printf '')"
 else
   # --no-verify kept for older-git belt; hooksPath above is the real cover (see why there).
   if "${GATE_GIT[@]}" commit -q --no-verify -m "$msg"; then
