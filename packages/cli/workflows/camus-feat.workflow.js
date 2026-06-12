@@ -22,10 +22,18 @@ const MODEL_RUNNER = 'haiku'                         // thin shell runners — n
 
 // ── Args: { feat, tasks: [...ordered], targetPath? } ─────────────────────────
 // Tolerate a JSON-encoded string (some callers stringify args); parse it back to an object.
+// STRICT JSON only, deliberately (live smoke run-3, 2026-06-12): a fresh session forwarded a
+// JS-style literal (unquoted keys) verbatim and JSON.parse refused it. Auto-repairing keys with
+// a quoting regex was considered and REJECTED — task strings legitimately contain `, word:`
+// shapes ("…, acceptance: …") that a string-blind transform would corrupt INSIDE quotes,
+// trading this loud error for silent arg mangling. The error teaches instead.
 let A = args
 if (typeof A === 'string') { try { A = JSON.parse(A) } catch (_) { /* leave as string -> fails below */ } }
 if (!A || typeof A !== 'object' || Array.isArray(A)) {
-  throw new Error('camus-feat: args must be an object { feat, tasks: [...] } (got: ' + typeof args + ')')
+  throw new Error('camus-feat: args must be an object { feat, tasks: [...] }'
+    + (typeof args === 'string'
+      ? ' — got a STRING that is not valid JSON. If your invocation stringifies args, use strict JSON (quoted keys: {"feat": "...", "tasks": ["..."]}), not a JS-style literal.'
+      : ' (got: ' + typeof args + ')'))
 }
 const FEAT = String(A.feat || '').trim()
 const TASKS = Array.isArray(A.tasks) ? A.tasks.map((t) => String(t).trim()).filter(Boolean) : []

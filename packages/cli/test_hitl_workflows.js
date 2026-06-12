@@ -704,6 +704,18 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F1 question in report', res && res.question === 'Pick A or B?')
     ok('F1 resumeWith hint present', !!(res && res.resumeWith && res.resumeWith.answers))
   }
+  // F33 (live smoke run-3, 2026-06-12): args arriving as a JS-style literal STRING (unquoted
+  // keys — a fresh session forwarded the paste verbatim) must throw an error that TEACHES the
+  // strict-JSON form. Stringified STRICT JSON keeps working. No silent key-quoting repair —
+  // task strings contain `, word:` shapes a string-blind transform would corrupt.
+  {
+    let threw = null
+    try { await runFeat('{ feat: "F", tasks: ["t"] }', featBase, []) } catch (e) { threw = String((e && e.message) || e) }
+    ok('F33 JS-literal string args → teaching error', !!threw && /strict JSON/.test(threw) && /quoted keys/.test(threw), threw)
+    const { res } = await runFeat(JSON.stringify({ feat: 'F', tasks: ['only task'] }), featBase,
+      [{ status: 'done', branch: 'b', decisions: [] }])
+    ok('F33b stringified STRICT JSON args still work', res && res.status === 'done', res && res.status)
+  }
   // F15 (smoke 2026-06-11): the feat lifts the env doctor's delimited [env-facts] block VERBATIM
   // and threads it to every task's loop as envFacts; no block (or a garbled one) → no key at all.
   {
