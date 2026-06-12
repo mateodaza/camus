@@ -1162,15 +1162,27 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     // …(b) and the canonical resumeArgs still carries the land list verbatim (audit P1: dropping it
     // on resume would re-enter the full loop — the exact run-5 failure mode).
     ok('F13b resumeArgs persists land', !!fresh.stateJSON && JSON.stringify((fresh.stateJSON.resumeArgs || {}).land) === JSON.stringify([tid]), JSON.stringify(fresh.stateJSON && fresh.stateJSON.resumeArgs && fresh.stateJSON.resumeArgs.land))
-    // (c) Run 1 halts verify-clean → persisted as needs_decision (the PROOF)…
+    // (c) Run 1 halts verify-clean → persisted as needs_decision (the PROOF — since the
+    // park-first reorder, with the PARKED sha riding the same persist)…
     const r1 = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
-      [{ status: 'review_unresolved', verifyClean: true, stuck: [], blocking: [] }])
+      [{ status: 'review_unresolved', verifyClean: true, stuck: [], blocking: [], parkedSha: 'p4rk1234' }])
     ok('F13c prior halt persisted as needs_decision', !!r1.stateJSON && r1.stateJSON.tasks[0].status === 'needs_decision', r1.stateJSON && r1.stateJSON.tasks[0].status)
+    ok('F37a needs_decision persist stashes provenCommit = the parked sha (publish audit round-3)',
+      !!r1.stateJSON && r1.stateJSON.tasks[0].provenCommit === 'p4rk1234', r1.stateJSON && r1.stateJSON.tasks[0].provenCommit)
     // …(d) resume with land:[tid] → NOW authorized: land forwards, narration matches, feat lands+merges.
     const featResume = { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(r1.stateJSON) } }
     const r2 = await runFeat({ feat: 'F', tasks: ['only task'], land: [tid] }, featResume,
       [{ status: 'done', branch: 'camus/feat/x/only', commit_sha: 'land1', landed: true, decisions: [] }])
     ok('F13d proven needs_decision + land → land:true forwarded', !!(r2.loopArgs[0] && r2.loopArgs[0].land === true), JSON.stringify(r2.loopArgs[0] && r2.loopArgs[0].land))
+    ok('F37b accepted decision lands head-bound: expectHead = the parked sha, never the live tip',
+      !!(r2.loopArgs[0] && r2.loopArgs[0].expectHead === 'p4rk1234'), JSON.stringify(r2.loopArgs[0] && r2.loopArgs[0].expectHead))
+    // (f) the FAILED halt stashes the park too — `camus land --proven` flips it to
+    // ready_to_merge preserving fields, and the auto-land lane hydrates the same anchor.
+    const rRed = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
+      [{ status: 'review_unresolved', verifyClean: false, stuck: [], blocking: [], parkedSha: 'p4rkred1' }])
+    ok('F37c failed halt stashes the parked sha for a later camus-land accept',
+      !!rRed.stateJSON && rRed.stateJSON.tasks[0].status === 'failed' && rRed.stateJSON.tasks[0].provenCommit === 'p4rkred1',
+      rRed.stateJSON && (rRed.stateJSON.tasks[0].status + '/' + rRed.stateJSON.tasks[0].provenCommit))
     ok('F13d landed task merges → feat done', r2.res && r2.res.status === 'done', r2.res && r2.res.status)
     // (e) audit P3: the live narration for a land task says what is actually happening.
     ok('F13e land narration says LAND → commit → verify → merge', !!r2.stateJSON && (r2.stateJSON.events || []).some((e) => /LAND \(accepted decision\) → commit → verify → merge/.test(e.msg || '')))

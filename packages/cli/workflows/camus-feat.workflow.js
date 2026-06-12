@@ -489,7 +489,12 @@ if (prior && Array.isArray(prior.tasks)) {
   let carried = 0
   for (const node of state.tasks) {
     const p = priorById.get(node.taskId)
-    if (p && p.status === 'needs_decision') PROVEN_DECISION.add(node.taskId)
+    if (p && p.status === 'needs_decision') {
+      PROVEN_DECISION.add(node.taskId)
+      // The parked proof's sha (publish audit round-3): an ACCEPTED decision lands head-bound
+      // to the park — the live-tip fallback is for legacy states only, never for a known proof.
+      if (typeof p.provenCommit === 'string' && p.provenCommit) node.provenCommit = p.provenCommit
+    }
     // merge_failed WITH a proven verdict joins the same lane (smoke 2026-06-12): the work is
     // committed + verified on the task branch and only the merge is missing — the merge agent's
     // refusal (e.g. a dirty main tree) is retryable once the human clears the cause. Without
@@ -890,6 +895,13 @@ If the branch does not exist git errors — output that error line verbatim.`,
     // re-looped into a branch collision instead of retrying the (fixable) land. Keep the lane.
     const landAbort = landAuthorized && res && (res.status === 'aborted' || res.status === 'infra_error')
     node.status = verifyCleanHalt ? 'needs_decision' : (landAbort ? 'ready_to_merge' : 'failed')
+    // PARKED PROOF's sha rides the halt persist (publish audit round-3, 2026-06-12): the accept
+    // lane (needs_decision → human accepts → land) and the `camus land --proven` lane (failed →
+    // ready_to_merge) both end in a land whose verify must bind to the PARK, not the live tip —
+    // without this stash, a task branch moved past the parked proof was believed and merged.
+    // Same ownership rule as provenStatus: a land result never parks (res.parkedSha absent), so
+    // a landAbort can never clobber the hydrated anchor.
+    if (res && !res.landed && typeof res.parkedSha === 'string' && res.parkedSha) node.provenCommit = res.parkedSha
     await persistState('Tasks')
     note(verifyCleanHalt
       ? `⚠ Task ${n} did not converge in review, BUT deterministic verify PASSES — a decision (accept vs refine), not a failure.`
