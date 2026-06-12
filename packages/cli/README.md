@@ -86,6 +86,13 @@ reviews re-attach in bounded chunks, so no tool timeout caps review depth anymor
 round also logs Codex's own token usage and keeps a full event-stream audit dir
 alongside the verdict file.
 
+**A killed review is resumed, never re-paid.** Every Codex thread announces its session id
+in the event stream, so when a round's prior attempt was idle-killed or abandoned, the next
+attempt runs `codex exec resume <thread_id>` to finish that same thread for one short turn
+instead of paying for a whole fresh review. It falls closed to a fresh review whenever resume
+can't produce a verdict — no recorded thread id, a non-zero exit, or an empty result — so the
+worst case is exactly today's behavior, never a new failure mode.
+
 **Tests are the last word.** A clean review does not ship code that fails
 `type-check` or `test`. The verifier auto-detects the stack (node, python, rust, go,
 foundry, make) or uses `CAMUS_VERIFY_CMD`. If it finds no verifier at all, that is a

@@ -39,6 +39,24 @@ echo "junk" > "$WT/ignoredfile.txt"
 SPY="$ROOT/spy"; mkdir -p "$SPY" "$ROOT/bin"
 cat > "$ROOT/bin/codex" <<EOF
 #!/usr/bin/env bash
+# Resume vs fresh branch (codex-resume-recovery 2026-06-12): \`codex exec resume <id> ...\` records
+# to a DISTINCT spy file (so a test can prove resume was chosen) and emits thread.started so the
+# watchdog re-captures the id. SPY_RESUME_FAIL forces the failure modes the script must fall
+# closed on: exit=nonzero, or a done run that writes NO -o verdict (adapter → ran:false).
+if [ "\$1" = "exec" ] && [ "\$2" = "resume" ]; then
+  printf '%s\n' "\$@" > "$SPY/args_resume"
+  printf '%s\n' "\$3" > "$SPY/resume_id"
+  printf '{"type":"thread.started","thread_id":"%s"}\n' "\$3"
+  case "\${SPY_RESUME_FAIL:-}" in
+    exit) printf '{"type":"turn.completed","usage":{"output_tokens":1}}\n'; exit 7 ;;
+    noverdict) printf '{"type":"turn.completed","usage":{"output_tokens":1}}\n'; exit 0 ;;
+  esac
+  out=""; prev=""
+  for a in "\$@"; do [ "\$prev" = "-o" ] && out="\$a"; prev="\$a"; done
+  [ -n "\$out" ] && printf '{"findings": [], "overall_correctness": "patch is correct"}' > "\$out"
+  printf '{"type":"turn.completed","usage":{"input_tokens":3,"output_tokens":1}}\n'
+  exit 0
+fi
 printf '%s\n' "\$@" > "$SPY/args"
 git diff --name-only > "$SPY/seen_diff" 2>/dev/null
 wc -c < /dev/stdin | tr -d ' ' > "$SPY/stdin_bytes"
@@ -191,6 +209,70 @@ check "scope recorded in watch meta.json (audit trail)" \
 run_review >/dev/null || { echo "FAIL default-scope review errored/hung"; exit 1; }
 check "default scope stays FULL (no light section in the prompt)" \
   "no" "$(grep -q 'Review scope: LIGHT' "$SPY/args" && echo yes || echo no)"
+
+# ── Codex-resume recovery (codex-resume-recovery 2026-06-12): a round whose PRIOR attempt was
+# idle-killed/aborted owns a live codex thread — the next attempt RESUMES it (codex exec resume
+# <thread_id>) instead of paying for a fresh review. Fail closed to a fresh review when resume
+# exits nonzero or yields no verdict — never a new failure mode.
+run_review_round() { # $1 = round number
+  python3 - "$R" "$here/codex_review.sh" "$WT" "$1" <<'PY'
+import subprocess, sys
+r = subprocess.run(["bash", sys.argv[2], sys.argv[3], "the task", sys.argv[4]],
+                   cwd=sys.argv[1], capture_output=True, text=True, timeout=30)
+sys.stdout.write(r.stdout)
+PY
+}
+# Stage a round dir as if a prior attempt was aborted WITH a thread_id (meta.json carries it,
+# the away/abort form's persistence) — the trigger the script probes for before the fresh path.
+stage_aborted_round() { # $1 = round, $2 = thread_id
+  local d="$ROOT/reviews/camus-wt-task-r$1.watch"
+  mkdir -p "$d"
+  python3 -c 'import json,sys; json.dump({"target_dir": sys.argv[2], "round": sys.argv[3],
+    "effort": "medium", "scope": "full", "thread_id": sys.argv[4]}, open(sys.argv[1],"w"))' \
+    "$d/meta.json" "$WT" "$1" "$2"
+  printf '{"type":"thread.started","thread_id":"%s"}\n' "$2" > "$d/events.jsonl"
+}
+
+# resume CHOSEN when a prior aborted thread_id is present: the script runs `codex exec resume <id>`
+# and the verdict normalizes ran:true (the resumed thread finished the review).
+rm -f "$SPY/args_resume" "$SPY/resume_id"
+stage_aborted_round 7 "sess-resume-ok"
+out="$(run_review_round 7)" || { echo "FAIL resume review errored/hung"; exit 1; }
+check "resume chosen: argv shows 'exec resume <thread_id>'" \
+  "yes" "$([ -f "$SPY/args_resume" ] && grep -qx 'resume' "$SPY/args_resume" && grep -qx 'sess-resume-ok' "$SPY/args_resume" && echo yes || echo no)"
+check "resume verdict normalizes ran:true (clean)" \
+  "yes" "$(printf '%s' "$out" | python3 -c 'import json,sys; g=json.load(sys.stdin); print("yes" if g["ran"] and g["clean"] else "no")')"
+check "resume rides the SAME schema/-o plumbing (--output-schema present)" \
+  "yes" "$(grep -qx -- '--output-schema' "$SPY/args_resume" && echo yes || echo no)"
+check "resume preserves the aborted attempt's events under a1/ (audit not clobbered)" \
+  "yes" "$([ -f "$ROOT/reviews/camus-wt-task-r7.watch/a1/events.jsonl" ] && echo yes || echo no)"
+
+# fallback on resume FAILURE (nonzero exit): the script falls through to a FRESH review for the
+# round (a fresh `codex exec` recorded to $SPY/args, ran:true) — no new failure mode.
+rm -f "$SPY/args" "$SPY/args_resume"
+stage_aborted_round 8 "sess-resume-bad"
+out="$(SPY_RESUME_FAIL=exit run_review_round 8)" || { echo "FAIL resume-fail review errored/hung"; exit 1; }
+check "resume failure (exit≠0): resume WAS attempted" \
+  "yes" "$([ -f "$SPY/args_resume" ] && echo yes || echo no)"
+check "resume failure falls back to a FRESH codex exec for the round" \
+  "yes" "$([ -f "$SPY/args" ] && grep -qx -- '--output-schema' "$SPY/args" && echo yes || echo no)"
+check "fallback verdict still normalizes ran:true (fresh review ran)" \
+  "yes" "$(printf '%s' "$out" | python3 -c 'import json,sys; g=json.load(sys.stdin); print("yes" if g["ran"] else "no")')"
+
+# fallback on resume NO-VERDICT (done but empty -o → adapter ran:false): same fresh fallback.
+rm -f "$SPY/args" "$SPY/args_resume"
+stage_aborted_round 9 "sess-resume-empty"
+out="$(SPY_RESUME_FAIL=noverdict run_review_round 9)" || { echo "FAIL resume-noverdict review errored/hung"; exit 1; }
+check "resume no-verdict falls back to a fresh codex exec (ran:true)" \
+  "yes" "$([ -f "$SPY/args" ] && grep -qx -- '--output-schema' "$SPY/args" && printf '%s' "$out" | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin)["ran"] else "no")' || echo no)"
+
+# NO prior thread → today's fresh path is byte-identical (no resume attempted at all).
+rm -f "$SPY/args" "$SPY/args_resume"
+out="$(run_review_round 10)" || { echo "FAIL no-prior review errored/hung"; exit 1; }
+check "no prior aborted thread: resume NOT attempted (fresh path unchanged)" \
+  "no" "$([ -f "$SPY/args_resume" ] && echo yes || echo no)"
+check "no prior aborted thread: a fresh codex exec ran" \
+  "yes" "$([ -f "$SPY/args" ] && grep -qx -- '--output-schema' "$SPY/args" && echo yes || echo no)"
 
 # ── Reviewer-backend dispatcher (review.sh): codex passes through VERBATIM; an unknown backend
 # fails CLOSED (ran:false gate JSON naming it, exit 0) — never a fallback, never a crash.
