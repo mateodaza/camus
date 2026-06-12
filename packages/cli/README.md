@@ -339,7 +339,7 @@ read cleanly.
 
 ## Tests
 
-Pure stdlib, no network, no dependencies. 656 assertions across 19 suites:
+Pure stdlib, no network, no dependencies. 20 suites:
 
 ```bash
 npm test    # or run the suites individually under skills/camus/scripts/
@@ -347,6 +347,34 @@ npm test    # or run the suites individually under skills/camus/scripts/
 
 Codex has reviewed Camus's own adapter, guard, and workflows, and caught
 real bugs each time.
+
+## Self-test (`camus canary`)
+
+`npm test` proves the gate's *units*. `camus canary` proves the *toolchain*: it
+spins up a throwaway git repo under `$TMPDIR` and runs the real gate against it,
+end to end, so you can answer "is my local gate actually working?" without a real
+project.
+
+```bash
+camus canary             # free + local: RED → GREEN
+camus canary --review    # also exercises the codex reviewer (one small codex call)
+```
+
+Three known-answer stages, short-circuiting on the first break:
+
+- **RED** — a repo whose `npm test` fails by design must verify `pass:false` with a
+  *named* failed check. If the verifier can't tell broken from working, nothing it
+  says downstream is trustworthy.
+- **GREEN** — fix the assertion, commit, and the same verify must read `pass:true`
+  **and name the exact HEAD it certified** (`result.head == git rev-parse HEAD`) —
+  the head-binding contract the orchestrator relies on to catch an
+  edit→commit→rerun cover-up.
+- **review** (only with `--review`, **off by default**) — stage a one-line diff and
+  run the Codex reviewer, requiring a normalized verdict that carries the gate's
+  contract keys. This is the one stage that costs a (small) codex call.
+
+Exit 0 only when every stage holds; otherwise it prints the first broken stage with
+its evidence. The throwaway repo is always torn down, including on failure.
 
 ## Boundary
 

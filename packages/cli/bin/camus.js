@@ -67,6 +67,9 @@ usage: npx camus-cli <command>
   retro        read-only run-history analytics over ~/.camus/reports: per-feat lines,
                  aggregates (status/posture mix, rounds, token p50/p90), evidence-gated
                  recommendations · --json emits just the aggregate
+  canary       opt-in known-answer self-test of the local gate: builds a throwaway repo,
+                 proves verify's RED verdict + GREEN head-binding hold end-to-end
+                 (--review also exercises the codex reviewer — one small codex call)
   version      print version (also -v / --version)
 
 per-run recipe (from your repo):
@@ -116,6 +119,9 @@ switch (cmd) {
     break;
   case 'retro':
     py('retro.py', rest);
+    break;
+  case 'canary':
+    py('canary.py', rest);
     break;
   case 'version':
   case 'v':
