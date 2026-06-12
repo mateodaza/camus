@@ -646,6 +646,13 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const { res } = await runLoop({ task: 't' }, stubs)
     ok('S26b empty-residue collision → branch -D advice, never the resume-lane lie', /empty residue/.test(res.note || '') && /git branch -D/.test(res.note || '') && !/resume lanes land proven/.test(res.note || ''), res.note)
   }
+  {
+    const stubs = { ...clsStd, ...planOf('clear', ''),
+      implement: { worktree_path: 'FAILED', branch: 'b', summary: "fatal: a branch named 'camus/x' already exists" },
+      'collision-audit': 'fatal: ambiguous argument' }
+    const { res } = await runLoop({ task: 't' }, stubs)
+    ok('S26c malformed collision-audit → inconclusive advice, never the resume-lane lie', res.status === 'infra_error' && /could not verify/.test(res.note || '') && !/resume lanes land proven/.test(res.note || '') && res.collisionAuditOutput === 'fatal: ambiguous argument', res.note)
+  }
 
   // S7: worktree path contract (2026-06-10) — centralized out-of-tree home + fail-closed validation.
   {

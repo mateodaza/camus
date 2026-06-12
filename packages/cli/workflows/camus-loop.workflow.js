@@ -465,13 +465,17 @@ if (claimed.startsWith('FAILED')) {
   ${HB_TOUCH}git rev-list --count HEAD..${JSON.stringify(BRANCH)} --`,
     { model: MODEL_RUNNER, phase: 'Implement', label: 'collision-audit' }
   )
-  const cnt = parseInt(String(cntRaw == null ? '' : cntRaw).trim(), 10)
-  const residue = Number.isInteger(cnt) && cnt === 0
+  const cntText = String(cntRaw == null ? '' : cntRaw).trim()
+  const cnt = /^\d+$/.test(cntText) ? parseInt(cntText, 10) : null
+  const residue = cnt === 0
   return { status: 'infra_error', task: TASK, branch: BRANCH, rounds: 0,
     error: `worktree/branch collision: ${claimed}`,
-    note: residue
+    collisionAuditOutput: cnt === null ? cntText.slice(0, 1000) : undefined,
+    note: cnt === null
+      ? `Implement could not create ${BRANCH} / its worktree — and Camus could not verify whether the colliding branch holds prior commits (collision-audit output was not a non-negative integer). Missing collision evidence must not become resume-lane advice. Inspect the branch/worktree, fix the git/audit issue, then re-run. Git's original error: ${(impl && impl.summary) || 'not captured'}`
+      : residue
       ? `Implement could not create ${BRANCH} / its worktree — the branch exists but holds NO commits of its own: empty residue of a previously failed worktree add (or a name collision with one of your refs — git's error: ${(impl && impl.summary) || 'not captured'}). Delete it and re-run:\n  git branch -D ${BRANCH}`
-      : `Implement could not create ${BRANCH} / its worktree — a previous attempt's work exists there${Number.isInteger(cnt) ? ` (${cnt} commit(s))` : ''} (${(impl && impl.summary) || 'no git error captured'}). Under a feat, re-run with the SAME args: the resume lanes land proven prior work. Standalone: merge or delete the branch, then re-run.` }
+      : `Implement could not create ${BRANCH} / its worktree — a previous attempt's work exists there (${cnt} commit(s)) (${(impl && impl.summary) || 'no git error captured'}). Under a feat, re-run with the SAME args: the resume lanes land proven prior work. Standalone: merge or delete the branch, then re-run.` }
 }
 if (!claimed || !claimed.endsWith(WT_NAME)) {
   return { status: 'aborted', stage: 'implement', task: TASK, plan,
