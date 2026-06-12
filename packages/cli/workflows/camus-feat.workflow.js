@@ -589,7 +589,7 @@ if (baseV.pass !== true) {
   if (baseV.inconclusive) {
     return finalize('env_not_ready', {
       stage: 'baseline_verify',
-      note: 'Baseline verify could NOT run (toolchain/deps missing, or the target guard refused) — env/infra, not code-red. Fix the environment and re-run.',
+      note: 'Baseline verify could NOT run — env/infra, not code-red. Either the toolchain/deps are missing (fix and re-run), or NO VERIFIER exists yet (a greenfield/empty repo): camus gates changes against YOUR tests, so bootstrap first — scaffold the project with one runnable test command (a plain Claude Code session is fine for step zero), commit it as the baseline, then run camus for every change after. A custom command also works: export CAMUS_VERIFY_CMD=\'<build && test>\'.',
       failures: baseV.failures || [],
     })
   }

@@ -35,6 +35,16 @@ plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep �
   your files in an unknown state. A mode that "just edits files and reports success"
   would be an agent grading its own homework — the exact thing camus exists to refuse.
 
+### Starting from zero
+
+Camus gates *changes* against a baseline and your own tests, so a brand-new project
+needs one bootstrap step before the gate has anything to hold: scaffold it (a plain
+Claude Code session or `npm create …` is fine for step zero) until a single verify
+command exists — even one trivial test — then `git init && git add -A && git commit`.
+From the second change onward, every edit runs through the loop. An empty repo halts
+honestly as `env_not_ready` ("nothing to verify ≠ code is broken"), never as a fake
+green: a gate with no floor would just be an agent grading its own work again.
+
 ## Why you can trust a green run
 
 **The reviewer is a competing model.** Codex reviews; a thin runner relays its JSON
