@@ -326,12 +326,26 @@ def render(synth, now=None):
         lines.append("")
 
     if status == "needs_human":
+        # FEAT-level pauses (live smoke 2026-06-12): posture/budget/steer pauses halt no task, so
+        # the engine now persists `state.question` + `state.stage` on every needs_human finalize —
+        # and each stage has its OWN resume shape (the per-task answers:{...} hint was actively
+        # wrong for them). Stage "task" or absent (older states, real task pauses) stays
+        # byte-identical: question scanned off the task nodes, answers:{...} resume hint.
         q = s.get("question") or next((t.get("question") for t in tasks if t.get("question")), "")
         if q:
             lines.append("PAUSED — the run needs your decision:")
             lines.append("  %s" % q)
-        halted = next((t.get("taskId") for t in tasks if t.get("status") == "needs_human"), "<taskId>")
-        lines.append('  resume: re-run the feat with  answers:{"%s":"<your answer>"}' % halted)
+        stage = s.get("stage")
+        if stage == "posture":
+            lines.append('  resume: re-run the feat with  posture:"oneshot"  (or "full") '
+                         "— explicit posture is used verbatim, never re-asked")
+        elif stage == "budget":
+            lines.append("  resume: re-run with a HIGHER budgetTokens (or drop it) — done tasks skip")
+        elif stage == "steer":
+            lines.append("  resume: re-issue your guidance (camus steer ...), then re-run with the SAME args")
+        else:
+            halted = next((t.get("taskId") for t in tasks if t.get("status") == "needs_human"), "<taskId>")
+            lines.append('  resume: re-run the feat with  answers:{"%s":"<your answer>"}' % halted)
         lines.append("")
 
     if status == "integration_pending":

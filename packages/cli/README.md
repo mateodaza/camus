@@ -84,6 +84,20 @@ silently marked done. Every `done` carries its `commit_sha`.
   (resumable), `g` steers the next task, `c` clears a pending note. `camus status`
   is the one-shot version; `camus steer "<guidance>"` scripts the same notes.
   Notes are consumed once, at the run's safe redirect points.
+- **Review speed: prune codex's MCP servers.** Every review spawns a fresh
+  `codex exec`, which initializes every MCP server in `~/.codex/config.toml` —
+  including ones that fail auth or spawn through `npx`. On a measured setup,
+  disabling unused servers cut trivial-call wall time ~35% and silenced startup
+  errors (the token cost of MCP tool definitions is small — the win is latency
+  and noise). Disable per server, which leaves the rest of your codex setup alone:
+
+  ```toml
+  [mcp_servers.<name>]
+  enabled = false
+  ```
+
+  (`-c mcp_servers.<name>.enabled=false` works per-invocation too; overriding the
+  whole table with `mcp_servers={}` does NOT — config tables merge.)
 
 ## Layout
 

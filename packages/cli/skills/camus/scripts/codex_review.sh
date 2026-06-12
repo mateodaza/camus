@@ -207,6 +207,35 @@ fi
 if [[ -n "${CAMUS_CODEX_TIER:-}" ]]; then
   codex_review_args="$codex_review_args -c service_tier=$CAMUS_CODEX_TIER"
 fi
+# MCP PRUNING (2026-06-12, live smoke findings — probed on codex 0.137.0): every `codex exec`
+# initializes EVERY MCP server in the user's config.toml before the review starts — npx spawns,
+# remote auth handshakes (a failing remote burns its whole retry window) — measured at ~35% of
+# trivial-call wall time with all servers off, with ~zero token difference. A bounded review
+# needs the repo, not the user's toolbelt. CAMUS_CODEX_DISABLE_MCP="figma,notion" appends
+# `-c mcp_servers.<id>.enabled=false` per id, scoping the pruning to CAMUS's review lane only —
+# the user's config.toml and their interactive codex are untouched (the same isolation promise
+# the levers above make). Default-OFF: unset env → byte-identical invocation (the
+# CAMUS_CODEX_LIGHT_MODEL / CAMUS_CODEX_TIER discipline).
+#   - Per-server on PURPOSE: blanking the whole table with `-c 'mcp_servers={}'` does NOT work
+#     (codex config tables MERGE, so the empty override is silently ignored — verified on
+#     0.137.0). Do not "simplify" this loop to it.
+#   - NOT folded into CAMUS_CODEX_ARGS on purpose: that var REPLACES the dynamic-effort default,
+#     so parking the pruning there would kill effort escalation. This lever is additive and
+#     composes with either effort source.
+#   - Ids reach a command line, so only [A-Za-z0-9_-]+ tokens are accepted — the loop's
+#     handle-validation charset discipline, minus `.` (a dot would shift the TOML key path).
+#     Whitespace around commas is trimmed; anything else (empty tokens included) is silently
+#     skipped.
+if [[ -n "${CAMUS_CODEX_DISABLE_MCP:-}" ]]; then
+  _mcp_rest="${CAMUS_CODEX_DISABLE_MCP},"          # trailing comma: every token ends with one
+  while [[ -n "$_mcp_rest" ]]; do
+    _mcp_id="${_mcp_rest%%,*}"; _mcp_rest="${_mcp_rest#*,}"
+    _mcp_id="${_mcp_id#"${_mcp_id%%[![:space:]]*}"}"   # trim leading whitespace
+    _mcp_id="${_mcp_id%"${_mcp_id##*[![:space:]]}"}"   # trim trailing whitespace
+    [[ "$_mcp_id" =~ ^[A-Za-z0-9_-]+$ ]] || continue
+    codex_review_args="$codex_review_args -c mcp_servers.${_mcp_id}.enabled=false"
+  done
+fi
 
 # Fresh watch dir per round (a retry of the same round starts clean — stale events would
 # poison idle detection and usage extraction).

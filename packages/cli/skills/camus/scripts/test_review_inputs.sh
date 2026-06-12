@@ -4,8 +4,8 @@
 # codex block and return empty verdicts). A fake `codex` on PATH records, from inside
 # the worktree at invocation time: the diff it would see, its argv, and its stdin size.
 # 2026-06-11 (VELOCITY-DIRECTION §2): also covers the additive levers (light model, service
-# tier, review scope) and the review.sh backend dispatcher (verbatim pass-through for codex,
-# fail-closed gate JSON for unknown backends).
+# tier, review scope; 2026-06-12: MCP pruning) and the review.sh backend dispatcher (verbatim
+# pass-through for codex, fail-closed gate JSON for unknown backends).
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(mktemp -d)"
@@ -126,6 +126,34 @@ unset CAMUS_CODEX_TIER
 run_review >/dev/null || { echo "FAIL post-tier review errored/hung"; exit 1; }
 check "no service-tier flag when CAMUS_CODEX_TIER is unset" \
   "no" "$(grep -q 'service_tier=' "$SPY/args" && echo yes || echo no)"
+
+# MCP pruning (CAMUS_CODEX_DISABLE_MCP, 2026-06-12 smoke findings): per-server enabled=false
+# flags appended NEXT TO the effort default (additive — never inside CAMUS_CODEX_ARGS), with
+# ids sanitized to [A-Za-z0-9_-]+ before they reach argv.
+export CAMUS_CODEX_DISABLE_MCP="figma,notion"
+run_review >/dev/null || { echo "FAIL mcp-prune review errored/hung"; exit 1; }
+check "MCP pruning: figma disable flag reaches codex" \
+  "yes" "$(grep -qx 'mcp_servers.figma.enabled=false' "$SPY/args" && echo yes || echo no)"
+check "MCP pruning: notion disable flag reaches codex" \
+  "yes" "$(grep -qx 'mcp_servers.notion.enabled=false' "$SPY/args" && echo yes || echo no)"
+check "MCP pruning composes with the effort default (medium still present)" \
+  "yes" "$(grep -qx 'model_reasoning_effort=medium' "$SPY/args" && echo yes || echo no)"
+# hostile/garbage ids are silently skipped — the value reaches a command line (single-quoted
+# here so the literal $(evil) is what the script sees, not this test shell's expansion)
+export CAMUS_CODEX_DISABLE_MCP='figma, $(evil) ,bad name,notion'
+run_review >/dev/null || { echo "FAIL mcp-sanitize review errored/hung"; exit 1; }
+check "sanitization: clean ids still survive (figma)" \
+  "yes" "$(grep -qx 'mcp_servers.figma.enabled=false' "$SPY/args" && echo yes || echo no)"
+check "sanitization: clean ids still survive (notion)" \
+  "yes" "$(grep -qx 'mcp_servers.notion.enabled=false' "$SPY/args" && echo yes || echo no)"
+check "sanitization: \$(evil) never reaches argv" \
+  "no" "$(grep -q 'evil' "$SPY/args" && echo yes || echo no)"
+check "sanitization: token with a space never reaches argv" \
+  "no" "$(grep -q 'bad' "$SPY/args" && echo yes || echo no)"
+unset CAMUS_CODEX_DISABLE_MCP
+run_review >/dev/null || { echo "FAIL post-mcp review errored/hung"; exit 1; }
+check "no enabled=false flags when CAMUS_CODEX_DISABLE_MCP is unset" \
+  "no" "$(grep -q 'enabled=false' "$SPY/args" && echo yes || echo no)"
 
 # review scope (positional arg 5): light appends the narrowed-field instruction to the prompt
 # (the prompt rides in argv, so the spy's args file is exactly what the reviewer would read)

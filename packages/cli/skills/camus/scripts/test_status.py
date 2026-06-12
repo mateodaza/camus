@@ -96,6 +96,66 @@ def test_render_needs_human_shows_question_and_resume():
         assert 'answers:{"polish-it-cc22dd"' in out
 
 
+def test_render_needs_human_posture_stage_hint():
+    # Live smoke 2026-06-12: the posture-selection pause is FEAT-level — no task is halted, the
+    # state itself carries question + stage. It must render the persisted question and the
+    # posture-shaped resume hint; the per-task answers:{...} shape would be actively wrong.
+    with tempfile.TemporaryDirectory() as base:
+        st = _feat_state("f", status="needs_human")
+        st["stage"] = "posture"
+        st["question"] = "Recommended posture: oneshot — small tasks"
+        _write(os.path.join(base, "feats", "f.json"), st)
+        synth = S.synthesize(base, "f")
+        synth["live"] = []
+        out = "\n".join(S.render(synth))
+        assert "PAUSED — the run needs your decision:" in out
+        assert "Recommended posture: oneshot — small tasks" in out
+        assert 'resume: re-run the feat with  posture:"oneshot"  (or "full")' in out
+        assert "explicit posture is used verbatim, never re-asked" in out
+        assert "answers:{" not in out                 # the task-answer shape must be ABSENT
+
+
+def test_render_needs_human_budget_and_steer_stage_hints():
+    # The other two feat-level stages each carry their own resume shape — never answers:{...}.
+    with tempfile.TemporaryDirectory() as base:
+        st = _feat_state("f", status="needs_human")
+        st["stage"] = "budget"
+        st["question"] = "Budget exhausted after task 1/2 — raise it?"
+        _write(os.path.join(base, "feats", "f.json"), st)
+        synth = S.synthesize(base, "f")
+        synth["live"] = []
+        out = "\n".join(S.render(synth))
+        assert "Budget exhausted after task 1/2 — raise it?" in out
+        assert "resume: re-run with a HIGHER budgetTokens (or drop it) — done tasks skip" in out
+        assert "answers:{" not in out
+        st2 = _feat_state("f2", status="needs_human")
+        st2["stage"] = "steer"
+        st2["question"] = "Steer note pending — confirm direction?"
+        _write(os.path.join(base, "feats", "f2.json"), st2)
+        synth = S.synthesize(base, "f2")
+        synth["live"] = []
+        out2 = "\n".join(S.render(synth))
+        assert "resume: re-issue your guidance (camus steer ...), then re-run with the SAME args" in out2
+        assert "answers:{" not in out2
+
+
+def test_render_needs_human_legacy_task_pause_byte_identical():
+    # No stage, question on the TASK node (older states / real task pauses): the whole PAUSED
+    # block renders byte-identical to what it always was — question + answers:{...} hint.
+    with tempfile.TemporaryDirectory() as base:
+        st = _feat_state("f", status="needs_human")
+        st["tasks"][1]["status"] = "needs_human"
+        st["tasks"][1]["question"] = "Keep the old adapter API?"
+        _write(os.path.join(base, "feats", "f.json"), st)
+        synth = S.synthesize(base, "f")
+        synth["live"] = []
+        out = "\n".join(S.render(synth))
+        assert ("PAUSED — the run needs your decision:\n"
+                "  Keep the old adapter API?\n"
+                '  resume: re-run the feat with  answers:{"polish-it-cc22dd":"<your answer>"}') in out
+        assert "posture:" not in out and "budgetTokens" not in out and "re-issue" not in out
+
+
 def test_render_shows_pending_steer_note():
     with tempfile.TemporaryDirectory() as base:
         _write(os.path.join(base, "feats", "f.json"), _feat_state("f"))
