@@ -166,7 +166,13 @@ const STANDARDS = `Camus task standards (what makes the gate converge fast — j
 - SAFELY ORDERED: additive changes first, destructive/renames next, cleanup last — the repo's type-check+tests (the baseline) must stay GREEN between tasks, never red mid-feat.
 - INDEPENDENTLY VERIFIABLE: each task states explicit acceptance criteria a verifier or a grep can check (e.g. "grep -ri X src/ returns 0 hits and tsc passes").
 - SELF-CONTAINED SPEC: detailed enough that the implementer never guesses — names files, functions, signatures, behavior. Reuse existing abstractions named in the repo grounding.
-- UNAMBIGUOUS: no open design decisions left inside a task; those are resolved at plan time.`
+- UNAMBIGUOUS: no open design decisions left inside a task; those are resolved at plan time.
+- SOURCE-BOUND REFERENCES (field incident 2026-06-12): when a task depends on behavior in code the
+  implementer CANNOT read at run time (another repo, an unmerged branch), the task must carry either
+  literal code marked "paste the CURRENT version at launch" or an executable contract to port (an
+  ACCEPT/REJECT test table) — NEVER an English walkthrough of that code. Prose detaches from its
+  source the moment it is written; the source moves, the prose holds still, and the implementer
+  faithfully builds the stale version. Flag any prose-of-unreadable-code as a blocking violation.`
 
 // ── Phase 1: GROUND — explore the repo read-only ─────────────────────────────
 phase('Ground')

@@ -181,6 +181,16 @@ const emitOk = { emit: { written: true } }
     ok('P9 missing request throws', threw)
   }
 
+  // P13 (field incident 2026-06-12, hive-mind/scraper): the SOURCE-BOUND REFERENCES standard —
+  // prose-of-unreadable-code is a stale relay (the source moves, the prose holds still) — must
+  // reach BOTH ends: the decomposer (writes tasks) and the adversarial critic (judges them).
+  {
+    const { prompts } = await run({ request: 'standards check' },
+      { ...ground, ...clear, ...arch, ...decompose, ...critiqueReady, ...emitOk })
+    ok('P13 decompose prompt carries the source-bound rule', /SOURCE-BOUND REFERENCES/.test(prompts.decompose || '') && /paste the CURRENT version at launch/.test(prompts.decompose || ''))
+    ok('P13 critique prompt judges by the same rule', /SOURCE-BOUND REFERENCES/.test(prompts['critique:r1'] || '') && /prose-of-unreadable-code/.test(prompts['critique:r1'] || ''))
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exit(fail ? 1 : 0)
 })().catch((e) => { console.error('HARNESS ERROR', e); process.exit(2) })
