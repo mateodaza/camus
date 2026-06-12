@@ -85,6 +85,35 @@ def test_legacy_five_script_profile_reads_partial_and_upgrades():
         assert out["permissions"]["allow"].count(rule) == 1
 
 
+def test_gitops_mutation_script_rules_present():
+    # Gate-owned git MUTATIONS live in allowlisted scripts (live smoke run-5, 2026-06-12): the
+    # auto-mode classifier denies agent-typed `git -c core.hooksPath=/dev/null ...` as a
+    # guardrail bypass. wt.sh (worktree create/attach) and merge.sh (the feat merge runner)
+    # carry those flags in-script — if either falls out of _GATE_SCRIPTS, implement/land/merge
+    # re-prompt (or hard-deny) under auto mode and unattended runs break.
+    for name in ("wt.sh", "merge.sh"):
+        assert ("bash", name) in M._GATE_SCRIPTS
+        assert 'Bash(bash "$HOME/.claude/skills/camus/scripts"/%s *)' % name in M.allow_rules()
+
+
+def test_pre_gitops_profile_reads_partial_and_upgrades():
+    # An install made before wt.sh/merge.sh joined the allowlist (0.2.5) has no rules for them.
+    # has_profile() must read it as INCOMPLETE — so `install.sh --check` reports MISSING/partial
+    # and an upgrader re-runs auto-setup — and --apply must append exactly the four missing
+    # rules (literal + expanded form for each script), no dupes. Same upgrade path review.sh
+    # took earlier today.
+    legacy_allow = [r for r in M.allow_rules()
+                    if "/wt.sh" not in r and "/merge.sh" not in r]
+    assert len(legacy_allow) == len(M.allow_rules()) - 4
+    settings = {"autoMode": {"environment": [M.DEFAULTS] + list(M.ENV_LINES)},
+                "permissions": {"allow": list(legacy_allow)}}
+    assert M.has_profile(settings) is False
+    out = M.apply(copy.deepcopy(settings))
+    assert M.has_profile(out) is True
+    for rule in M.allow_rules():
+        assert out["permissions"]["allow"].count(rule) == 1
+
+
 def test_preserves_all_other_settings():
     src = {"permissions": {"allow": ["Bash(npm test)"]}, "mcpServers": {"x": 1}}
     out = M.apply(copy.deepcopy(src))

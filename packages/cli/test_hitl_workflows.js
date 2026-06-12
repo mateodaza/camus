@@ -327,14 +327,16 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // the proven commits survive). Recreate-impossible stays an honest abort naming the branch.
   {
     const { res, calls, prompts } = await runLoop({ task: 't', land: true },
-      { ...landStubs, 'land-resolve': 'MISSING', 'land-recreate': wtPath('t') })
+      { ...landStubs, 'land-resolve': 'MISSING', 'land-recreate': J({ ok: true, path: wtPath('t') }) })
     ok('S27 missing worktree → recreated from the branch → landed done', res.status === 'done' && calls.includes('land-recreate'), res.status + ' ' + calls.join(','))
-    ok('S27 recreate attaches the existing branch, hookless', !!prompts['land-recreate'] && prompts['land-recreate'].includes('-c core.hooksPath=/dev/null worktree add') && !prompts['land-recreate'].includes(' -b '), (prompts['land-recreate'] || '').slice(0, 160))
+    // run-5 (2026-06-12): the mutation lives in the allowlisted wt.sh — agent-typed hookless git
+    // is classifier-denied, so the prompt must carry NO raw git at all.
+    ok('S27 recreate goes through wt.sh attach (no raw git in the prompt)', !!prompts['land-recreate'] && prompts['land-recreate'].includes('/wt.sh attach') && !prompts['land-recreate'].includes('git -c'), (prompts['land-recreate'] || '').slice(0, 160))
   }
   {
     const { res } = await runLoop({ task: 't', land: true },
-      { ...landStubs, 'land-resolve': 'MISSING', 'land-recreate': 'FAILED' })
-    ok('S27b recreate impossible → honest abort naming the branch', res.status === 'aborted' && /could not recreate one from/.test(res.note || ''), res.note)
+      { ...landStubs, 'land-resolve': 'MISSING', 'land-recreate': J({ ok: false, error: 'denied by the auto mode classifier: hooksPath bypass' }) })
+    ok('S27b recreate failure carries the REAL cause verbatim', res.status === 'aborted' && /wt\.sh said: "denied by the auto mode classifier/.test(res.note || ''), res.note)
   }
 
   // S9: DYNAMIC review reasoning effort (run feedback 2026-06-11) — the orchestrator passes a
@@ -647,8 +649,8 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const { res, prompts } = await runLoop({ task: 't' }, stubs)
     ok('S26 declared collision → infra_error naming the cause', res.status === 'infra_error' && /collision/.test(res.error || ''), res.status + ' ' + res.error)
     ok('S26 prior-work collision (commits>0) → resume-lane advice', /resume lanes land proven prior work/.test(res.note || '') && /2 commit/.test(res.note || ''), res.note)
-    ok('S26 implement prompt forbids improvising around failures', !!prompts.implement && prompts.implement.includes('do NOT improvise alternatives'))
-    ok('S26 worktree add runs hookless (post-checkout hooks can rc-poison)', !!prompts.implement && prompts.implement.includes('-c core.hooksPath=/dev/null worktree add -b'))
+    ok('S26 implement prompt forbids improvising around failures', !!prompts.implement && prompts.implement.includes('do NOT improvise any git commands'))
+    ok('S26 worktree creation goes through wt.sh (no agent-typed hookless git — run-5 classifier denial)', !!prompts.implement && prompts.implement.includes('/wt.sh create') && !prompts.implement.includes('git -c core.hooksPath'))
   }
   {
     // git audit 2026-06-12 (P2): `worktree add -b` is NON-ATOMIC — a hook/smudge failure leaves an
@@ -672,7 +674,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   {
     const { res, prompts } = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail })
     ok('S7a implement told to use ~/.camus/worktrees', !!prompts.implement && prompts.implement.includes('$HOME/.camus/worktrees/'))
-    ok('S7a mkdir of the repo-unique parent', !!prompts.implement && prompts.implement.includes('mkdir -p "$HOME/.camus/worktrees/'))
+    ok('S7a worktree created via wt.sh at the repo-unique home', !!prompts.implement && prompts.implement.includes('/wt.sh create'))
     ok('S7a canonical wt name in the command', !!prompts.implement && prompts.implement.includes(wtName('t')))
     ok('S7a → done with a valid path', res.status === 'done', res.status)
     // Cross-contract pin: the feat's cleanup consumes res.worktree — renaming this return key
@@ -994,8 +996,8 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const { prompts } = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
       [{ status: 'done', branch: 'b', decisions: [] }])
     const mp = prompts['merge:' + tid] || ''
-    ok('F32 merge checkout + merge run hookless/unsigned', mp.includes('-c core.hooksPath=/dev/null checkout') && mp.includes('-c core.hooksPath=/dev/null -c commit.gpgsign=false merge --no-ff'), mp.slice(0, 160))
-    ok('F32 abort on ANY failed merge, not just conflicts', mp.includes('If the merge FAILS for ANY reason'))
+    ok('F32 merge goes through merge.sh (no agent-typed git — run-5 classifier denial)', mp.includes('/merge.sh') && !mp.includes('git -c'), mp.slice(0, 160))
+    ok('F32 thin runner transcribes, never re-judges', mp.includes('EXACTLY as the script computed them'))
     ok('F32 preflight porcelain ignores submodule noise', (prompts.preflight || '').includes('--ignore-submodules=all'))
   }
 
