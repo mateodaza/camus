@@ -179,3 +179,5 @@ a { color: inherit; text-decoration: none; }
 @media (max-width: 420px) {
   .nav-links { gap: 14px; font-size: 11px; }
 }
+
+.hero-proof { margin-top: 26px; }

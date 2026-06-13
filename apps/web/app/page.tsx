@@ -19,13 +19,27 @@ export default function Home() {
               <span className="tagline">Makes it work. Knows when to stop.</span>
             </h1>
             <p className="hero-sub">
-              A competing model reviews every change, and your own tests have the final word.
-              When the judges disagree, it brings you a decision instead of burning rounds.
+              A competing model reviews every change, your own tests have the final word, and
+              every green names the exact commit it certified. When the loop stops being
+              trustworthy, it stops — evidence preserved, a decision on your desk.
               No agent grades its own work.
             </p>
             <div className="cta-row">
               <a className="cta" href="https://www.npmjs.com/package/camus-cli">npx camus-cli install</a>
               <a className="cta-ghost" href="https://github.com/mateodaza/camus">GitHub &#8599;</a>
+            </div>
+            <div className="pol hero-proof">
+              <b>cross-model review</b>
+              <span>·</span>
+              <b>isolated worktrees</b>
+              <span>·</span>
+              <b>head-bound verify</b>
+              <span>·</span>
+              <b>crash-safe resume</b>
+              <span>·</span>
+              <b>named human halts</b>
+              <span>·</span>
+              <b>run history + canary</b>
             </div>
           </div>
         </header>
@@ -94,9 +108,9 @@ export default function Home() {
                 <Artifact tone="dark" path="~/.camus/reviews/harden-x1f9q2-r1.json" label="A Codex review verdict">
 {`{
   `}<span className="k">&quot;ran&quot;</span>{`: true,
-  `}<span className="k">&quot;verdict&quot;</span>{`: `}<span className="rej">&quot;REJECT&quot;</span>{`,
+  `}<span className="k">&quot;clean&quot;</span>{`: `}<span className="rej">false</span>{`,
   `}<span className="k">&quot;blocking&quot;</span>{`: [
-    { `}<span className="k">&quot;priority&quot;</span>{`: 1, `}<span className="k">&quot;note&quot;</span>{`: "missing empty-input guard" }
+    { `}<span className="k">&quot;priority&quot;</span>{`: 1, `}<span className="k">&quot;title&quot;</span>{`: "missing empty-input guard" }
   ]
 }`}
                 </Artifact>
@@ -104,13 +118,14 @@ export default function Home() {
 
               <Reveal className="ev">
                 <p className="ev-cap">
-                  A clean review still has to clear the repo&apos;s own checks.{' '}
-                  <em>A green run means real checks passed.</em>
+                  A clean review still has to clear the repo&apos;s own checks — and the
+                  verdict names the commit it ran against.{' '}
+                  <em>A green run means real checks passed on that exact commit.</em>
                 </p>
                 <Artifact tone="dark" path="camus verify" label="A verification run">
 {`$ pnpm type-check     `}<span className="ok">ok</span>{`
 $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
-→ done · commit a1f9c2e`}
+→ done · commit a1f9c2e · `}<span className="ok">head-bound: a1f9c2e</span>{``}
                 </Artifact>
               </Reveal>
 
@@ -242,6 +257,11 @@ $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
               <div className="creed">
                 <p><em>A craftsman knows how to work. An artist knows when to stop.</em></p>
                 <p>
+                  Underneath, it treats agent work the way a database treats a transaction:
+                  every handoff carries evidence, every green names the state it certified,
+                  and a halt preserves the proof instead of the mess.
+                </p>
+                <p>
                   An agent can always run one more round, so Camus treats stopping as judgment:
                   it tells one more round from a decision worth a human, because perfection is out
                   of reach and knowing when to stop is not.
@@ -273,17 +293,16 @@ $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
                 <pre>
 {`# one-time
 $ npm i -g camus-cli
-$ camus install        `}<span className="c"># skill + workflows into ~/.claude</span>{`
+$ camus install        `}<span className="c"># a frozen copy into ~/.claude — what you ran is what runs</span>{`
 $ camus auto-setup     `}<span className="c"># opt-in scoped unattended profile</span>{`
 
 # per run, from your repo
-$ camus check
-$ export CAMUS_REPO_ROOT=`}<span className="o">&quot;$(pwd -P)&quot;</span>{`
-$ export CAMUS_VERIFY_CMD=`}<span className="o">&quot;pnpm type-check &amp;&amp; pnpm test&quot;</span>{`
+$ camus check          `}<span className="c"># installed == package, safe to run</span>{`
+$ camus canary         `}<span className="c"># optional: prove the toolchain on a throwaway repo first</span>{`
 $ claude --permission-mode auto
 
 > /camus-feat { feat: "Harden input boundaries", tasks: [...] }
-`}<span className="o">✓</span>{` env + baseline · 3/3 tasks done · integration verify green`}
+`}<span className="o">✓</span>{` env + baseline · 3/3 tasks done · integration verify green, head-bound`}
                 </pre>
               </div>
             </Reveal>
