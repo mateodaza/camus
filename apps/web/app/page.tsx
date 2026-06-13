@@ -28,17 +28,12 @@ export default function Home() {
               <a className="cta" href="https://www.npmjs.com/package/camus-cli">npx camus-cli install</a>
               <a className="cta-ghost" href="https://github.com/mateodaza/camus">GitHub &#8599;</a>
             </div>
-            <div className="pol hero-proof">
+            <div className="hero-proof">
               <b>cross-model review</b>
-              <span>·</span>
               <b>isolated worktrees</b>
-              <span>·</span>
               <b>head-bound verify</b>
-              <span>·</span>
               <b>crash-safe resume</b>
-              <span>·</span>
               <b>named human halts</b>
-              <span>·</span>
               <b>run history + canary</b>
             </div>
           </div>
