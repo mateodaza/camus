@@ -11,6 +11,7 @@ export default function Home() {
       <main id="top">
         <header className="hero">
           <div className="wrap hero-in">
+            <p className="hero-kicker">An agent gate for Claude Code</p>
             <h1 className="hero-h1">
               <span className="lockup">
                 <ClimbLoop />

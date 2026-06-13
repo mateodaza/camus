@@ -51,6 +51,7 @@ a { color: inherit; text-decoration: none; }
 /* hero */
 .hero { min-height: calc(100vh - 64px); display: flex; align-items: center; padding: 56px 0; }
 .hero-in { display: flex; flex-direction: column; align-items: center; text-align: center; width: 100%; }
+.hero-kicker { margin: 0 0 22px; font-family: var(--mono); font-size: 12.5px; letter-spacing: .04em; color: var(--muted); }
 .climb { width: clamp(92px, 13vw, 150px); height: auto; display: block; }
 .hero-h1 { margin: 0; }
 .lockup { display: flex; align-items: center; justify-content: center; gap: clamp(8px, 1.8vw, 22px); }
