@@ -85,6 +85,14 @@ own tests; anything less arrives as a named halt with the remedy in the note
   heartbeat ("last heartbeat Xs ago", a loud warning when a "running" feat goes
   quiet), one-key steering, and honest token totals. Landed a task by hand?
   `camus reconcile` records it, with git evidence required.
+- **It studies its own history — and checks its own pulse.** `camus retro` reads your
+  run reports back (read-only, never a model call) and recommends only what ≥3 data
+  points support, evidence cited inline. `camus canary` proves the local toolchain
+  end-to-end on a throwaway repo before a real run pays for the discovery: a known-red
+  must fail by name, a known-green must come back bound to its exact commit.
+- **A killed review is resumed before it is re-paid.** Codex announces its thread id in
+  the event stream; recovery resumes that thread — and only ever a thread the evidence
+  says was abandoned — falling closed to a fresh review on any doubt.
 
 ## Layout
 
