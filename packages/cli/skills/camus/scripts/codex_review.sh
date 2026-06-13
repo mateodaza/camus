@@ -437,4 +437,14 @@ if ! printf '%s' "$start_env" | python3 -c 'import json,sys; sys.exit(0 if json.
 fi
 
 envelope="$(python3 "$here/review_watch.py" await --handle "$watch_dir" --chunk "$chunk" --idle "$idle_s" 2>/dev/null)"
+# First-attempt idle-kills are abandoned threads too (refine finding, conf 0.84): persist the
+# envelope's thread id under the SAME aborted/abandoned-only gate as the await/abort entrypoint
+# (the helper is shared and pinned there), or the next recovery has no meta.json thread_id to
+# resume — events.jsonl is deliberately NOT a resume source (thread-only recovery).
+_start_state="$(printf '%s' "$envelope" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("state",""))
+except Exception: print("")' 2>/dev/null)"
+if [[ "$_start_state" == "idle_killed" || "$_start_state" == "aborted" ]]; then
+  _persist_thread_id "$watch_dir/meta.json" "$(_envelope_thread_id "$envelope")"
+fi
 emit_outcome "$envelope" "$watch_dir" "$target_dir" "$round"

@@ -370,18 +370,21 @@ check "pending live process: events.jsonl thread NOT resumed (resume not attempt
 check "pending live process: a FRESH codex exec ran instead" \
   "yes" "$([ -f "$SPY/args" ] && grep -qx -- '--output-schema' "$SPY/args" && echo yes || echo no)"
 
-# (4b) the events.jsonl fallback STILL ARMS resume when the prior local process is GONE (no
-# handle.json → the process is no longer running): a thread known only via events.jsonl, with the
-# process dead, is the legitimate salvage case. Stage events.jsonl + NO meta.json thread_id + NO
-# handle.json → resume IS attempted against the events.jsonl thread id.
+# (4b) THREAD-ONLY recovery means meta.json is the ONLY resume source (refine finding, conf
+# 0.98: the previous version of this case demanded an events.jsonl fallback gated on whether
+# the prior local PROCESS was gone — exactly the local-process awareness the hardening
+# removed). A thread known ONLY via events.jsonl, with no meta.json thread_id, is DOUBT — and
+# doubt resolves to a FRESH review, never a resume.
 rm -f "$SPY/args" "$SPY/args_resume"
 GONE="$ROOT/reviews/camus-wt-task-r16.watch"; mkdir -p "$GONE"
 python3 -c 'import json,sys; json.dump({"target_dir": sys.argv[2], "round": "16",
   "effort": "medium", "scope": "full"}, open(sys.argv[1],"w"))' "$GONE/meta.json" "$WT"
 printf '{"type":"thread.started","thread_id":"sess-proc-gone"}\n' > "$GONE/events.jsonl"
-out="$(run_review_round 16)" || { echo "FAIL events-fallback review errored/hung"; exit 1; }
-check "events.jsonl fallback (process gone): resume IS attempted off the event-stream thread id" \
-  "yes" "$([ -f "$SPY/args_resume" ] && grep -qx 'resume' "$SPY/args_resume" && grep -qx 'sess-proc-gone' "$SPY/args_resume" && echo yes || echo no)"
+out="$(run_review_round 16)" || { echo "FAIL events-only review errored/hung"; exit 1; }
+check "events.jsonl-only evidence (no meta thread_id): resume NOT attempted (doubt → fresh)" \
+  "no" "$([ -f "$SPY/args_resume" ] && echo yes || echo no)"
+check "events.jsonl-only evidence: a FRESH review ran instead" \
+  "yes" "$([ -f "$SPY/args" ] && grep -qx -- '--output-schema' "$SPY/args" && echo yes || echo no)"
 
 # ── Reviewer-backend dispatcher (review.sh): codex passes through VERBATIM; an unknown backend
 # fails CLOSED (ran:false gate JSON naming it, exit 0) — never a fallback, never a crash.
