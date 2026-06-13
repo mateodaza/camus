@@ -61,7 +61,14 @@ const COMMIT_CMD = `bash ${SKILL_SCRIPTS}/commit.sh` // commit reviewed work so 
 // wt.sh carries the same hookless discipline plus the camus branch/worktree guard.
 const WT_CMD = `bash ${SKILL_SCRIPTS}/wt.sh`         // worktree create (implement) / attach (land)
 
-// args may be a bare string or {task, targetPath}
+// args may be a bare string or {task, targetPath}. A STRING that parses as a JSON object is
+// unwrapped first (live dogfood 2026-06-12, the loop-side F33): some callers stringify the
+// object, and without this the ENTIRE JSON became the task text — the branch slug read
+// "posture-full-targetpath-…" and posture/targetPath silently dropped. A bare-string task that
+// merely starts with "{" but isn't valid JSON keeps working unchanged (parse failure → string).
+if (typeof args === 'string' && args.trim().startsWith('{')) {
+  try { args = JSON.parse(args) } catch (_) { /* a bare-string task, not JSON — leave it */ }
+}
 const TASK = typeof args === 'string' ? args : (args && args.task) || ''
 const TARGET = (args && typeof args === 'object' && args.targetPath) || ''
 // REPO_CD (live dogfood run-8, 2026-06-12): WT_DEST embeds $(pwd -P), so every command that

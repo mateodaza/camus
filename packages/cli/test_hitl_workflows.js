@@ -1314,6 +1314,22 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       (r3.prompts['land-recreate'] || '').includes(cdp) && (r3.prompts['land-recreate'] || '').includes('/wt.sh attach'), (r3.prompts['land-recreate'] || '').slice(0, 200))
     ok('F38c …and the recreated land completes', r3.res.status === 'done', r3.res.status)
   }
+  // F39 (live dogfood 2026-06-12, loop-side F33): a STRINGIFIED args object reached the loop and
+  // the whole JSON became the task text — branch slug "posture-full-targetpath-…", posture and
+  // targetPath silently dropped. JSON-looking strings are unwrapped; bare-string tasks unchanged.
+  {
+    const tp = '/some/repo'
+    const r = await runLoop(JSON.stringify({ task: 't', targetPath: tp }), { ...cls, ...planOf('clear', ''), ...happyTail })
+    ok('F39a stringified loop args are unwrapped (targetPath reaches REPO_CD)',
+      r.res.status === 'done' && (r.prompts.implement || '').includes(`cd ${J(tp)} && `), r.res.status)
+    ok('F39b the task text is the TASK, not the JSON blob',
+      (r.prompts.classify || '').includes('Task: t') && !(r.prompts.classify || '').includes('targetPath'), (r.prompts.classify || '').slice(-120))
+    const weird = '{not json, just a weird task title'
+    const r2 = await runLoop(weird, { ...cls, ...planOf('clear', ''), ...happyTail,
+      implement: { ...happyTail.implement, worktree_path: wtPath(weird) } })
+    ok('F39c a bare-string task starting with "{" still works verbatim',
+      r2.res.status === 'done' && (r2.prompts.classify || '').includes('{not json'), r2.res.status)
+  }
   // F35 (live smoke run-6, 2026-06-12): the merge runner defected COHERENTLY — merge.sh said
   // CONFLICT, the agent hand-resolved it, committed under the normal merge message, and relayed
   // a contract-complete success. Ancestry can't catch a hand-merge (the self-audit passed), so
