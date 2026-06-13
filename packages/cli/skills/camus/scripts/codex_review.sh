@@ -130,10 +130,20 @@ if [[ "${1:-}" == "await" || "${1:-}" == "abort" ]]; then
     case "$effort" in medium) chunk=300 ;; *) chunk=480 ;; esac
     envelope="$(python3 "$here/review_watch.py" await --handle "$watch_dir" --chunk "$chunk" --idle "$idle_s" 2>/dev/null)"
   fi
-  # Persist the codex thread_id the envelope carries (present on abort/idle_killed) into the
-  # round's meta.json — that handle is what lets the NEXT round's fresh-review path RESUME this
-  # killed thread instead of paying again (codex-resume-recovery 2026-06-12). No-op otherwise.
-  _persist_thread_id "$meta" "$(_envelope_thread_id "$envelope")"
+  # Persist the codex thread_id into the round's meta.json ONLY for a terminal abandoned shape
+  # (idle_killed / aborted) — that handle is what lets the NEXT round's fresh-review path RESUME this
+  # killed thread instead of paying again (codex-resume-recovery 2026-06-12). A `pending` envelope
+  # carries a thread_id too (review_watch.py), but its LOCAL process is still running and the loop
+  # will re-`await` it — persisting that id would let a later fresh invocation resume a live thread,
+  # the exact aborted/abandoned-only trigger violation the will_resume gate exists to prevent. Only
+  # idle_killed/aborted leave a thread genuinely abandoned with no completion evidence, so gate the
+  # persist on that state. No-op for any other state, an empty id, or an unwritable meta.json.
+  _env_state="$(printf '%s' "$envelope" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("state",""))
+except Exception: print("")' 2>/dev/null)"
+  if [[ "$_env_state" == "idle_killed" || "$_env_state" == "aborted" ]]; then
+    _persist_thread_id "$meta" "$(_envelope_thread_id "$envelope")"
+  fi
   emit_outcome "$envelope" "$watch_dir" "${target_dir:-unknown}" "${round:-0}"
   exit 0
 fi
@@ -282,9 +292,11 @@ watch_dir="$review_dir/$(basename "$target_dir")-r${round}.watch"
 # RESUME PROBE (codex-resume-recovery 2026-06-12): a prior attempt of THIS round that was
 # idle-killed/aborted owns a live codex thread — `codex exec resume <thread_id>` can finish it
 # for the price of one short turn instead of re-paying a whole fresh review. The thread_id lives
-# in the round's meta.json (persisted by the await/abort form) or, failing that, in the prior
-# attempt's events.jsonl — both readable ONLY before the fresh path's `rm -rf` below, so capture
-# it now. Empty when there's no prior aborted thread → fresh review, today's path byte-identical.
+# ONLY in the round's meta.json (persisted by the await/abort form for the terminal abandoned shape),
+# readable before the fresh path's `rm -rf` below, so capture it now. Empty when there's no prior
+# abandoned thread → fresh review, today's path byte-identical.
+# A captured id only ARMS resume; the fail-closed gate below (will_resume) still requires the
+# aborted/abandoned shape — no completion evidence — before resume actually fires.
 prior_thread_id=""
 if [[ -f "$watch_dir/meta.json" ]]; then
   prior_thread_id="$(python3 -c 'import json,sys
@@ -292,23 +304,40 @@ try: tid = json.load(open(sys.argv[1])).get("thread_id")
 except Exception: tid = None
 print(tid if isinstance(tid, str) and tid else "")' "$watch_dir/meta.json" 2>/dev/null)"
 fi
-if [[ -z "$prior_thread_id" && -f "$watch_dir/events.jsonl" ]]; then
-  prior_thread_id="$(python3 -c 'import json,sys
-tid = ""
+# meta.json is the ONLY resume source (THREAD-ONLY recovery, zero local-process awareness): it
+# carries thread_id solely for the terminal abandoned shape (idle_killed/aborted), persisted there by
+# the await/abort form gated on that exact state. There is deliberately NO events.jsonl fallback — a
+# raw thread.started in the prior stream does NOT distinguish a killed thread from a still-RUNNING
+# pending review, and the only way to tell them apart would be to probe the local process (PID
+# liveness), which is exactly the local-process coupling this recovery path must not have. So a prior
+# attempt that left a thread.started but no persisted meta.json id (e.g. a pending review still in
+# flight) is treated as un-resumable: it goes fresh, never probed. A reused/live unrelated PID can
+# never influence whether a thread is resumed, because no pid is ever read.
+# FAIL-CLOSED resume gate (codex-resume-recovery hardening 2026-06-12): a thread_id alone is NOT
+# enough — resume must fire ONLY on the aborted/abandoned SHAPE (idle-killed/watchdog-abort:
+# thread_id present AND the prior attempt produced NO completion evidence). Completion evidence is
+# either the wrapper's exit_code file OR a valid verdict already sitting in the prior last.txt;
+# either one BLOCKS resume (constraints 2 + 4) → fall to the byte-identical fresh path. _last_has_verdict
+# is the same completion oracle adapter.normalize_codex uses: last.txt must parse to a JSON dict whose
+# `overall_correctness` is in the schema enum; missing/empty/garbage/non-dict = NO verdict. These
+# prior-attempt files sit directly in $watch_dir right now (before the a1/ move below), so read them here.
+_last_has_verdict() { # $1 = last.txt path; truthy exit iff a valid verdict is present
+  python3 -c 'import json,sys
 try:
-    for line in open(sys.argv[1], encoding="utf-8"):
-        try: e = json.loads(line)
-        except ValueError: continue
-        if isinstance(e, dict) and e.get("type") == "thread.started":
-            t = e.get("thread_id")
-            if isinstance(t, str) and t: tid = t; break
-except OSError: pass
-print(tid)' "$watch_dir/events.jsonl" 2>/dev/null)"
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+ok = isinstance(d, dict) and d.get("overall_correctness") in ("patch is correct", "patch is incorrect")
+sys.exit(0 if ok else 1)' "$1" 2>/dev/null
+}
+will_resume=""
+if [[ -n "$prior_thread_id" && ! -e "$watch_dir/exit_code" ]] && ! _last_has_verdict "$watch_dir/last.txt"; then
+  will_resume="$prior_thread_id"
 fi
 # A resume must not clobber the aborted attempt's events.jsonl (the thread_id source + audit):
-# preserve it under a1/ instead of deleting the round dir. No prior thread → the original
-# rm-and-recreate, so the fresh path is unchanged.
-if [[ -n "$prior_thread_id" ]]; then
+# preserve it under a1/ instead of deleting the round dir. No resume (no prior thread, or completion
+# evidence present) → the original rm-and-recreate, so the fresh path is byte-identical.
+if [[ -n "$will_resume" ]]; then
   mkdir -p "$watch_dir/a1" 2>/dev/null || true
   for _f in events.jsonl err.log exit_code handle.json last.txt; do
     [[ -e "$watch_dir/$_f" ]] && mv -f "$watch_dir/$_f" "$watch_dir/a1/" 2>/dev/null || true
@@ -323,12 +352,17 @@ last_file="$watch_dir/last.txt"
 # (and doubles as the handle-authenticity check above). Scope is recorded for the AUDIT TRAIL
 # only — the prompt already shipped at start, so an await re-attach never needs it, but the
 # trail must show what scope a round actually ran at.
+# NO thread_id is seeded here. meta.json carries a thread_id ONLY once `_persist_thread_id` writes
+# one, and that writer fires ONLY on a terminal abandoned envelope (idle_killed/aborted) from the
+# await/abort form. Seeding the live thread at start would make an in-flight thread (a pending review
+# or a still-running resume) look terminally abandoned to a LATER recovery, which could then resume a
+# thread that was never idle-killed or watchdog-aborted (the "only aborted/abandoned evidence" trigger
+# violation). So this seed writes audit identity only; the abandoned-shape gate stays the sole source
+# of a resumable id.
 python3 -c 'import json,sys
 m = {"target_dir": sys.argv[2], "round": sys.argv[3], "effort": sys.argv[4], "scope": sys.argv[5]}
-if len(sys.argv) > 6 and sys.argv[6]:
-    m["thread_id"] = sys.argv[6]
 json.dump(m, open(sys.argv[1], "w"), indent=2)' \
-  "$watch_dir/meta.json" "$target_dir" "$round" "$effort" "$scope" "$prior_thread_id"
+  "$watch_dir/meta.json" "$target_dir" "$round" "$effort" "$scope"
 
 # Chunk by effort: medium reviews are short (and the orchestrator instructs a 360s tool timeout
 # for them — the chunk must FIT under it); high/xhigh get the full window under 600s.
@@ -349,12 +383,12 @@ case "$effort" in medium) chunk=300 ;; *) chunk=480 ;; esac
 # never reaches a `done` envelope falls through to the fresh-review block below — today's path,
 # never a new failure mode. A pending resume (live, talking, didn't finish in one chunk) is NOT a
 # failure: return the re-attach handle so the loop finishes it later instead of re-paying.
-if [[ -n "$prior_thread_id" ]]; then
+if [[ -n "$will_resume" ]]; then
   resume_last="$last_file"
   resume_prompt="Resume this review and emit the final verdict JSON per the schema now."
   # shellcheck disable=SC2086
   r_start="$(python3 "$here/review_watch.py" start --handle "$watch_dir" --last "$resume_last" -- \
-    codex exec resume "$prior_thread_id" --json ${codex_review_args} --output-schema "$schema" -o "$resume_last" "$resume_prompt" 2>>"$watch_dir/err.log")"
+    codex exec resume "$will_resume" --json ${codex_review_args} --output-schema "$schema" -o "$resume_last" "$resume_prompt" 2>>"$watch_dir/err.log")"
   if printf '%s' "$r_start" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("state")=="started" else 1)' 2>/dev/null; then
     r_env="$(python3 "$here/review_watch.py" await --handle "$watch_dir" --chunk "$chunk" --idle "$idle_s" 2>/dev/null)"
     # Accept the resume when it finished with a usable verdict (ran:true), OR hand back a pending
@@ -378,6 +412,20 @@ except Exception: sys.exit(1)' 2>/dev/null; then
   for _f in events.jsonl err.log exit_code handle.json last.txt; do
     [[ -e "$watch_dir/$_f" ]] && mv -f "$watch_dir/$_f" "$watch_dir/a2/" 2>/dev/null || true
   done
+  # Clear the recorded thread_id NOW (constraint 3, conf 0.88): this thread is dead/abandoned, so
+  # drop it from meta.json (keep target_dir/round/effort/scope) the moment we give up on it. A prior
+  # persisted id can sit here (the await/abort form that fed this resume wrote one for the abandoned
+  # shape); the fresh `start` below seeds NO thread_id, so without this clear a LATER recovery would
+  # read the now-dead resumed thread's id and try to resurrect it. Clearing it forces that recovery to
+  # find NO thread to resume and go fresh, never resuming a thread that was not freshly idle-killed.
+  python3 -c 'import json,sys
+try:
+    m = json.load(open(sys.argv[1]))
+    if not isinstance(m, dict): m = {}
+except Exception:
+    m = {}
+m.pop("thread_id", None)
+json.dump(m, open(sys.argv[1], "w"), indent=2)' "$watch_dir/meta.json" 2>/dev/null || true
 fi
 
 # shellcheck disable=SC2086
@@ -389,4 +437,14 @@ if ! printf '%s' "$start_env" | python3 -c 'import json,sys; sys.exit(0 if json.
 fi
 
 envelope="$(python3 "$here/review_watch.py" await --handle "$watch_dir" --chunk "$chunk" --idle "$idle_s" 2>/dev/null)"
+# First-attempt idle-kills are abandoned threads too (refine finding, conf 0.84): persist the
+# envelope's thread id under the SAME aborted/abandoned-only gate as the await/abort entrypoint
+# (the helper is shared and pinned there), or the next recovery has no meta.json thread_id to
+# resume — events.jsonl is deliberately NOT a resume source (thread-only recovery).
+_start_state="$(printf '%s' "$envelope" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("state",""))
+except Exception: print("")' 2>/dev/null)"
+if [[ "$_start_state" == "idle_killed" || "$_start_state" == "aborted" ]]; then
+  _persist_thread_id "$watch_dir/meta.json" "$(_envelope_thread_id "$envelope")"
+fi
 emit_outcome "$envelope" "$watch_dir" "$target_dir" "$round"

@@ -121,6 +121,25 @@ def test_abort_returns_done_instead_of_killing_a_finished_review():
         os.killpg(pid, 15)                     # cleanup
 
 
+def test_await_done_from_exit_code_never_kills_the_group():
+    # Constraint 1 reinforcement (codex-resume-recovery hardening 2026-06-12): the exit-code file is
+    # the SOLE local-liveness oracle, and a completed review is never killed — not even when a pid
+    # from the same handle is still alive. Recovery must not re-attach to or signal an old handle;
+    # the watchdog proves the half of that contract that lives here: a done envelope produced from a
+    # written exit_code leaves the (still-running, possibly recycled) recorded pid untouched. Distinct
+    # from test_exit_file_outranks_a_lingering_pid (which pins state==done): this pins NO group kill.
+    with tempfile.TemporaryDirectory() as h:
+        pid = _start(h, ["sh", "-c", "echo started; sleep 60"])
+        assert _alive(pid)
+        with open(os.path.join(h, "exit_code"), "w", encoding="utf-8") as fh:
+            fh.write("0\n")
+        env, _ = _run("await", "--handle", h, "--chunk", "1", "--idle", "60")
+        assert env["state"] == "done" and env["exit"] == 0, env
+        time.sleep(0.2)
+        assert _alive(pid), "completed review must not be group-killed"  # no kill of a finished review
+        os.killpg(pid, 15)   # cleanup the stand-in process ourselves
+
+
 def test_await_without_a_handle_is_an_error_envelope():
     with tempfile.TemporaryDirectory() as h:
         env, _ = _run("await", "--handle", os.path.join(h, "nope"), "--chunk", "1", "--idle", "1")
