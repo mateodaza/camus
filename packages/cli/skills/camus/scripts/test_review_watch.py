@@ -127,6 +127,63 @@ def test_await_without_a_handle_is_an_error_envelope():
         assert env["state"] == "error" and "handle" in env["error"], env
 
 
+# --- thread_id capture (codex-resume-recovery 2026-06-12) -------------------
+# codex emits {"type":"thread.started","thread_id":<uuid>} first; review_watch parses it lazily
+# from events.jsonl and CARRIES it in its envelopes so codex_review.sh can resume a killed thread
+# instead of re-paying a fresh review. The envelope is the only channel (review_watch never writes
+# meta.json), so done/idle_killed/abort must all carry the id when the event was emitted.
+
+def test_done_envelope_carries_the_thread_id():
+    with tempfile.TemporaryDirectory() as h:
+        _start(h, ["sh", "-c",
+                   'echo \'{"type":"thread.started","thread_id":"sess-abc-123"}\';'
+                   ' echo \'{"type":"turn.completed","usage":{"output_tokens":7}}\'; exit 0'])
+        env, _ = _run("await", "--handle", h, "--chunk", "10", "--idle", "60")
+        assert env["state"] == "done", env
+        assert env["thread_id"] == "sess-abc-123", env
+
+
+def test_thread_id_is_none_when_no_thread_started_event():
+    # A review that never announced a session id → thread_id is None (absent the event), so the
+    # resume path has nothing to act on and codex_review.sh stays on the fresh-review path.
+    with tempfile.TemporaryDirectory() as h:
+        _start(h, ["sh", "-c",
+                   'echo \'{"type":"turn.completed","usage":{"output_tokens":7}}\'; exit 0'])
+        env, _ = _run("await", "--handle", h, "--chunk", "10", "--idle", "60")
+        assert env["state"] == "done", env
+        assert env.get("thread_id") is None, env
+
+
+def test_idle_killed_envelope_carries_the_thread_id():
+    # The thread that gets killed is exactly the one worth resuming — idle_killed must carry its id.
+    with tempfile.TemporaryDirectory() as h:
+        pid = _start(h, ["sh", "-c",
+                         'echo \'{"type":"thread.started","thread_id":"sess-idle-9"}\'; sleep 60'])
+        env, _ = _run("await", "--handle", h, "--chunk", "30", "--idle", "1")
+        assert env["state"] == "idle_killed", env
+        assert env["thread_id"] == "sess-idle-9", env
+        assert not _alive(pid)
+
+
+def test_abort_carries_the_thread_id():
+    # abort is the verdict codex_review.sh records as the round outcome, so it MUST carry the id
+    # (that handle is what the NEXT round resumes). Abort AFTER a thread.started event was written.
+    with tempfile.TemporaryDirectory() as h:
+        pid = _start(h, ["sh", "-c",
+                         'echo \'{"type":"thread.started","thread_id":"sess-killme"}\'; sleep 60'])
+        # let the event land before we abort (events.jsonl is the only thread_id source)
+        for _ in range(50):
+            ev = os.path.join(h, "events.jsonl")
+            if os.path.exists(ev) and os.path.getsize(ev) > 0:
+                break
+            time.sleep(0.05)
+        env, _ = _run("abort", "--handle", h)
+        assert env["state"] == "aborted", env
+        assert env["thread_id"] == "sess-killme", env
+        time.sleep(0.2)
+        assert not _alive(pid)
+
+
 # --- stdlib runner (no pytest required) ------------------------------------
 
 if __name__ == "__main__":

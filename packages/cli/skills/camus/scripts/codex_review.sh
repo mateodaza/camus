@@ -85,6 +85,32 @@ print(json.dumps({"ran": False, "error": msg, "clean": False, "blocking": [], "n
   esac
 }
 
+# Echo the thread_id carried in a review_watch envelope (codex-resume-recovery 2026-06-12), or
+# nothing when absent/unreadable. review_watch only ever writes handle.json, so it CARRIES the
+# id in its envelopes; this script owns meta.json and is the one that persists it.
+_envelope_thread_id() {
+  printf '%s' "$1" | python3 -c 'import json,sys
+try: tid = json.load(sys.stdin).get("thread_id")
+except Exception: tid = None
+print(tid if isinstance(tid, str) and tid else "")' 2>/dev/null
+}
+
+# Persist a thread_id into the round's meta.json so the NEXT attempt of this round can resume the
+# idle-killed/aborted codex thread instead of re-paying a fresh review. Merge-in-place (keeps
+# target_dir/round/effort/scope); a no-op when the id is empty or meta.json is unwritable.
+_persist_thread_id() { # $1 = meta.json path, $2 = thread_id
+  [[ -n "$2" && -f "$1" ]] || return 0
+  python3 -c 'import json,sys
+p, tid = sys.argv[1], sys.argv[2]
+try:
+    m = json.load(open(p))
+    assert isinstance(m, dict)
+except Exception:
+    sys.exit(0)
+m["thread_id"] = tid
+json.dump(m, open(p, "w"), indent=2)' "$1" "$2" 2>/dev/null || true
+}
+
 # ── Re-attach / abort forms (the orchestrator holds the handle from a pending verdict) ────────
 if [[ "${1:-}" == "await" || "${1:-}" == "abort" ]]; then
   mode="$1"; watch_dir="${2:-}"
@@ -104,6 +130,10 @@ if [[ "${1:-}" == "await" || "${1:-}" == "abort" ]]; then
     case "$effort" in medium) chunk=300 ;; *) chunk=480 ;; esac
     envelope="$(python3 "$here/review_watch.py" await --handle "$watch_dir" --chunk "$chunk" --idle "$idle_s" 2>/dev/null)"
   fi
+  # Persist the codex thread_id the envelope carries (present on abort/idle_killed) into the
+  # round's meta.json — that handle is what lets the NEXT round's fresh-review path RESUME this
+  # killed thread instead of paying again (codex-resume-recovery 2026-06-12). No-op otherwise.
+  _persist_thread_id "$meta" "$(_envelope_thread_id "$envelope")"
   emit_outcome "$envelope" "$watch_dir" "${target_dir:-unknown}" "${round:-0}"
   exit 0
 fi
@@ -248,7 +278,44 @@ fi
 # Fresh watch dir per round (a retry of the same round starts clean — stale events would
 # poison idle detection and usage extraction).
 watch_dir="$review_dir/$(basename "$target_dir")-r${round}.watch"
-rm -rf "$watch_dir" 2>/dev/null || true
+
+# RESUME PROBE (codex-resume-recovery 2026-06-12): a prior attempt of THIS round that was
+# idle-killed/aborted owns a live codex thread — `codex exec resume <thread_id>` can finish it
+# for the price of one short turn instead of re-paying a whole fresh review. The thread_id lives
+# in the round's meta.json (persisted by the await/abort form) or, failing that, in the prior
+# attempt's events.jsonl — both readable ONLY before the fresh path's `rm -rf` below, so capture
+# it now. Empty when there's no prior aborted thread → fresh review, today's path byte-identical.
+prior_thread_id=""
+if [[ -f "$watch_dir/meta.json" ]]; then
+  prior_thread_id="$(python3 -c 'import json,sys
+try: tid = json.load(open(sys.argv[1])).get("thread_id")
+except Exception: tid = None
+print(tid if isinstance(tid, str) and tid else "")' "$watch_dir/meta.json" 2>/dev/null)"
+fi
+if [[ -z "$prior_thread_id" && -f "$watch_dir/events.jsonl" ]]; then
+  prior_thread_id="$(python3 -c 'import json,sys
+tid = ""
+try:
+    for line in open(sys.argv[1], encoding="utf-8"):
+        try: e = json.loads(line)
+        except ValueError: continue
+        if isinstance(e, dict) and e.get("type") == "thread.started":
+            t = e.get("thread_id")
+            if isinstance(t, str) and t: tid = t; break
+except OSError: pass
+print(tid)' "$watch_dir/events.jsonl" 2>/dev/null)"
+fi
+# A resume must not clobber the aborted attempt's events.jsonl (the thread_id source + audit):
+# preserve it under a1/ instead of deleting the round dir. No prior thread → the original
+# rm-and-recreate, so the fresh path is unchanged.
+if [[ -n "$prior_thread_id" ]]; then
+  mkdir -p "$watch_dir/a1" 2>/dev/null || true
+  for _f in events.jsonl err.log exit_code handle.json last.txt; do
+    [[ -e "$watch_dir/$_f" ]] && mv -f "$watch_dir/$_f" "$watch_dir/a1/" 2>/dev/null || true
+  done
+else
+  rm -rf "$watch_dir" 2>/dev/null || true
+fi
 mkdir -p "$watch_dir" 2>/dev/null || {
   printf '' | python3 "$here/adapter.py" from-codex --exit 1; exit 0; }
 last_file="$watch_dir/last.txt"
@@ -257,13 +324,61 @@ last_file="$watch_dir/last.txt"
 # only — the prompt already shipped at start, so an await re-attach never needs it, but the
 # trail must show what scope a round actually ran at.
 python3 -c 'import json,sys
-json.dump({"target_dir": sys.argv[2], "round": sys.argv[3], "effort": sys.argv[4],
-           "scope": sys.argv[5]},
-          open(sys.argv[1], "w"), indent=2)' "$watch_dir/meta.json" "$target_dir" "$round" "$effort" "$scope"
+m = {"target_dir": sys.argv[2], "round": sys.argv[3], "effort": sys.argv[4], "scope": sys.argv[5]}
+if len(sys.argv) > 6 and sys.argv[6]:
+    m["thread_id"] = sys.argv[6]
+json.dump(m, open(sys.argv[1], "w"), indent=2)' \
+  "$watch_dir/meta.json" "$target_dir" "$round" "$effort" "$scope" "$prior_thread_id"
 
 # Chunk by effort: medium reviews are short (and the orchestrator instructs a 360s tool timeout
 # for them — the chunk must FIT under it); high/xhigh get the full window under 600s.
 case "$effort" in medium) chunk=300 ;; *) chunk=480 ;; esac
+
+# ── RESUME a prior aborted thread (codex-resume-recovery 2026-06-12) ──────────────────────────
+# When the probe above found a thread_id, try to FINISH the killed codex thread for one short
+# turn — `codex exec resume <thread_id> <finish-prompt>` — instead of paying for a whole fresh
+# review. The invocation rides the same --json/--output-schema/-o plumbing as a fresh run, MINUS
+# the sandbox flag: `codex exec resume` rejects `-s/--sandbox` (it inherits the resumed thread's
+# sandbox policy), so passing it makes every resume exit nonzero. codex_review_args carries only
+# -c/-m overrides, which resume accepts. The resume runs in the round dir ITSELF (its handle.json/
+# events/verdict now own the round dir — the aborted attempt already moved to a1/, so nothing
+# collides), which is what lets a STILL-RUNNING resume be re-attached: a pending resume returns the
+# round-dir handle, and the orchestrator's `codex_review.sh await <round_dir>` form re-attaches to
+# the live resumed thread exactly like a pending fresh review.
+# FAIL CLOSED: resume that exits nonzero, yields no verdict (empty -o / adapter ran:false), or
+# never reaches a `done` envelope falls through to the fresh-review block below — today's path,
+# never a new failure mode. A pending resume (live, talking, didn't finish in one chunk) is NOT a
+# failure: return the re-attach handle so the loop finishes it later instead of re-paying.
+if [[ -n "$prior_thread_id" ]]; then
+  resume_last="$last_file"
+  resume_prompt="Resume this review and emit the final verdict JSON per the schema now."
+  # shellcheck disable=SC2086
+  r_start="$(python3 "$here/review_watch.py" start --handle "$watch_dir" --last "$resume_last" -- \
+    codex exec resume "$prior_thread_id" --json ${codex_review_args} --output-schema "$schema" -o "$resume_last" "$resume_prompt" 2>>"$watch_dir/err.log")"
+  if printf '%s' "$r_start" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("state")=="started" else 1)' 2>/dev/null; then
+    r_env="$(python3 "$here/review_watch.py" await --handle "$watch_dir" --chunk "$chunk" --idle "$idle_s" 2>/dev/null)"
+    # Accept the resume when it finished with a usable verdict (ran:true), OR hand back a pending
+    # handle for re-attach. A done exit with empty/no -o normalizes to ran:false → fall through to a
+    # fresh review; only an outright failure re-pays.
+    r_verdict="$(emit_outcome "$r_env" "$watch_dir" "$target_dir" "$round")"
+    if printf '%s' "$r_verdict" | python3 -c 'import json,sys
+try:
+    v = json.load(sys.stdin)
+    sys.exit(0 if (v.get("ran") is True or v.get("pending") is True) else 1)
+except Exception: sys.exit(1)' 2>/dev/null; then
+      printf '%s' "$r_verdict"
+      exit 0
+    fi
+  fi
+  # Resume could not produce a verdict → fail closed to a fresh review (below). The resume ran in
+  # the round dir, so its transient files (exit_code/handle/events/last.txt) MUST be cleared first,
+  # or the fresh await would read the failed resume's stale exit_code as an instant "done". Preserve
+  # the failed resume's events under a2/ (a1/ holds the original aborted attempt, untouched).
+  mkdir -p "$watch_dir/a2" 2>/dev/null || true
+  for _f in events.jsonl err.log exit_code handle.json last.txt; do
+    [[ -e "$watch_dir/$_f" ]] && mv -f "$watch_dir/$_f" "$watch_dir/a2/" 2>/dev/null || true
+  done
+fi
 
 # shellcheck disable=SC2086
 start_env="$(python3 "$here/review_watch.py" start --handle "$watch_dir" --last "$last_file" -- \

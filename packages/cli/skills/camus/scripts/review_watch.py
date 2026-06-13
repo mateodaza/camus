@@ -101,6 +101,30 @@ def _usage(handle):
     return usage
 
 
+def _thread_id(handle):
+    """The codex session id from the FIRST {"type":"thread.started","thread_id":...} event, or
+    None when absent/unreadable. The resume key (codex-resume-recovery 2026-06-12): an
+    idle-killed/aborted review owns a live codex thread, and `codex exec resume <thread_id>` can
+    finish it instead of re-paying a fresh review. events.jsonl is empty at spawn, so this is read
+    LAZILY here, never persisted at cmd_start — mirrors _usage's defensive per-line parse; first
+    valid event wins. Carried in the await/abort envelopes so codex_review.sh (which owns
+    meta.json; this module only ever writes handle.json) can persist and act on it."""
+    try:
+        with open(_paths(handle)["events"], encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(e, dict) and e.get("type") == "thread.started":
+                    tid = e.get("thread_id")
+                    if isinstance(tid, str) and tid:
+                        return tid
+    except OSError:
+        pass
+    return None
+
+
 def _exit_code_read(handle):
     """The wrapper's exit-code file, or None while it hasn't been written. The FILE is the
     completion channel (audit P2 2026-06-11): pid liveness must never outrank it — a lingering
@@ -172,16 +196,20 @@ def cmd_await(args):
         code = _exit_code_read(args.handle)
         if code is not None:
             return _emit({"state": "done", "exit": code,
-                          "usage": _usage(args.handle), "last": rec.get("last")})
+                          "usage": _usage(args.handle), "last": rec.get("last"),
+                          "thread_id": _thread_id(args.handle)})
         if not _alive(pid):
             return _emit({"state": "done", "exit": _exit_code(args.handle),
-                          "usage": _usage(args.handle), "last": rec.get("last")})
+                          "usage": _usage(args.handle), "last": rec.get("last"),
+                          "thread_id": _thread_id(args.handle)})
         age = _event_age(args.handle, started_at)
         if age > args.idle:
             _kill_group(pid)
-            return _emit({"state": "idle_killed", "idle_s": int(age)})
+            return _emit({"state": "idle_killed", "idle_s": int(age),
+                          "thread_id": _thread_id(args.handle)})
         if time.time() >= deadline:
-            return _emit({"state": "pending", "pid": pid, "last_event_age": int(age)})
+            return _emit({"state": "pending", "pid": pid, "last_event_age": int(age),
+                          "thread_id": _thread_id(args.handle)})
         time.sleep(min(1.0, max(0.05, deadline - time.time())))
 
 
@@ -194,10 +222,14 @@ def cmd_abort(args):
     code = _exit_code_read(args.handle) if rec else None
     if code is not None:
         return _emit({"state": "done", "exit": code,
-                      "usage": _usage(args.handle), "last": rec.get("last")})
+                      "usage": _usage(args.handle), "last": rec.get("last"),
+                      "thread_id": _thread_id(args.handle)})
     if rec and isinstance(rec.get("pid"), int) and _alive(rec["pid"]):
         _kill_group(rec["pid"])
-    return _emit({"state": "aborted"})
+    # The abort verdict is the one codex_review.sh records as the round's outcome, so it MUST
+    # carry the thread_id — that handle is what lets the NEXT round resume this killed thread
+    # instead of paying for a fresh review (codex-resume-recovery 2026-06-12).
+    return _emit({"state": "aborted", "thread_id": _thread_id(args.handle)})
 
 
 def main(argv=None):

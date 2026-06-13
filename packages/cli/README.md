@@ -86,6 +86,13 @@ reviews re-attach in bounded chunks, so no tool timeout caps review depth anymor
 round also logs Codex's own token usage and keeps a full event-stream audit dir
 alongside the verdict file.
 
+**A killed review is resumed, never re-paid.** Every Codex thread announces its session id
+in the event stream, so when a round's prior attempt was idle-killed or abandoned, the next
+attempt runs `codex exec resume <thread_id>` to finish that same thread for one short turn
+instead of paying for a whole fresh review. It falls closed to a fresh review whenever resume
+can't produce a verdict — no recorded thread id, a non-zero exit, or an empty result — so the
+worst case is exactly today's behavior, never a new failure mode.
+
 **Tests are the last word.** A clean review does not ship code that fails
 `type-check` or `test`. The verifier auto-detects the stack (node, python, rust, go,
 foundry, make) or uses `CAMUS_VERIFY_CMD`. If it finds no verifier at all, that is a
@@ -328,9 +335,18 @@ Then `/camus-feat` with your task list (add `posture:"oneshot"` for one-review s
 on work you trust), or `/camus-loop <one task>`. The feature report lands in
 `~/.camus/reports/<featId>.json`. The branch is left for you to merge.
 
+`camus retro` reads that history back, read-only — never a model call, never a write.
+It prints a one-liner per feat (status, posture, task count, tokens), aggregates
+(status/posture mix, review-rounds, per-task token p50/p90), and a few evidence-gated
+observations: each needs at least three supporting data points and cites them inline,
+otherwise it prints `insufficient data (N runs)` rather than guess from a thin pile. Add
+`--json` to emit just the aggregate for a script. The report schema has shifted across
+versions, so every field is optional — older reports without posture or token counts still
+read cleanly.
+
 ## Tests
 
-Pure stdlib, no network, no dependencies. 656 assertions across 19 suites:
+Pure stdlib, no network, no dependencies. 20 suites:
 
 ```bash
 npm test    # or run the suites individually under skills/camus/scripts/
@@ -338,6 +354,34 @@ npm test    # or run the suites individually under skills/camus/scripts/
 
 Codex has reviewed Camus's own adapter, guard, and workflows, and caught
 real bugs each time.
+
+## Self-test (`camus canary`)
+
+`npm test` proves the gate's *units*. `camus canary` proves the *toolchain*: it
+spins up a throwaway git repo under `$TMPDIR` and runs the real gate against it,
+end to end, so you can answer "is my local gate actually working?" without a real
+project.
+
+```bash
+camus canary             # free + local: RED → GREEN
+camus canary --review    # also exercises the codex reviewer (one small codex call)
+```
+
+Three known-answer stages, short-circuiting on the first break:
+
+- **RED** — a repo whose `npm test` fails by design must verify `pass:false` with a
+  *named* failed check. If the verifier can't tell broken from working, nothing it
+  says downstream is trustworthy.
+- **GREEN** — fix the assertion, commit, and the same verify must read `pass:true`
+  **and name the exact HEAD it certified** (`result.head == git rev-parse HEAD`) —
+  the head-binding contract the orchestrator relies on to catch an
+  edit→commit→rerun cover-up.
+- **review** (only with `--review`, **off by default**) — stage a one-line diff and
+  run the Codex reviewer, requiring a normalized verdict that carries the gate's
+  contract keys. This is the one stage that costs a (small) codex call.
+
+Exit 0 only when every stage holds; otherwise it prints the first broken stage with
+its evidence. The throwaway repo is always torn down, including on failure.
 
 ## Boundary
 
