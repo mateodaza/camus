@@ -86,7 +86,7 @@ reviews re-attach in bounded chunks, so no tool timeout caps review depth anymor
 round also logs Codex's own token usage and keeps a full event-stream audit dir
 alongside the verdict file.
 
-**A killed review is resumed, never re-paid.** Every Codex thread announces its session id
+**A killed review is resumed before it is re-paid.** Every Codex thread announces its session id
 in the event stream, so when a round's prior attempt was idle-killed or abandoned, the next
 attempt runs `codex exec resume <thread_id>` to finish that same thread for one short turn
 instead of paying for a whole fresh review. It falls closed to a fresh review whenever resume
@@ -346,7 +346,7 @@ read cleanly.
 
 ## Tests
 
-Pure stdlib, no network, no dependencies. 20 suites:
+Pure stdlib, no network, no dependencies. 22 suites:
 
 ```bash
 npm test    # or run the suites individually under skills/camus/scripts/
