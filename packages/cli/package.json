@@ -1,6 +1,6 @@
 {
   "name": "camus-cli",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "A coding loop that proves every change \u2014 and knows when to stop. Claude writes it, Codex (a competitor) reviews it, your own tests decide; a stalled review becomes a decision on your desk, not churn. No agent grades its own work.",
   "bin": {
     "camus": "bin/camus.js"
