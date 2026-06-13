@@ -274,6 +274,115 @@ check "no prior aborted thread: resume NOT attempted (fresh path unchanged)" \
 check "no prior aborted thread: a fresh codex exec ran" \
   "yes" "$([ -f "$SPY/args" ] && grep -qx -- '--output-schema' "$SPY/args" && echo yes || echo no)"
 
+# ── Resume-recovery HARDENING (codex-resume-recovery 2026-06-12): a thread_id is NOT sufficient to
+# resume — resume fires ONLY on the aborted/abandoned shape (thread_id + NO exit_code + NO last.txt
+# verdict). COMPLETION EVIDENCE blocks resume even when exit_code is missing (constraints 2 + 4),
+# and a FAILED resume clears the recorded thread_id so a later recovery never resurrects a dead
+# thread (constraint 3). All four resolve fail-closed to a fresh review.
+
+# (2) completed-evidence via a last.txt VERDICT (no exit_code file): a prior attempt that already
+# produced a valid verdict is DONE — never resume its thread. Stage thread_id + a valid last.txt
+# verdict, NO exit_code → resume MUST NOT be attempted; a fresh codex exec runs instead.
+rm -f "$SPY/args" "$SPY/args_resume"
+stage_aborted_round 11 "sess-has-verdict"
+printf '{"findings": [], "overall_correctness": "patch is correct"}' \
+  > "$ROOT/reviews/camus-wt-task-r11.watch/last.txt"
+out="$(run_review_round 11)" || { echo "FAIL completed-verdict review errored/hung"; exit 1; }
+check "completed verdict in last.txt BLOCKS resume (constraint 2: resume NOT attempted)" \
+  "no" "$([ -f "$SPY/args_resume" ] && echo yes || echo no)"
+check "completed verdict in last.txt: a FRESH codex exec ran instead" \
+  "yes" "$([ -f "$SPY/args" ] && grep -qx -- '--output-schema' "$SPY/args" && echo yes || echo no)"
+
+# (2b) completed-evidence via the exit_code FILE (thread_id present): the wrapper's exit_code means
+# the prior attempt completed → resume MUST NOT be attempted (constraint 4 — only no-exit_code shape
+# triggers). Garbage last.txt here proves the exit_code file alone blocks it.
+rm -f "$SPY/args" "$SPY/args_resume"
+stage_aborted_round 12 "sess-has-exitcode"
+printf '0\n' > "$ROOT/reviews/camus-wt-task-r12.watch/exit_code"
+printf 'not json' > "$ROOT/reviews/camus-wt-task-r12.watch/last.txt"
+out="$(run_review_round 12)" || { echo "FAIL completed-exitcode review errored/hung"; exit 1; }
+check "exit_code file present BLOCKS resume (constraint 4: resume NOT attempted)" \
+  "no" "$([ -f "$SPY/args_resume" ] && echo yes || echo no)"
+check "exit_code file present: a FRESH codex exec ran instead" \
+  "yes" "$([ -f "$SPY/args" ] && grep -qx -- '--output-schema' "$SPY/args" && echo yes || echo no)"
+
+# (3) a FAILED resume CLEARS the thread pointer → a SECOND recovery of the same round goes fresh,
+# never resurrecting the known-dead thread. First run forces SPY_RESUME_FAIL=exit on a staged round;
+# assert resume WAS tried AND the round's meta.json no longer carries a live thread_id. Then run the
+# SAME round again (no re-staging) and assert resume is NOT attempted the second time.
+rm -f "$SPY/args" "$SPY/args_resume"
+stage_aborted_round 13 "sess-dead-after-fail"
+out="$(SPY_RESUME_FAIL=exit run_review_round 13)" || { echo "FAIL clear-on-fail review errored/hung"; exit 1; }
+check "failed resume: resume WAS attempted the first time" \
+  "yes" "$([ -f "$SPY/args_resume" ] && echo yes || echo no)"
+check "failed resume CLEARS the recorded thread_id (constraint 3: meta.json thread_id empty/absent)" \
+  "" "$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("thread_id","") or "")
+except Exception: print("")' "$ROOT/reviews/camus-wt-task-r13.watch/meta.json" 2>/dev/null)"
+rm -f "$SPY/args" "$SPY/args_resume"
+out="$(run_review_round 13)" || { echo "FAIL second-recovery review errored/hung"; exit 1; }
+check "second recovery of a dead thread does NOT resume (known-dead never resurrected)" \
+  "no" "$([ -f "$SPY/args_resume" ] && echo yes || echo no)"
+check "second recovery goes FRESH (a fresh codex exec ran)" \
+  "yes" "$([ -f "$SPY/args" ] && grep -qx -- '--output-schema' "$SPY/args" && echo yes || echo no)"
+
+# (1) stale-pid / NO-KILL in recovery: recovery operates on codex THREADS only — it reads files and
+# spawns a FRESH `codex exec resume`, never reading a prior pid nor killing/awaiting an old handle.
+# Stage an aborted round whose meta carries a STALE pid (a handle.json pointing at PID 1, which the
+# script must never touch); assert the only codex invocation is the resume SPAWN (argv shows
+# `exec resume <thread_id>`) and that PID 1 is still alive afterward (no kill aimed at a stale handle).
+rm -f "$SPY/args" "$SPY/args_resume"
+stage_aborted_round 14 "sess-stale-pid"
+python3 -c 'import json,sys; json.dump({"pid": 1, "started_at": 0, "cmd": ["codex"], "cwd": ".",
+  "last": sys.argv[2]}, open(sys.argv[1],"w"))' \
+  "$ROOT/reviews/camus-wt-task-r14.watch/handle.json" "$ROOT/reviews/camus-wt-task-r14.watch/last.txt"
+out="$(run_review_round 14)" || { echo "FAIL stale-pid review errored/hung"; exit 1; }
+check "stale-pid recovery: the resume is a fresh 'codex exec resume <thread_id>' spawn (no re-attach)" \
+  "yes" "$([ -f "$SPY/args_resume" ] && grep -qx 'resume' "$SPY/args_resume" && grep -qx 'sess-stale-pid' "$SPY/args_resume" && echo yes || echo no)"
+# Liveness of PID 1 the same way review_watch._alive judges it: EPERM (a non-root user signalling
+# init) means ALIVE, not gone — a bare `kill -0 1` exits nonzero on that EPERM and would falsely
+# read "killed" for every non-root run. (PID 1 is never actually killed; we assert it survived.)
+check "stale-pid recovery: no kill aimed at the stale handle (PID 1 still alive)" \
+  "yes" "$(python3 -c 'import os,sys
+try: os.kill(1, 0)
+except ProcessLookupError: sys.exit(1)
+except PermissionError: pass
+except OSError: sys.exit(1)
+print("yes")' 2>/dev/null || echo no)"
+
+# (4) PENDING-process / events.jsonl fallback must NOT resume a STILL-RUNNING review. A healthy
+# long-running review that returned `pending` leaves events.jsonl (with thread.started) + a LIVE
+# local process behind, and meta.json carries NO thread_id for it (the await form persists the id
+# only for idle_killed/aborted). Resume reading that live thread off events.jsonl would `codex exec
+# resume` a thread whose original local process is still running — the local-process-uncertainty
+# rule. Stage events.jsonl + a handle.json whose pid is THIS test process ($$, provably alive) and
+# NO meta.json thread_id → resume MUST NOT be attempted; a fresh codex exec runs instead.
+rm -f "$SPY/args" "$SPY/args_resume"
+PEND="$ROOT/reviews/camus-wt-task-r15.watch"; mkdir -p "$PEND"
+python3 -c 'import json,sys; json.dump({"target_dir": sys.argv[2], "round": "15",
+  "effort": "medium", "scope": "full"}, open(sys.argv[1],"w"))' "$PEND/meta.json" "$WT"
+printf '{"type":"thread.started","thread_id":"sess-still-running"}\n' > "$PEND/events.jsonl"
+python3 -c 'import json,sys; json.dump({"pid": int(sys.argv[3]), "started_at": 0, "cmd": ["codex"],
+  "cwd": ".", "last": sys.argv[2]}, open(sys.argv[1],"w"))' "$PEND/handle.json" "$PEND/last.txt" "$$"
+out="$(run_review_round 15)" || { echo "FAIL pending-live review errored/hung"; exit 1; }
+check "pending live process: events.jsonl thread NOT resumed (resume not attempted)" \
+  "no" "$([ -f "$SPY/args_resume" ] && echo yes || echo no)"
+check "pending live process: a FRESH codex exec ran instead" \
+  "yes" "$([ -f "$SPY/args" ] && grep -qx -- '--output-schema' "$SPY/args" && echo yes || echo no)"
+
+# (4b) the events.jsonl fallback STILL ARMS resume when the prior local process is GONE (no
+# handle.json → the process is no longer running): a thread known only via events.jsonl, with the
+# process dead, is the legitimate salvage case. Stage events.jsonl + NO meta.json thread_id + NO
+# handle.json → resume IS attempted against the events.jsonl thread id.
+rm -f "$SPY/args" "$SPY/args_resume"
+GONE="$ROOT/reviews/camus-wt-task-r16.watch"; mkdir -p "$GONE"
+python3 -c 'import json,sys; json.dump({"target_dir": sys.argv[2], "round": "16",
+  "effort": "medium", "scope": "full"}, open(sys.argv[1],"w"))' "$GONE/meta.json" "$WT"
+printf '{"type":"thread.started","thread_id":"sess-proc-gone"}\n' > "$GONE/events.jsonl"
+out="$(run_review_round 16)" || { echo "FAIL events-fallback review errored/hung"; exit 1; }
+check "events.jsonl fallback (process gone): resume IS attempted off the event-stream thread id" \
+  "yes" "$([ -f "$SPY/args_resume" ] && grep -qx 'resume' "$SPY/args_resume" && grep -qx 'sess-proc-gone' "$SPY/args_resume" && echo yes || echo no)"
+
 # ── Reviewer-backend dispatcher (review.sh): codex passes through VERBATIM; an unknown backend
 # fails CLOSED (ran:false gate JSON naming it, exit 0) — never a fallback, never a crash.
 run_dispatch() { # same happy-path invocation as run_review, but through the dispatcher
