@@ -1811,6 +1811,23 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       mp.includes("'camus/feat/x/$(whoami)'") && !mp.includes('"camus/feat/x/$(whoami)"'), mp.slice(0, 220))
   }
 
+  // F48 (verification audit round-3, 2026-06-13): a state-FILE mergedBranch is untrusted — on resume
+  // it is inlined into the postflight self-audit `git rev-list HEAD..<branch>` command. A poisoned
+  // value must be DROPPED at load (→ falls back to the computed node.branch), never reach the shell.
+  {
+    const tid = taskIdOf('F', ['only task'], 'only task')
+    const fid = featIdOf('F', ['only task'])
+    const prior = {
+      featId: fid, feat: 'F', featBranch: 'camus/feat-' + fid, status: 'running',
+      tasks: [{ taskId: tid, spec: 'only task', status: 'done', branch: 'camus/feat/x/only', mergedBranch: '$(touch /tmp/PWN)' }],
+    }
+    const resume = { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(prior) } }
+    const r = await runFeat({ feat: 'F', tasks: ['only task'] }, resume, [])
+    const sa = r.prompts['self-audit'] || ''
+    ok('F48 poisoned state mergedBranch dropped on load — never in the self-audit command',
+      sa.length > 0 && !sa.includes('$(touch /tmp/PWN)'), sa.slice(0, 200))
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exit(fail ? 1 : 0)
 })().catch((e) => { console.error('HARNESS ERROR', e); process.exit(2) })

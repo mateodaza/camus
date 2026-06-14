@@ -145,6 +145,14 @@ function fnv1a(str) {
 // 2026-06-13): nothing expands inside '…'. Used for the AGENT-RETURNED merge branch (res.branch) —
 // JSON.stringify only double-quotes, where bash STILL expands $(…)/backticks.
 const shq = (s) => `'${String(s).replace(/'/g, "'\\''")}'`
+// Reject the in-double-quote-dangerous set for path-shaped values that reach a shell (round-3:
+// a persisted worktree path used in `git worktree remove`).
+const _SHELL_UNSAFE = ['$', '`', '"', '\\', '\n', '\r']
+const shellSafe = (s) => typeof s === 'string' && s.length > 0 && !_SHELL_UNSAFE.some((c) => s.includes(c))
+// A legitimate camus branch ref — used to validate a state-FILE-loaded mergedBranch before it is
+// inlined into the self-audit command (round-3: a poisoned ~/.camus state file is the doctrine's
+// untrusted-state threat; a real value is always camus/feat/<id>/<slug>-<id>).
+const _CAMUS_BRANCH_OK = /^camus\/[A-Za-z0-9/_-]+$/
 // featId = readable slug + a stable FNV-1a hash over the feat title + ordered task list
 // (order-sensitive on purpose). The slug makes the feat branch human-scannable; the hash keeps
 // it collision-resistant and resumable (re-running the same feat yields the same featId).
@@ -382,8 +390,11 @@ Return {written:true} once that file is on disk with exactly that content.`,
 // step existed. Failed/paused tasks keep their worktree on purpose (debugging/resume artifact).
 async function removeTaskWorktree(node, wtPath, n) {
   const expected = `camus-wt-${node.taskId}`
-  if (!wtPath || typeof wtPath !== 'string' || wtPath.split('/').pop() !== expected) {
-    if (wtPath) log(`Task ${n}: NOT removing worktree — unexpected path (${wtPath}); expected basename ${expected}.`)
+  // shellSafe (round-3): the path is inlined into `git worktree remove "…"` — the basename check
+  // alone let /tmp/$(…)/camus-wt-<taskId> through (basename matches, $() expands). Skip cleanup on
+  // any shell-unsafe path rather than rely on the upstream loop invariant; a left-behind worktree is benign.
+  if (!wtPath || typeof wtPath !== 'string' || !shellSafe(wtPath) || wtPath.split('/').pop() !== expected) {
+    if (wtPath) log(`Task ${n}: NOT removing worktree — unexpected or unsafe path (${wtPath}); expected basename ${expected}.`)
     else log(`Task ${n}: loop reported no worktree path — skipping cleanup (a worktree may be left behind).`)
     return
   }
@@ -574,7 +585,11 @@ if (prior && Array.isArray(prior.tasks)) {
       if (p.tokens != null) node.tokens = p.tokens   // keep the real spend; a replayed delta would read ~0
       if (p.findingsDeferred != null) node.findingsDeferred = p.findingsDeferred
       if (Array.isArray(p.deferredFindings)) node.deferredFindings = p.deferredFindings
-      if (p.mergedBranch) node.mergedBranch = p.mergedBranch   // keep the report truthful across resumes
+      // keep the report truthful across resumes — but a state-FILE value is untrusted (round-3): it
+      // is inlined into the self-audit `git rev-list HEAD..<branch>` command, so reject anything that
+      // is not a real camus branch ref (a poisoned mergedBranch would otherwise execute). Drop →
+      // falls back to the computed node.branch, which is always safe.
+      if (p.mergedBranch && _CAMUS_BRANCH_OK.test(String(p.mergedBranch))) node.mergedBranch = p.mergedBranch
       carried++
     }
   }
