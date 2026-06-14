@@ -53,10 +53,14 @@ def frame(base, feat_id, feedback="", now=None):
 def dispatch(key, base, feat_id, prompt=input):
     """Map a steering keypress to its action; returns the feedback line ('' = no-op key).
     Pure logic over steer.py's audited helpers — the IO loop stays thin and untested."""
+    # A stranded `.consuming` claim (a crashed consume) is anomalous PENDING state — every steer
+    # consumer must agree (re-soak 2026-06-14, finding P2). Writes refuse over it; clear removes it too.
     if key == "p":
         fid, err = ST.resolve_feat(base, feat_id)
         if err:
             return "pause refused: " + err
+        if ST.claim_present(base, fid):
+            return "pause refused: a stranded steer claim is present — clear it (c) or re-run the feat to recover it"
         # MERGED write (audit P1 2026-06-11): raw write_note here clobbered a pending note, so
         # an interactive pause erased queued answers/guidance the CLI had carefully composed.
         _, warn = ST.write_note_merged(base, fid, {"pause": True})
@@ -66,6 +70,8 @@ def dispatch(key, base, feat_id, prompt=input):
         fid, err = ST.resolve_feat(base, feat_id)
         if err:
             return "steer refused: " + err
+        if ST.claim_present(base, fid):
+            return "steer refused: a stranded steer claim is present — clear it (c) or re-run the feat to recover it"
         text = prompt("guidance for the next task: ").strip()
         if not text:
             return "empty guidance — nothing written"
@@ -76,13 +82,10 @@ def dispatch(key, base, feat_id, prompt=input):
         fid, err = ST.resolve_feat(base, feat_id, require_running=False)
         if err:
             return "clear refused: " + err
-        try:
-            os.remove(ST.steer_path(base, fid))
-            return "steer note cleared"
-        except FileNotFoundError:
-            return "no pending steer note"
-        except OSError as exc:
-            return "could NOT clear the note (%s) — it is still pending" % exc
+        removed, cerr = ST.clear_notes(base, fid)
+        if cerr:
+            return "could NOT clear — " + cerr
+        return ("cleared steer " + " + ".join(removed)) if removed else "no pending steer note"
     return ""
 
 

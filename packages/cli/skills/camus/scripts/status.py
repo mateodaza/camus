@@ -145,6 +145,12 @@ def steer_note(base, feat_id):
     return _read_json(os.path.join(base, "steer", "%s.json" % feat_id))[0]
 
 
+def steer_claim_present(base, feat_id):
+    # A `<feat>.json.consuming` claim from a crashed consume is PENDING state a feat re-run recovers
+    # (re-soak 2026-06-14, finding P2). status must surface it, not report "none pending" over it.
+    return os.path.exists(os.path.join(base, "steer", "%s.json.consuming" % feat_id))
+
+
 def fmt_age(sec):
     if sec is None:
         return "?"
@@ -203,6 +209,7 @@ def synthesize(base, feat_id=None, now=None, repo=None):
         "heartbeatAge": hb_age,
         "reviews": review_activity(base, task_ids, now=now),
         "steer": steer_note(base, state.get("featId", "")),
+        "steerClaim": steer_claim_present(base, state.get("featId", "")),
         "live": live,
         "cost": cost,
         **({"skippedCorrupt": corrupt} if corrupt else {}),
@@ -375,9 +382,13 @@ def render(synth, now=None):
     if synth["steer"]:
         lines.append("Steer note PENDING (applies at the next task boundary):")
         lines.append("  %s" % json.dumps(synth["steer"]))
-    else:
+    elif not synth.get("steerClaim"):
         lines.append('Steer: none pending — `camus steer "<guidance>"` redirects the next task;')
         lines.append("       `camus steer --pause` halts at the next task boundary.")
+    if synth.get("steerClaim"):
+        # A crashed consume left a claim — surface it rather than reporting "none pending" over it.
+        lines.append("⚠ Stranded steer claim present (a prior consume crashed) — a feat re-run will")
+        lines.append("  recover and apply it, or `camus steer --clear` to remove it.")
     return lines
 
 

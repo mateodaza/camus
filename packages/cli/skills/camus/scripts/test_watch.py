@@ -92,9 +92,36 @@ def test_dispatch_clear_removes_note_even_on_finished_feat():
         _feat(base, "f1", status="done")
         _write(os.path.join(base, "steer", "f1.json"), {"pause": True})
         fb = W.dispatch("c", base, "f1")
-        assert fb == "steer note cleared"
+        assert fb == "cleared steer note"
         assert _note(base, "f1") is None
         assert W.dispatch("c", base, "f1") == "no pending steer note"
+
+
+def test_dispatch_clear_removes_a_stranded_claim_too():
+    # Claim-awareness (re-soak 2026-06-14, P2): the `c` key must remove a `.consuming` claim too,
+    # else watch would say "cleared" while a re-run resurrects the note.
+    with tempfile.TemporaryDirectory() as base:
+        _feat(base, "f1")
+        claim = os.path.join(base, "steer", "f1.json.consuming")
+        os.makedirs(os.path.dirname(claim), exist_ok=True)
+        with open(claim, "w") as fh:
+            fh.write('{"guidance":"stranded"}')
+        fb = W.dispatch("c", base, "f1")
+        assert "stranded claim" in fb, fb
+        assert not os.path.exists(claim), "the claim must be removed"
+
+
+def test_dispatch_write_refused_while_a_claim_exists():
+    # A `g`/`p` write must refuse over a stranded claim rather than leave the next run halted on both.
+    with tempfile.TemporaryDirectory() as base:
+        _feat(base, "f1")
+        claim = os.path.join(base, "steer", "f1.json.consuming")
+        os.makedirs(os.path.dirname(claim), exist_ok=True)
+        with open(claim, "w") as fh:
+            fh.write('{"guidance":"stranded"}')
+        assert "refused" in W.dispatch("p", base, "f1")
+        assert "refused" in W.dispatch("g", base, "f1", prompt=lambda _: "new")
+        assert _note(base, "f1") is None, "no new live note written while a claim is unresolved"
 
 
 def test_dispatch_explicit_feat_id_targets_that_feat():

@@ -183,6 +183,35 @@ def write_note_merged(base, feat_id, note):
     return write_note(base, feat_id, note), warning
 
 
+# Claim awareness (re-soak 2026-06-14, finding P2): steer_read.py uses a `<feat>.json.consuming`
+# claim file while consuming a note; a crashed consume leaves it stranded, and a feat re-run RECOVERS
+# and applies it — so it is PENDING state. Every steer consumer (this CLI, watch.py, status.py) must
+# read the SAME model: surface a stranded claim, clear it alongside the live note, and refuse to write
+# a fresh note on top of it. These shared helpers keep all three in lockstep (a divergent reader was
+# exactly how --clear/--show/status fell out of sync).
+def claim_path(base, feat_id):
+    return steer_path(base, feat_id) + ".consuming"
+
+
+def claim_present(base, feat_id):
+    return os.path.exists(claim_path(base, feat_id))
+
+
+def clear_notes(base, feat_id):
+    """Remove the live note AND any stranded claim. Returns (removed_labels, error_or_None); never
+    reports success while state survives (--clear is the escape hatch for a stuck note)."""
+    removed = []
+    for p, label in ((steer_path(base, feat_id), "note"), (claim_path(base, feat_id), "stranded claim")):
+        try:
+            os.remove(p)
+            removed.append(label)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            return removed, "could NOT remove %s (%s) — it is still pending" % (p, exc)
+    return removed, None
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Steer a running Camus feat at its next task boundary")
     ap.add_argument("guidance", nargs="?", default=None, help="guidance for the NEXT task")
@@ -200,12 +229,7 @@ def main(argv=None):
         print("steer: %s" % err, file=sys.stderr)
         return 1
     path = steer_path(args.dir, feat_id)
-    # steer_read.py treats a `<feat>.json.consuming` claim file (a crashed consume) as PENDING steer
-    # state — a feat re-run recovers and applies it. So the human CLI must see the same state model
-    # (re-soak 2026-06-14, finding P2): --show surfaces it, --clear removes it, and a write refuses
-    # while it exists. Otherwise --clear would lie ("no note") while a re-run resurrects a "cleared"
-    # note, and a new steer would report success while leaving the next run halted on both files.
-    claim = path + ".consuming"
+    claim = claim_path(args.dir, feat_id)   # the crash-claim sibling (see claim helpers above)
 
     if args.show:
         note, problem = _read_json(path)
@@ -223,20 +247,9 @@ def main(argv=None):
                   "--clear` to remove it, or a feat re-run will recover and apply it" % (claim, detail))
         return 0
     if args.clear:
-        removed, failed = [], False
-        for p, label in ((path, "note"), (claim, "stranded claim")):
-            try:
-                os.remove(p)
-                removed.append(label)
-            except FileNotFoundError:
-                pass
-            except OSError as exc:
-                # Never report success-shaped output while state survives — --clear is the escape
-                # hatch for a stuck note, so it lying would be uniquely bad.
-                print("steer: could NOT remove %s (%s) — it is still pending" % (p, exc),
-                      file=sys.stderr)
-                failed = True
-        if failed:
+        removed, cerr = clear_notes(args.dir, feat_id)
+        if cerr:
+            print("steer: " + cerr, file=sys.stderr)
             return 1
         print(("cleared steer %s for %s" % (" + ".join(removed), feat_id)) if removed
               else "no pending steer note for %s" % feat_id)
@@ -245,7 +258,7 @@ def main(argv=None):
     # A stranded claim is anomalous PENDING state (a crashed consume). Refuse to write a new note on
     # top of it — recovery/merge would silently combine stale + new intent, and a blind write would
     # leave the next feat run halted on both files while we reported success. Make the human resolve it.
-    if os.path.exists(claim):
+    if claim_present(args.dir, feat_id):
         print("steer: a stranded steer claim is present (%s) — a prior consume crashed. Resolve it "
               "first: `camus steer --show` to inspect, `camus steer --clear` to remove, or re-run the "
               "feat to recover it. Refusing to write a note the next run would halt on." % claim,

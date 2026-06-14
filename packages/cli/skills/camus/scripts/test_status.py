@@ -164,6 +164,18 @@ def test_render_shows_pending_steer_note():
         assert "PENDING" in out and "prefer adapter B" in out
 
 
+def test_render_surfaces_a_stranded_steer_claim():
+    # Claim-awareness (re-soak 2026-06-14, P2): a crashed consume leaves a `.consuming` claim that a
+    # feat re-run recovers — status must surface it, not report "none pending" over it.
+    with tempfile.TemporaryDirectory() as base:
+        _write(os.path.join(base, "feats", "f.json"), _feat_state("f"))
+        os.makedirs(os.path.join(base, "steer"), exist_ok=True)
+        with open(os.path.join(base, "steer", "f.json.consuming"), "w") as fh:
+            fh.write('{"guidance":"stranded"}')
+        out = "\n".join(S.render(S.synthesize(base)))
+        assert "Stranded steer claim" in out and "none pending" not in out
+
+
 def test_events_capped_to_last_ten_in_render():
     with tempfile.TemporaryDirectory() as base:
         st = _feat_state("f")
