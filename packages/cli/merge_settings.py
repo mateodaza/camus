@@ -86,22 +86,25 @@ _GATE_SCRIPTS = [
     ("bash", "merge.sh"),         # the feat merge runner (same run-5 finding): checkout +
                                   # --no-ff merge + abort-on-failure computed in-script,
                                   # MERGE_SCHEMA verdict on stdout
-    ("bash", "containment.sh"),   # the worktree-containment receipt (field soak 2026-06-13,
-                                  # finding 8): reads `git status --porcelain` in-script and emits
-                                  # {ran,dirty,paths} — the loop parses it instead of trusting a
-                                  # thin agent to echo git stdout (which false-bred breaches AND
-                                  # false-cleared real leaks). Read-only, but allowlisted so the
-                                  # thin runner that echoes it never re-prompts in auto mode.
+    ("bash", "containment.sh"),   # the containment receipt (field soak 2026-06-13 finding 8; reused
+                                  # by the feat's task-boundary parent-tree check, re-soak 2026-06-14
+                                  # finding B): reads `git status --porcelain` in-script and emits
+                                  # {ran,dirty,paths} — callers parse it instead of trusting a thin
+                                  # agent to echo git stdout (which false-bred breaches AND false-
+                                  # cleared real leaks). Read-only, but allowlisted so the thin
+                                  # runner that echoes it never re-prompts in auto mode.
     ("python3", "env_check.py"),
     ("python3", "feat_scan.py"),  # fork-detection inventory (field soak 2026-06-13, finding 8):
                                   # reads ~/.camus/feats/*.json and emits {feats:[...]} so the feat
                                   # preflight can spot a same-title/different-id in-progress feat.
                                   # Read-only (no git, no egress); allowlisted so its thin runner
                                   # doesn't re-prompt in auto mode.
-    ("python3", "steer_read.py"), # mechanical steer-note read+sentinel (field soak 2026-06-13,
-                                  # item 7): {read,note} so an agent failure is distinguishable from
-                                  # a present bad note (the old cat||echo{} conflated them and
-                                  # consumed real notes). Reads/consumes ~/.camus/steer/<id>.json.
+    ("python3", "steer_read.py"), # mechanical steer-note read+sentinel (field soak 2026-06-13 item
+                                  # 7; read/consume SPLIT, re-soak 2026-06-14 finding A): {read,note}
+                                  # so an agent failure is distinguishable from a present bad note (the
+                                  # old cat||echo{} conflated them and consumed real notes). The plain
+                                  # read is NON-destructive (retry-safe); --consume deletes only after
+                                  # a confirmed parse. Reads/consumes ~/.camus/steer/<id>.json.
 ]
 
 

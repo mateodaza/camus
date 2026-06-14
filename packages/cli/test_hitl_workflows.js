@@ -732,6 +732,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   const featBase = {
     preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: '' },
     'fork-scan': J({ feats: [] }),          // no in-progress twin feat (0.2.7 item 8); fail-open if absent
+    'parent-tree': J({ ran: true, dirty: false, paths: '' }), // clean main checkout at each task boundary (0.2.7 finding B)
     'steer': J({ read: true, note: null }), // steer_read.py sentinel: no note (0.2.7 item 7)
     'feat-branch': { ok: true, branch: 'camus/feat-x', created: true },
     'env-check': { ready: true, exitCode: 0, output: 'ok' },
@@ -1547,6 +1548,68 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F7f run HALTS for the human (no silent drop)', res && res.status === 'needs_human' && res.stage === 'steer', res && (res.status + '/' + res.stage))
     ok('F7f no task dispatched past the dropped guidance', workflowCalls === 0, String(workflowCalls))
     ok('F7f note says nothing was applied + how to resume', /NOTHING was applied/.test((res && res.note) || '') && /re-run/i.test((res && res.note) || ''))
+  }
+
+  // F50 (live re-soak 2026-06-14, finding A): the steer READ is now non-consuming, so a transient
+  // thin-runner relay flake is RETRIED rather than halting an unattended feat. A garbage reply on
+  // the first try, a valid sentinel on the retry → the feat PROCEEDS (the bug this fixes turned a
+  // one-off haiku hiccup into a full halt). The split read/consume in steer_read.py guarantees the
+  // retried read re-reads the same un-consumed note.
+  {
+    let sc = 0
+    const flakeThenSentinel = () => (++sc === 1 ? 'oops budget preamble, no json here' : J({ read: true, note: null }))
+    const { res, calls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, steer: flakeThenSentinel },
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    ok('F50 steer relay flake is RETRIED (retry label present)', calls.some((c) => /^steer:.*:retry1$/.test(c)), calls.filter((c) => c.startsWith('steer')).join(','))
+    ok('F50 one flake then a valid read → feat PROCEEDS (no false halt)', res && res.status === 'done', res && res.status)
+    ok('F50 no-note read consumes nothing (no consume agent)', !calls.some((c) => c.startsWith('steer-consume')), calls.join(','))
+  }
+  // F50b: a PERSISTENT failure to obtain the steer state (no sentinel even after retries) is an
+  // inconclusive halt — fail-closed, never a false countermand-drop, and NOTHING consumed.
+  {
+    const { res, calls, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, steer: 'never valid json' },
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    ok('F50b persistent no-sentinel → needs_human inconclusive (stage steer)', res && res.status === 'needs_human' && res.stage === 'steer', res && (res.status + '/' + res.stage))
+    ok('F50b retried before giving up', calls.some((c) => /^steer:.*:retry1$/.test(c)), calls.filter((c) => c.startsWith('steer')).join(','))
+    ok('F50b nothing consumed (read-only check never deletes)', !calls.some((c) => c.startsWith('steer-consume')), calls.join(','))
+    ok('F50b no task dispatched', workflowCalls === 0, String(workflowCalls))
+    ok('F50b note says note is intact', /intact/.test((res && res.note) || ''))
+  }
+
+  // F51 (live re-soak 2026-06-14, finding B): the feat PROVES the main checkout is clean at each
+  // task BOUNDARY (per-task work lives in isolated worktrees, so the parent tree should carry only
+  // Camus's committed merges). A concurrent editor — typically the driver session — that dirtied the
+  // parent tree is caught HERE, at the clean merge point, not later as a confusing integration anomaly.
+  // Reuses containment.sh's {ran,dirty,paths} receipt; ran:false ⇒ inconclusive, never a clean pass.
+  {
+    const dirty = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, 'parent-tree': J({ ran: true, dirty: true, paths: ' M src/concurrent.ts' }) },
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    ok('F51 dirty parent tree → needs_human at task_boundary', dirty.res && dirty.res.status === 'needs_human' && dirty.res.stage === 'task_boundary', dirty.res && (dirty.res.status + '/' + dirty.res.stage))
+    ok('F51 halt names the dirty paths', /concurrent\.ts/.test((dirty.res && dirty.res.note) || '') && /concurrent\.ts/.test((dirty.res && dirty.res.dirtyPaths) || ''))
+    ok('F51 no task dispatched past a dirty tree', dirty.workflowCalls === 0, String(dirty.workflowCalls))
+    ok('F51 check routes through containment.sh (mechanical receipt)',
+      Object.entries(dirty.prompts).some(([k, v]) => k.startsWith('parent-tree') && /\/containment\.sh/.test(v)))
+    // inconclusive: a {ran:false} receipt is NOT read as clean (silent-leak closed)
+    const ranFalse = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, 'parent-tree': J({ ran: false, error: 'not a git repository' }) },
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    ok('F51 {ran:false} → inconclusive halt, never clean', ranFalse.res && ranFalse.res.status === 'needs_human' && ranFalse.res.stage === 'task_boundary', ranFalse.res && (ranFalse.res.status + '/' + ranFalse.res.stage))
+    ok('F51 inconclusive dispatches no task', ranFalse.workflowCalls === 0, String(ranFalse.workflowCalls))
+    // non-JSON reply (a garbled runner) → inconclusive, NOT read as clean
+    const noJson = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, 'parent-tree': 'here is the output: (no changes)' },
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    ok('F51 non-JSON reply → inconclusive (cry-wolf/silent-clear both closed)', noJson.res && noJson.res.status === 'needs_human' && noJson.res.stage === 'task_boundary', noJson.res && (noJson.res.status + '/' + noJson.res.stage))
+    // already-done tasks (resume) skip the boundary check — a dirty tree must not block a no-op resume
+    const resumeDone = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0,
+        stateRaw: J({ tasks: [{ taskId: taskIdOf('F', ['only task'], 'only task'), status: 'done', branch: 'camus/feat/x/only' }] }) },
+        'parent-tree': J({ ran: true, dirty: true, paths: ' M unrelated.ts' }) },
+      [])
+    ok('F51 resume skips the boundary check for already-done tasks', !resumeDone.calls.some((c) => c.startsWith('parent-tree')), resumeDone.calls.join(','))
   }
 
   // F8: worktree cleanup contract — the headline "no more camus-wt-* litter" feature.

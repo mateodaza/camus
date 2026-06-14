@@ -116,6 +116,14 @@ if (!TASKS.length) throw new Error('camus-feat: args.tasks[] is empty')
 // feat runner's cd target (baseline/integration guards require the repo root on a camus/feat-* branch).
 const REPO_ARG = '"$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"'
 
+// Parent-tree containment RECEIPT (live re-soak 2026-06-14, finding B): containment.sh reads
+// `git status --porcelain` MECHANICALLY in the MAIN checkout and emits {ran,dirty,paths} — the
+// same script camus-loop uses to catch a worktree leak. The feat runs it at each task BOUNDARY so
+// a concurrent editor (e.g. the driver session) that dirtied the parent tree is caught HERE, at the
+// clean merge point, instead of surfacing later as a confusing integration-verify anomaly. A thin
+// runner only echoes the receipt; ran:false ⇒ inconclusive (never a clean verdict).
+const CONTAIN_CMD = `bash ${SKILL}/containment.sh`
+
 // Token telemetry, degradable: `budget` ships with workflows GA (Claude Code >= 2.1.154,
 // doc-checked 2026-06-10). On an older runtime spentTok() is null and every token field/log
 // fragment is simply omitted — the gate never crashes over telemetry.
@@ -758,10 +766,49 @@ phase('Tasks')
 // exactly that; the integration report still NAMES the head it certified via verify's own
 // `head` field.
 let lastMergeHead = null
+// THREE-outcome parent-tree containment (live re-soak 2026-06-14, finding B): containment.sh reads
+// the MAIN checkout's `git status --porcelain` MECHANICALLY and emits {ran,dirty,paths}; the runner
+// only echoes it. Returns null (ran && clean) | {kind:'breach', paths} | {kind:'inconclusive', why}.
+async function parentTreeClean(label) {
+  const raw = await agent(
+    `THIN parent-tree containment runner. Run EXACTLY this one command and output its stdout VERBATIM as your entire reply (it is JSON — {ran,dirty,paths} or {ran,error}); no fences, no commentary:
+  ${HB_TOUCH}${CONTAIN_CMD} ${REPO_ARG}`,
+    { model: MODEL_RUNNER, phase: 'Tasks', label: `parent-tree:${label}` }
+  )
+  const r = extractJsonObject(raw)
+  if (!r || r.ran !== true) return { kind: 'inconclusive', why: (r && r.error) || 'containment runner returned no parseable {ran} receipt' }
+  if (r.dirty === true) return { kind: 'breach', paths: r.paths || '' }
+  return null   // ran === true && dirty === false → genuinely clean
+}
 for (let i = 0; i < state.tasks.length; i++) {
   const node = state.tasks[i]
   const n = `${i + 1}/${state.tasks.length}`
   if (node.status === 'done' || node.status === 'noop' || node.status === 'done_with_findings') { log(`Task ${n} "${node.taskId}" already ${node.status} (resume) — skipping.`); continue }
+
+  // ── PARENT-TREE BOUNDARY GUARD (live re-soak 2026-06-14, finding B): before launching a task,
+  // PROVE the main checkout is clean. The per-task work happens in an isolated worktree, so the
+  // parent tree should carry ONLY Camus's own committed merges — never uncommitted edits. If it is
+  // dirty here, a concurrent editor (typically the driver session) touched the repo Camus is mid-
+  // feat on; running a task now would interleave that work with Camus's and corrupt the integration
+  // picture. Catch it at the boundary — the clean, merged point — not later at integration. ran:false
+  // is inconclusive (a budget-killed/errored runner or a non-git target), NOT a clean pass.
+  const ptc = await parentTreeClean(node.taskId)
+  if (ptc && ptc.kind === 'breach') {
+    note(`Task ${n}: parent tree is DIRTY before launch — uncommitted changes Camus did not make. Halting.`)
+    return finalize('needs_human', {
+      stage: 'task_boundary', haltedTask: node.taskId, dirtyPaths: ptc.paths,
+      question: `The main checkout has uncommitted changes Camus did not make (before task ${n}). A concurrent editor dirtied the parent tree — resolve it (commit/stash/discard), then re-run with the SAME args.`,
+      note: `Parent-tree boundary check FAILED before task ${n}: the main checkout has uncommitted changes Camus did not author (Camus does per-task work in isolated worktrees; the parent tree should hold only Camus's committed merges). Most likely a concurrent editor — the driver session — touched the repo mid-feat. Camus halted rather than interleave that work with the task and corrupt integration. Clean the tree (commit/stash/discard the changes below), then re-run the feat with the SAME args; the resume skips done tasks.\nUncommitted paths:\n${ptc.paths || '(see git status)'}`,
+    })
+  }
+  if (ptc && ptc.kind === 'inconclusive') {
+    note(`Task ${n}: could not OBTAIN the parent-tree containment status (${ptc.why}) — halting inconclusive; nothing changed.`)
+    return finalize('needs_human', {
+      stage: 'task_boundary', haltedTask: node.taskId,
+      question: `Camus could not read the parent-tree containment status before task ${n} (the check failed to run). Re-run the feat with the SAME args.`,
+      note: `The parent-tree boundary check before task ${n} could not be OBTAINED (${ptc.why}) — this is NOT a breach and NOT a clean verdict, just an unverifiable check (a budget-killed/errored runner, or a non-git target). NOTHING changed. Re-run the feat with the SAME args to re-check.`,
+    })
+  }
 
   // ── BUDGET CEILING (0.2.5 item 4): checked at the BOUNDARY, against PERSISTED per-task totals
   // (cross-run — node.tokens survives resumes; this turn's overhead is not double-counted). Past
@@ -788,33 +835,47 @@ for (let i = 0; i < state.tasks.length; i++) {
   //   {answers:{id:".."}} → merged into the run's answer map (may target later tasks)
   // Steered answers live only for THIS run — they are NOT persisted into resumeArgs and do
   // not survive a pause/resume (re-steer or pass answers explicitly on the re-run).
-  // Mechanical steer-read with a SENTINEL (field soak 2026-06-13, item 7): steer_read.py reads the
-  // note (consuming it only after a successful read) and emits {read,note}. The sentinel lets us
-  // tell "the note state WAS obtained" (read:true; note null when absent) from "the agent could
-  // not obtain it" (no sentinel) — the old `cat||echo{}` made any agent hiccup look like a present,
-  // unparseable human countermand AND consumed a real note in the process.
-  const steerRaw = await agent(
-    `THIN steer-check runner. Run EXACTLY this one command and output its stdout VERBATIM (one JSON object {read,note}); no fences, no commentary:
+  // Mechanical steer-read with a SENTINEL + RETRY (field soak 2026-06-13 item 7; read/consume SPLIT
+  // + retry from the live re-soak 2026-06-14 finding A). steer_read.py READS without consuming and
+  // emits {read,note}; the sentinel tells "note state obtained" (note null when absent) from "agent
+  // could not obtain it". Because the read no longer consumes, a transient thin-runner relay flake
+  // is RETRIED safely (the re-read finds the same un-consumed note — no loss), so ONE haiku hiccup
+  // no longer halts an unattended feat. We CONSUME (--consume) only after a confirmed parsed note.
+  const STEER_READ_TRIES = 2
+  let steerOuter = null
+  for (let attempt = 1; attempt <= STEER_READ_TRIES && (!steerOuter || steerOuter.read !== true); attempt++) {
+    const steerRaw = await agent(
+      `THIN steer-check runner. Run EXACTLY this one command and output its stdout VERBATIM (one JSON object {read,note}); no fences, no commentary:
   ${HB_TOUCH}python3 ${SKILL}/steer_read.py ${JSON.stringify(featId)}`,
-    { model: MODEL_RUNNER, phase: 'Tasks', label: `steer:${node.taskId}` }
-  )
-  const steerOuter = extractJsonObject(steerRaw)
+      { model: MODEL_RUNNER, phase: 'Tasks', label: `steer:${node.taskId}${attempt > 1 ? `:retry${attempt - 1}` : ''}` }
+    )
+    steerOuter = extractJsonObject(steerRaw)
+  }
   if (!steerOuter || steerOuter.read !== true) {
-    // The agent could not OBTAIN the steer state (budget / error / non-sentinel noise). This is NOT
-    // a bad note — the read-only check failed to deliver, nothing was consumed, so a re-run re-reads
-    // any note intact. Inconclusive halt, never a false countermand-drop (the bug this fixes).
-    note(`Task ${n}: could not READ the steer-note state — halting inconclusive; nothing consumed.`)
+    // STILL no sentinel after retries → a persistent failure to obtain the steer state. This is NOT
+    // a bad note — the read-only check never consumed anything, so a re-run re-reads any note intact.
+    // Inconclusive halt (fail-closed), never a false countermand-drop.
+    note(`Task ${n}: could not READ the steer-note state after ${STEER_READ_TRIES} tries — halting inconclusive; nothing consumed.`)
     return finalize('needs_human', {
       stage: 'steer', haltedTask: node.taskId,
-      question: `Camus could not read the steer-note state before task ${n} (the check failed to run). Re-run the feat with the SAME args.`,
-      note: `The steer-note check before task ${n} could not be OBTAINED (a failed/garbled runner) — this is NOT a bad note, and NOTHING was consumed or applied. Re-run the feat with the SAME args to re-check; any \`camus steer\` note you left is intact.`,
+      question: `Camus could not read the steer-note state before task ${n} (the check failed to run, ${STEER_READ_TRIES}×). Re-run the feat with the SAME args.`,
+      note: `The steer-note check before task ${n} could not be OBTAINED after ${STEER_READ_TRIES} tries (a persistently failing/garbled runner) — this is NOT a bad note, and NOTHING was consumed or applied. Re-run the feat with the SAME args to re-check; any \`camus steer\` note you left is intact.`,
     })
   }
   const steerNoteRaw = steerOuter.note   // raw file text, or null when no note exists
   const steerParsed = (typeof steerNoteRaw === 'string') ? extractJsonObject(steerNoteRaw) : null
+  // CONSUME only after a CONFIRMED read (a note applies once). A present note (parseable or not) is
+  // consumed now via --consume; a null note (no file) consumes nothing. The pause re-queue below
+  // re-writes any remainder, so pause fires once and the payload survives.
+  if (typeof steerNoteRaw === 'string') {
+    await agent(
+      `THIN steer-consume runner. Run EXACTLY this one command and output its stdout VERBATIM ({consumed,...}); no fences, no commentary:
+  ${HB_TOUCH}python3 ${SKILL}/steer_read.py ${JSON.stringify(featId)} --consume`,
+      { model: MODEL_RUNNER, phase: 'Tasks', label: `steer-consume:${node.taskId}` }
+    )
+  }
   // A note FILE existed but its content is not parseable JSON — a real human note we can't read
-  // (already consumed by the script on read, so the re-run won't re-halt on the same file). Halt
-  // asking for a re-issue. A NULL note (no file) is the clean no-note case and skips this.
+  // (now consumed, so the re-run won't re-halt on the same file). Halt asking for a re-issue.
   if (typeof steerNoteRaw === 'string' && steerParsed == null) {
     note(`Task ${n}: a steer note was PRESENT but UNPARSEABLE — consumed; NOTHING was applied.`)
     return finalize('needs_human', {
@@ -826,8 +887,8 @@ for (let i = 0; i < state.tasks.length; i++) {
   const steer = steerParsed || {}
   if (steer.pause === true) {
     // RE-QUEUE the rest of the note before halting (audit P1 2026-06-11): steer merges compose
-    // pause+answers into ONE note, but the cat/rm above already CONSUMED it — halting here would
-    // silently drop the answers/guidance riding alongside the pause. Write the remainder (minus
+    // pause+answers into ONE note, but the --consume agent above already DELETED it — halting here
+    // would silently drop the answers/guidance riding alongside the pause. Write the remainder (minus
     // pause) back to the steer path so the NEXT run's boundary check picks it up: pause fires
     // once, the payload survives the pause. Fail-soft but LOUD: a failed re-queue is named in
     // the halt note so the human knows to re-issue.
