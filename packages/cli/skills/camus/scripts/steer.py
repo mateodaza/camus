@@ -320,12 +320,16 @@ def main(argv=None):
               "first (`camus steer --clear`, or re-run the feat to recover it); nothing was written."
               % exc, file=sys.stderr)
         return 1
-    print("steer note for %s written → applied at the next task boundary:" % feat_id)
+    print("steer note for %s written:" % feat_id)
     print("  %s" % json.dumps(note))
     if merged:
         answers = note.get("answers")
         n = len(answers) if isinstance(answers, dict) else 0
         print("merged with the pending note%s" % (" (%d answer(s) total)" % n if n else ""))
+    # EXPERIMENTAL / OPT-IN (descoped from 0.2.7, 2026-06-14): the feat consumes steer notes ONLY when
+    # it was started with steering enabled. Be honest rather than promise an effect a default run drops.
+    print("note: steering is EXPERIMENTAL and opt-in — it applies at the next task boundary ONLY if the")
+    print("      feat is running with steering enabled; a default run will not consume this note.")
     print("(change your mind: `camus steer --clear` · watch: `camus status`)")
     return 0
 

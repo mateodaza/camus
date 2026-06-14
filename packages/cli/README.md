@@ -223,12 +223,12 @@ rejected loudly, never silently downgraded.
   `~/.camus/worktrees/<repo>-<id>/`, never inside or beside your project. Once a task's
   branch is merged into the feat branch its worktree is removed (the branch is kept
   for audit); failed or paused tasks keep theirs for inspection.
-- **You can watch it — and grab the wheel.** `camus watch` is a live terminal
-  dashboard: per-task board, the last 10 steps, review rounds, and tokens,
-  auto-refreshing, with one-key steering — `p` pauses at the next task boundary
-  (resumable), `g` steers the next task, `c` clears a pending note. `camus status`
-  is the one-shot version; `camus steer "<guidance>"` scripts the same notes.
-  Notes are consumed once, at the run's safe redirect points.
+- **You can watch it.** `camus watch` is a live terminal dashboard: per-task board,
+  the last 10 steps, review rounds, and tokens, auto-refreshing. `camus status` is the
+  one-shot version. _(Live steering — `watch`'s `p`/`g`/`c` keys and
+  `camus steer "<guidance>"`, which scripts the same notes — is EXPERIMENTAL and
+  opt-in: a feat consumes steer notes only when run with steering enabled. Hardened
+  across the 0.2.x line; a race-free redesign lands in 0.3.)_
 - **"Running" must mean running.** Every phase touches a heartbeat file under
   `~/.camus/feats/`, so `status` and `watch` show `last heartbeat Xs ago` and warn
   loudly when a "running" feat has been quiet for over 10 minutes. The board also names

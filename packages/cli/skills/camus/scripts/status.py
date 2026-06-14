@@ -380,11 +380,12 @@ def render(synth, now=None):
         lines.append("")
 
     if synth["steer"]:
-        lines.append("Steer note PENDING (applies at the next task boundary):")
+        lines.append("Steer note PENDING (applies at the next task boundary IF the feat runs with steering enabled):")
         lines.append("  %s" % json.dumps(synth["steer"]))
     elif not synth.get("steerClaim"):
-        lines.append('Steer: none pending — `camus steer "<guidance>"` redirects the next task;')
-        lines.append("       `camus steer --pause` halts at the next task boundary.")
+        # Steering is EXPERIMENTAL / opt-in (descoped from 0.2.7) — don't promote it as a default lever.
+        lines.append("Steer: none pending — `camus steer` is experimental/opt-in (the feat must be run")
+        lines.append("       with steering enabled for notes to be consumed).")
     if synth.get("steerClaim"):
         # A crashed consume left a claim — surface it rather than reporting "none pending" over it.
         lines.append("⚠ Stranded steer claim present (a prior consume crashed) — a feat re-run will")

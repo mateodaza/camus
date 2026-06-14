@@ -1130,7 +1130,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // before halting; a pause-only note re-queues nothing.
   {
     const tid = taskIdOf('F', ['only task'], 'only task')
-    const { res, calls, prompts } = await runFeat({ feat: 'F', tasks: ['only task'] },
+    const { res, calls, prompts } = await runFeat({ feat: 'F', tasks: ['only task'], steer: true },
       { ...featBase, steer: J({ read: true, note: J({ pause: true, answers: { [tid]: 'use adapter B' } }) }), 'steer-requeue': { written: true } },
       [])
     ok('F20 pause still halts', res && res.status === 'paused_by_user', res && res.status)
@@ -1141,7 +1141,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F20 halt note says the payload survived', /RE-QUEUED/.test((res && res.note) || ''))
   }
   {
-    const { res, calls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+    const { res, calls } = await runFeat({ feat: 'F', tasks: ['only task'], steer: true },
       { ...featBase, steer: J({ read: true, note: J({ pause: true }) }) }, [])
     ok('F20b pause-only note → no re-queue agent', res && res.status === 'paused_by_user' && !calls.some((c) => c.startsWith('steer-requeue')), calls.join(','))
   }
@@ -1488,31 +1488,34 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   }
   // F7: steer hook (2026-06-10) — a pending human note is consumed at the task boundary.
   {
-    const { res, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+    const { res, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'], steer: true },
       { ...featBase, steer: J({ read: true, note: J({ pause: true }) }) }, [])
     ok('F7 pause note → paused_by_user before the loop', res && res.status === 'paused_by_user', res && res.status)
     ok('F7 loop never invoked on pause', workflowCalls === 0, 'workflowCalls=' + workflowCalls)
   }
   {
-    const { res, loopArgs } = await runFeat({ feat: 'F', tasks: ['only task'] },
+    const { res, loopArgs } = await runFeat({ feat: 'F', tasks: ['only task'], steer: true },
       { ...featBase, steer: J({ read: true, note: J({ guidance: 'use adapter B' }) }) },
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F7 guidance threaded as humanAnswer', !!loopArgs[0] && loopArgs[0].humanAnswer === 'use adapter B', J(loopArgs[0]))
     ok('F7 feat still done with guidance', res && res.status === 'done', res && res.status)
   }
   {
-    // No note (steer agent unstubbed → undefined) → no humanAnswer, no pause: steering is opt-in.
-    const { res, loopArgs } = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
+    // STEER OFF BY DEFAULT (descoped from 0.2.7, 2026-06-14): without steer:true the steer file-IPC
+    // path is skipped ENTIRELY — no steer agent call, no humanAnswer, no claim surface — and the feat
+    // runs normally. (The feature is opt-in via args.steer=true; see the F7/F50/F52/F53 pins.)
+    const { res, loopArgs, calls } = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
-    ok('F7 no note → no humanAnswer injected', !!loopArgs[0] && !('humanAnswer' in loopArgs[0]))
-    ok('F7 no note → run proceeds', res && res.status === 'done', res && res.status)
+    ok('F7 steer OFF by default → no steer agent call', !calls.some((c) => c.startsWith('steer')), calls.join(','))
+    ok('F7 steer off → no humanAnswer injected', !!loopArgs[0] && !('humanAnswer' in loopArgs[0]))
+    ok('F7 steer off → run proceeds', res && res.status === 'done', res && res.status)
   }
   // F7d: pause → re-run with the SAME args resumes past the done task (the contract the
   // finalize note promises the user).
   {
     let steerCalls = 0
     const steerOnceThenPause = () => (++steerCalls === 1 ? J({ read: true, note: null }) : J({ read: true, note: J({ pause: true }) }))
-    const r1 = await runFeat({ feat: 'P', tasks: ['a', 'b'] },
+    const r1 = await runFeat({ feat: 'P', tasks: ['a', 'b'], steer: true },
       { ...featBase, steer: steerOnceThenPause },
       [{ status: 'done', branch: 'camus/feat/x/a', decisions: [] }])
     ok('F7d task a done, paused before b', r1.res && r1.res.status === 'paused_by_user' && r1.workflowCalls === 1,
@@ -1520,7 +1523,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const prior = r1.stateJSON
     ok('F7d paused state persisted (a=done)', !!prior && prior.status === 'paused_by_user' && prior.tasks[0].status === 'done')
     const featResume = { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(prior) } }
-    const r2 = await runFeat({ feat: 'P', tasks: ['a', 'b'] }, featResume,
+    const r2 = await runFeat({ feat: 'P', tasks: ['a', 'b'], steer: true }, featResume,
       [{ status: 'done', branch: 'camus/feat/x/b', decisions: [] }])
     ok('F7d re-run resumes: only task b runs', r2.workflowCalls === 1, 'workflowCalls=' + r2.workflowCalls)
     ok('F7d re-run completes', r2.res && r2.res.status === 'done', r2.res && r2.res.status)
@@ -1531,7 +1534,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const bId = taskIdOf('T2', ['a', 'b'], 'b')
     let sc = 0
     const steerNoteOnce = () => (++sc === 1 ? J({ read: true, note: J({ answers: { [bId]: 'pick B' } }) }) : J({ read: true, note: null }))
-    const { loopArgs } = await runFeat({ feat: 'T2', tasks: ['a', 'b'] },
+    const { loopArgs } = await runFeat({ feat: 'T2', tasks: ['a', 'b'], steer: true },
       { ...featBase, steer: steerNoteOnce },
       [{ status: 'done', branch: 'camus/feat/x/a', decisions: [] },
        { status: 'done', branch: 'camus/feat/x/b', decisions: [] }])
@@ -1542,7 +1545,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // note now HALTS the feat — a human countermand was consumed without being applied, and running
   // past it re-opens exactly what it was written to prevent. needs_human → not auto-resumable.
   {
-    const { res, stateJSON, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+    const { res, stateJSON, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'], steer: true },
       { ...featBase, steer: J({ read: true, note: 'totally not json' }) },
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F7f garbage note surfaced in run log', !!stateJSON && stateJSON.events.some((e) => /UNPARSEABLE/.test(e.msg)))
@@ -1559,7 +1562,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   {
     let sc = 0
     const flakeThenSentinel = () => (++sc === 1 ? 'oops budget preamble, no json here' : J({ read: true, note: null }))
-    const { res, calls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+    const { res, calls } = await runFeat({ feat: 'F', tasks: ['only task'], steer: true },
       { ...featBase, steer: flakeThenSentinel },
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F50 steer relay flake is RETRIED (retry label present)', calls.some((c) => /^steer:.*:retry1$/.test(c)), calls.filter((c) => c.startsWith('steer')).join(','))
@@ -1569,7 +1572,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // F50b: a PERSISTENT failure to obtain the steer state (no sentinel even after retries) is an
   // inconclusive halt — fail-closed, never a false countermand-drop, and NOTHING consumed.
   {
-    const { res, calls, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+    const { res, calls, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'], steer: true },
       { ...featBase, steer: 'never valid json' },
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F50b persistent no-sentinel → needs_human inconclusive (stage steer)', res && res.status === 'needs_human' && res.stage === 'steer', res && (res.status + '/' + res.stage))
@@ -1630,7 +1633,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       J({ consumed: false, reason: 'changed', sha: 'shaB' }),  // 1st consume: note changed under us → nothing deleted
       J({ consumed: true }),                                   // 2nd consume (after re-read): matched → deleted
     ]
-    const { res, loopArgs, calls, prompts } = await runFeat({ feat: 'F', tasks: ['only task'] },
+    const { res, loopArgs, calls, prompts } = await runFeat({ feat: 'F', tasks: ['only task'], steer: true },
       { ...featBase, steer: () => reads[Math.min(rc++, reads.length - 1)], 'steer-consume': () => consumes[Math.min(cc++, consumes.length - 1)] },
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F52 sha-mismatch triggers a RE-READ', calls.some((c) => /:reread1/.test(c)), calls.filter((c) => c.startsWith('steer')).join(','))
@@ -1643,7 +1646,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // must HALT named after the churn cap, never spin forever and never apply a half-written note.
   {
     const churning = J({ read: true, note: J({ guidance: 'moving target' }), sha: 'sha-x' })
-    const { res, calls, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+    const { res, calls, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'], steer: true },
       { ...featBase, steer: churning, 'steer-consume': J({ consumed: false, reason: 'changed', sha: 'sha-y' }) },
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F52b a note that never settles → needs_human (stage steer)', res && res.status === 'needs_human' && res.stage === 'steer', res && (res.status + '/' + res.stage))
@@ -1660,7 +1663,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       J({ read: true, note: J({ guidance: 'RETRACTED' }), sha: 'shaA' }),
       J({ read: true, note: null, sha: null }),   // the human cleared it
     ]
-    const { res, loopArgs, calls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+    const { res, loopArgs, calls } = await runFeat({ feat: 'F', tasks: ['only task'], steer: true },
       { ...featBase, steer: () => reads[Math.min(rc++, reads.length - 1)], 'steer-consume': J({ consumed: false, reason: 'absent' }) },
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F53 a cleared note triggers a RE-READ (treated as changed-to-null)', calls.some((c) => /:reread1/.test(c)), calls.filter((c) => c.startsWith('steer')).join(','))
@@ -1672,7 +1675,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // exist it halts loudly (read:false). The feat surfaces that reason and halts inconclusive — no
   // silent loss, nothing dispatched.
   {
-    const { res, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+    const { res, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'], steer: true },
       { ...featBase, steer: J({ read: false, error: 'a previous consume crashed leaving a stranded steer claim (x.consuming) alongside a current note — resolve it before continuing' }) },
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F53b stranded-claim read:false → needs_human (stage steer)', res && res.status === 'needs_human' && res.stage === 'steer', res && (res.status + '/' + res.stage))

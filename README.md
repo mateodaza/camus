@@ -81,10 +81,11 @@ own tests; anything less arrives as a named halt with the remedy in the note
   resume shape.
 - **Kill it anywhere; resume finishes only what is left.** Finished tasks skip, and
   proven work lands mechanically.
-- **You can watch it — and grab the wheel.** `camus watch` is a live board with a
-  heartbeat ("last heartbeat Xs ago", a loud warning when a "running" feat goes
-  quiet), one-key steering, and honest token totals. Landed a task by hand?
-  `camus reconcile` records it, with git evidence required.
+- **You can watch it.** `camus watch` is a live board with a heartbeat ("last
+  heartbeat Xs ago", a loud warning when a "running" feat goes quiet) and honest token
+  totals. Landed a task by hand? `camus reconcile` records it, with git evidence
+  required. _(Live steering — `camus steer` / `watch`'s `p`·`g`·`c` keys — is
+  experimental and opt-in; a race-free redesign lands in 0.3.)_
 - **It studies its own history — and checks its own pulse.** `camus retro` reads your
   run reports back (read-only, never a model call) and recommends only what ≥3 data
   points support, evidence cited inline. `camus canary` proves the local toolchain

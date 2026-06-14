@@ -91,6 +91,13 @@ const ROUND_CAP = Number.isInteger(A.roundCap) ? A.roundCap : null
 // framing applies: tokens are an estimate-adjacent counter, never an invoice. Invalid → ignored.
 const BUDGET_TOKENS = (typeof A.budgetTokens === 'number' && isFinite(A.budgetTokens) && A.budgetTokens > 0)
   ? Math.floor(A.budgetTokens) : null
+// HUMAN STEERING — OPT-IN, default OFF (descoped from 0.2.7, 2026-06-14). `camus steer` is concurrent
+// file-IPC between the human CLI and this workflow over a shared note file; six audit rounds shrank
+// the race windows to ~single syscalls and made every failure mode fail-safe, but the read-then-act
+// architecture guarantees residual windows. Rather than ship that surface promoted, steer is gated
+// behind args.steer=true (experimental) so a normal run never touches the steer path. The race-free
+// redesign (atomic claim → per-run private inbox; the durable-log pattern) lands default-ON in 0.3.
+const STEER_ENABLED = A.steer === true
 // LAND list (run-5 fix 2026-06-11): taskIds whose worktree is ALREADY proven (review passed, or a
 // human ACCEPTED a verify-clean needs_decision halt). Those tasks run the loop in land mode —
 // commit → verify → merge, no re-plan/re-implement/re-review. The accept half of accept-vs-refine.
@@ -845,9 +852,12 @@ for (let i = 0; i < state.tasks.length; i++) {
   //       the OLD note and silently delete the NEW one. So consume is SHA-GATED (--expect-sha): it
   //       deletes ONLY the exact bytes we read. If the note changed under us, the newer note survives
   //       and we RE-READ + reprocess the current note (bounded), never applying a superseded one.
+  // OPT-IN (descoped from 0.2.7): the steer file-IPC path runs ONLY when args.steer===true. A normal
+  // run skips it entirely — no steer agent calls, no claim files, none of the read-then-act surface.
+  let steer = {}
+  if (STEER_ENABLED) {
   const STEER_READ_TRIES = 2     // retry a FLAKED read (no sentinel)
   const STEER_CHURN_TRIES = 3    // re-read when the note changed between read and consume
-  let steer = {}
   let steerNoteRaw = null        // the (final) raw note text we actually CONSUMED + apply, if any
   for (let churn = 0; ; churn++) {
     let steerOuter = null
@@ -914,6 +924,7 @@ for (let i = 0; i < state.tasks.length; i++) {
     })
   }
   steer = steerParsed || {}
+  }  // end if (STEER_ENABLED)
   if (steer.pause === true) {
     // RE-QUEUE the rest of the note before halting (audit P1 2026-06-11): steer merges compose
     // pause+answers into ONE note, but the sha-gated consume above already DELETED the exact note we
