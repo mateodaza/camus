@@ -319,6 +319,23 @@ def test_write_refuses_while_a_claim_exists():
         assert _note(base, "f1") is None, "no new live note is written while a claim is unresolved"
 
 
+def test_write_note_primitive_refuses_at_the_side_effect():
+    # P2 round 6: the guard lives INSIDE the write primitive, so it catches a claim regardless of any
+    # caller-side check. write_note raises ClaimPresentError; write_note_merged returns (None, msg).
+    with tempfile.TemporaryDirectory() as base:
+        _feat(base, "f1")
+        _write_raw(_claim_path(base, "f1"), '{"guidance":"stranded"}')
+        raised = False
+        try:
+            ST.write_note(base, "f1", {"guidance": "x"})
+        except ST.ClaimPresentError:
+            raised = True
+        assert raised, "the write primitive must refuse over a stranded claim"
+        assert _note(base, "f1") is None
+        path, msg = ST.write_note_merged(base, "f1", {"guidance": "x"})
+        assert path is None and "stranded steer claim" in msg, (path, msg)
+
+
 # --- stdlib runner (no pytest required) ------------------------------------
 
 if __name__ == "__main__":

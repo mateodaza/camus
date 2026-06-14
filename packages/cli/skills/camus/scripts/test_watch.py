@@ -124,6 +124,26 @@ def test_dispatch_write_refused_while_a_claim_exists():
         assert _note(base, "f1") is None, "no new live note written while a claim is unresolved"
 
 
+def test_dispatch_guidance_refused_when_claim_appears_DURING_prompt():
+    # P2 round 6 (Mateo's exact repro): the early check passes (no claim yet), but a `.consuming` claim
+    # appears WHILE the human types guidance. The write primitive must still refuse — the guard is at
+    # the side effect, not the pre-prompt check. No live note may be left next to the claim.
+    with tempfile.TemporaryDirectory() as base:
+        _feat(base, "f1")
+        claim = os.path.join(base, "steer", "f1.json.consuming")
+        os.makedirs(os.path.dirname(claim), exist_ok=True)
+
+        def prompt_that_strands_a_claim(_):
+            with open(claim, "w") as fh:   # a consume claims (and crashes) mid-prompt
+                fh.write('{"guidance":"stranded"}')
+            return "my new guidance"
+
+        fb = W.dispatch("g", base, "f1", prompt=prompt_that_strands_a_claim)
+        assert "refused" in fb, fb
+        assert _note(base, "f1") is None, "no live note may be written next to the claim"
+        assert os.path.exists(claim), "the stranded claim is left intact for the human to resolve"
+
+
 def test_dispatch_explicit_feat_id_targets_that_feat():
     with tempfile.TemporaryDirectory() as base:
         _feat(base, "f1")

@@ -63,7 +63,9 @@ def dispatch(key, base, feat_id, prompt=input):
             return "pause refused: a stranded steer claim is present — clear it (c) or re-run the feat to recover it"
         # MERGED write (audit P1 2026-06-11): raw write_note here clobbered a pending note, so
         # an interactive pause erased queued answers/guidance the CLI had carefully composed.
-        _, warn = ST.write_note_merged(base, fid, {"pause": True})
+        path, warn = ST.write_note_merged(base, fid, {"pause": True})
+        if path is None:   # authoritative backstop: a claim raced the write (P2 round 6)
+            return "pause refused: " + warn
         return ("pause note written — the run halts at the next task boundary"
                 + ("; WARNING: " + warn if warn else ""))
     if key == "g":
@@ -75,7 +77,11 @@ def dispatch(key, base, feat_id, prompt=input):
         text = prompt("guidance for the next task: ").strip()
         if not text:
             return "empty guidance — nothing written"
-        _, warn = ST.write_note_merged(base, fid, {"guidance": text})
+        # A claim can appear DURING the prompt above — the early check can't catch that, so the write
+        # primitive is the authoritative guard (P2 round 6): write_note_merged returns (None, msg) then.
+        path, warn = ST.write_note_merged(base, fid, {"guidance": text})
+        if path is None:
+            return "steer refused: " + warn
         return ("guidance note written — applied at the next task boundary"
                 + ("; WARNING: " + warn if warn else ""))
     if key == "c":

@@ -139,6 +139,13 @@ def merge_notes(existing, new):
     return merged
 
 
+class ClaimPresentError(Exception):
+    """A stranded `.consuming` claim exists — refuse to write a note over it (it would leave the next
+    feat run halted on both files). Raised INSIDE the write primitive so every caller is guarded at the
+    SIDE EFFECT, not via a check-then-act a claim can slip past (re-soak 2026-06-14, P2 round 6: a
+    caller's pre-prompt check let a claim appear during the prompt, then the write proceeded anyway)."""
+
+
 def write_note(base, feat_id, note):
     path = steer_path(base, feat_id)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -146,16 +153,21 @@ def write_note(base, feat_id, note):
     note["writtenAt"] = int(time.time())
     # ATOMIC write (re-soak 2026-06-14, P2 subsystem): write to a per-pid temp then os.replace, so a
     # concurrent steer_read NEVER sees a half-written or truncated note. A plain open(path,"w") would
-    # truncate first, and a read landing in that window would see an empty/partial file. The reader's
-    # sha-gate would self-correct (a torn read just looks like a "changed" note → re-read), but writing
-    # atomically removes the torn state entirely — every boundary observes a complete old or new note.
+    # truncate first, and a read landing in that window would see an empty/partial file.
     tmp = "%s.writing.%d" % (path, os.getpid())
     try:
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(note, fh, indent=2)
             fh.write("\n")
+        # GUARD AT THE SIDE EFFECT (P2 round 6): refuse if a claim exists, checked here — one syscall
+        # before os.replace — so a claim that slipped past a caller's earlier check (e.g. appeared
+        # during a CLI prompt) is still caught. The window shrinks from a prompt's seconds to ~1
+        # syscall; a non-crashed consume racing this cleans up its own claim, so only a CRASH-stranded
+        # claim trips it. True atomicity needs the durable-log redesign (0.3); this closes the bug.
+        if os.path.exists(path + ".consuming"):
+            raise ClaimPresentError(path + ".consuming")
         os.replace(tmp, path)
-    except Exception:
+    except BaseException:
         try:
             os.remove(tmp)
         except Exception:
@@ -165,7 +177,8 @@ def write_note(base, feat_id, note):
 
 
 def write_note_merged(base, feat_id, note):
-    """Compose `note` with any PENDING note and write the result. Returns (path, warning|None).
+    """Compose `note` with any PENDING note and write the result. Returns (path, warning|None), or
+    (None, refusal) when a stranded claim blocks the write (the caller must surface the refusal).
 
     Audit P1 2026-06-11: watch's keypress handlers called raw write_note, so an interactive
     pause-then-guidance CLOBBERED the pending note despite the CLI's merge rules. This is the
@@ -180,7 +193,11 @@ def write_note_merged(base, feat_id, note):
                    "be re-issued" % path)
     elif existing is not None:
         note = merge_notes(existing, note)
-    return write_note(base, feat_id, note), warning
+    try:
+        return write_note(base, feat_id, note), warning
+    except ClaimPresentError as exc:
+        return None, ("a stranded steer claim is present (%s) — clear it (`camus steer --clear`) or "
+                      "re-run the feat to recover it; refusing to write a note the next run would halt on" % exc)
 
 
 # Claim awareness (re-soak 2026-06-14, finding P2): steer_read.py uses a `<feat>.json.consuming`
@@ -294,7 +311,15 @@ def main(argv=None):
         note = merge_notes(existing, note)
         merged = True
 
-    write_note(args.dir, feat_id, note)
+    try:
+        write_note(args.dir, feat_id, note)
+    except ClaimPresentError as exc:
+        # Authoritative backstop: a claim that appeared after the early guard above (the write
+        # primitive is the real boundary, not this CLI caller). Nothing was written.
+        print("steer: a stranded steer claim is present (%s) — a prior consume crashed. Resolve it "
+              "first (`camus steer --clear`, or re-run the feat to recover it); nothing was written."
+              % exc, file=sys.stderr)
+        return 1
     print("steer note for %s written → applied at the next task boundary:" % feat_id)
     print("  %s" % json.dumps(note))
     if merged:
