@@ -21,3 +21,6 @@ pytest-cache-files-*/
 
 # vercel
 .vercel/
+
+# firecrawl MCP scratch/cache
+.firecrawl/
