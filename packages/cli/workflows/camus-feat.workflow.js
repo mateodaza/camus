@@ -54,10 +54,15 @@ const TASKS = Array.isArray(A.tasks) ? A.tasks.map((t) => String(t).trim()).filt
 const TARGET = (A.targetPath && String(A.targetPath)) || ''
 // args.verifyCmd (field soak 2026-06-13, finding 3): a per-run verify override for HEADLESS runs
 // (no interactive shell to `export CAMUS_VERIFY_CMD`). Persisted in resumeArgs, forwarded to every
-// per-task loop, and inlined as an ENV-ASSIGNMENT PREFIX (JSON-quoted, never in the command body)
-// on the feat-level env/baseline/integration runners — so it reaches verify.py's env lookup and
-// cannot become a shell-injection vector. Advisory config; verify.py already handles it safely.
-const VERIFY_CMD_OVERRIDE = (typeof A.verifyCmd === 'string' && A.verifyCmd.trim()) ? A.verifyCmd : ''
+// per-task loop, and inlined as an ENV-ASSIGNMENT PREFIX: CAMUS_VERIFY_CMD="<value>" cmd.
+// SHELL-INJECTION GUARD (verification audit 2026-06-13): INSIDE double quotes bash STILL expands
+// $(…) / `…` and honors \ and " — JSON.stringify does NOT neutralize them. A value carrying any of
+// $ ` " \ or a newline is REFUSED (dropped → auto-detect verify still gates; named loudly), which
+// closes the escalation where an LLM-grounded camus-plan verifyCmd reaches the gate as code-exec.
+const _VERIFY_CMD_RAW = (typeof A.verifyCmd === 'string' && A.verifyCmd.trim()) ? A.verifyCmd : ''
+const _VERIFY_UNSAFE = ['$', '`', '"', '\\', '\n', '\r']
+const VERIFY_CMD_OVERRIDE = (_VERIFY_CMD_RAW && !_VERIFY_UNSAFE.some((ch) => _VERIFY_CMD_RAW.includes(ch))) ? _VERIFY_CMD_RAW : ''
+if (_VERIFY_CMD_RAW && !VERIFY_CMD_OVERRIDE) log('⚠ Ignoring args.verifyCmd: it contains shell-unsafe characters ($ ` " \\ or newline). Falling back to auto-detected verify — bake the command into your repo\'s test script instead.')
 const VERIFY_ENV = VERIFY_CMD_OVERRIDE ? `CAMUS_VERIFY_CMD=${JSON.stringify(VERIFY_CMD_OVERRIDE)} ` : ''
 // HITL: policy is threaded to every per-task loop (default ask_on_ambiguity). `answers` is an
 // optional map { taskId: "human answer" } supplied on a RESUME after a needs_human pause — the

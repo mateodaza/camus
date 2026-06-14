@@ -1743,6 +1743,19 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F45 verifyCmd forwarded to the per-task loop', !!r.loopArgs[0] && r.loopArgs[0].verifyCmd === vc, J(r.loopArgs[0] && r.loopArgs[0].verifyCmd))
     const none = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase, loopDone)
     ok('F45 no verifyCmd → no env prefix (unchanged)', !(none.prompts['baseline-verify'] || '').includes('CAMUS_VERIFY_CMD='))
+    // F45b (verification audit 2026-06-13): a shell-injection verifyCmd ($()/backtick/quote) is
+    // REFUSED — dropped (no env prefix), never inlined where bash would expand it. JSON.stringify
+    // does NOT neutralize $(…) inside double quotes; the charset guard does.
+    for (const evil of ['true$(touch /tmp/PWN)', 'a `id` b', 'x" ; rm -rf / ; "y']) {
+      const r2 = await runFeat({ feat: 'F', tasks: ['only task'], verifyCmd: evil }, featBase, loopDone)
+      ok('F45b injection verifyCmd refused (no env prefix): ' + evil.slice(0, 18),
+        !(r2.prompts['baseline-verify'] || '').includes('CAMUS_VERIFY_CMD=') && !(r2.loopArgs[0] && r2.loopArgs[0].verifyCmd),
+        (r2.prompts['baseline-verify'] || '').slice(0, 120))
+    }
+    // F45c: the loop-side guard too (a stringified loop arg carrying an injection verifyCmd)
+    const lp = await runLoop({ task: 't', verifyCmd: 'go$(whoami)' }, { ...cls, ...planOf('clear', ''), ...happyTail })
+    ok('F45c loop refuses injection verifyCmd (verify prompt has no env prefix)',
+      lp.res.status === 'done' && !(lp.prompts.verify || '').includes('CAMUS_VERIFY_CMD='), lp.res.status)
   }
 
   console.log(`\n${pass} passed, ${fail} failed`)

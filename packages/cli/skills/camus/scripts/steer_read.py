@@ -19,9 +19,12 @@ import json
 import os
 import sys
 
-home = os.environ.get("CAMUS_HOME") or os.path.expanduser("~")
+# CAMUS_HOME IS the camus home itself (default ~/.camus) — same convention as reconcile.py/land.py,
+# NOT the parent of .camus (verification audit 2026-06-13: the original nested .camus under it,
+# silently MISSING pending steer notes under a custom CAMUS_HOME).
+camus_home = os.environ.get("CAMUS_HOME") or os.path.join(os.path.expanduser("~"), ".camus")
 feat_id = os.path.basename(sys.argv[1]) if len(sys.argv) > 1 else ""
-path = os.path.join(home, ".camus", "steer", feat_id + ".json")
+path = os.path.join(camus_home, "steer", feat_id + ".json")
 
 note = None
 try:

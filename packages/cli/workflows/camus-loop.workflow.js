@@ -79,21 +79,29 @@ const TASK = typeof args === 'string' ? args : (args && args.task) || ''
 const TARGET = (args && typeof args === 'object' && args.targetPath) || ''
 // args.verifyCmd (field soak 2026-06-13, finding 3): a per-run verify override for HEADLESS runs
 // where there is no interactive shell to `export CAMUS_VERIFY_CMD`. Inlined as an ENV-ASSIGNMENT
-// PREFIX (never interpolated into the command body) so it reaches verify.py's env lookup and
-// cannot become a shell-injection vector; JSON-quoted. verify.py already handles the override
-// safely — this is advisory config, not a gate change.
-const VERIFY_CMD_OVERRIDE = (args && typeof args === 'object' && typeof args.verifyCmd === 'string' && args.verifyCmd.trim()) ? args.verifyCmd : ''
+// PREFIX: CAMUS_VERIFY_CMD="<value>" cmd. SHELL-INJECTION GUARD (verification audit 2026-06-13):
+// INSIDE double quotes bash STILL expands $(…) / `…` and honors \ and " — JSON.stringify does NOT
+// neutralize them (the EXACT trap okHandle guards on the review-handle path). A value carrying any
+// of $ ` " \ or a newline is REFUSED (dropped → auto-detect verify still gates; named loudly),
+// which also closes the escalation where an LLM-grounded camus-plan verifyCmd reaches the gate as
+// arbitrary code execution. The accepted value is still JSON-quoted as belt.
+const _VERIFY_CMD_RAW = (args && typeof args === 'object' && typeof args.verifyCmd === 'string' && args.verifyCmd.trim()) ? args.verifyCmd : ''
+const _VERIFY_UNSAFE = ['$', '`', '"', '\\', '\n', '\r']
+const VERIFY_CMD_OVERRIDE = (_VERIFY_CMD_RAW && !_VERIFY_UNSAFE.some((ch) => _VERIFY_CMD_RAW.includes(ch))) ? _VERIFY_CMD_RAW : ''
+if (_VERIFY_CMD_RAW && !VERIFY_CMD_OVERRIDE) log('⚠ Ignoring args.verifyCmd: it contains shell-unsafe characters ($ ` " \\ or newline). Falling back to auto-detected verify — bake the command into your repo\'s test script instead.')
 const VERIFY_ENV = VERIFY_CMD_OVERRIDE ? `CAMUS_VERIFY_CMD=${JSON.stringify(VERIFY_CMD_OVERRIDE)} ` : ''
 // REPO_CD (dogfood run-8 + field soak finding "garland", 2026-06-12/13): worktree identity and
 // every repo-reading command must run at the GIT TOPLEVEL, not whatever cwd the runner inherited.
 // A launch from a SUBDIRECTORY computed a different worktree home (the basename was the subdir,
 // not the repo) and made the implement agent edit the main tree — a containment leak. The fix is
 // to ALWAYS resolve and cd to `git rev-parse --show-toplevel` (of targetPath if given, else cwd),
-// so it no longer matters which folder the run was launched from. A non-repo resolves to empty →
-// `cd "" && …` fails the whole command (fail-closed; the feat preflight already refuses non-repos).
-// In a `cmd1 && cmd2` list bash expands cmd2's words AFTER cmd1 runs, so the $(git rev-parse …)
-// inside WT_DEST resolves at the toplevel, which is the entire point.
-const REPO_CD = `cd "$(cd ${TARGET ? JSON.stringify(TARGET) : '.'} && git rev-parse --show-toplevel)" && `
+// so it no longer matters which folder the run was launched from. FAIL-CLOSED on a non-repo / bad
+// targetPath: the inner `(cd <t> && git rev-parse) || echo <sentinel>` yields a non-existent
+// sentinel path, so the outer `cd "<sentinel>"` ERRORS and the `&&` short-circuits the whole
+// command (verification audit 2026-06-13: a bare `cd ""` is a no-op exit 0, NOT fail-closed —
+// the sentinel makes the failure real). In a `cmd1 && cmd2` list bash expands cmd2's words AFTER
+// cmd1 runs, so the $(git rev-parse …) inside WT_DEST resolves at the toplevel, the entire point.
+const REPO_CD = `cd "$( (cd ${TARGET ? JSON.stringify(TARGET) : '.'} && git rev-parse --show-toplevel) || echo /nonexistent/camus-not-a-repo )" && `
 // Identity composability: a caller (e.g. the M1 feat-runner) can feat-scope this task's branch
 // and worktree by passing branchPrefix (default 'camus/') and idSalt (default '' = standalone).
 const BRANCH_PREFIX = (args && typeof args === 'object' && args.branchPrefix) || 'camus/'

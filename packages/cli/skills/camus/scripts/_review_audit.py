@@ -12,6 +12,16 @@ import json
 import sys
 import time
 
+# The audit `ran` must mean EXACTLY what the gate means by "a review ran" — so reuse the adapter's
+# own normalizer rather than re-deriving the rule (verification audit 2026-06-13: an inline
+# overall_correctness check still diverged from the adapter, which ALSO rejects missing findings[],
+# malformed priorities, and "patch is incorrect" with no blocking findings). Guarded import keeps
+# this best-effort writer from ever raising into the review path.
+try:
+    import adapter as _adapter
+except Exception:  # pragma: no cover - sibling always present in a real gate
+    _adapter = None
+
 
 def _int(x):
     try:
@@ -20,26 +30,19 @@ def _int(x):
         return x
 
 
-# A usable verdict, mirrored from adapter.VALID_CORRECTNESS / codex_review.sh _last_has_verdict —
-# kept inline so this best-effort audit writer takes no import on the adapter (audit 2026-06-13,
-# item 12: the audit `ran` must match the GATE's "usable verdict", not merely "parsed as JSON").
-_VALID_CORRECTNESS = ("patch is correct", "patch is incorrect")
-
-
 def build_record(wt, rnd, status, raw):
     try:
         parsed = json.loads(raw) if raw.strip() else None
     except (ValueError, TypeError):
         parsed = None
-    # `ran` is the proof signal — and it must mean the SAME thing the gate means by "a review ran":
-    # a real verdict, not just any JSON. Parseable JSON that lacks a valid overall_correctness is
-    # exactly what the adapter rejects as schema-drift infra (it did NOT review), so it must read
-    # ran:false here too — otherwise the forensic file claims a review "ran" for output the gate
-    # threw away (audit 2026-06-13, item 12).
-    ran = (
-        isinstance(parsed, dict)
-        and parsed.get("overall_correctness") in _VALID_CORRECTNESS
-    )
+    # `ran` = the gate's "usable verdict" oracle, computed by the SAME adapter the loop branches on,
+    # so the forensic file can never claim a review ran for output the gate rejected as infra.
+    ran = False
+    if _adapter is not None:
+        try:
+            ran = _adapter.normalize_codex(raw, _int(status)).get("ran") is True
+        except Exception:
+            ran = False
     return {
         "ran_at": int(time.time()),
         "worktree": wt,

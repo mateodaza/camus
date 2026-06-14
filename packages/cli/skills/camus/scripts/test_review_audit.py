@@ -41,6 +41,23 @@ def test_incorrect_verdict_marks_ran_true():
     assert rec["ran"] is True  # a real REJECT verdict is a review that ran
 
 
+def test_ran_matches_adapter_full_contract():
+    # verification audit 2026-06-13: ran must mirror the adapter's FULL usable-verdict contract,
+    # not merely a valid overall_correctness. Each shape below is one the adapter rejects as infra.
+    missing_findings = A.build_record("/x/camus-wt-foo", "1", "0",
+                                      '{"overall_correctness":"patch is correct"}')
+    assert missing_findings["ran"] is False, "missing findings[] must be ran:false"
+    bad_priority = A.build_record("/x/camus-wt-foo", "1", "0",
+                                  '{"overall_correctness":"patch is correct","findings":[{"priority":9}]}')
+    assert bad_priority["ran"] is False, "out-of-range priority must be ran:false"
+    incorrect_no_blocking = A.build_record("/x/camus-wt-foo", "1", "0",
+                                           '{"overall_correctness":"patch is incorrect","findings":[]}')
+    assert incorrect_no_blocking["ran"] is False, "'incorrect' with no blocking must be ran:false"
+    nonzero_exit = A.build_record("/x/camus-wt-foo", "1", "7",
+                                  '{"overall_correctness":"patch is correct","findings":[]}')
+    assert nonzero_exit["ran"] is False, "a non-zero codex exit must be ran:false"
+
+
 def test_nonnumeric_round_exit_preserved_as_string():
     rec = A.build_record("/x/wt", "r1", "sig", "{}")
     assert rec["round"] == "r1" and rec["codex_exit"] == "sig"

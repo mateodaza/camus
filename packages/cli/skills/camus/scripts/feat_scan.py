@@ -17,8 +17,11 @@ import glob
 import json
 import os
 
-home = os.environ.get("CAMUS_HOME") or os.path.expanduser("~")
-feats_dir = os.path.join(home, ".camus", "feats")
+# CAMUS_HOME IS the camus home itself (default ~/.camus) — the same convention as reconcile.py /
+# land.py, NOT the parent of .camus (verification audit 2026-06-13: the original nested .camus
+# under it, silently disabling fork detection under a custom CAMUS_HOME).
+camus_home = os.environ.get("CAMUS_HOME") or os.path.join(os.path.expanduser("~"), ".camus")
+feats_dir = os.path.join(camus_home, "feats")
 
 out = []
 for path in sorted(glob.glob(os.path.join(feats_dir, "*.json"))):
