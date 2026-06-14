@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """Leave a steering note for a RUNNING Camus feat — consumed at the next task boundary.
 
-The feat workflow checks ~/.camus/steer/<featId>.json before starting each task, applies it,
-and deletes it (a note steers ONCE). This is the deliberate middle ground between "watch
-helplessly" and live mid-task injection (which would break the deterministic, resumable
+EXPERIMENTAL / opt-in (descoped from 0.2.7): the feat consumes steer notes ONLY when it was
+started with steering enabled; a default run will NOT consume this note. Steering is concurrent
+file-IPC between this CLI and the workflow — hardened across 0.2.x but its read-then-act design
+has residual race windows, so a race-free redesign (atomic claim → per-run private inbox) lands
+default-ON in 0.3. Until then, treat `camus steer` as a power-user opt-in, not a default lever.
+
+When enabled, the feat workflow checks ~/.camus/steer/<featId>.json before starting each task,
+applies it, and deletes it (a note steers ONCE). This is the deliberate middle ground between
+"watch helplessly" and live mid-task injection (which would break the deterministic, resumable
 engine): you redirect BETWEEN tasks, where the run is at a clean, merged point.
 
   steer.py "guidance text"            # redirect the NEXT task (threads in as a human decision)

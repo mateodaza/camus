@@ -229,6 +229,9 @@ const resumeArgs = {
   ...(SKIP_PLAN ? { skipPlan: true } : {}),
   ...(ROUND_CAP != null ? { roundCap: ROUND_CAP } : {}),
   ...(BUDGET_TOKENS != null ? { budgetTokens: BUDGET_TOKENS } : {}),
+  // steering is opt-in (descoped 0.2.7) — a resume MUST keep it on, else a paused/crashed/auto-resumed
+  // steer-enabled run would silently revert to steering OFF (resume_scan.py emits resumeArgs verbatim).
+  ...(STEER_ENABLED ? { steer: true } : {}),
   ...(VERIFY_CMD_OVERRIDE ? { verifyCmd: VERIFY_CMD_OVERRIDE } : {}),   // headless verify override (finding 3)
   ...(ARG_POSTURE ? { posture: ARG_POSTURE } : {}),   // explicit only — a RESOLVED posture carries via state.posture
   // land changes task behavior MATERIALLY (audit P1 2026-06-11): dropping it on a resume would

@@ -4,10 +4,11 @@
 The interactive sibling of status.py: same synthesis (state file + review audits + steer
 note), redrawn every --interval seconds on the terminal's alternate screen, with one-key
 steering that goes through the SAME audited write path as `camus steer` (steer.py — all
-of its rules apply: writes need a RUNNING feat, notes are consumed once, at task
-boundaries):
+of its rules apply: writes need a RUNNING feat). Steering is EXPERIMENTAL and opt-in
+(descoped from 0.2.7): a note is consumed at a task boundary ONLY if the feat was started
+with steering enabled; a default run will not consume it. The race-free redesign lands in 0.3.
 
-  q  quit                       p  pause at the next task boundary (resumable)
+  q  quit                       p  pause at the next task boundary (if steering enabled)
   g  steer the next task        c  clear the pending note
   r  clear feedback / redraw
 
@@ -66,8 +67,8 @@ def dispatch(key, base, feat_id, prompt=input):
         path, warn = ST.write_note_merged(base, fid, {"pause": True})
         if path is None:   # authoritative backstop: a claim raced the write (P2 round 6)
             return "pause refused: " + warn
-        return ("pause note written — the run halts at the next task boundary"
-                + ("; WARNING: " + warn if warn else ""))
+        return ("pause note written — halts at the next task boundary ONLY if this feat runs with "
+                "steering enabled (experimental/opt-in)" + ("; WARNING: " + warn if warn else ""))
     if key == "g":
         fid, err = ST.resolve_feat(base, feat_id)
         if err:
@@ -82,8 +83,8 @@ def dispatch(key, base, feat_id, prompt=input):
         path, warn = ST.write_note_merged(base, fid, {"guidance": text})
         if path is None:
             return "steer refused: " + warn
-        return ("guidance note written — applied at the next task boundary"
-                + ("; WARNING: " + warn if warn else ""))
+        return ("guidance note written — applies at the next task boundary ONLY if this feat runs with "
+                "steering enabled (experimental/opt-in)" + ("; WARNING: " + warn if warn else ""))
     if key == "c":
         fid, err = ST.resolve_feat(base, feat_id, require_running=False)
         if err:

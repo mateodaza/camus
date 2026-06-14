@@ -1682,6 +1682,17 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F53b the stranded-claim reason is surfaced to the human', /stranded steer claim/.test((res && res.note) || ''))
     ok('F53b nothing dispatched past the unresolved claim', workflowCalls === 0, String(workflowCalls))
   }
+  // F54 (re-soak 2026-06-14, P2): steer is opt-in, so a steer-enabled run MUST persist steer:true in
+  // the canonical resumeArgs — else a paused/crashed/auto-resumed run (resume_scan emits resumeArgs
+  // verbatim) silently reverts to steering OFF. The default run must NOT carry steer.
+  {
+    const on = await runFeat({ feat: 'F', tasks: ['only task'], steer: true }, featBase,
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    ok('F54 steer:true persists in resumeArgs', !!on.stateJSON && on.stateJSON.resumeArgs.steer === true, on.stateJSON && J(on.stateJSON.resumeArgs))
+    const off = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    ok('F54 default run carries no steer in resumeArgs', !!off.stateJSON && !('steer' in off.stateJSON.resumeArgs), off.stateJSON && J(off.stateJSON.resumeArgs))
+  }
 
   // F8: worktree cleanup contract — the headline "no more camus-wt-* litter" feature.
   {
