@@ -1080,20 +1080,20 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // completed task's branch halts as self_audit_failed; the feat must never read done over it.
   {
     const over = await runFeat({ feat: 'F', tasks: ['only task'] },
-      { ...featBase, 'self-audit': 'b 2' },
-      [{ status: 'done', branch: 'b', decisions: [] }])
+      { ...featBase, 'self-audit': 'camus/feat/x/only 2' },
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F28 unmerged completed work → self_audit_failed, never done', over.res && over.res.status === 'self_audit_failed', over.res && over.res.status)
-    ok('F28 violation named with branch + count', !!over.res && Array.isArray(over.res.violations) && over.res.violations[0].unmergedCommits === 2 && over.res.violations[0].branch === 'b', JSON.stringify(over.res && over.res.violations))
+    ok('F28 violation named with branch + count', !!over.res && Array.isArray(over.res.violations) && over.res.violations[0].unmergedCommits === 2 && over.res.violations[0].branch === 'camus/feat/x/only', JSON.stringify(over.res && over.res.violations))
     ok('F28c remedy names camus land, never state surgery', /camus land/.test((over.res && over.res.note) || ''), over.res && over.res.note)
     const clean = await runFeat({ feat: 'F', tasks: ['only task'] },
-      { ...featBase, 'self-audit': 'b 0' },
-      [{ status: 'done', branch: 'b', decisions: [] }])
+      { ...featBase, 'self-audit': 'camus/feat/x/only 0' },
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F28b ancestry clean → done, audit logged', clean.res && clean.res.status === 'done', clean.res && clean.res.status)
   }
   {
     const bad = await runFeat({ feat: 'F', tasks: ['only task'] },
       { ...featBase, 'self-audit': 'I did not run git rev-list' },
-      [{ status: 'done', branch: 'b', decisions: [] }])
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F28c malformed self-audit → infra halt, never done', bad.res && bad.res.status === 'infra_error' && bad.res.stage === 'self_audit', bad.res && (bad.res.status + '/' + bad.res.stage))
     ok('F28c integration never runs past missing self-audit evidence', !bad.calls.includes('integration-verify'), bad.calls.join(','))
   }
@@ -1807,8 +1807,8 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const fr = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
       [{ status: 'done', branch: 'camus/feat/x/$(whoami)', decisions: [] }])
     const mp = fr.prompts['merge:' + tid] || ''
-    ok('F47c feat single-quotes an agent-returned mergeBranch (no $()-expand)',
-      mp.includes("'camus/feat/x/$(whoami)'") && !mp.includes('"camus/feat/x/$(whoami)"'), mp.slice(0, 220))
+    ok('F47c feat REJECTS an injection mergeBranch (never inlined; falls back to node.branch)',
+      !mp.includes('$(whoami)'), mp.slice(0, 220))
   }
 
   // F48 (verification audit round-3, 2026-06-13): a state-FILE mergedBranch is untrusted — on resume
@@ -1826,6 +1826,22 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const sa = r.prompts['self-audit'] || ''
     ok('F48 poisoned state mergedBranch dropped on load — never in the self-audit command',
       sa.length > 0 && !sa.includes('$(touch /tmp/PWN)'), sa.slice(0, 200))
+  }
+
+  // F49 (verification audit round-4, 2026-06-13): the LIVE twin of F48. A loop-RETURNED res.branch
+  // is a relayed value; a mismatched one with $() was stored raw into node.mergedBranch and reached
+  // the self-audit `git rev-list HEAD..<branch>` command. mergeBranch is now validated against the
+  // camus-branch allowlist before any use — a non-camus ref falls back to the computed node.branch.
+  {
+    const tid = taskIdOf('F', ['only task'], 'only task')
+    const r = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
+      [{ status: 'done', branch: 'camus/feat/x/$(id)', decisions: [] }])
+    const sa = r.prompts['self-audit'] || ''
+    ok('F49 live mismatched res.branch with $() never reaches the self-audit command',
+      sa.length > 0 && !sa.includes('$(id)'), sa.slice(0, 200))
+    // and the merge command never inlines it double-quoted either (shq + validation)
+    const mp = r.prompts['merge:' + tid] || ''
+    ok('F49 …nor double-quoted in the merge command', !mp.includes('"camus/feat/x/$(id)"'), mp.slice(0, 160))
   }
 
   console.log(`\n${pass} passed, ${fail} failed`)

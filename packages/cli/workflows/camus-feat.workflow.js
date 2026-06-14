@@ -1058,9 +1058,19 @@ If the branch does not exist git errors — output that error line verbatim.`,
   await persistState('Tasks')
 
   // Merge the loop's reported branch (cross-check against our deterministic one).
-  const mergeBranch = res.branch || node.branch
+  let mergeBranch = res.branch || node.branch
   if (res.branch && res.branch !== node.branch) {
     log(`WARN: loop branch "${res.branch}" != expected "${node.branch}" — merging the loop's reported branch.`)
+  }
+  // res.branch is a RELAYED value (the loop's report) — validate it before it is inlined into ANY
+  // shell command (verification audit round-4, 2026-06-13): round 2 shq'd it for merge.sh and round 3
+  // allowlisted the resume-LOADED mergedBranch, but the LIVE assignment node.mergedBranch=mergeBranch
+  // (below) stores it raw, and the self-audit later inlines `git rev-list HEAD..<mergedBranch>`. The
+  // doctrine: never trust the relay "always returns the computed BRANCH". A non-camus ref is garbage
+  // → fall back to the computed node.branch (always safe); a valid different ref keeps the tolerance.
+  if (!_CAMUS_BRANCH_OK.test(String(mergeBranch))) {
+    log(`WARN: merge branch "${mergeBranch}" is not a valid camus ref — using the computed ${node.branch} instead (never inlining an unvalidated branch into a command).`)
+    mergeBranch = node.branch
   }
   // The merge CONTRACT is computed by merge.sh, never reported by an agent (live smoke run-5,
   // 2026-06-12): the script owns checkout/merge/abort-on-any-failure with the hookless+unsigned
