@@ -1791,6 +1791,26 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       reviewPrompt.includes("'fix the $(whoami) call") && !reviewPrompt.includes('"fix the $(whoami) call'), reviewPrompt.slice(0, 200))
   }
 
+  // F47 (verification audit round-2, 2026-06-13): the identity/branch args of the SAME class — found
+  // by an INDEPENDENT auditor after the first round generalized "branches are computed/safe" (true
+  // for feat, NOT for camus-loop's caller-supplied branchPrefix/idSalt, nor feat's agent-returned
+  // mergeBranch).
+  {
+    const ab = await runLoop({ task: 't', branchPrefix: '$(touch /tmp/PWN)camus/' }, { ...cls, ...planOf('clear', ''), ...happyTail })
+    ok('F47a injection branchPrefix → loop aborts (stage:args)', ab.res.status === 'aborted' && ab.res.stage === 'args', ab.res.status + '/' + ab.res.stage)
+    const semi = await runLoop({ task: 't', branchPrefix: 'a;id;camus/' }, { ...cls, ...planOf('clear', ''), ...happyTail })
+    ok('F47a2 branchPrefix with ; refused (unquoted word-split class)', semi.res.status === 'aborted' && semi.res.stage === 'args', semi.res.status)
+    const as = await runLoop({ task: 't', idSalt: '$(touch /tmp/PWN)x' }, { ...cls, ...planOf('clear', ''), ...happyTail })
+    ok('F47b injection idSalt → loop aborts (stage:args)', as.res.status === 'aborted' && as.res.stage === 'args', as.res.status + '/' + as.res.stage)
+    // feat: an agent-returned mergeBranch with $() is SINGLE-quoted in the merge command (inert)
+    const tid = taskIdOf('F', ['only task'], 'only task')
+    const fr = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
+      [{ status: 'done', branch: 'camus/feat/x/$(whoami)', decisions: [] }])
+    const mp = fr.prompts['merge:' + tid] || ''
+    ok('F47c feat single-quotes an agent-returned mergeBranch (no $()-expand)',
+      mp.includes("'camus/feat/x/$(whoami)'") && !mp.includes('"camus/feat/x/$(whoami)"'), mp.slice(0, 220))
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exit(fail ? 1 : 0)
 })().catch((e) => { console.error('HARNESS ERROR', e); process.exit(2) })

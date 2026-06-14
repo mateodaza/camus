@@ -141,6 +141,10 @@ function fnv1a(str) {
   }
   return h.toString(36)
 }
+// POSIX single-quote a value before inlining it into a command (verification audit round-2,
+// 2026-06-13): nothing expands inside '…'. Used for the AGENT-RETURNED merge branch (res.branch) —
+// JSON.stringify only double-quotes, where bash STILL expands $(…)/backticks.
+const shq = (s) => `'${String(s).replace(/'/g, "'\\''")}'`
 // featId = readable slug + a stable FNV-1a hash over the feat title + ordered task list
 // (order-sensitive on purpose). The slug makes the feat branch human-scannable; the hash keeps
 // it collision-resistant and resumable (re-running the same feat yields the same featId).
@@ -1051,7 +1055,7 @@ If the branch does not exist git errors — output that error line verbatim.`,
   // belt against mis-transcription.
   let mg = await agent(
     `THIN merge runner. cd ${REPO_ARG}. Run EXACTLY this one command (it performs the merge and prints ONE JSON object):
-  ${HB_TOUCH}${MERGE_CMD} ${JSON.stringify(featBranch)} ${JSON.stringify(mergeBranch)} ${JSON.stringify('camus(feat): merge ' + node.taskId)}
+  ${HB_TOUCH}${MERGE_CMD} ${JSON.stringify(featBranch)} ${shq(mergeBranch)} ${JSON.stringify('camus(feat): merge ' + node.taskId)}
 Return the printed JSON's fields EXACTLY as the script computed them — every field verbatim, no re-judging, no omissions.
 If the JSON says merged:false (e.g. a conflict), that IS the verdict — return it AS-IS and STOP.
 Do NOT resolve conflicts, do NOT run git merge/add/commit yourself, do NOT edit files: the script

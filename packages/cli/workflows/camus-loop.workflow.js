@@ -123,8 +123,20 @@ const VERIFY_ENV = VERIFY_CMD_OVERRIDE ? `CAMUS_VERIFY_CMD=${JSON.stringify(VERI
 const REPO_CD = `cd "$( (cd ${TARGET ? JSON.stringify(TARGET) : '.'} && git rev-parse --show-toplevel) || echo /nonexistent/camus-not-a-repo )" && `
 // Identity composability: a caller (e.g. the M1 feat-runner) can feat-scope this task's branch
 // and worktree by passing branchPrefix (default 'camus/') and idSalt (default '' = standalone).
+// SHELL-SAFETY (verification audit round-2, 2026-06-13): both are caller args that flow into
+// commands the thin runner executes — branchPrefix → BRANCH, inlined UNQUOTED into wt.sh
+// create/resolve/attach (so a `;`/space/$() in it runs); idSalt → HB_TOUCH's `touch "…${idSalt}.hb"`
+// (where $(…) expands inside the double quotes). A branch namespace / id-salt is a STRUCTURED value,
+// so enforce a strict allowlist (letters, digits, / _ -) and abort rather than sanitize. This makes
+// BRANCH entirely safe-charset at every site, quoted or not.
+const _ID_OK = /^[A-Za-z0-9/_-]+$/
 const BRANCH_PREFIX = (args && typeof args === 'object' && args.branchPrefix) || 'camus/'
 const ID_SALT = (args && typeof args === 'object' && args.idSalt) || ''
+if ((args && typeof args === 'object' && args.branchPrefix && !_ID_OK.test(String(args.branchPrefix)))
+    || (ID_SALT && !_ID_OK.test(String(ID_SALT)))) {
+  return { status: 'aborted', stage: 'args',
+    note: 'branchPrefix / idSalt may contain only letters, digits, and / _ - (they become a git branch name and a shell path). Refusing a value with other characters.' }
+}
 // HITL: policy governs when the loop PAUSES to ask a human vs. acting and LOGGING the decision.
 //   autonomous       — never ask; every notable call is recorded in `decisions`, human reviews at merge.
 //   ask_on_ambiguity — ask only on genuine ambiguity / divergent readings / irreversible calls. (default)
@@ -354,7 +366,7 @@ if (LAND) {
   // a silently-picked path.
   const wtRaw = await agent(
     `THIN land-path resolver. Run EXACTLY this one command and output its stdout VERBATIM (one JSON object — {found,path}); no fences, no commentary:
-  ${HB_TOUCH}${REPO_CD}${WT_CMD} resolve ${BRANCH} ${WT_DEST}`,
+  ${HB_TOUCH}${REPO_CD}${WT_CMD} resolve ${JSON.stringify(BRANCH)} ${WT_DEST}`,
     { model: MODEL_RUNNER, phase: 'Commit', label: 'land-resolve' }
   )
   const wtJ = extractJsonObject(wtRaw)
@@ -369,7 +381,7 @@ if (LAND) {
     // gate-owned mutation.
     const reRaw = await agent(
       `THIN land-worktree recreator. The land worktree is missing but the task branch holds the proven work. Run EXACTLY this one command and output its stdout VERBATIM (one JSON object); no fences, no commentary:
-  ${HB_TOUCH}${REPO_CD}${WT_CMD} attach ${BRANCH} ${WT_DEST}`,
+  ${HB_TOUCH}${REPO_CD}${WT_CMD} attach ${JSON.stringify(BRANCH)} ${WT_DEST}`,
       { model: MODEL_RUNNER, phase: 'Commit', label: 'land-recreate' }
     )
     const reJ = extractJsonObject(reRaw)
@@ -537,7 +549,7 @@ Files in scope: ${plan.relevant_files.join(', ') || (planSkipped ? 'discover the
 Steps:
 1. From the repo root, run EXACTLY this one command and NOTHING ELSE (it creates the new branch
    from the current HEAD and prints ONE JSON object):
-     ${REPO_CD}${WT_CMD} create ${BRANCH} ${WT_DEST}
+     ${REPO_CD}${WT_CMD} create ${JSON.stringify(BRANCH)} ${WT_DEST}
    If the JSON says "ok": false, STOP IMMEDIATELY — do NOT improvise any git commands (no
    \`worktree add\`, no checkout: attaching a previous attempt's branch silently reuses its
    commits and corrupts the run — live smoke 2026-06-12). Return worktree_path "FAILED" with
