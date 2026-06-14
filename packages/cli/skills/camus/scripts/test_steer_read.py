@@ -97,6 +97,52 @@ def test_consume_absent_is_idempotent():
     assert out == {"consumed": False, "reason": "absent"}, out
 
 
+def test_read_recovers_stranded_claim():
+    # The FIX (P2b): a consume that crashed AFTER os.rename leaves the note in <path>.consuming and the
+    # live path empty. A naive read would report note:null (silent loss). Read must RECOVER the stranded
+    # note and surface it, restoring it to the live path.
+    home = tempfile.mkdtemp(prefix="camus_sr_")
+    os.makedirs(os.path.join(home, "steer"))
+    path = os.path.join(home, "steer", "f1.json")
+    tmp = path + ".consuming"
+    body = '{"guidance":"stranded"}'
+    with open(tmp, "w") as fh:   # simulate a crash mid-consume: note stranded in the claim file
+        fh.write(body)
+    out = json.loads(_run(home, "f1"))
+    assert out == {"read": True, "note": body, "sha": _sha(body)}, out
+    assert os.path.exists(path) and not os.path.exists(tmp), "the stranded note is restored to the live path"
+
+
+def test_read_halts_loudly_when_claim_and_live_note_both_exist():
+    # A crash stranded an old note in .consuming AND the human then wrote a new note to the live path.
+    # Read must not guess which to honor — it halts loudly for the human to resolve.
+    home = tempfile.mkdtemp(prefix="camus_sr_")
+    os.makedirs(os.path.join(home, "steer"))
+    path = os.path.join(home, "steer", "f1.json")
+    with open(path + ".consuming", "w") as fh:
+        fh.write('{"guidance":"old-stranded"}')
+    with open(path, "w") as fh:
+        fh.write('{"guidance":"new"}')
+    out = json.loads(_run(home, "f1"))
+    assert out.get("read") is False and "stranded" in (out.get("error") or ""), out
+
+
+def test_consume_refuses_to_overwrite_a_stale_claim():
+    # Consume must not os.rename over an existing .consuming (that would erase a stranded note).
+    home = tempfile.mkdtemp(prefix="camus_sr_")
+    os.makedirs(os.path.join(home, "steer"))
+    path = os.path.join(home, "steer", "f1.json")
+    tmp = path + ".consuming"
+    with open(tmp, "w") as fh:
+        fh.write('{"guidance":"stranded"}')
+    with open(path, "w") as fh:
+        fh.write('{"guidance":"live"}')
+    out = json.loads(_run(home, "f1", "--consume", "--expect-sha", _sha('{"guidance":"live"}')))
+    assert out.get("consumed") is False and "stale" in (out.get("error") or ""), out
+    with open(tmp) as fh:
+        assert fh.read() == '{"guidance":"stranded"}', "the stranded claim must NOT be overwritten"
+
+
 def test_camus_home_is_the_home_not_its_parent():
     home = tempfile.mkdtemp(prefix="camus_sr_")
     _seed(home, "f2", '{"guidance":"x"}')

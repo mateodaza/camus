@@ -144,9 +144,23 @@ def write_note(base, feat_id, note):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     note = dict(note)
     note["writtenAt"] = int(time.time())
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(note, fh, indent=2)
-        fh.write("\n")
+    # ATOMIC write (re-soak 2026-06-14, P2 subsystem): write to a per-pid temp then os.replace, so a
+    # concurrent steer_read NEVER sees a half-written or truncated note. A plain open(path,"w") would
+    # truncate first, and a read landing in that window would see an empty/partial file. The reader's
+    # sha-gate would self-correct (a torn read just looks like a "changed" note → re-read), but writing
+    # atomically removes the torn state entirely — every boundary observes a complete old or new note.
+    tmp = "%s.writing.%d" % (path, os.getpid())
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(note, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        raise
     return path
 
 

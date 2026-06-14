@@ -734,6 +734,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     'fork-scan': J({ feats: [] }),          // no in-progress twin feat (0.2.7 item 8); fail-open if absent
     'parent-tree': J({ ran: true, dirty: false, paths: '' }), // clean main checkout at each task boundary (0.2.7 finding B)
     'steer': J({ read: true, note: null }), // steer_read.py sentinel: no note (0.2.7 item 7)
+    'steer-consume': J({ consumed: true }), // a present note is consumed exactly-once (0.2.7 P2; apply gates on this)
     'feat-branch': { ok: true, branch: 'camus/feat-x', created: true },
     'env-check': { ready: true, exitCode: 0, output: 'ok' },
     'baseline-verify': J({ pass: true, failures: [] }),
@@ -1648,6 +1649,35 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F52b a note that never settles → needs_human (stage steer)', res && res.status === 'needs_human' && res.stage === 'steer', res && (res.status + '/' + res.stage))
     ok('F52b bounded — does not spin (re-reads then halts)', calls.filter((c) => c.startsWith('steer:')).length <= 5, String(calls.filter((c) => c.startsWith('steer:')).length))
     ok('F52b nothing dispatched, note says nothing applied', workflowCalls === 0 && /NOTHING was applied/.test((res && res.note) || ''), String(workflowCalls))
+  }
+  // F53 (re-soak 2026-06-14, finding P2a): a `camus steer --clear` BETWEEN read and consume makes the
+  // sha-gated consume report reason:'absent' (the note vanished). A clear is a newer human action, so
+  // it must be treated as changed-to-null — Camus must NOT apply the bytes it read earlier. Apply now
+  // gates strictly on consumed:true, so 'absent' triggers a re-read → null → no-note → proceed UNAPPLIED.
+  {
+    let rc = 0
+    const reads = [
+      J({ read: true, note: J({ guidance: 'RETRACTED' }), sha: 'shaA' }),
+      J({ read: true, note: null, sha: null }),   // the human cleared it
+    ]
+    const { res, loopArgs, calls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, steer: () => reads[Math.min(rc++, reads.length - 1)], 'steer-consume': J({ consumed: false, reason: 'absent' }) },
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    ok('F53 a cleared note triggers a RE-READ (treated as changed-to-null)', calls.some((c) => /:reread1/.test(c)), calls.filter((c) => c.startsWith('steer')).join(','))
+    ok('F53 the retracted note is NEVER applied', !!loopArgs[0] && !('humanAnswer' in loopArgs[0]), J(loopArgs[0]))
+    ok('F53 → done (proceeds as no-note after the clear)', res && res.status === 'done', res && res.status)
+  }
+  // F53b (finding P2b): a crashed prior consume can strand a note in a `.consuming` claim file.
+  // steer_read recovers it on read when possible, but when a stranded claim AND a current note both
+  // exist it halts loudly (read:false). The feat surfaces that reason and halts inconclusive — no
+  // silent loss, nothing dispatched.
+  {
+    const { res, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, steer: J({ read: false, error: 'a previous consume crashed leaving a stranded steer claim (x.consuming) alongside a current note — resolve it before continuing' }) },
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    ok('F53b stranded-claim read:false → needs_human (stage steer)', res && res.status === 'needs_human' && res.stage === 'steer', res && (res.status + '/' + res.stage))
+    ok('F53b the stranded-claim reason is surfaced to the human', /stranded steer claim/.test((res && res.note) || ''))
+    ok('F53b nothing dispatched past the unresolved claim', workflowCalls === 0, String(workflowCalls))
   }
 
   // F8: worktree cleanup contract — the headline "no more camus-wt-* litter" feature.

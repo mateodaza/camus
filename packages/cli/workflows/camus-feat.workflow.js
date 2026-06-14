@@ -862,11 +862,13 @@ for (let i = 0; i < state.tasks.length; i++) {
     if (!steerOuter || steerOuter.read !== true) {
       // STILL no sentinel after retries → a persistent failure to obtain the steer state. This is NOT
       // a bad note — the read-only check never consumed anything, so a re-run re-reads any note intact.
-      note(`Task ${n}: could not READ the steer-note state after ${STEER_READ_TRIES} tries — halting inconclusive; nothing consumed.`)
+      // A read:false carries a reason (e.g. a stranded claim from a crashed consume) — surface it.
+      const why = (steerOuter && steerOuter.error) ? ` — ${steerOuter.error}` : ''
+      note(`Task ${n}: could not READ the steer-note state after ${STEER_READ_TRIES} tries — halting inconclusive; nothing consumed.${why}`)
       return finalize('needs_human', {
         stage: 'steer', haltedTask: node.taskId,
-        question: `Camus could not read the steer-note state before task ${n} (the check failed to run, ${STEER_READ_TRIES}×). Re-run the feat with the SAME args.`,
-        note: `The steer-note check before task ${n} could not be OBTAINED after ${STEER_READ_TRIES} tries (a persistently failing/garbled runner) — this is NOT a bad note, and NOTHING was consumed or applied. Re-run the feat with the SAME args to re-check; any \`camus steer\` note you left is intact.`,
+        question: `Camus could not read the steer-note state before task ${n} (the check failed to run, ${STEER_READ_TRIES}×)${why}. Resolve it, then re-run the feat with the SAME args.`,
+        note: `The steer-note check before task ${n} could not be OBTAINED after ${STEER_READ_TRIES} tries${why} — this is NOT a bad note, and NOTHING was consumed or applied. Resolve any reported issue (e.g. a stranded \`.consuming\` claim from a crashed run, or \`camus steer --clear\`), then re-run the feat with the SAME args; any pending \`camus steer\` note is intact.`,
       })
     }
     if (steerOuter.note == null) { steerNoteRaw = null; break }   // clean no-note → proceed
@@ -878,23 +880,27 @@ for (let i = 0; i < state.tasks.length; i++) {
       { model: MODEL_RUNNER, phase: 'Tasks', label: `steer-consume:${node.taskId}${churn > 0 ? `:reread${churn}` : ''}` }
     )
     const cons = extractJsonObject(consRaw)
-    if (cons && cons.consumed === false && cons.reason === 'changed') {
-      // The note CHANGED between read and consume — a human re-steered. We deleted NOTHING; the newer
-      // note survives on disk. Discard the stale read and re-read the CURRENT note (bounded), so the
-      // newest guidance is what applies — never the superseded one (the bug finding P2 names).
-      if (churn < STEER_CHURN_TRIES) { note(`Task ${n}: steer note changed during processing — re-reading the current note.`); continue }
-      note(`Task ${n}: steer note kept changing while Camus tried to consume it — halting; nothing applied.`)
-      return finalize('needs_human', {
-        stage: 'steer', haltedTask: node.taskId,
-        question: `A steer note kept changing while Camus tried to consume it before task ${n} — finish editing it, then re-run with the SAME args.`,
-        note: `The steer note before task ${n} changed every time Camus read it (it was edited ${STEER_CHURN_TRIES}× mid-consume) — NOTHING was applied and the latest note is intact on disk. Stop editing, then re-run the feat with the SAME args to apply it.`,
-      })
+    if (cons && cons.consumed === true) {
+      // We atomically deleted EXACTLY the bytes we read → safe to apply (a note applies once).
+      steerNoteRaw = candidate
+      break
     }
-    // consumed:true (deleted exactly what we read), OR absent/flaked (note is gone or the echo
-    // garbled, but consume is sha-gated so it could not have clobbered a NEWER note — a newer note
-    // would have reported 'changed' above). We hold the parsed content, so apply what we read.
-    steerNoteRaw = candidate
-    break
+    // NOT confirmed-consumed. The note either CHANGED (human re-steered → reason:'changed'), was
+    // CLEARED (human retracted → reason:'absent'; a clear is a newer human action, so treat it as
+    // changed-to-null), or the consume could not be CONFIRMED (error / garbled relay). The consume is
+    // sha-gated + crash-safe, so in none of these could it have clobbered a newer note. In ALL cases
+    // we must NOT apply the bytes we read — RE-READ and act only on what is CURRENTLY pending: a clear
+    // re-reads to null (no-note, proceed); a new note re-reads to that note. Bounded, then halt.
+    if (churn < STEER_CHURN_TRIES) {
+      note(`Task ${n}: steer note not confirmed-consumed (${(cons && (cons.reason || cons.error)) || 'no receipt'}) — re-reading the current note.`)
+      continue
+    }
+    note(`Task ${n}: could not consume the steer note after ${STEER_CHURN_TRIES} re-reads — halting; nothing applied.`)
+    return finalize('needs_human', {
+      stage: 'steer', haltedTask: node.taskId,
+      question: `Camus could not consume the steer note before task ${n} (it kept changing, or the consume could not be confirmed) — settle it (finish editing, or \`camus steer --clear\`), then re-run with the SAME args.`,
+      note: `The steer note before task ${n} could not be consumed after ${STEER_CHURN_TRIES} re-reads — NOTHING was applied. Either it was being edited repeatedly or the consume could not be confirmed (so applying the bytes Camus first read would risk running past your latest intent). Settle it — finish editing, or \`camus steer --clear --feat ${featId}\` — then re-run the feat with the SAME args.`,
+    })
   }
   const steerParsed = (typeof steerNoteRaw === 'string') ? extractJsonObject(steerNoteRaw) : null
   // A note FILE existed but its content is not parseable JSON — a real human note we can't read
