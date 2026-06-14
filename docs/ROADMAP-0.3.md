@@ -98,6 +98,25 @@ salvage that *wants one more review* before landing (accept-with-fresh-eyes inst
 accept-as-is). Cheap once bookend exists — it's a bookend's closing review applied to a
 parked branch.
 
+## 7. Steer redesign: atomic claim → per-run private inbox (decided 2026-06-14)
+
+Human steering (`camus steer`) was DESCOPED from 0.2.7 to opt-in/experimental (default OFF)
+after six audit rounds: its read-then-act-over-a-shared-file design guarantees residual race
+windows. The fixes shrank windows to single syscalls and made every failure fail-safe, but the
+architecture is the problem. Root cause: 0.2.7's read/consume SPLIT (introduced for retry-safety
+against a relay flake) opened a TOCTOU class — newer-note-deleted, clear-applies-stale,
+crash-stranded claim, torn write, caller-checks-not-side-effect.
+
+The 0.3 redesign retires the class by construction:
+- A single `os.rename` atomically CLAIMS and removes the note into a per-run PRIVATE inbox
+  (`~/.camus/steer/<featId>/inbox/<runid>/…`) the human CLI never touches. Retry-safe (the
+  rename is idempotent — re-run re-reads the inbox), race-free (a human write after the claim
+  lands at the original path for the next boundary), crash-safe (a stranded inbox entry is
+  recovered by runid). No sha-gate, no shared `.consuming` claim file, no check-then-act.
+- This is what Fix A should have been: when you must make an atomic op retryable, claim-to-a-
+  private-location beats split-read-from-act. Default ON once it lands.
+- The hardened 0.2.x steer code stays in-tree (dormant behind `args.steer`) until replaced.
+
 ## Non-goals for 0.3
 
 - No anonymous/best-effort backend routing — opt-in + benchmark-gated only.
