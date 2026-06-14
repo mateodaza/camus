@@ -767,6 +767,24 @@ if (baseV.pass !== true) {
 }
 note(`Baseline green on ${featBranch}. Running ${state.tasks.length} task(s) strictly in order.`)
 
+// Parent-tree dirt BASELINE (re-soak 2026-06-14): containment.sh now reports UNTRACKED files too (an
+// untracked leak breaks the merge). The baseline-verify just ran the verify command in the MAIN tree
+// and may have left un-ignored artifacts — those are NOT a leak. Capture the dirt set here, once, so
+// the boundary guard fires only on dirt that appears AFTER (delta), never on legit baseline artifacts.
+const dirtLines = (s) => String(s || '').split('\n').map((l) => l.trim()).filter(Boolean)
+async function featContainment(label) {
+  const raw = await agent(
+    `THIN parent-tree containment runner. Run EXACTLY this one command and output its stdout VERBATIM as your entire reply (it is JSON — {ran,dirty,paths} or {ran,error}); no fences, no commentary:
+  ${HB_TOUCH}${CONTAIN_CMD} ${REPO_ARG}`,
+    { model: MODEL_RUNNER, phase: 'Tasks', label: `parent-tree:${label}` }
+  )
+  return extractJsonObject(raw)
+}
+const featDirtBaseline = await (async () => {
+  const b = await featContainment('baseline')
+  return new Set((b && b.ran === true) ? dirtLines(b.paths) : [])   // inconclusive → empty: a leak still fires
+})()
+
 // ── 5. TASKS — sequential; reuse camus-loop; merge on done; halt on first non-done ─
 phase('Tasks')
 // The branch tip certified by the LAST receipt-proven merge of THIS run — the integration
@@ -780,15 +798,13 @@ let lastMergeHead = null
 // the MAIN checkout's `git status --porcelain` MECHANICALLY and emits {ran,dirty,paths}; the runner
 // only echoes it. Returns null (ran && clean) | {kind:'breach', paths} | {kind:'inconclusive', why}.
 async function parentTreeClean(label) {
-  const raw = await agent(
-    `THIN parent-tree containment runner. Run EXACTLY this one command and output its stdout VERBATIM as your entire reply (it is JSON — {ran,dirty,paths} or {ran,error}); no fences, no commentary:
-  ${HB_TOUCH}${CONTAIN_CMD} ${REPO_ARG}`,
-    { model: MODEL_RUNNER, phase: 'Tasks', label: `parent-tree:${label}` }
-  )
-  const r = extractJsonObject(raw)
+  const r = await featContainment(label)
   if (!r || r.ran !== true) return { kind: 'inconclusive', why: (r && r.error) || 'containment runner returned no parseable {ran} receipt' }
-  if (r.dirty === true) return { kind: 'breach', paths: r.paths || '' }
-  return null   // ran === true && dirty === false → genuinely clean
+  // DELTA vs the post-baseline-verify baseline: only dirt that appeared AFTER fires (re-soak 2026-06-14),
+  // so an untracked leak / concurrent-editor change is caught while legit baseline artifacts are not.
+  const newDirt = dirtLines(r.paths).filter((l) => !featDirtBaseline.has(l))
+  if (newDirt.length) return { kind: 'breach', paths: newDirt.join('\n') }
+  return null   // no NEW dirt vs the baseline → genuinely clean
 }
 for (let i = 0; i < state.tasks.length; i++) {
   const node = state.tasks[i]

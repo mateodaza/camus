@@ -13,15 +13,20 @@
 # runner only echoes this JSON.
 #
 # Emits EXACTLY ONE JSON object on stdout, always exits 0:
-#   {"ran": true,  "dirty": <bool>, "paths": "<verbatim tracked-file porcelain; \"\" when clean>"}
+#   {"ran": true,  "dirty": <bool>, "paths": "<verbatim porcelain incl. untracked; \"\" when clean>"}
 #   {"ran": false, "error": "<reason>"}     # cd/git failed — the answer was NOT obtained
 # The {ran:false} case is the cardinal fix: "could not obtain the answer" must read as
 # INCONCLUSIVE/infra, NEVER as a breach and NEVER as clean.
 #
-# --untracked-files=no aligns with verify.py git_porcelain: only TRACKED-file mutation can ever
-# merge, so test-written untracked artifacts (build caches, coverage, snapshots) never false-fire
-# a feat-fatal breach. --ignore-submodules=all per the existing containment discipline (a merged
-# submodule-pointer bump leaves a permanent ` M sub` otherwise).
+# --untracked-files=normal INCLUDES untracked files (live re-soak 2026-06-14): an UNTRACKED leak in
+# the parent tree breaks the merge. The old --untracked-files=no rationale ("only TRACKED-file mutation
+# can ever merge") was FALSE — `git merge` ABORTS when an incoming tracked file would overwrite an
+# untracked parent file (exactly how a classifier-leaked test file hard-failed integration). `normal`
+# RESPECTS .gitignore, so gitignored build caches/coverage/snapshots still don't show; the remaining
+# false-positive source (un-ignored artifacts the parent-tree baseline-verify writes) is handled by the
+# CALLER, which DELTAS this porcelain against a baseline captured before the task — only NEW dirt fires.
+# This script reports the full truth; the caller decides what is a leak. --ignore-submodules=all per the
+# existing containment discipline (a merged submodule-pointer bump leaves a permanent ` M sub` otherwise).
 set -uo pipefail
 
 repo="${1:?usage: containment.sh <repo>}"
@@ -43,7 +48,7 @@ guard_err="$(camus_guard repo_or_worktree "$repo" 2>&1)" || emit_err "${guard_er
 # unobtained answer (ran:false), never a confident clean/dirty verdict.
 tmp="$(mktemp "${TMPDIR:-/tmp}/camus-containment-err.XXXXXX")" || emit_err "mktemp failed"
 trap 'rm -f "$tmp"' EXIT
-status_out="$(git -C "$repo" status --porcelain --untracked-files=no --ignore-submodules=all 2>"$tmp")"
+status_out="$(git -C "$repo" status --porcelain --untracked-files=normal --ignore-submodules=all 2>"$tmp")"
 rc=$?
 if [ "$rc" -ne 0 ]; then
   emit_err "git status failed (exit $rc): $(cat "$tmp")"

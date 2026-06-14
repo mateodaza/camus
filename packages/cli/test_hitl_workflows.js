@@ -69,6 +69,12 @@ async function runFeat(args, scripts, loopResults, budget) {
 }
 
 const J = (o) => JSON.stringify(o)
+// A containment / parent-tree stub that models a leak APPEARING AFTER the loop-start baseline: the
+// `:baseline` capture reads clean, the later leak-check reads dirty. Exercises the untracked-DELTA
+// (re-soak 2026-06-14) — only dirt that is new vs the baseline is a breach.
+const leakAfterBaseline = (paths) => (p, opts) => J(((opts && opts.label) || '').endsWith(':baseline')
+  ? { ran: true, dirty: false, paths: '' }
+  : { ran: true, dirty: true, paths })
 let pass = 0, fail = 0
 const ok = (name, cond, extra) => { if (cond) { pass++; console.log('PASS ' + name) } else { fail++; console.log('FAIL ' + name + (extra ? '  ' + extra : '')) } }
 
@@ -649,7 +655,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     // git audit 2026-06-12: a merged submodule-pointer bump leaves permanent ` M sub` porcelain —
     // the guard must ignore submodule noise or every later task false-fires.
     ok('S25a2 containment ignores submodule noise', (clean.prompts['containment:implement'] || '').includes('/containment.sh'))
-    const leaky = await runLoop({ task: 't', idSalt: salt }, { ...base25, containment: J({ ran: true, dirty: true, paths: ' M packages/x.ts' }) })
+    const leaky = await runLoop({ task: 't', idSalt: salt }, { ...base25, containment: leakAfterBaseline(' M packages/x.ts') })
     ok('S25b implement leak → infra halt naming the phase', leaky.res.status === 'infra_error' && leaky.res.containment === 'implement', leaky.res.status + '/' + leaky.res.containment)
     ok('S25b note names the leaked paths + recovery', /packages\/x\.ts/.test(leaky.res.note) && /diff them against the task worktree/.test(leaky.res.note))
   }
@@ -661,7 +667,9 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       ...clsStd, ...planOf('clear', ''),
       implement: { worktree_path: wtPath('t', salt), branch: 'b', summary: 's', decisions: [] },
       review: (() => { let r = 0; return () => { r++; return J({ ran: true, clean: false, blocking: [{ priority: 1, title: 't' + r, code_location: 'f.ts:' + r }], nonblocking: [] }) } })(),
-      fix: '', containment: () => (++c25 === 1 ? J({ ran: true, dirty: false, paths: '' }) : J({ ran: true, dirty: true, paths: ' M lib/leaked.ts' })),
+      // calls in order: baseline (clean) → implement-check (clean) → fix-check (dirty). The added
+      // loop-start baseline shifts the count by one, so the first TWO calls read clean.
+      fix: '', containment: () => (++c25 <= 2 ? J({ ran: true, dirty: false, paths: '' }) : J({ ran: true, dirty: true, paths: ' M lib/leaked.ts' })),
       prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [] }),
     }
     const { res } = await runLoop({ task: 't', idSalt: salt, roundCap: 2 }, stubs)
@@ -671,6 +679,31 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     // standalone (no idSalt): even a would-be-dirty tree is never checked — not a breach.
     const { res, calls } = await runLoop({ task: 't' }, { ...clsStd, ...planOf('clear', ''), ...happyTail, containment: J({ ran: true, dirty: true, paths: ' M anything.ts' }) })
     ok('S25d standalone loop → containment never runs', res.status === 'done' && !calls.some((c) => c.startsWith('containment')), calls.join(','))
+  }
+  // F55 (live re-soak 2026-06-14): the UNTRACKED-DELTA — the actual blocker. containment.sh now reports
+  // untracked files (an untracked leak ABORTS the merge — how a classifier-leaked test file hard-failed
+  // integration); the loop deltas against a baseline captured before any phase, so a NEW untracked leak
+  // fires but pre-existing/baseline-verify artifacts don't cry wolf.
+  {
+    const salt = 'feat123'
+    const base = {
+      ...clsStd, ...planOf('clear', ''),
+      implement: { worktree_path: wtPath('t', salt), branch: 'b', summary: 's', decisions: [] },
+      review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
+      commit: J({ committed: true, sha: 'c1' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'c1' }),
+    }
+    // (a) an UNTRACKED file leaked after the baseline → breach (the exact finding)
+    const r1 = await runLoop({ task: 't', idSalt: salt }, { ...base, containment: leakAfterBaseline('?? packages/ai/src/__tests__/model-selector.test.ts') })
+    ok('F55 untracked leak (the finding) → breach naming it', r1.res.status === 'infra_error' && r1.res.containment === 'implement' && /model-selector\.test\.ts/.test(r1.res.note || ''), r1.res.status + '/' + r1.res.containment)
+    // (b) pre-existing dirt present at BOTH baseline and check → NOT re-flagged (delta ignores it)
+    const r2 = await runLoop({ task: 't', idSalt: salt }, { ...base, containment: J({ ran: true, dirty: true, paths: '?? local-scratch.txt' }) })
+    ok('F55 pre-existing baseline dirt is NOT a breach (no cry-wolf)', r2.res.status === 'done', r2.res.status)
+    // (c) mix: baseline has X; post-implement has X + new Y → breach names ONLY Y
+    const mixed = (p, opts) => J(((opts && opts.label) || '').endsWith(':baseline')
+      ? { ran: true, dirty: true, paths: '?? local-scratch.txt' }
+      : { ran: true, dirty: true, paths: '?? local-scratch.txt\n?? leaked.ts' })
+    const r3 = await runLoop({ task: 't', idSalt: salt }, { ...base, containment: mixed })
+    ok('F55 delta names ONLY the new dirt, not the pre-existing', r3.res.status === 'infra_error' && /leaked\.ts/.test(r3.res.note || '') && !/local-scratch/.test(r3.res.note || ''), r3.res.note)
   }
 
   // S26 (live smoke run-2, 2026-06-12): a worktree/branch COLLISION must be declared, not
@@ -1589,7 +1622,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // Reuses containment.sh's {ran,dirty,paths} receipt; ran:false ⇒ inconclusive, never a clean pass.
   {
     const dirty = await runFeat({ feat: 'F', tasks: ['only task'] },
-      { ...featBase, 'parent-tree': J({ ran: true, dirty: true, paths: ' M src/concurrent.ts' }) },
+      { ...featBase, 'parent-tree': leakAfterBaseline(' M src/concurrent.ts') },
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F51 dirty parent tree → needs_human at task_boundary', dirty.res && dirty.res.status === 'needs_human' && dirty.res.stage === 'task_boundary', dirty.res && (dirty.res.status + '/' + dirty.res.stage))
     ok('F51 halt names the dirty paths', /concurrent\.ts/.test((dirty.res && dirty.res.note) || '') && /concurrent\.ts/.test((dirty.res && dirty.res.dirtyPaths) || ''))
@@ -1613,7 +1646,9 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
         stateRaw: J({ tasks: [{ taskId: taskIdOf('F', ['only task'], 'only task'), status: 'done', branch: 'camus/feat/x/only' }] }) },
         'parent-tree': J({ ran: true, dirty: true, paths: ' M unrelated.ts' }) },
       [])
-    ok('F51 resume skips the boundary check for already-done tasks', !resumeDone.calls.some((c) => c.startsWith('parent-tree')), resumeDone.calls.join(','))
+    // The per-task boundary GUARD must not run for a done task; the once-per-feat dirt baseline
+    // (parent-tree:baseline, captured after baseline-verify) is a separate step and may still run.
+    ok('F51 resume skips the per-task boundary check for already-done tasks', !resumeDone.calls.some((c) => c.startsWith('parent-tree:') && c !== 'parent-tree:baseline'), resumeDone.calls.join(','))
   }
 
   // F52 (re-soak 2026-06-14, finding P2): the steer read and consume are TWO steps; a human running
@@ -1799,7 +1834,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F40 containment ran+clean → done', clean.res.status === 'done', clean.res.status)
     ok('F40 containment prompt routes through containment.sh (mechanical receipt)',
       (clean.prompts['containment:implement'] || '').includes('/containment.sh'))
-    const breach = await runLoop({ task: 't', idSalt: salt }, { ...base, containment: J({ ran: true, dirty: true, paths: ' M leaked.ts' }) })
+    const breach = await runLoop({ task: 't', idSalt: salt }, { ...base, containment: leakAfterBaseline(' M leaked.ts') })
     ok('F40 containment ran+dirty → breach naming paths', breach.res.status === 'infra_error' && breach.res.containment === 'implement' && /leaked\.ts/.test(breach.res.note || ''), breach.res.status + '/' + breach.res.containment)
     // the KEY fix — both failure shapes are INCONCLUSIVE, not a verdict:
     const noJson = await runLoop({ task: 't', idSalt: salt }, { ...base, containment: 'Here is the output: (no changes)' })

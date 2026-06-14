@@ -267,8 +267,9 @@ check "unwritable receipt dir: no receipt file appeared" no "$([ -e "$RO/sub" ] 
 
 # ════ containment.sh ═══════════════════════════════════════════════════════════════════════════
 # Field soak 2026-06-13, finding 8: the receipt that replaced the thin-runner-echo containment
-# check. {ran,dirty,paths}; --untracked-files=no; and the cardinal fix — a non-obtained answer
-# is ran:false (inconclusive), NEVER clean and NEVER a breach.
+# check. {ran,dirty,paths}; --untracked-files=normal (re-soak 2026-06-14 — untracked leaks break the
+# merge, so they MUST be reported; .gitignore still respected); and the cardinal fix — a non-obtained
+# answer is ran:false (inconclusive), NEVER clean and NEVER a breach.
 CR="$ROOT/crepo"; mkdir -p "$CR"
 ( cd "$CR" && git init -q && echo a > a.txt && git add -A && git -c commit.gpgsign=false commit -qm base && git checkout -q -b camus/feat-c )
 # invoked from inside the target repo (same as the merge.sh tests, and as REPO_CD does in production)
@@ -283,8 +284,15 @@ check "containment tracked edit: dirty true"           true "$(jget "$out" dirty
 check "containment tracked edit: paths name the file"  yes  "$(has "$(jget "$out" paths)" "a.txt")"
 ( cd "$CR" && git checkout -q -- a.txt && echo junk > only-untracked.txt )
 out="$( cd "$CR" && bash "$here/containment.sh" "$CR" )"
-check "containment untracked-only: dirty false (--untracked-files=no)" false "$(jget "$out" dirty)"
+# re-soak 2026-06-14: an un-ignored untracked file MUST now report dirty (it would abort a merge).
+check "containment untracked-only: dirty true (--untracked-files=normal)" true "$(jget "$out" dirty)"
+check "containment untracked-only: paths name the untracked file"         yes  "$(has "$(jget "$out" paths)" "only-untracked.txt")"
 ( cd "$CR" && rm -f only-untracked.txt )
+# but a GITIGNORED untracked file must NOT fire — `normal` respects .gitignore (build caches/coverage).
+( cd "$CR" && printf 'ignored-dir/\n' > .gitignore && git add .gitignore && git -c commit.gpgsign=false commit -qm gi && mkdir -p ignored-dir && echo junk > ignored-dir/x )
+out="$( cd "$CR" && bash "$here/containment.sh" "$CR" )"
+check "containment gitignored untracked: dirty false (.gitignore respected)" false "$(jget "$out" dirty)"
+( cd "$CR" && rm -rf ignored-dir )
 NG="$ROOT/notgit"; mkdir -p "$NG"
 out="$( cd "$NG" && bash "$here/containment.sh" "$NG" )"
 check "containment non-repo: ran false (inconclusive, not clean, not breach)" false "$(jget "$out" ran)"

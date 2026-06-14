@@ -117,6 +117,25 @@ The 0.3 redesign retires the class by construction:
   private-location beats split-read-from-act. Default ON once it lands.
 - The hardened 0.2.x steer code stays in-tree (dormant behind `args.steer`) until replaced.
 
+## 8. Toolless classifier agent (decided 2026-06-14)
+
+The per-task complexity classifier (camus-loop Phase 0) is spawned as a normal workflow subagent —
+full Write/Edit/Bash. Asked only to return a tier, it once "helpfully" *implemented* the task in the
+MAIN checkout (Write→Edit→Write + ran tests), leaking an untracked file that aborted the integration
+merge (live re-soak 2026-06-14, the publish blocker). Root: an under-constrained classifier — full
+tools + parent cwd for what should be a cheap, toolless label. This is the SAME bug as the classifier's
+token over-provisioning (it can burn a task's worth of work).
+
+0.2.7 ships the pragmatic fix: `agentType: 'Explore'` (removes Write/Edit/NotebookEdit — the leak
+vector) + a tightened classify-only prompt, with the untracked-delta containment net as the backstop.
+Residual: `Explore` keeps Bash and carries exploration semantics (a classifier shouldn't explore).
+
+0.3: replace it with a **custom TOOLLESS classifier agent** — a registered agent type with NO tools at
+all, so it can only read the task text and return `{tier, reason}` via StructuredOutput. Airtight (can't
+write OR explore) and cheap (no wandering) — closes the leak vector and the cost flag together. Needs an
+`agents/` dir in the skill + install.sh deploy + `--check` manifest entry. Same toolless treatment for
+the feat-level posture classifier (the 5-agent / ~160k-token pause flagged in the re-soak).
+
 ## Non-goals for 0.3
 
 - No anonymous/best-effort backend routing — opt-in + benchmark-gated only.

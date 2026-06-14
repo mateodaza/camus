@@ -434,16 +434,45 @@ if (LAND) {
     note: 'Land mode: deterministic verify did NOT pass — this worktree is not actually clean. Re-run WITHOUT land:true to fix it through the full loop.' }
 }
 
+// Parent-tree dirt BASELINE (re-soak 2026-06-14): containment.sh now reports UNTRACKED files too (an
+// untracked leak breaks the merge), but the parent tree may legitimately hold un-ignored artifacts the
+// feat's baseline-verify wrote BEFORE this task. So capture the dirt set ONCE at loop start (before any
+// phase that could leak — classify is Phase 0) and treat ONLY dirt that appears AFTER as a breach
+// (delta). Feat-scoped only (ID_SALT); a standalone loop never runs containment. An inconclusive
+// baseline → empty allowed-set: a real leak still fires, and we never manufacture a false clean.
+const dirtLines = (s) => String(s || '').split('\n').map((l) => l.trim()).filter(Boolean)
+async function runContainment(label, grp) {
+  const raw = await agent(
+    `THIN containment runner. Run EXACTLY this one command and output its stdout VERBATIM as your entire reply (it is JSON — {ran,dirty,paths} or {ran,error}); no fences, no commentary:
+  ${HB_TOUCH}${REPO_CD}${CONTAIN_CMD} "$(git rev-parse --show-toplevel)"`,
+    { model: MODEL_RUNNER, phase: grp || 'Review', label }
+  )
+  return extractJsonObject(raw)
+}
+let containmentBaseline = new Set()
+if (ID_SALT) {
+  const b = await runContainment('containment:baseline', 'Classify')
+  containmentBaseline = new Set((b && b.ran === true) ? dirtLines(b.paths) : [])
+}
+
 // ── Phase 0: CLASSIFY complexity → route the think-model ─────────────────────
 phase('Classify')
 const cls = await agent(
-  `Classify the complexity of this ONE coding task. Reply with a tier:
+  `You are a COMPLEXITY CLASSIFIER. Your ONE job is to read the task text below and return a tier.
+Do NOT implement it, write or edit files, run commands, or touch the repo in any way — acting on the
+task instead of labeling it is a CONTAINMENT VIOLATION (a classifier that "helpfully" did the task in
+the main checkout once broke a real run — re-soak 2026-06-14). Judge from the text alone.
+
+Classify the complexity of this ONE coding task. Reply with a tier:
 - "trivial": a localized change of a few lines with obvious scope (a guard, a rename, a typo, a one-function fix).
 - "standard": a normal change touching one area or file-set with clear intent.
 - "complex": multi-file, ambiguous, architectural, or cross-cutting.
 
 Task: ${TASK}`,
-  { model: MODEL_RUNNER, phase: 'Classify', label: 'classify', schema: CLASSIFY_SCHEMA }
+  // agentType:'Explore' is read-only (no Write/Edit/NotebookEdit) — removes the file-creation tools the
+  // leak used. Capability removal, not prompt-trust (the prompt above is defense in depth). 0.3: replace
+  // with a custom TOOLLESS classifier agent (airtight + cheap; ROADMAP-0.3 §8).
+  { model: MODEL_RUNNER, phase: 'Classify', label: 'classify', schema: CLASSIFY_SCHEMA, agentType: 'Explore' }
 )
 // Override precedence (FEATURE 1a): explicit `model` > `modelTier` > classifier result.
 //   args.model     — exact think-model string (e.g. 'opus'), used VERBATIM, forces nothing about tier.
@@ -626,19 +655,16 @@ log(`Implemented in worktree ${WT} (branch ${BRANCH})${tokSuffix()}.`)
 // false-positive) AND an empty reply on agent failure as a clean tree (silent false-negative that
 // let a real leak merge). Now neither failure can produce a verdict.
 async function containmentLeak(phaseName) {
-  const raw = await agent(
-    `THIN containment runner. Run EXACTLY this one command and output its stdout VERBATIM as your entire reply (it is JSON — {ran,dirty,paths} or {ran,error}); no fences, no commentary:
-  ${HB_TOUCH}${REPO_CD}${CONTAIN_CMD} "$(git rev-parse --show-toplevel)"`,
-    { model: MODEL_RUNNER, phase: 'Review', label: `containment:${phaseName}` }
-  )
-  const r = extractJsonObject(raw)
+  const r = await runContainment(`containment:${phaseName}`, 'Review')
   if (!r || r.ran !== true) {
     return { kind: 'inconclusive', why: (r && r.error) || 'containment runner returned no parseable {ran} receipt' }
   }
-  if (r.dirty === true) {
-    return { kind: 'breach', paths: (typeof r.paths === 'string' && r.paths.trim()) ? r.paths.trim() : '(paths not reported by the receipt)' }
-  }
-  return null   // ran === true && dirty === false → genuinely clean
+  // DELTA (re-soak 2026-06-14): only dirt that appeared AFTER the loop-start baseline is a leak — so an
+  // untracked file the gate leaked into the main tree fires, while pre-existing / baseline-verify
+  // artifacts (already in the baseline) do not false-fire. r.dirty alone would cry wolf on the latter.
+  const newDirt = dirtLines(r.paths).filter((l) => !containmentBaseline.has(l))
+  if (newDirt.length) return { kind: 'breach', paths: newDirt.join('\n') }
+  return null   // no NEW dirt vs the baseline → genuinely clean
 }
 if (ID_SALT) {
   const c = await containmentLeak('implement')
