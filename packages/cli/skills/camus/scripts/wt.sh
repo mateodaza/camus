@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Worktree gate: mint (create) or re-attach (attach) a Camus task worktree.
-#   wt.sh create <branch> <dest-dir>   # implement phase: NEW branch from current HEAD
-#   wt.sh attach <branch> <dest-dir>   # land recreate: check out an EXISTING branch's commits
+# Worktree gate: mint (create), re-attach (attach), or resolve (locate) a Camus task worktree.
+#   wt.sh create  <branch> <dest-dir>  # implement phase: NEW branch from current HEAD
+#   wt.sh attach  <branch> <dest-dir>  # land recreate: check out an EXISTING branch's commits
+#   wt.sh resolve <branch> <dest-dir>  # land-resolve: READ-ONLY — is the worktree there? emit its path
 #
 # WHY THIS IS A SCRIPT (live smoke run-5, 2026-06-12): every gate-owned git MUTATION lives
 # inside an allowlisted script — the Claude Code auto-mode classifier DENIES a thin agent
@@ -41,8 +42,8 @@ print(json.dumps({"ok": False, "error": sys.stdin.buffer.read().decode("utf-8", 
 }
 
 case "$mode" in
-  create|attach) ;;
-  *) emit_err "usage: wt.sh create|attach <branch> <dest-dir> (unknown mode '$mode')" ;;
+  create|attach|resolve) ;;
+  *) emit_err "usage: wt.sh create|attach|resolve <branch> <dest-dir> (unknown mode '$mode')" ;;
 esac
 
 # ── Guard fence ───────────────────────────────────────────────────────────────────────────────
@@ -72,6 +73,21 @@ if [ -n "${CAMUS_REPO_ROOT:-}" ]; then
   if [ -z "$anchor_common" ] || [ "$anchor_common" != "$pwd_common" ]; then
     emit_err "guard refused: \$PWD ($PWD) is not in the trusted repo CAMUS_REPO_ROOT=$CAMUS_REPO_ROOT"
   fi
+fi
+
+# resolve: READ-ONLY land-resolve (audit 2026-06-13, item 6 — replaces the brittle `cd && pwd`
+# last-line pop()). The worktree may legitimately NOT exist (→ found:false → the loop's
+# recreate-from-branch lane); that is not an error. No mkdir, no git mutation. The {found,path}
+# contract mirrors create/attach's {ok,path} so both land paths parse the same way.
+if [ "$mode" = "resolve" ]; then
+  abs="$(cd "$dest" 2>/dev/null && pwd -P)"
+  if [ -z "$abs" ]; then
+    printf '%s\n' '{"found": false, "path": null}'
+    exit 0
+  fi
+  printf '%s' "$abs" | python3 -c 'import json,sys
+print(json.dumps({"found": True, "path": sys.stdin.buffer.read().decode("utf-8","replace")}))'
+  exit 0
 fi
 
 # The centralized worktree home (~/.camus/worktrees/<repo>/) may not exist yet — the dest's

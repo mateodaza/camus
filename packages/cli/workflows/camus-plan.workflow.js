@@ -172,7 +172,13 @@ const STANDARDS = `Camus task standards (what makes the gate converge fast — j
   literal code marked "paste the CURRENT version at launch" or an executable contract to port (an
   ACCEPT/REJECT test table) — NEVER an English walkthrough of that code. Prose detaches from its
   source the moment it is written; the source moves, the prose holds still, and the implementer
-  faithfully builds the stale version. Flag any prose-of-unreadable-code as a blocking violation.`
+  faithfully builds the stale version. Flag any prose-of-unreadable-code as a blocking violation.
+- BASELINE PRESENT (field soak 2026-06-13, item 10): every task assumes a GREEN baseline (a runnable
+  type-check+test) ALREADY EXISTS before task 1 — camus-feat verifies the baseline BEFORE running any
+  task. If grounding found NO verifier (verifyCmd is ""), the bootstrap that creates one is a PRE-GATE
+  step done OUTSIDE camus (a plain Claude Code session), surfaced as a caveat — NEVER as Task 1 inside
+  the gated run (camus-feat would halt at baseline-verify before it could run). Flag any plan whose
+  Task 1 scaffolds the verifier/test command as a BLOCKING violation.`
 
 // ── Phase 1: GROUND — explore the repo read-only ─────────────────────────────
 phase('Ground')
@@ -323,6 +329,15 @@ if (critiqueInfra || !critique) {
     : [{ taskIndex: -1, severity: 'major',
         problem: 'Critic returned needs_revision but listed no issues (malformed verdict) — plan quality unverified.',
         fix: 'Re-run camus-plan, or review the plan manually before trusting it.' }]
+}
+// GREENFIELD BASELINE caveat (field soak 2026-06-13, item 10): grounding found NO verifier, so
+// camus-feat would halt at baseline-verify before task 1. Surface a synthetic PRE-GATE caveat (→
+// planned_with_caveats, never a silent clean "planned") naming the bootstrap as an OUTSIDE-camus
+// step — the STANDARDS clause already forbids decomposing it as Task 1.
+if (!repo.verifyCmd) {
+  remainingIssues = [...remainingIssues, { taskIndex: -1, severity: 'major',
+    problem: 'No baseline verifier detected in this repo (no runnable type-check+test). camus-feat verifies the baseline BEFORE task 1, so it would halt at baseline-verify (env_not_ready) before running any task here.',
+    fix: 'PRE-GATE (outside camus): scaffold one runnable test command and commit it as the baseline (a plain Claude Code session is fine for step zero), OR pass camus-feat verifyCmd:"<build && test>". Then run this plan. Do NOT make the bootstrap Task 1 — it cannot pass the gate it would run under.' }]
 }
 
 // ── Phase 6: EMIT — write the plan (camus-feat args + readable .md) ───────────

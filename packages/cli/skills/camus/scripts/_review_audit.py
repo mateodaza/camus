@@ -20,18 +20,32 @@ def _int(x):
         return x
 
 
+# A usable verdict, mirrored from adapter.VALID_CORRECTNESS / codex_review.sh _last_has_verdict —
+# kept inline so this best-effort audit writer takes no import on the adapter (audit 2026-06-13,
+# item 12: the audit `ran` must match the GATE's "usable verdict", not merely "parsed as JSON").
+_VALID_CORRECTNESS = ("patch is correct", "patch is incorrect")
+
+
 def build_record(wt, rnd, status, raw):
     try:
         parsed = json.loads(raw) if raw.strip() else None
     except (ValueError, TypeError):
         parsed = None
+    # `ran` is the proof signal — and it must mean the SAME thing the gate means by "a review ran":
+    # a real verdict, not just any JSON. Parseable JSON that lacks a valid overall_correctness is
+    # exactly what the adapter rejects as schema-drift infra (it did NOT review), so it must read
+    # ran:false here too — otherwise the forensic file claims a review "ran" for output the gate
+    # threw away (audit 2026-06-13, item 12).
+    ran = (
+        isinstance(parsed, dict)
+        and parsed.get("overall_correctness") in _VALID_CORRECTNESS
+    )
     return {
         "ran_at": int(time.time()),
         "worktree": wt,
         "round": _int(rnd),
         "codex_exit": _int(status),
-        # `ran` is the proof signal: a non-empty Codex response that parsed as JSON.
-        "ran": bool(raw.strip()) and parsed is not None,
+        "ran": ran,
         "codex_raw": raw,
         "codex_parsed": parsed,
     }

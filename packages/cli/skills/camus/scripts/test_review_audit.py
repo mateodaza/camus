@@ -26,6 +26,21 @@ def test_nonjson_response_marks_ran_false():
     assert rec["ran"] is False and rec["codex_parsed"] is None
 
 
+def test_parseable_json_without_verdict_marks_ran_false():
+    # audit 2026-06-13, item 12: parseable JSON that LACKS a valid overall_correctness is exactly
+    # what the adapter rejects as schema-drift infra (the review did NOT happen) — the audit `ran`
+    # must agree, or the forensic file claims a review "ran" for output the gate threw away.
+    rec = A.build_record("/x/camus-wt-foo", "1", "0", '{"some":"json","but":"no verdict"}')
+    assert rec["ran"] is False, "parseable-but-no-overall_correctness must be ran:false"
+    assert rec["codex_parsed"] == {"some": "json", "but": "no verdict"}  # still captured for forensics
+
+
+def test_incorrect_verdict_marks_ran_true():
+    rec = A.build_record("/x/camus-wt-foo", "1", "0",
+                         '{"overall_correctness":"patch is incorrect","findings":[{"priority":1}]}')
+    assert rec["ran"] is True  # a real REJECT verdict is a review that ran
+
+
 def test_nonnumeric_round_exit_preserved_as_string():
     rec = A.build_record("/x/wt", "r1", "sig", "{}")
     assert rec["round"] == "r1" and rec["codex_exit"] == "sig"

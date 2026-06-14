@@ -330,6 +330,56 @@ def test_uv_repo_skips_the_system_python_probe():
     assert not any("import pytest" in i for i in issues)
 
 
+# --- repo_facts: workspace + toplevel divergence (field soak 2026-06-13, item 11) ----------
+
+class _FakeProc:
+    def __init__(self, rc, out=""):
+        self.returncode = rc
+        self.stdout = out
+
+
+def _run_nogit(*a, **k):
+    return _FakeProc(1, "")            # git rev-parse fails → toplevel check skipped
+
+
+def test_repo_facts_parent_pnpm_workspace_warns():
+    parent = tempfile.mkdtemp(prefix="camus_ws_")
+    with open(os.path.join(parent, "pnpm-workspace.yaml"), "w") as fh:
+        fh.write("packages: ['pkgs/*']\n")
+    pkg = os.path.join(parent, "pkgs", "app")
+    os.makedirs(pkg)
+    with open(os.path.join(pkg, "package.json"), "w") as fh:
+        fh.write("{}")
+    facts = E.repo_facts(pkg, run=_run_nogit)
+    assert any("workspace" in f and "pnpm-workspace.yaml" in f for f in facts), facts
+
+
+def test_repo_facts_parent_package_json_workspaces_warns():
+    parent = tempfile.mkdtemp(prefix="camus_ws_")
+    with open(os.path.join(parent, "package.json"), "w") as fh:
+        fh.write('{"workspaces": ["a"]}')
+    pkg = os.path.join(parent, "app")
+    os.makedirs(pkg)
+    with open(os.path.join(pkg, "package.json"), "w") as fh:
+        fh.write("{}")
+    facts = E.repo_facts(pkg, run=_run_nogit)
+    assert any("workspace" in f for f in facts), facts
+
+
+def test_repo_facts_standalone_no_false_positive():
+    d = _repo({"package.json": "{}"})
+    facts = E.repo_facts(d, run=_run_nogit)
+    assert not any("workspace" in f for f in facts), facts
+
+
+def test_repo_facts_toplevel_mismatch_warns():
+    d = _repo({"package.json": "{}"})
+    sub = os.path.join(d, "sub")
+    os.makedirs(sub)
+    facts = E.repo_facts(sub, run=lambda *a, **k: _FakeProc(0, d + "\n"))
+    assert any("NOT the git repo root" in f for f in facts), facts
+
+
 # --- stdlib runner ---------------------------------------------------------
 
 if __name__ == "__main__":

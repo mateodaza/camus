@@ -59,7 +59,13 @@ const COMMIT_CMD = `bash ${SKILL_SCRIPTS}/commit.sh` // commit reviewed work so 
 // auto-mode classifier denies agent-typed `git -c core.hooksPath=/dev/null …` as a guardrail
 // bypass — commit.sh was never denied because its flags live INSIDE an allowlisted script.
 // wt.sh carries the same hookless discipline plus the camus branch/worktree guard.
-const WT_CMD = `bash ${SKILL_SCRIPTS}/wt.sh`         // worktree create (implement) / attach (land)
+const WT_CMD = `bash ${SKILL_SCRIPTS}/wt.sh`         // worktree create (implement) / attach / resolve (land)
+const CONTAIN_CMD = `bash ${SKILL_SCRIPTS}/containment.sh`  // main-tree containment RECEIPT {ran,dirty,paths}
+// (field soak 2026-06-13, finding 8): the containment check now reads `git status --porcelain`
+// MECHANICALLY in-script and emits a {ran} receipt — the loop parses it instead of asking a thin
+// agent to echo git stdout. The old "non-empty agent reply ⇒ breach" both false-bred breaches
+// (a preamble/error/budget stub looked like dirt) AND false-cleared real leaks (an empty reply on
+// agent failure looked like a clean tree). Now: ran:false ⇒ inconclusive, never a verdict.
 
 // args may be a bare string or {task, targetPath}. A STRING that parses as a JSON object is
 // unwrapped first (live dogfood 2026-06-12, the loop-side F33): some callers stringify the
@@ -71,16 +77,23 @@ if (typeof args === 'string' && args.trim().startsWith('{')) {
 }
 const TASK = typeof args === 'string' ? args : (args && args.task) || ''
 const TARGET = (args && typeof args === 'object' && args.targetPath) || ''
-// REPO_CD (live dogfood run-8, 2026-06-12): WT_DEST embeds $(pwd -P), so every command that
-// carries it — or that reads the repo (containment, collision probes) — must run at a
-// DETERMINISTIC directory, not whatever cwd the runner inherited. Two launches of the same feat
-// from different shells resolved two different worktree homes: the land lane looked where the
-// worktree wasn't, and the recreate was (correctly) refused because the branch lives in the
-// original one. With targetPath, every such command is prefixed `cd <target> && `; without it
-// the prefix is empty and the documented contract (launch from the repo root) governs unchanged.
-// In a `cmd1 && cmd2` list bash expands cmd2's words AFTER cmd1 runs, so the $(pwd -P) inside
-// WT_DEST resolves at the target, which is the entire point.
-const REPO_CD = TARGET ? `cd ${JSON.stringify(TARGET)} && ` : ''
+// args.verifyCmd (field soak 2026-06-13, finding 3): a per-run verify override for HEADLESS runs
+// where there is no interactive shell to `export CAMUS_VERIFY_CMD`. Inlined as an ENV-ASSIGNMENT
+// PREFIX (never interpolated into the command body) so it reaches verify.py's env lookup and
+// cannot become a shell-injection vector; JSON-quoted. verify.py already handles the override
+// safely — this is advisory config, not a gate change.
+const VERIFY_CMD_OVERRIDE = (args && typeof args === 'object' && typeof args.verifyCmd === 'string' && args.verifyCmd.trim()) ? args.verifyCmd : ''
+const VERIFY_ENV = VERIFY_CMD_OVERRIDE ? `CAMUS_VERIFY_CMD=${JSON.stringify(VERIFY_CMD_OVERRIDE)} ` : ''
+// REPO_CD (dogfood run-8 + field soak finding "garland", 2026-06-12/13): worktree identity and
+// every repo-reading command must run at the GIT TOPLEVEL, not whatever cwd the runner inherited.
+// A launch from a SUBDIRECTORY computed a different worktree home (the basename was the subdir,
+// not the repo) and made the implement agent edit the main tree — a containment leak. The fix is
+// to ALWAYS resolve and cd to `git rev-parse --show-toplevel` (of targetPath if given, else cwd),
+// so it no longer matters which folder the run was launched from. A non-repo resolves to empty →
+// `cd "" && …` fails the whole command (fail-closed; the feat preflight already refuses non-repos).
+// In a `cmd1 && cmd2` list bash expands cmd2's words AFTER cmd1 runs, so the $(git rev-parse …)
+// inside WT_DEST resolves at the toplevel, which is the entire point.
+const REPO_CD = `cd "$(cd ${TARGET ? JSON.stringify(TARGET) : '.'} && git rev-parse --show-toplevel)" && `
 // Identity composability: a caller (e.g. the M1 feat-runner) can feat-scope this task's branch
 // and worktree by passing branchPrefix (default 'camus/') and idSalt (default '' = standalone).
 const BRANCH_PREFIX = (args && typeof args === 'object' && args.branchPrefix) || 'camus/'
@@ -178,8 +191,13 @@ const WT_NAME = `camus-wt-${SLUG}-${RUN_ID}`
 // "fix" this back to the documented location without solving both.
 // Parent = <basename>-<cksum of the absolute repo path>: basename alone collides across two
 // repos both named "app"/"game" (review P2 2026-06-10); the cksum (POSIX, always present)
-// makes the parent repo-unique while staying deterministic for the same checkout path.
-const WT_PARENT_EXPR = `$HOME/.camus/worktrees/$(basename "$(pwd -P)")-$(pwd -P | cksum | cut -d' ' -f1)`
+// makes the parent repo-unique while staying deterministic for the same repo.
+// Keyed to the GIT TOPLEVEL, not `pwd` (field soak "garland" 2026-06-13): a subdir launch must
+// resolve the SAME worktree home as a root launch — `git rev-parse --show-toplevel` is invariant
+// across any cwd inside the repo, where `pwd -P` was not. (Migration: worktrees minted under the
+// old pwd-keyed scheme won't match this path on resume — land-resolve simply recreates from the
+// branch, the durable home; an in-flight feat spanning the upgrade may need a `git worktree prune`.)
+const WT_PARENT_EXPR = `$HOME/.camus/worktrees/$(basename "$(git rev-parse --show-toplevel)")-$(git rev-parse --show-toplevel | cksum | cut -d' ' -f1)`
 const WT_PARENT = `"${WT_PARENT_EXPR}"`
 const WT_DEST = `"${WT_PARENT_EXPR}/${WT_NAME}"`
 
@@ -303,14 +321,18 @@ if (LAND) {
   // Resolve the EXISTING worktree at the same deterministic destination implement would have
   // created — with the same fail-closed path validation (audit F3: never cd/exec an unvalidated
   // path). No worktree → nothing to land → abort, never plan/implement under land.
+  // Land-resolve via wt.sh's JSON {found,path} contract (audit 2026-06-13, item 6 — replaces the
+  // brittle `cd && pwd` last-line pop(), which a trailing commentary line could poison). A
+  // non-parseable reply or found:false routes to recreate-from-branch (itself fail-closed) — never
+  // a silently-picked path.
   const wtRaw = await agent(
-    `THIN land-path resolver. Run EXACTLY this one command and output ONLY its stdout (one absolute path), no commentary:
-  ${HB_TOUCH}${REPO_CD}cd ${WT_DEST} && pwd
-If the cd fails (directory does not exist), output exactly: MISSING`,
+    `THIN land-path resolver. Run EXACTLY this one command and output its stdout VERBATIM (one JSON object — {found,path}); no fences, no commentary:
+  ${HB_TOUCH}${REPO_CD}${WT_CMD} resolve ${BRANCH} ${WT_DEST}`,
     { model: MODEL_RUNNER, phase: 'Commit', label: 'land-resolve' }
   )
-  let wt = String(wtRaw || '').trim().split('\n').pop().trim()
-  if (!wt || wt === 'MISSING' || !wt.endsWith(WT_NAME)) {
+  const wtJ = extractJsonObject(wtRaw)
+  let wt = (wtJ && wtJ.found === true && typeof wtJ.path === 'string') ? wtJ.path.trim() : ''
+  if (!wt || !wt.endsWith(WT_NAME)) {
     // RECREATE FROM THE BRANCH (live smoke run-4, 2026-06-12): the work's durable home is the
     // BRANCH — the worktree was always just a checkout, and lanes legitimately remove it (the
     // noop path did here) while the proven commits survive. A missing checkout must not abort a
@@ -557,21 +579,39 @@ log(`Implemented in worktree ${WT} (branch ${BRANCH})${tokSuffix()}.`)
 // every later task false-fires this guard and the feat wedges. Documented blind spot: an agent
 // editing ONLY a submodule pointer in the main tree goes unseen here; the merge step still
 // surfaces it.
+// THREE-outcome containment (field soak 2026-06-13, finding 8): containment.sh reads
+// `git status --porcelain` MECHANICALLY and emits {ran,dirty,paths}; the runner only echoes it.
+// Returns: null (ran && clean) | {kind:'breach', paths} (ran && dirty) | {kind:'inconclusive', why}
+// (the answer was NOT obtained — agent failure / budget / non-git / unparseable). The inconclusive
+// case is the whole fix: the old code read a non-empty noisy reply as a confirmed breach (cry-wolf
+// false-positive) AND an empty reply on agent failure as a clean tree (silent false-negative that
+// let a real leak merge). Now neither failure can produce a verdict.
 async function containmentLeak(phaseName) {
   const raw = await agent(
-    `THIN containment check. Run EXACTLY this one command and output its stdout VERBATIM as your entire reply (it may be EMPTY — then reply with nothing); do NOT cd anywhere else:
-  ${HB_TOUCH}${REPO_CD}git status --porcelain --ignore-submodules=all`,
+    `THIN containment runner. Run EXACTLY this one command and output its stdout VERBATIM as your entire reply (it is JSON — {ran,dirty,paths} or {ran,error}); no fences, no commentary:
+  ${HB_TOUCH}${REPO_CD}${CONTAIN_CMD} "$(git rev-parse --show-toplevel)"`,
     { model: MODEL_RUNNER, phase: 'Review', label: `containment:${phaseName}` }
   )
-  const dirt = String(raw == null ? '' : raw).trim()
-  return (!dirt || dirt === '(empty)') ? null : dirt
+  const r = extractJsonObject(raw)
+  if (!r || r.ran !== true) {
+    return { kind: 'inconclusive', why: (r && r.error) || 'containment runner returned no parseable {ran} receipt' }
+  }
+  if (r.dirty === true) {
+    return { kind: 'breach', paths: (typeof r.paths === 'string' && r.paths.trim()) ? r.paths.trim() : '(paths not reported by the receipt)' }
+  }
+  return null   // ran === true && dirty === false → genuinely clean
 }
 if (ID_SALT) {
-  const leak = await containmentLeak('implement')
-  if (leak) {
+  const c = await containmentLeak('implement')
+  if (c && c.kind === 'breach') {
     return { status: 'infra_error', task: TASK, worktree: WT, branch: BRANCH, rounds: 0, containment: 'implement',
       error: 'worktree containment breach: the implement agent leaked edits into the MAIN repo tree',
-      note: `The implement phase modified the MAIN repo tree — it must only touch its worktree. Leaked paths:\n${leak}\nIf these are agent strays, diff them against the task worktree (${WT}) and discard; if they are YOUR mid-run edits, commit or stash them. Then re-run the feat with the SAME args. The worktree itself is untouched.` }
+      note: `The implement phase modified the MAIN repo tree — it must only touch its worktree. Leaked paths:\n${c.paths}\nIf these are agent strays, diff them against the task worktree (${WT}) and discard; if they are YOUR mid-run edits, commit or stash them. Then re-run the feat with the SAME args. The worktree itself is untouched.` }
+  }
+  if (c && c.kind === 'inconclusive') {
+    return { status: 'infra_error', task: TASK, worktree: WT, branch: BRANCH, rounds: 0, containment: 'implement_inconclusive',
+      error: 'containment check could not run',
+      note: `Camus could not OBTAIN the main-tree containment status after implement (${c.why}). This is NOT a breach and NOT a clean verdict — just an unverifiable check (a budget-killed or errored runner, or a non-git target). Nothing merged. Re-run the feat with the SAME args to re-check; the worktree (${WT}) is untouched.` }
   }
 }
 
@@ -897,11 +937,16 @@ ${softBudget}`,
 // run once after the loop whenever any fix dispatched. Checked BEFORE the unresolved/commit
 // paths on purpose: a leak poisons the NEXT task's merge even when this task halts.
 if (ID_SALT && fixesRan) {
-  const leak = await containmentLeak('fix')
-  if (leak) {
+  const c = await containmentLeak('fix')
+  if (c && c.kind === 'breach') {
     return { status: 'infra_error', task: TASK, worktree: WT, branch: BRANCH, rounds: round, containment: 'fix',
       error: 'worktree containment breach: the fix agent leaked edits into the MAIN repo tree',
-      note: `The fix phase modified the MAIN repo tree — it must only touch its worktree. Leaked paths:\n${leak}\nIf these are agent strays, diff them against the task worktree (${WT}) and discard; if they are YOUR mid-run edits, commit or stash them. Then re-run the feat with the SAME args.` }
+      note: `The fix phase modified the MAIN repo tree — it must only touch its worktree. Leaked paths:\n${c.paths}\nIf these are agent strays, diff them against the task worktree (${WT}) and discard; if they are YOUR mid-run edits, commit or stash them. Then re-run the feat with the SAME args.` }
+  }
+  if (c && c.kind === 'inconclusive') {
+    return { status: 'infra_error', task: TASK, worktree: WT, branch: BRANCH, rounds: round, containment: 'fix_inconclusive',
+      error: 'containment check could not run',
+      note: `Camus could not OBTAIN the main-tree containment status after the fix phase (${c.why}). This is NOT a breach and NOT a clean verdict — just an unverifiable check. Nothing merged. Re-run the feat with the SAME args to re-check; the worktree (${WT}) is untouched.` }
   }
 }
 
@@ -931,7 +976,7 @@ async function prepAndVerify(wt = WT, expectedHead = null) {
     `Run the Camus verification on the worktree and return its stdout JSON verbatim.
 
 Run EXACTLY this one command (the worktree path is the argument — do NOT cd, do NOT add anything else):
-  ${HB_TOUCH}${VERIFY_CMD} ${JSON.stringify(wt)}
+  ${HB_TOUCH}${VERIFY_ENV}${VERIFY_CMD} ${JSON.stringify(wt)}
 
 Output the command's stdout VERBATIM as your entire reply (it is JSON {pass, failures}).
 No fences, no commentary.

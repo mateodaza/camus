@@ -191,6 +191,22 @@ const emitOk = { emit: { written: true } }
     ok('P13 critique prompt judges by the same rule', /SOURCE-BOUND REFERENCES/.test(prompts['critique:r1'] || '') && /prose-of-unreadable-code/.test(prompts['critique:r1'] || ''))
   }
 
+  // P14 (field soak 2026-06-13, item 10): a greenfield repo (grounding found NO verifier) must NOT
+  // emit a clean "planned" — camus-feat would halt at baseline-verify before task 1. The STANDARDS
+  // carry the baseline-present rule, and the result is planned_with_caveats with a pre-gate caveat.
+  {
+    const greenfield = { ground: { verifyCmd: '', stack: 'node/ts', conventions: [], relevantFiles: [], notes: '' } }
+    const { res } = await run({ request: 'brand new project' },
+      { ...greenfield, ...clear, ...arch, ...decompose, ...critiqueReady, ...emitOk })
+    ok('P14 no verifier → planned_with_caveats (never a silent clean planned)', res.status === 'planned_with_caveats', res.status)
+    ok('P14 caveat names the missing baseline as a PRE-GATE step',
+      Array.isArray(res.remainingIssues) && res.remainingIssues.some((i) => /baseline|PRE-GATE/i.test(i.problem + ' ' + i.fix)),
+      JSON.stringify(res.remainingIssues))
+    const { prompts } = await run({ request: 'x' }, { ...ground, ...clear, ...arch, ...decompose, ...critiqueReady, ...emitOk })
+    ok('P14 STANDARDS carry the BASELINE PRESENT rule (decompose + critique see it)',
+      /BASELINE PRESENT/.test(prompts.decompose || '') && /BASELINE PRESENT/.test(prompts['critique:r1'] || ''))
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exit(fail ? 1 : 0)
 })().catch((e) => { console.error('HARNESS ERROR', e); process.exit(2) })

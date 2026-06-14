@@ -293,7 +293,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   }
   // S12 (run-5 fix 2026-06-11): LAND MODE — commit already-proven work without re-running the loop.
   const landStubs = {
-    'land-resolve': wtPath('t'),
+    'land-resolve': J({ found: true, path: wtPath('t') }),
     commit: J({ committed: true, sha: 'land1' }),
     prep: J({ prepped: true, ran: [] }),
     verify: J({ pass: true, failures: [], head: 'land1' }),
@@ -312,7 +312,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   }
   {
     // No existing worktree → nothing to land: abort, never plan/implement.
-    const { res, calls } = await runLoop({ task: 't', land: true }, { ...landStubs, 'land-resolve': 'MISSING' })
+    const { res, calls } = await runLoop({ task: 't', land: true }, { ...landStubs, 'land-resolve': J({ found: false, path: null }) })
     ok('S12c land with no worktree → aborted stage land', res.status === 'aborted' && res.stage === 'land', res.status + '/' + res.stage)
     ok('S12c …and nothing else ran', !calls.some((c) => /^(classify|plan|implement|review|commit|prep|verify)/.test(c)), calls.join(','))
   }
@@ -352,7 +352,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   }
   {
     // A hallucinated resolver path (wrong suffix) is refused fail-closed (audit F3 discipline).
-    const { res } = await runLoop({ task: 't', land: true }, { ...landStubs, 'land-resolve': '/tmp/evil-dir' })
+    const { res } = await runLoop({ task: 't', land: true }, { ...landStubs, 'land-resolve': J({ found: true, path: '/tmp/evil-dir' }) })
     ok('S12f land refuses an unvalidated worktree path', res.status === 'aborted' && res.stage === 'land', res.status)
   }
   // S27 (live smoke run-4, 2026-06-12): the work's durable home is the BRANCH — a missing land
@@ -360,7 +360,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // the proven commits survive). Recreate-impossible stays an honest abort naming the branch.
   {
     const { res, calls, prompts } = await runLoop({ task: 't', land: true },
-      { ...landStubs, 'land-resolve': 'MISSING', 'land-recreate': J({ ok: true, path: wtPath('t') }) })
+      { ...landStubs, 'land-resolve': J({ found: false, path: null }), 'land-recreate': J({ ok: true, path: wtPath('t') }) })
     ok('S27 missing worktree → recreated from the branch → landed done', res.status === 'done' && calls.includes('land-recreate'), res.status + ' ' + calls.join(','))
     // run-5 (2026-06-12): the mutation lives in the allowlisted wt.sh — agent-typed hookless git
     // is classifier-denied, so the prompt must carry NO raw git at all.
@@ -368,7 +368,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   }
   {
     const { res } = await runLoop({ task: 't', land: true },
-      { ...landStubs, 'land-resolve': 'MISSING', 'land-recreate': J({ ok: false, error: 'denied by the auto mode classifier: hooksPath bypass' }) })
+      { ...landStubs, 'land-resolve': J({ found: false, path: null }), 'land-recreate': J({ ok: false, error: 'denied by the auto mode classifier: hooksPath bypass' }) })
     ok('S27b recreate failure carries the REAL cause verbatim', res.status === 'aborted' && /wt\.sh said: "denied by the auto mode classifier/.test(res.note || ''), res.note)
   }
 
@@ -468,6 +468,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       implement: { worktree_path: wtPath('t', salt), branch: 'b', summary: 's', decisions: [] },
       review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
       commit: J({ committed: true, sha: 'abc' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'abc' }),
+      containment: J({ ran: true, dirty: false, paths: '' }),
     }
     const { res, calls, prompts } = await runLoop({ task: 't', idSalt: salt }, stubs)
     ok('S17 review command carries the heartbeat touch', (prompts[reviewLbl(calls, 1)] || '').includes(hb))
@@ -643,12 +644,12 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
       commit: J({ committed: true, sha: 'c1' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'c1' }),
     }
-    const clean = await runLoop({ task: 't', idSalt: salt }, { ...base25, containment: '' })
+    const clean = await runLoop({ task: 't', idSalt: salt }, { ...base25, containment: J({ ran: true, dirty: false, paths: '' }) })
     ok('S25a clean main tree → done, containment checked', clean.res.status === 'done' && clean.calls.includes('containment:implement'), clean.res.status + ' ' + clean.calls.join(','))
     // git audit 2026-06-12: a merged submodule-pointer bump leaves permanent ` M sub` porcelain —
     // the guard must ignore submodule noise or every later task false-fires.
-    ok('S25a2 containment ignores submodule noise', (clean.prompts['containment:implement'] || '').includes('--ignore-submodules=all'))
-    const leaky = await runLoop({ task: 't', idSalt: salt }, { ...base25, containment: ' M packages/x.ts\n?? packages/new.ts' })
+    ok('S25a2 containment ignores submodule noise', (clean.prompts['containment:implement'] || '').includes('/containment.sh'))
+    const leaky = await runLoop({ task: 't', idSalt: salt }, { ...base25, containment: J({ ran: true, dirty: true, paths: ' M packages/x.ts' }) })
     ok('S25b implement leak → infra halt naming the phase', leaky.res.status === 'infra_error' && leaky.res.containment === 'implement', leaky.res.status + '/' + leaky.res.containment)
     ok('S25b note names the leaked paths + recovery', /packages\/x\.ts/.test(leaky.res.note) && /diff them against the task worktree/.test(leaky.res.note))
   }
@@ -660,7 +661,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       ...clsStd, ...planOf('clear', ''),
       implement: { worktree_path: wtPath('t', salt), branch: 'b', summary: 's', decisions: [] },
       review: (() => { let r = 0; return () => { r++; return J({ ran: true, clean: false, blocking: [{ priority: 1, title: 't' + r, code_location: 'f.ts:' + r }], nonblocking: [] }) } })(),
-      fix: '', containment: () => (++c25 === 1 ? '' : ' M lib/leaked.ts'),
+      fix: '', containment: () => (++c25 === 1 ? J({ ran: true, dirty: false, paths: '' }) : J({ ran: true, dirty: true, paths: ' M lib/leaked.ts' })),
       prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [] }),
     }
     const { res } = await runLoop({ task: 't', idSalt: salt, roundCap: 2 }, stubs)
@@ -668,7 +669,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   }
   {
     // standalone (no idSalt): even a would-be-dirty tree is never checked — not a breach.
-    const { res, calls } = await runLoop({ task: 't' }, { ...clsStd, ...planOf('clear', ''), ...happyTail, containment: ' M anything.ts' })
+    const { res, calls } = await runLoop({ task: 't' }, { ...clsStd, ...planOf('clear', ''), ...happyTail, containment: J({ ran: true, dirty: true, paths: ' M anything.ts' }) })
     ok('S25d standalone loop → containment never runs', res.status === 'done' && !calls.some((c) => c.startsWith('containment')), calls.join(','))
   }
 
@@ -730,6 +731,8 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   const featMerge = { merged: true, committed: true, alreadyUpToDate: false, before: 'aaa', after: 'bbb', priorMergeCommit: null }
   const featBase = {
     preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: '' },
+    'fork-scan': J({ feats: [] }),          // no in-progress twin feat (0.2.7 item 8); fail-open if absent
+    'steer': J({ read: true, note: null }), // steer_read.py sentinel: no note (0.2.7 item 7)
     'feat-branch': { ok: true, branch: 'camus/feat-x', created: true },
     'env-check': { ready: true, exitCode: 0, output: 'ok' },
     'baseline-verify': J({ pass: true, failures: [] }),
@@ -1126,7 +1129,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   {
     const tid = taskIdOf('F', ['only task'], 'only task')
     const { res, calls, prompts } = await runFeat({ feat: 'F', tasks: ['only task'] },
-      { ...featBase, steer: J({ pause: true, answers: { [tid]: 'use adapter B' } }), 'steer-requeue': { written: true } },
+      { ...featBase, steer: J({ read: true, note: J({ pause: true, answers: { [tid]: 'use adapter B' } }) }), 'steer-requeue': { written: true } },
       [])
     ok('F20 pause still halts', res && res.status === 'paused_by_user', res && res.status)
     const rqLabel = 'steer-requeue:' + tid
@@ -1137,7 +1140,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   }
   {
     const { res, calls } = await runFeat({ feat: 'F', tasks: ['only task'] },
-      { ...featBase, steer: J({ pause: true }) }, [])
+      { ...featBase, steer: J({ read: true, note: J({ pause: true }) }) }, [])
     ok('F20b pause-only note → no re-queue agent', res && res.status === 'paused_by_user' && !calls.some((c) => c.startsWith('steer-requeue')), calls.join(','))
   }
   {
@@ -1304,12 +1307,12 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F38a implement worktree-create is cd-prefixed under targetPath',
       (r.prompts.implement || '').includes(cdp) && (r.prompts.implement || '').includes('/wt.sh create'), (r.prompts.implement || '').slice(460, 560))
     const r2 = await runLoop({ task: 't', land: true, targetPath: tp },
-      { 'land-resolve': wtPath('t'), commit: J({ committed: true, sha: 'land1' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'land1' }) })
+      { 'land-resolve': J({ found: true, path: wtPath('t') }), commit: J({ committed: true, sha: 'land1' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'land1' }) })
     ok('F38b land-resolve is cd-prefixed under targetPath (identity resolves AT the target)',
       (r2.prompts['land-resolve'] || '').includes(cdp), (r2.prompts['land-resolve'] || '').slice(0, 200))
     ok('F38b …and still lands done', r2.res.status === 'done', r2.res.status)
     const r3 = await runLoop({ task: 't', land: true, targetPath: tp },
-      { 'land-resolve': 'MISSING', 'land-recreate': J({ ok: true, path: wtPath('t') }), commit: J({ committed: true, sha: 'land1' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'land1' }) })
+      { 'land-resolve': J({ found: false, path: null }), 'land-recreate': J({ ok: true, path: wtPath('t') }), commit: J({ committed: true, sha: 'land1' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'land1' }) })
     ok('F38c land-recreate is cd-prefixed under targetPath',
       (r3.prompts['land-recreate'] || '').includes(cdp) && (r3.prompts['land-recreate'] || '').includes('/wt.sh attach'), (r3.prompts['land-recreate'] || '').slice(0, 200))
     ok('F38c …and the recreated land completes', r3.res.status === 'done', r3.res.status)
@@ -1454,9 +1457,9 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const { loopArgs, prompts } = await runFeat({ feat: 'F', tasks: ['only task'], targetPath: 'packages/ai/src' }, featBase,
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F4 targetPath forwarded to loop', loopArgs[0] && loopArgs[0].targetPath === 'packages/ai/src', J(loopArgs[0]))
-    ok('F4 targetPath not used as preflight cwd', prompts.preflight && prompts.preflight.includes('cd "$PWD"') && !prompts.preflight.includes('cd "packages/ai/src"'))
-    ok('F4 targetPath not used as baseline verify target', prompts['baseline-verify'] && prompts['baseline-verify'].includes('verify.sh "$PWD"') && !prompts['baseline-verify'].includes('packages/ai/src'))
-    ok('F4 targetPath not used as integration verify target', prompts['integration-verify'] && prompts['integration-verify'].includes('verify.sh "$PWD"') && !prompts['integration-verify'].includes('packages/ai/src'))
+    ok('F4 targetPath not used as preflight cwd', prompts.preflight && prompts.preflight.includes('git rev-parse --show-toplevel') && !prompts.preflight.includes('packages/ai/src'))
+    ok('F4 targetPath not used as baseline verify target', prompts['baseline-verify'] && prompts['baseline-verify'].includes('git rev-parse --show-toplevel') && !prompts['baseline-verify'].includes('packages/ai/src'))
+    ok('F4 targetPath not used as integration verify target', prompts['integration-verify'] && prompts['integration-verify'].includes('git rev-parse --show-toplevel') && !prompts['integration-verify'].includes('packages/ai/src'))
   }
   // F5: loop telemetry (tier/model/rounds/planSkipped) surfaced into the report per task.
   {
@@ -1484,13 +1487,13 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // F7: steer hook (2026-06-10) — a pending human note is consumed at the task boundary.
   {
     const { res, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'] },
-      { ...featBase, steer: J({ pause: true }) }, [])
+      { ...featBase, steer: J({ read: true, note: J({ pause: true }) }) }, [])
     ok('F7 pause note → paused_by_user before the loop', res && res.status === 'paused_by_user', res && res.status)
     ok('F7 loop never invoked on pause', workflowCalls === 0, 'workflowCalls=' + workflowCalls)
   }
   {
     const { res, loopArgs } = await runFeat({ feat: 'F', tasks: ['only task'] },
-      { ...featBase, steer: J({ guidance: 'use adapter B' }) },
+      { ...featBase, steer: J({ read: true, note: J({ guidance: 'use adapter B' }) }) },
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F7 guidance threaded as humanAnswer', !!loopArgs[0] && loopArgs[0].humanAnswer === 'use adapter B', J(loopArgs[0]))
     ok('F7 feat still done with guidance', res && res.status === 'done', res && res.status)
@@ -1506,7 +1509,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // finalize note promises the user).
   {
     let steerCalls = 0
-    const steerOnceThenPause = () => (++steerCalls === 1 ? '{}' : J({ pause: true }))
+    const steerOnceThenPause = () => (++steerCalls === 1 ? J({ read: true, note: null }) : J({ read: true, note: J({ pause: true }) }))
     const r1 = await runFeat({ feat: 'P', tasks: ['a', 'b'] },
       { ...featBase, steer: steerOnceThenPause },
       [{ status: 'done', branch: 'camus/feat/x/a', decisions: [] }])
@@ -1525,7 +1528,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   {
     const bId = taskIdOf('T2', ['a', 'b'], 'b')
     let sc = 0
-    const steerNoteOnce = () => (++sc === 1 ? J({ answers: { [bId]: 'pick B' } }) : '{}')
+    const steerNoteOnce = () => (++sc === 1 ? J({ read: true, note: J({ answers: { [bId]: 'pick B' } }) }) : J({ read: true, note: null }))
     const { loopArgs } = await runFeat({ feat: 'T2', tasks: ['a', 'b'] },
       { ...featBase, steer: steerNoteOnce },
       [{ status: 'done', branch: 'camus/feat/x/a', decisions: [] },
@@ -1538,7 +1541,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // past it re-opens exactly what it was written to prevent. needs_human → not auto-resumable.
   {
     const { res, stateJSON, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'] },
-      { ...featBase, steer: 'totally not json' },
+      { ...featBase, steer: J({ read: true, note: 'totally not json' }) },
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F7f garbage note surfaced in run log', !!stateJSON && stateJSON.events.some((e) => /UNPARSEABLE/.test(e.msg)))
     ok('F7f run HALTS for the human (no silent drop)', res && res.status === 'needs_human' && res.stage === 'steer', res && (res.status + '/' + res.stage))
@@ -1632,6 +1635,114 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const isResumable = (s) => !!(s && s.status === 'running' && s.feat && Array.isArray(s.tasks))
     ok('F6 running feat IS auto-resumable', isResumable(running))
     ok('F6 needs_human feat NOT auto-resumable', !isResumable(halted))
+  }
+
+  // ── 0.2.7 batch (field soak 2026-06-13): the adversarial-audit fixes, each pinned ───────────
+  // F40: CONTAINMENT is a 3-outcome RECEIPT (item 8/finding 8). The runner echoes containment.sh's
+  // {ran,dirty,paths}; the loop must read it MECHANICALLY — ran:false (failure) ⇒ inconclusive,
+  // NEVER a breach (the cry-wolf false-positive) and NEVER clean (the silent false-negative).
+  {
+    const salt = 'c027'
+    const base = {
+      ...clsStd, ...planOf('clear', ''),
+      implement: { worktree_path: wtPath('t', salt), branch: 'b', summary: 's', decisions: [] },
+      review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
+      fix: '', commit: J({ committed: true, sha: 'c1' }), prep: J({ prepped: true, ran: [] }),
+      verify: J({ pass: true, failures: [], head: 'c1' }),
+    }
+    const clean = await runLoop({ task: 't', idSalt: salt }, { ...base, containment: J({ ran: true, dirty: false, paths: '' }) })
+    ok('F40 containment ran+clean → done', clean.res.status === 'done', clean.res.status)
+    ok('F40 containment prompt routes through containment.sh (mechanical receipt)',
+      (clean.prompts['containment:implement'] || '').includes('/containment.sh'))
+    const breach = await runLoop({ task: 't', idSalt: salt }, { ...base, containment: J({ ran: true, dirty: true, paths: ' M leaked.ts' }) })
+    ok('F40 containment ran+dirty → breach naming paths', breach.res.status === 'infra_error' && breach.res.containment === 'implement' && /leaked\.ts/.test(breach.res.note || ''), breach.res.status + '/' + breach.res.containment)
+    // the KEY fix — both failure shapes are INCONCLUSIVE, not a verdict:
+    const noJson = await runLoop({ task: 't', idSalt: salt }, { ...base, containment: 'Here is the output: (no changes)' })
+    ok('F40 containment non-JSON reply → inconclusive, NOT a breach (cry-wolf closed)',
+      noJson.res.status === 'infra_error' && noJson.res.containment === 'implement_inconclusive', noJson.res.status + '/' + noJson.res.containment)
+    const ranFalse = await runLoop({ task: 't', idSalt: salt }, { ...base, containment: J({ ran: false, error: 'not a git repository' }) })
+    ok('F40 containment {ran:false} → inconclusive, NEVER clean (silent-leak closed)',
+      ranFalse.res.status === 'infra_error' && ranFalse.res.containment === 'implement_inconclusive', ranFalse.res.status + '/' + ranFalse.res.containment)
+    const empty = await runLoop({ task: 't', idSalt: salt }, { ...base, containment: '' })
+    ok('F40 containment empty reply → inconclusive (not read as clean)',
+      empty.res.status === 'infra_error' && empty.res.containment === 'implement_inconclusive', empty.res.status)
+  }
+
+  // F41: MERGE NULL-RELAY recovery (item 2) — a dropped merge relay must NOT stamp merge_failed
+  // when merge.sh's receipt proves the merge; and no-relay+no-receipt is inconclusive, not failed.
+  {
+    const loopDone = [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }]
+    const proven = { merged: true, committed: true, alreadyUpToDate: false, before: 'aaa', after: 'bbb', priorMergeCommit: null }
+    // relay dropped (mg null) BUT receipt proves success + live HEAD matches → merge succeeds
+    const r = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, merge: null, 'merge-receipt': J(proven), 'merge-head': 'bbb' }, loopDone)
+    ok('F41 null relay + proven receipt + matching HEAD → done (not a false merge_failed)', r.res && r.res.status === 'done', r.res && r.res.status)
+    // relay dropped AND receipt missing → inconclusive ready_to_merge, NEVER definitive merge_failed
+    const r2 = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, merge: null, 'merge-receipt': 'MISSING', 'merge-head': 'zzz' }, loopDone)
+    ok('F41 null relay + no receipt → ready_to_merge inconclusive, not merge_failed',
+      r2.res && r2.res.status === 'feat_integration_failed' && r2.res.stage === 'merge_receipt' && !!r2.stateJSON && r2.stateJSON.tasks[0].status === 'ready_to_merge', r2.res && (r2.res.status + '/' + r2.res.stage))
+    // null relay + receipt says success but live HEAD moved off it → off-script mutation caught
+    const r3 = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, merge: null, 'merge-receipt': J(proven), 'merge-head': 'zzz' }, loopDone)
+    ok('F41 null relay + receipt vs moved HEAD → off-script halt', r3.res && r3.res.status === 'feat_integration_failed' && r3.res.stage === 'merge_receipt' && /OFF-SCRIPT/.test(r3.res.note || ''), r3.res && r3.res.stage)
+  }
+
+  // F42: ENV readiness DERIVED from exitCode (item 4) — a relay whose `ready` contradicts its
+  // exitCode is a misread; halt loud, never advance on a contradicted env.
+  {
+    const loopDone = [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }]
+    const ok1 = await runFeat({ feat: 'F', tasks: ['only task'] }, { ...featBase, 'env-check': { ready: true, exitCode: 0, output: 'ok' } }, loopDone)
+    ok('F42 env ready:true exit:0 → proceeds (done)', ok1.res && ok1.res.status === 'done', ok1.res && ok1.res.status)
+    const mism = await runFeat({ feat: 'F', tasks: ['only task'] }, { ...featBase, 'env-check': { ready: true, exitCode: 1, output: 'broken' } }, loopDone)
+    ok('F42 env ready:true exit:1 (contradiction) → env_not_ready halt', mism.res && mism.res.status === 'env_not_ready', mism.res && mism.res.status)
+    const red = await runFeat({ feat: 'F', tasks: ['only task'] }, { ...featBase, 'env-check': { ready: false, exitCode: 1, output: 'install' } }, loopDone)
+    ok('F42 env ready:false exit:1 → normal env_not_ready', red.res && red.res.status === 'env_not_ready', red.res && red.res.status)
+  }
+
+  // F43: FORK DETECTION (item 8) — an in-progress feat with the SAME title but a DIFFERENT id halts
+  // for a human; the current feat is excluded (normal resume never trips); allowFork bypasses.
+  {
+    const loopDone = [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }]
+    const myId = featIdOf('Shared Title', ['only task'])
+    const twin = { featId: 'shared-title-zz9999', title: 'Shared Title', status: 'running' }
+    const fork = await runFeat({ feat: 'Shared Title', tasks: ['only task'] },
+      { ...featBase, 'fork-scan': J({ feats: [twin] }) }, loopDone)
+    ok('F43 same-title different-id in-progress → needs_human fork', fork.res && fork.res.status === 'needs_human' && fork.res.stage === 'fork', fork.res && (fork.res.status + '/' + fork.res.stage))
+    ok('F43 fork note names the other branch', /shared-title-zz9999/.test((fork.res && fork.res.note) || ''))
+    const mineDone = await runFeat({ feat: 'Shared Title', tasks: ['only task'] },
+      { ...featBase, 'fork-scan': J({ feats: [{ featId: myId, title: 'Shared Title', status: 'running' }] }) }, loopDone)
+    ok('F43 current featId excluded → no false fork (proceeds)', mineDone.res && mineDone.res.status === 'done', mineDone.res && mineDone.res.status)
+    const doneTwin = await runFeat({ feat: 'Shared Title', tasks: ['only task'] },
+      { ...featBase, 'fork-scan': J({ feats: [{ ...twin, status: 'done' }] }) }, loopDone)
+    ok('F43 a DONE same-title feat is not a fork (terminal excluded)', doneTwin.res && doneTwin.res.status === 'done', doneTwin.res && doneTwin.res.status)
+    const bypass = await runFeat({ feat: 'Shared Title', tasks: ['only task'], allowFork: true },
+      { ...featBase, 'fork-scan': J({ feats: [twin] }) }, loopDone)
+    ok('F43 allowFork:true bypasses (no scan, proceeds)', bypass.res && bypass.res.status === 'done', bypass.res && bypass.res.status)
+  }
+
+  // F44: BASE-FROM-CHECKOUT guard (item 9) — base on a camus/feat-* branch halts; allowFeatBase bypasses.
+  {
+    const loopDone = [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }]
+    const onFeat = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, preflight: { clean: true, base: 'camus/feat-old', dirtyFiles: 0, stateRaw: '' } }, loopDone)
+    ok('F44 base is a camus/feat-* branch → needs_human', onFeat.res && onFeat.res.status === 'needs_human' && onFeat.res.stage === 'base_is_feat_branch', onFeat.res && (onFeat.res.status + '/' + onFeat.res.stage))
+    const bypass = await runFeat({ feat: 'F', tasks: ['only task'], allowFeatBase: true },
+      { ...featBase, preflight: { clean: true, base: 'camus/feat-old', dirtyFiles: 0, stateRaw: '' } }, loopDone)
+    ok('F44 allowFeatBase:true bypasses (proceeds)', bypass.res && bypass.res.status === 'done', bypass.res && bypass.res.status)
+  }
+
+  // F45: args.verifyCmd (item 3) — a headless verify override is inlined as a JSON-quoted env
+  // PREFIX on the feat verifiers and forwarded to every per-task loop.
+  {
+    const loopDone = [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }]
+    const vc = 'pnpm type-check && pnpm test'
+    const r = await runFeat({ feat: 'F', tasks: ['only task'], verifyCmd: vc }, featBase, loopDone)
+    ok('F45 verifyCmd inlined as a JSON-quoted env prefix on baseline verify',
+      (r.prompts['baseline-verify'] || '').includes(`CAMUS_VERIFY_CMD=${J(vc)} `), (r.prompts['baseline-verify'] || '').slice(0, 160))
+    ok('F45 verifyCmd forwarded to the per-task loop', !!r.loopArgs[0] && r.loopArgs[0].verifyCmd === vc, J(r.loopArgs[0] && r.loopArgs[0].verifyCmd))
+    const none = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase, loopDone)
+    ok('F45 no verifyCmd → no env prefix (unchanged)', !(none.prompts['baseline-verify'] || '').includes('CAMUS_VERIFY_CMD='))
   }
 
   console.log(`\n${pass} passed, ${fail} failed`)

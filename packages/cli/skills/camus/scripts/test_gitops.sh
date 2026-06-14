@@ -265,6 +265,45 @@ check "unwritable receipt dir: receiptError present and explains" yes \
   "$(has "$(jget "$out" receiptError)" "receipt not written")"
 check "unwritable receipt dir: no receipt file appeared" no "$([ -e "$RO/sub" ] && echo yes || echo no)"
 
+# ════ containment.sh ═══════════════════════════════════════════════════════════════════════════
+# Field soak 2026-06-13, finding 8: the receipt that replaced the thin-runner-echo containment
+# check. {ran,dirty,paths}; --untracked-files=no; and the cardinal fix — a non-obtained answer
+# is ran:false (inconclusive), NEVER clean and NEVER a breach.
+CR="$ROOT/crepo"; mkdir -p "$CR"
+( cd "$CR" && git init -q && echo a > a.txt && git add -A && git -c commit.gpgsign=false commit -qm base && git checkout -q -b camus/feat-c )
+# invoked from inside the target repo (same as the merge.sh tests, and as REPO_CD does in production)
+out="$( cd "$CR" && bash "$here/containment.sh" "$CR" )"
+check "containment clean: ran true"        true  "$(jget "$out" ran)"
+check "containment clean: dirty false"     false "$(jget "$out" dirty)"
+check "containment clean: paths empty"     ""    "$(jget "$out" paths)"
+check "containment clean: one JSON object" yes   "$(jone "$out")"
+( cd "$CR" && echo more >> a.txt )
+out="$( cd "$CR" && bash "$here/containment.sh" "$CR" )"
+check "containment tracked edit: dirty true"           true "$(jget "$out" dirty)"
+check "containment tracked edit: paths name the file"  yes  "$(has "$(jget "$out" paths)" "a.txt")"
+( cd "$CR" && git checkout -q -- a.txt && echo junk > only-untracked.txt )
+out="$( cd "$CR" && bash "$here/containment.sh" "$CR" )"
+check "containment untracked-only: dirty false (--untracked-files=no)" false "$(jget "$out" dirty)"
+( cd "$CR" && rm -f only-untracked.txt )
+NG="$ROOT/notgit"; mkdir -p "$NG"
+out="$( cd "$NG" && bash "$here/containment.sh" "$NG" )"
+check "containment non-repo: ran false (inconclusive, not clean, not breach)" false "$(jget "$out" ran)"
+check "containment non-repo: no dirty verdict (null)"  null "$(jget "$out" dirty)"
+check "containment non-repo: one JSON object"          yes  "$(jone "$out")"
+
+# ════ wt.sh resolve ════════════════════════════════════════════════════════════════════════════
+# Audit item 6: JSON {found,path} replaces the brittle `cd && pwd` last-line pop(). The dest may
+# legitimately not exist (→ found:false → the loop's recreate-from-branch lane).
+RWT="$WTS/camus-wt-feat-c"; mkdir -p "$RWT"
+out="$(bash "$here/wt.sh" resolve camus/feat-c "$RWT")"
+check "wt resolve existing: found true"                 true "$(jget "$out" found)"
+check "wt resolve existing: path names the worktree"    yes  "$(has "$(jget "$out" path)" "camus-wt-feat-c")"
+out="$(bash "$here/wt.sh" resolve camus/feat-c "$WTS/camus-wt-feat-nope")"
+check "wt resolve missing: found false (→ recreate lane)" false "$(jget "$out" found)"
+check "wt resolve missing: path null"                     null  "$(jget "$out" path)"
+out="$(bash "$here/wt.sh" resolve camus/feat-c "$WTS/not-a-camus-wt")"
+check "wt resolve fence: non-camus-wt dest refused (ok false)" false "$(jget "$out" ok)"
+
 echo
 echo "$pass passed, $fail failed"
 exit $((fail > 0 ? 1 : 0))

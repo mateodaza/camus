@@ -52,6 +52,13 @@ if (!A || typeof A !== 'object' || Array.isArray(A)) {
 const FEAT = String(A.feat || '').trim()
 const TASKS = Array.isArray(A.tasks) ? A.tasks.map((t) => String(t).trim()).filter(Boolean) : []
 const TARGET = (A.targetPath && String(A.targetPath)) || ''
+// args.verifyCmd (field soak 2026-06-13, finding 3): a per-run verify override for HEADLESS runs
+// (no interactive shell to `export CAMUS_VERIFY_CMD`). Persisted in resumeArgs, forwarded to every
+// per-task loop, and inlined as an ENV-ASSIGNMENT PREFIX (JSON-quoted, never in the command body)
+// on the feat-level env/baseline/integration runners — so it reaches verify.py's env lookup and
+// cannot become a shell-injection vector. Advisory config; verify.py already handles it safely.
+const VERIFY_CMD_OVERRIDE = (typeof A.verifyCmd === 'string' && A.verifyCmd.trim()) ? A.verifyCmd : ''
+const VERIFY_ENV = VERIFY_CMD_OVERRIDE ? `CAMUS_VERIFY_CMD=${JSON.stringify(VERIFY_CMD_OVERRIDE)} ` : ''
 // HITL: policy is threaded to every per-task loop (default ask_on_ambiguity). `answers` is an
 // optional map { taskId: "human answer" } supplied on a RESUME after a needs_human pause — the
 // matching task re-runs with that answer threaded back in. Neither enters featId (stable resume).
@@ -88,12 +95,15 @@ const ARG_POSTURE = (() => {
 })()
 if (!FEAT) throw new Error('camus-feat: missing feat title (args.feat)')
 if (!TASKS.length) throw new Error('camus-feat: args.tasks[] is empty')
-// All feat-level git/env/verify run in the repo root (workflow cwd = $PWD).
-// `targetPath` is a CODE-SCOPE HINT only: it is forwarded to camus-loop per task,
-// but must never become the feat runner's cd/verify target. Baseline/integration
-// guards require the repo root on a camus/feat-* branch; passing a relative subdir
-// would both double-resolve the path after `cd` and fail the guard.
-const REPO_ARG = '"$PWD"'
+// All feat-level git/env/verify run at the GIT TOPLEVEL, resolved at command time — NOT the raw
+// launch cwd (field soak "garland" 2026-06-13): a launch from a SUBDIRECTORY made `$PWD` the
+// subdir, so baseline/integration verify ran against the subdir (wrong/no verifier) and identity
+// diverged. `git rev-parse --show-toplevel` is invariant across any cwd inside the repo; a subdir
+// launch now behaves identically to a root launch. Falls back to `$PWD` only when NOT in a repo,
+// so the preflight's own NOT_A_REPO detection still fires cleanly.
+// `targetPath` stays a CODE-SCOPE HINT forwarded to camus-loop per task — it must NOT become the
+// feat runner's cd target (baseline/integration guards require the repo root on a camus/feat-* branch).
+const REPO_ARG = '"$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"'
 
 // Token telemetry, degradable: `budget` ships with workflows GA (Claude Code >= 2.1.154,
 // doc-checked 2026-06-10). On an older runtime spentTok() is null and every token field/log
@@ -181,6 +191,7 @@ const resumeArgs = {
   ...(SKIP_PLAN ? { skipPlan: true } : {}),
   ...(ROUND_CAP != null ? { roundCap: ROUND_CAP } : {}),
   ...(BUDGET_TOKENS != null ? { budgetTokens: BUDGET_TOKENS } : {}),
+  ...(VERIFY_CMD_OVERRIDE ? { verifyCmd: VERIFY_CMD_OVERRIDE } : {}),   // headless verify override (finding 3)
   ...(ARG_POSTURE ? { posture: ARG_POSTURE } : {}),   // explicit only — a RESOLVED posture carries via state.posture
   // land changes task behavior MATERIALLY (audit P1 2026-06-11): dropping it on a resume would
   // re-enter the full loop — the exact run-5 failure land exists to avoid. Snapshot, like answers.
@@ -252,6 +263,21 @@ function asVerify(raw) {
     return { pass: false, failures: [{ stage: 'verify', exit: -1, log_tail: 'verify output not parseable as {pass, failures}' }], inconclusive: true }
   }
   return v
+}
+// resolveEnv (field soak 2026-06-13, item 4): readiness is DERIVED from the mechanical exit code,
+// NOT the agent's self-judged `ready` bool. Returns {state} on a coherent read (ready ⇔ exitCode===0),
+// or {halt} when the relay's `ready` CONTRADICTS its `exitCode` (a misread — never advance on a
+// contradicted env, the merge-receipt defection posture). Absent agent / non-numeric exitCode →
+// ready:false (fail-closed → the caller's normal env_not_ready halt). `when` ∈ baseline|integration.
+function resolveEnv(env, when) {
+  if (!env) return { state: { ready: false, exitCode: -1, output: 'env agent returned nothing', when } }
+  const exit0 = (typeof env.exitCode === 'number' && env.exitCode === 0)
+  if (typeof env.ready === 'boolean' && env.ready !== exit0) {
+    return { halt: { stage: when + '_env',
+      note: `env-check relay self-contradicts: ready=${env.ready} but exitCode=${env.exitCode}. The exit code is ground truth; Camus refuses to guess readiness from a contradicted relay. Re-run.`,
+      fix: env.output } }
+  }
+  return { state: { ready: exit0, exitCode: env.exitCode, output: env.output, when } }
 }
 
 // ── Schemas (only where the script branches on structured fields) ─────────────
@@ -465,6 +491,17 @@ if (!pf.clean) {
     note: `Base working tree has ${pf.dirtyFiles} uncommitted change(s). Commit or stash before running the feat — Camus will not run on a dirty tree. (If the lines name a SUBMODULE, the pointer is stale rather than edited: \`git submodule update --init\` clears it.)`,
   })
 }
+// BASE-FROM-CHECKOUT guard (field soak 2026-06-13, finding 9): launching while checked out on a
+// leftover camus/feat-* branch silently cuts the new feat off it — inheriting unmerged, possibly
+// unreviewed work as the baseline (and baseline-verify passes because the prior feat's commits are
+// green). Same implicit-context family as the fork (finding 5): the base is the current branch,
+// and forking it forks identity. Halt with a converging next step rather than build on a phantom base.
+if (typeof pf.base === 'string' && /^camus\/feat[-/]/.test(pf.base) && A.allowFeatBase !== true) {
+  return finalize('needs_human', {
+    stage: 'base_is_feat_branch', question: `Base branch "${pf.base}" is a camus feat branch, not a mainline.`,
+    note: `The current branch is "${pf.base}" — a camus feat branch, not a mainline. Cutting this feat from it would inherit its unmerged (possibly unreviewed) work as your baseline. Almost always this means a prior run left you on a feat branch: \`git checkout main\` (or your mainline) and re-run the feat with the SAME args. If you GENUINELY mean to stack on it, re-run with allowFeatBase:true.`,
+  })
+}
 // Resume: carry forward tasks already marked done in the prior state (already merged into the
 // feat branch, which persists in git) so we skip them.
 // PROVEN_DECISION (audit P1 2026-06-11): land is authorized by PRIOR PERSISTED STATE, not by the
@@ -532,6 +569,31 @@ if (prior && Array.isArray(prior.tasks)) {
     state.eventSeq = Number(prior.eventSeq) || state.events.length
   }
   if (carried) note(`Resume: ${carried} task(s) already done/noop in ${STATE_PATH} — will skip.`)
+}
+
+// FORK DETECTION (field soak 2026-06-13, finding 8/5): editing/reordering/adding a task mints a
+// NEW featId → a silently-cut second feat branch, orphaning the original's work. Scan existing
+// run-states (MECHANICALLY, via feat_scan.py — the comparison is in JS, which owns slugify) for an
+// in-progress feat with the SAME title but a DIFFERENT id, and halt for a human rather than fork.
+// The current featId is excluded, so a normal resume never trips it. Fail-OPEN: an unparseable
+// scan just proceeds — a fork is recoverable, this is a convenience guard, not an integrity gate.
+if (A.allowFork !== true) {
+  const scanRaw = await agent(
+    `THIN feat-scan runner. Run EXACTLY this one command and output its stdout VERBATIM (one JSON object {feats:[...]}); no fences, no commentary:
+  ${HB_TOUCH}python3 ${SKILL}/feat_scan.py`,
+    { model: MODEL_RUNNER, phase: 'Preflight', label: 'fork-scan' }
+  )
+  const scan = extractJsonObject(scanRaw)
+  const twin = (scan && Array.isArray(scan.feats) ? scan.feats : []).find((f) =>
+    f && typeof f.featId === 'string' && f.featId !== featId &&
+    typeof f.title === 'string' && slugify(f.title) === featSlug &&
+    !['done', 'done_with_findings', 'done_with_noops', 'abandoned'].includes(f.status))
+  if (twin) {
+    return finalize('needs_human', {
+      stage: 'fork', question: `A feat titled "${FEAT}" is already in progress under a different task list.`,
+      note: `An in-progress feat with the SAME title but a DIFFERENT id already exists: branch camus/feat-${twin.featId} (status ${twin.status || 'unknown'}). Editing/reordering/adding a task changes the featId, so this run would FORK the feature — cutting a second branch camus/feat-${featId} and orphaning the first's work. To RESUME the original, re-run with its EXACT original args (no task edits). If this is a DELIBERATE new variant, change the feat title to distinguish it, or re-run with allowFork:true.`,
+    })
+  }
 }
 
 // ── 1b. POSTURE SELECTION (VELOCITY §3: classifier recommends, human confirms) ─
@@ -604,12 +666,17 @@ note(`Feat branch ${featBranch} ${fb.created ? 'created' : 'checked out (resume)
 // ── 3. ENV CHECK on the feat branch (fresh trees lack node_modules — mandatory) ─
 phase('Env+Baseline')
 const env = await agent(
-  `THIN env doctor. cd ${REPO_ARG}, then run EXACTLY:  ${HB_TOUCH}${ENV_CMD} ${REPO_ARG}
+  `THIN env doctor. cd ${REPO_ARG}, then run EXACTLY:  ${HB_TOUCH}${VERIFY_ENV}${ENV_CMD} ${REPO_ARG}
 ready=true ONLY if it exits 0. Capture exitCode and the full stdout+stderr text in output (when not ready it lists what to fix, e.g. \`pnpm install\`). Do not interpret further.`,
   { model: MODEL_RUNNER, phase: 'Env+Baseline', label: 'env-check', schema: ENV_SCHEMA }
 )
-state.env = env ? { ready: !!env.ready, exitCode: env.exitCode, output: env.output, when: 'baseline' }
-                : { ready: false, exitCode: -1, output: 'env agent returned nothing', when: 'baseline' }
+// READINESS IS DERIVED FROM THE EXIT CODE (field soak 2026-06-13, item 4), not the agent's
+// self-judged `ready` bool. A relay whose `ready` contradicts its `exitCode` is a misread — halt
+// loud (the merge-receipt defection posture), never advance on a contradicted env. Absent agent
+// or non-numeric exitCode → not ready (fail-closed).
+const envResolved = resolveEnv(env, 'baseline')
+if (envResolved.halt) return finalize('env_not_ready', envResolved.halt)
+state.env = envResolved.state
 // ENV FACTS (smoke 2026-06-11): lift the doctor's deterministic [env-facts] block and thread it
 // into every task's loop, where it lands in the plan/implement/fix prompts — platform truths
 // (darwin, GNU-timeout absence, codex version/auth) stop being rediscovered mid-run. ADVISORY
@@ -627,7 +694,7 @@ if (!state.env.ready) {
 
 // ── 4. BASELINE VERIFY — base must be green before any task ───────────────────
 const baseRaw = await agent(
-  `THIN verifier. cd ${REPO_ARG}, then run EXACTLY:  ${HB_TOUCH}${VERIFY_CMD} ${REPO_ARG}
+  `THIN verifier. cd ${REPO_ARG}, then run EXACTLY:  ${HB_TOUCH}${VERIFY_ENV}${VERIFY_CMD} ${REPO_ARG}
 Output the command's stdout VERBATIM as your entire reply (JSON {pass,failures,checks}). No fences, no commentary.
 ${VERIFY_OATH}`,
   { model: MODEL_RUNNER, phase: 'Env+Baseline', label: 'baseline-verify' }
@@ -691,27 +758,39 @@ for (let i = 0; i < state.tasks.length; i++) {
   //   {answers:{id:".."}} → merged into the run's answer map (may target later tasks)
   // Steered answers live only for THIS run — they are NOT persisted into resumeArgs and do
   // not survive a pause/resume (re-steer or pass answers explicitly on the re-run).
+  // Mechanical steer-read with a SENTINEL (field soak 2026-06-13, item 7): steer_read.py reads the
+  // note (consuming it only after a successful read) and emits {read,note}. The sentinel lets us
+  // tell "the note state WAS obtained" (read:true; note null when absent) from "the agent could
+  // not obtain it" (no sentinel) — the old `cat||echo{}` made any agent hiccup look like a present,
+  // unparseable human countermand AND consumed a real note in the process.
   const steerRaw = await agent(
-    `THIN steer-check runner. A human may have left a steering note for this Camus run. Run EXACTLY, in order:
-1. \`${HB_TOUCH}cat ~/.camus/steer/${featId}.json 2>/dev/null || echo {}\` — capture the full output.
-2. \`rm -f ~/.camus/steer/${featId}.json\` — consume it (a note applies ONCE). If rm is refused, continue anyway.
-Return the captured output VERBATIM as your entire reply. No fences, no commentary.`,
+    `THIN steer-check runner. Run EXACTLY this one command and output its stdout VERBATIM (one JSON object {read,note}); no fences, no commentary:
+  ${HB_TOUCH}python3 ${SKILL}/steer_read.py ${JSON.stringify(featId)}`,
     { model: MODEL_RUNNER, phase: 'Tasks', label: `steer:${node.taskId}` }
   )
-  const steerParsed = extractJsonObject(steerRaw)
-  // A PRESENT-but-unparseable note must not vanish silently (the rm already consumed it): the
-  // no-note case is exactly "{}" from the `|| echo {}`, so anything else that fails to parse
-  // was a real note the human wrote — surface it loudly (review 2026-06-10).
-  if (steerParsed == null && steerRaw != null && String(steerRaw).trim() !== '{}') {
-    // HALT, don't proceed (fixlet 2026-06-11 upgrade of the 2026-06-10 loud-log): a steer note is
-    // a human countermand — silently dropping one and running on re-opens exactly what it was
-    // written to prevent. The note is already consumed (the rm ran), so the halt message must say
-    // nothing was applied and ask for a re-issue. needs_human → not auto-resumable.
-    note(`Task ${n}: a steer note was PRESENT but UNPARSEABLE — halting; NOTHING was applied.`)
+  const steerOuter = extractJsonObject(steerRaw)
+  if (!steerOuter || steerOuter.read !== true) {
+    // The agent could not OBTAIN the steer state (budget / error / non-sentinel noise). This is NOT
+    // a bad note — the read-only check failed to deliver, nothing was consumed, so a re-run re-reads
+    // any note intact. Inconclusive halt, never a false countermand-drop (the bug this fixes).
+    note(`Task ${n}: could not READ the steer-note state — halting inconclusive; nothing consumed.`)
+    return finalize('needs_human', {
+      stage: 'steer', haltedTask: node.taskId,
+      question: `Camus could not read the steer-note state before task ${n} (the check failed to run). Re-run the feat with the SAME args.`,
+      note: `The steer-note check before task ${n} could not be OBTAINED (a failed/garbled runner) — this is NOT a bad note, and NOTHING was consumed or applied. Re-run the feat with the SAME args to re-check; any \`camus steer\` note you left is intact.`,
+    })
+  }
+  const steerNoteRaw = steerOuter.note   // raw file text, or null when no note exists
+  const steerParsed = (typeof steerNoteRaw === 'string') ? extractJsonObject(steerNoteRaw) : null
+  // A note FILE existed but its content is not parseable JSON — a real human note we can't read
+  // (already consumed by the script on read, so the re-run won't re-halt on the same file). Halt
+  // asking for a re-issue. A NULL note (no file) is the clean no-note case and skips this.
+  if (typeof steerNoteRaw === 'string' && steerParsed == null) {
+    note(`Task ${n}: a steer note was PRESENT but UNPARSEABLE — consumed; NOTHING was applied.`)
     return finalize('needs_human', {
       stage: 'steer', haltedTask: node.taskId,
       question: `A steer note before task ${n} was unparseable and was consumed UNAPPLIED — re-issue your guidance, then re-run.`,
-      note: `A steer note was present but could not be parsed before task ${n} — it was consumed (deleted) and NOTHING was applied. Halting rather than running past your guidance. Re-issue it (\`camus steer ...\`) and re-run the feat with the SAME args to resume from here.`,
+      note: `A steer note was present but could not be parsed before task ${n} — it was consumed and NOTHING was applied. Halting rather than running past your guidance. Re-issue it (\`camus steer ...\`) and re-run the feat with the SAME args to resume from here.`,
     })
   }
   const steer = steerParsed || {}
@@ -797,6 +876,7 @@ Return {written:true} once that file is on disk with exactly that content.`,
       ...(MODEL_TIER ? { modelTier: MODEL_TIER } : {}),
       ...(SKIP_PLAN ? { skipPlan: true } : {}),       // opt-in; loop honors only under policy:autonomous
       ...(ROUND_CAP != null ? { roundCap: ROUND_CAP } : {}),   // per-task review-round budget
+      ...(VERIFY_CMD_OVERRIDE ? { verifyCmd: VERIFY_CMD_OVERRIDE } : {}),   // headless verify override (finding 3)
       // PROVEN accept decision → land; unproven → full loop. expectHead anchors the land's
       // verify to the sha the original proof certified (publish audit round-2): an empty-stage
       // land on a tip that moved past the proof fails CLOSED instead of being believed.
@@ -958,7 +1038,7 @@ If the branch does not exist git errors — output that error line verbatim.`,
   // auto-mode classifier as a guardrail bypass — and emits every contract field by construction.
   // The thin runner only transcribes; the schema and the consistency checks below stay as the
   // belt against mis-transcription.
-  const mg = await agent(
+  let mg = await agent(
     `THIN merge runner. cd ${REPO_ARG}. Run EXACTLY this one command (it performs the merge and prints ONE JSON object):
   ${HB_TOUCH}${MERGE_CMD} ${JSON.stringify(featBranch)} ${JSON.stringify(mergeBranch)} ${JSON.stringify('camus(feat): merge ' + node.taskId)}
 Return the printed JSON's fields EXACTLY as the script computed them — every field verbatim, no re-judging, no omissions.
@@ -985,55 +1065,79 @@ receipt file — any divergence halts the whole feat as a contract violation.`,
   // Fail-closed throughout: a MISSING receipt halts (merge.sh never ran, or its receipt write
   // failed — stdout's receiptError says which), and an unreadable live HEAD halts too. This runs
   // BEFORE the merged:false lane so an honest-conflict relay still gets its repo-state check.
-  if (mg) {
-    const rcptRaw = await agent(
-      `THIN receipt reader. Run EXACTLY this one command and output its stdout VERBATIM (one JSON object, or the word MISSING); no fences, no commentary:
+  // RECEIPT CROSS-CHECK + NULL-RELAY RECOVERY (run-6 + audit item 2, 2026-06-13). Read merge.sh's
+  // receipt UNCONDITIONALLY — the script's proof outlives a lost relay. With a relay present the
+  // receipt is the DEFECTION guard (relay≠receipt ⇒ halt). With a NULL relay (budget / API socket
+  // drop mid-call) the receipt — cross-checked against the live repo HEAD — IS the verdict:
+  // merge.sh is atomic and idempotent, so a dropped relay must NOT be stamped a definitive
+  // merge_failed when the merge actually succeeded and left its receipt (the bug this fixes).
+  const rcptRaw = await agent(
+    `THIN receipt reader. Run EXACTLY this one command and output its stdout VERBATIM (one JSON object, or the word MISSING); no fences, no commentary:
   cat "\${CAMUS_MERGE_DIR:-$HOME/.camus/merges}/${node.taskId}.json" 2>/dev/null || echo MISSING`,
-      { model: MODEL_RUNNER, phase: 'Tasks', label: `merge-receipt:${node.taskId}` }
-    )
-    const rcpt = extractJsonObject(rcptRaw)
-    let liveHead = null
-    let stateViolation = null
-    let rcptDiff = []
-    if (rcpt) {
-      const liveRaw = await agent(
-        `THIN git runner. cd ${REPO_ARG}. Run EXACTLY this one command and output ONLY its stdout (one commit SHA), no commentary:
+    { model: MODEL_RUNNER, phase: 'Tasks', label: `merge-receipt:${node.taskId}` }
+  )
+  const rcpt = extractJsonObject(rcptRaw)
+  let liveHead = null
+  let stateViolation = null
+  let rcptDiff = []
+  if (rcpt) {
+    const liveRaw = await agent(
+      `THIN git runner. cd ${REPO_ARG}. Run EXACTLY this one command and output ONLY its stdout (one commit SHA), no commentary:
   git rev-parse ${JSON.stringify(featBranch)}`,
-        { model: MODEL_RUNNER, phase: 'Tasks', label: `merge-head:${node.taskId}` }
-      )
-      // Comparison value only (never a command arg) — screen out error lines, keep any
-      // single-token SHA shape.
-      const lh = String(liveRaw || '').trim()
-      liveHead = /^[0-9a-z._-]{1,64}$/i.test(lh) ? lh : null
-      const expectLive = rcpt.merged === true ? rcpt.after : rcpt.before
-      stateViolation = !liveHead
-        ? 'the live feat-branch HEAD could not be read to confirm the receipt'
-        : (typeof expectLive === 'string' && expectLive && liveHead !== expectLive)
-          ? `the live feat branch is at ${liveHead} but merge.sh's receipt says ${rcpt.merged === true ? `the merge ended at ${rcpt.after}` : `the aborted merge left ${rcpt.before}`} — the repo moved OFF-SCRIPT after the script's verdict`
-          : null
-      // priorMergeCommit included (publish audit 2026-06-12, P1): it is VERDICT-BEARING — the
-      // crash-after-merge evidence path trusts it to upgrade already-up-to-date into done. Left
-      // uncompared, a relay flipping null → a fabricated sha turns a true no-op into done while
-      // matching the receipt on every other field.
-      rcptDiff = ['merged', 'committed', 'before', 'after', 'alreadyUpToDate', 'priorMergeCommit'].filter((k) => rcpt[k] !== undefined && rcpt[k] !== mg[k])
-    }
-    if (!rcpt || stateViolation || rcptDiff.length) {
-      node.status = 'ready_to_merge'   // the proven work stands; the MERGE is what's unresolved
-      await persistState('Tasks')
-      // Only a receipt-sourced SHA may be offered as a reset target — mg.* is the very report
-      // that just failed the cross-check.
-      const resetTo = rcpt && typeof (rcpt.merged === true ? rcpt.after : rcpt.before) === 'string' && (rcpt.merged === true ? rcpt.after : rcpt.before).trim()
-        ? (rcpt.merged === true ? rcpt.after : rcpt.before) : null
-      const what = !rcpt ? 'MISSING receipt' : (stateViolation ? 'REPO STATE off the receipt' : `RELAY MISMATCH (${rcptDiff.join(', ')})`)
-      note(`Task ${n}: MERGE INTEGRITY — ${what}. The runner's report is not merge.sh's proven verdict; refusing it and halting.`)
-      return finalize('feat_integration_failed', {
-        stage: 'merge_receipt', haltedTask: node.taskId,
-        note: `Merge integrity check for ${node.taskId} failed: ${!rcpt ? 'NO receipt from merge.sh (the script may never have run, or its receipt write failed — the runner transcript\'s receiptError says which)' : (stateViolation || `the runner's relay DISAGREES with merge.sh's own receipt on: ${rcptDiff.join(', ')}`)} — a defecting runner may have mutated the repo by hand. Inspect \`git log -3 ${featBranch}\`${resetTo ? `; if an unauthorized commit sits on top, \`git reset --hard ${resetTo}\` restores the receipt's proven HEAD` : ''}. Then re-run the feat with the SAME args — the task is still ready_to_merge and the merge retries idempotently.`,
-      })
-    }
-    // The receipt is proven against relay AND repo — record the certified branch tip so the
-    // integration verify can be bound to it (head binding; see the integration phase).
-    if (typeof rcpt.after === 'string' && rcpt.after) lastMergeHead = rcpt.after
+      { model: MODEL_RUNNER, phase: 'Tasks', label: `merge-head:${node.taskId}` }
+    )
+    // Comparison value only (never a command arg) — screen out error lines, keep any
+    // single-token SHA shape.
+    const lh = String(liveRaw || '').trim()
+    liveHead = /^[0-9a-z._-]{1,64}$/i.test(lh) ? lh : null
+    const expectLive = rcpt.merged === true ? rcpt.after : rcpt.before
+    stateViolation = !liveHead
+      ? 'the live feat-branch HEAD could not be read to confirm the receipt'
+      : (typeof expectLive === 'string' && expectLive && liveHead !== expectLive)
+        ? `the live feat branch is at ${liveHead} but merge.sh's receipt says ${rcpt.merged === true ? `the merge ended at ${rcpt.after}` : `the aborted merge left ${rcpt.before}`} — the repo moved OFF-SCRIPT after the script's verdict`
+        : null
+    // relay-vs-receipt diff ONLY when a relay exists to compare (a null relay has nothing to diff).
+    // priorMergeCommit included (publish audit P1): it is VERDICT-BEARING — the crash-after-merge
+    // evidence path trusts it to upgrade already-up-to-date into done; uncompared, a relay flipping
+    // null → a fabricated sha turns a true no-op into done while matching every other field.
+    rcptDiff = mg ? ['merged', 'committed', 'before', 'after', 'alreadyUpToDate', 'priorMergeCommit'].filter((k) => rcpt[k] !== undefined && rcpt[k] !== mg[k]) : []
+  }
+  // CASE: neither a relay NOR a receipt — Camus cannot tell whether the merge ran. INCONCLUSIVE,
+  // NEVER a definitive merge_failed: merge.sh is idempotent, so a re-run retries/confirms it.
+  if (!mg && !rcpt) {
+    node.status = 'ready_to_merge'
+    await persistState('Tasks')
+    note(`Task ${n}: merge relay LOST and merge.sh left NO receipt — inconclusive, not a failure. Re-run to retry.`)
+    return finalize('feat_integration_failed', {
+      stage: 'merge_receipt', haltedTask: node.taskId,
+      note: `The merge runner for ${node.taskId} returned nothing AND no merge.sh receipt exists — Camus cannot tell whether the merge ran, so it will NOT stamp a definitive failure. merge.sh is atomic and idempotent: the task stays ready_to_merge; re-run the feat with the SAME args to retry/confirm the merge. (If this recurs, inspect \`git log -3 ${featBranch}\` and ~/.camus/merges/${node.taskId}.json.)`,
+    })
+  }
+  // DEFECTION / INTEGRITY halt: a present relay with NO receipt, OR the repo moved off the
+  // receipt, OR the relay disagrees with the receipt. (A null relay with a clean receipt skips
+  // this — it is governed only by stateViolation, which is included here.)
+  if ((mg && !rcpt) || stateViolation || rcptDiff.length) {
+    node.status = 'ready_to_merge'   // the proven work stands; the MERGE is what's unresolved
+    await persistState('Tasks')
+    // Only a receipt-sourced SHA may be offered as a reset target — mg.* is the very report
+    // that just failed the cross-check.
+    const resetTo = rcpt && typeof (rcpt.merged === true ? rcpt.after : rcpt.before) === 'string' && (rcpt.merged === true ? rcpt.after : rcpt.before).trim()
+      ? (rcpt.merged === true ? rcpt.after : rcpt.before) : null
+    const what = !rcpt ? 'MISSING receipt' : (stateViolation ? 'REPO STATE off the receipt' : `RELAY MISMATCH (${rcptDiff.join(', ')})`)
+    note(`Task ${n}: MERGE INTEGRITY — ${what}. The runner's report is not merge.sh's proven verdict; refusing it and halting.`)
+    return finalize('feat_integration_failed', {
+      stage: 'merge_receipt', haltedTask: node.taskId,
+      note: `Merge integrity check for ${node.taskId} failed: ${!rcpt ? 'NO receipt from merge.sh (the script may never have run, or its receipt write failed — the runner transcript\'s receiptError says which)' : (stateViolation || `the runner's relay DISAGREES with merge.sh's own receipt on: ${rcptDiff.join(', ')}`)} — a defecting runner may have mutated the repo by hand. Inspect \`git log -3 ${featBranch}\`${resetTo ? `; if an unauthorized commit sits on top, \`git reset --hard ${resetTo}\` restores the receipt's proven HEAD` : ''}. Then re-run the feat with the SAME args — the task is still ready_to_merge and the merge retries idempotently.`,
+    })
+  }
+  // The receipt is proven (against the repo, and against the relay when present) — bind the
+  // integration head to the certified branch tip (head binding; see the integration phase).
+  if (rcpt && typeof rcpt.after === 'string' && rcpt.after) lastMergeHead = rcpt.after
+  // NULL-RELAY RECOVERY: the relay dropped mid-call but the receipt is proven — adopt it as the
+  // verdict so the downstream merge logic (didCommit / priorMerge / finalStatus) works unchanged.
+  if (!mg && rcpt) {
+    mg = rcpt
+    log(`Task ${n}: merge relay was lost mid-call, but merge.sh's receipt — cross-checked against the live HEAD ${liveHead} — proves the merge; adopting the receipt as the verdict.`)
   }
   if (!mg || !mg.merged) {
     node.status = 'merge_failed'
@@ -1227,12 +1331,14 @@ Run \`${HB_TOUCH}true\` first (heartbeat; ignore failures).`,
 // ── 6. ENV RE-CHECK (tasks may have added deps) + FINAL INTEGRATION VERIFY ─────
 phase('Integration')
 const env2 = await agent(
-  `THIN env doctor. cd ${REPO_ARG}, then run EXACTLY:  ${HB_TOUCH}${ENV_CMD} ${REPO_ARG}
+  `THIN env doctor. cd ${REPO_ARG}, then run EXACTLY:  ${HB_TOUCH}${VERIFY_ENV}${ENV_CMD} ${REPO_ARG}
 ready=true ONLY if it exits 0. Capture exitCode and full stdout+stderr in output.`,
   { model: MODEL_RUNNER, phase: 'Integration', label: 'env-recheck', schema: ENV_SCHEMA }
 )
-state.envRecheck = env2 ? { ready: !!env2.ready, exitCode: env2.exitCode, output: env2.output, when: 'integration' }
-                        : { ready: false, exitCode: -1, output: 'env agent returned nothing', when: 'integration' }
+// readiness derived from exitCode + contradiction-halt (field soak 2026-06-13, item 4) — same as baseline
+const env2Resolved = resolveEnv(env2, 'integration')
+if (env2Resolved.halt) return finalize('env_not_ready', env2Resolved.halt)
+state.envRecheck = env2Resolved.state
 if (!state.envRecheck.ready) {
   return finalize('env_not_ready', {
     stage: 'integration_env',
@@ -1241,7 +1347,7 @@ if (!state.envRecheck.ready) {
   })
 }
 const intRaw = await agent(
-  `THIN verifier. cd ${REPO_ARG}, then run EXACTLY:  ${HB_TOUCH}${VERIFY_CMD} ${REPO_ARG}
+  `THIN verifier. cd ${REPO_ARG}, then run EXACTLY:  ${HB_TOUCH}${VERIFY_ENV}${VERIFY_CMD} ${REPO_ARG}
 Output the command's stdout VERBATIM (JSON {pass,failures,checks}). No fences, no commentary.
 ${VERIFY_OATH}`,
   { model: MODEL_RUNNER, phase: 'Integration', label: 'integration-verify' }

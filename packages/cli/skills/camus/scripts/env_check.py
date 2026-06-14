@@ -218,6 +218,58 @@ def collect_facts(which=None, env=None, platform=None, codex_version=None):
     return facts
 
 
+def repo_facts(repo, run=None):
+    """Repo-level advisory FACTS (field soak 2026-06-13, item 11): a target nested under a
+    package-manager WORKSPACE, or a target that is not the git toplevel. ADVISORY — these WARN
+    (install/verify may operate on the PARENT tree, OUTSIDE camus containment), they do NOT gate
+    readiness, so a legitimately-scoped nested-package run is never blocked. Injectable run for tests.
+    """
+    run = run or subprocess.run
+    facts = []
+    repo_abs = os.path.abspath(repo)
+    # git toplevel vs the target — camus keys worktree identity off the repo root.
+    toplevel = None
+    try:
+        proc = run(["git", "rev-parse", "--show-toplevel"], cwd=repo,
+                   capture_output=True, text=True, timeout=15)
+        if proc.returncode == 0 and proc.stdout.strip():
+            toplevel = os.path.abspath(proc.stdout.strip())
+    except Exception:
+        toplevel = None
+    if toplevel and toplevel != repo_abs:
+        facts.append("env_check target (%s) is NOT the git repo root (%s) — camus keys worktree "
+                     "identity off the repo root; launch camus from the root, not a subdirectory."
+                     % (repo_abs, toplevel))
+    # a PARENT package-manager workspace above the target: install/verify may resolve UP to it,
+    # mutating a tree outside camus containment. Walk parents; report the FIRST marker; stop at the
+    # filesystem root or $HOME.
+    home = os.path.expanduser("~")
+    cur = os.path.dirname(repo_abs)
+    while cur and cur != os.path.dirname(cur):
+        hit = None
+        if os.path.exists(os.path.join(cur, "pnpm-workspace.yaml")):
+            hit = "pnpm-workspace.yaml"
+        else:
+            pj = os.path.join(cur, "package.json")
+            if os.path.exists(pj):
+                try:
+                    with open(pj, encoding="utf-8") as fh:
+                        if isinstance(json.load(fh).get("workspaces"), (list, dict)):
+                            hit = "package.json workspaces"
+                except Exception:
+                    pass
+        if hit:
+            facts.append("nested under a package-manager workspace: a parent %s at %s — install/"
+                         "verify may operate on the PARENT tree, OUTSIDE camus containment. Run "
+                         "camus on the workspace root, or set CAMUS_VERIFY_CMD to a package-scoped "
+                         "command." % (hit, cur))
+            break
+        if cur == home:
+            break
+        cur = os.path.dirname(cur)
+    return facts
+
+
 def main(argv=None):
     argv = argv if argv is not None else sys.argv[1:]
     repo = argv[0] if argv else os.getcwd()
@@ -234,6 +286,8 @@ def main(argv=None):
     # fix-and-resume after NOT READY still has the platform truths in the captured output.
     print("[env-facts]")
     for f in collect_facts():
+        print(f)
+    for f in repo_facts(repo):
         print(f)
     print("[/env-facts]")
     return rc
