@@ -43,6 +43,30 @@ def _sha(data_bytes):
     return hashlib.sha256(data_bytes).hexdigest()
 
 
+def _claim_back(tmp, path):
+    """Atomically move tmp -> path ONLY if path is free (no clobber). Returns True if moved, False if
+    path already exists (a newer note won the race — caller decides: halt on read, drop on consume).
+
+    os.link is the no-clobber primitive (raises FileExistsError if path exists), which closes the
+    check-then-replace race where a human `camus steer` landing between `exists()` and `os.replace`
+    could be overwritten by the older claim. A re-checked os.replace covers the rare filesystem
+    without hardlink support (window shrinks to a single syscall)."""
+    try:
+        os.link(tmp, path)
+        os.unlink(tmp)
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        if os.path.exists(path):
+            return False
+        try:
+            os.replace(tmp, path)
+            return True
+        except Exception:
+            return False
+
+
 def main(argv):
     camus_home = os.environ.get("CAMUS_HOME") or os.path.join(os.path.expanduser("~"), ".camus")
     feat_id = os.path.basename(argv[0]) if argv else ""
@@ -80,14 +104,12 @@ def main(argv):
             with open(tmp, "rb") as fh:
                 got = _sha(fh.read())
         except Exception as exc:
-            # Could not verify the claim — restore it so nothing is lost, then report.
-            try:
-                if not os.path.exists(path):
-                    os.replace(tmp, path)
-                else:
-                    os.remove(tmp)
-            except Exception:
-                pass
+            # Could not verify the claim — restore it (no-clobber) so nothing is lost, then report.
+            if not _claim_back(tmp, path):
+                try:
+                    os.remove(tmp)   # a newer note won the race — drop our stale claim
+                except Exception:
+                    pass
             print(json.dumps({"consumed": False, "error": str(exc)[:200]}))
             return
         if got == expect:
@@ -98,29 +120,21 @@ def main(argv):
             print(json.dumps({"consumed": True}))
             return
         # The note CHANGED since the workflow read it — preserve the newer note, delete nothing.
-        try:
-            if not os.path.exists(path):
-                os.replace(tmp, path)   # nothing newer arrived — put the changed note back
-            else:
-                os.remove(tmp)          # an even-newer note already sits at path — drop our stale claim
-        except Exception:
-            pass
+        if not _claim_back(tmp, path):   # an even-newer note already sits at path — drop our stale claim
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
         print(json.dumps({"consumed": False, "reason": "changed", "sha": got}))
         return
 
-    # READ-ONLY. First resolve any stranded claim from a crashed consume (crash-safety, finding P2):
-    if os.path.exists(tmp):
-        if not os.path.exists(path):
-            try:
-                os.replace(tmp, path)   # self-heal: restore the only stranded note, then read it
-            except Exception as exc:
-                print(json.dumps({"read": False, "error": "could not recover stranded steer claim: " + str(exc)[:160]}))
-                return
-        else:
-            # Both a stranded claim AND a current note — a crash plus a newer human note. Don't guess
-            # which to honor; halt loudly so the human resolves it (inspect %s / `camus steer --clear`).
-            print(json.dumps({"read": False, "error": "a previous consume crashed leaving a stranded steer claim (" + tmp + ") alongside a current note — resolve it before continuing"}))
-            return
+    # READ-ONLY. First resolve any stranded claim from a crashed consume (crash-safety, finding P2).
+    # Recovery is ATOMIC + no-clobber: _claim_back restores the stranded note ONLY if the live path is
+    # free. If a current note is there (a crash PLUS a newer human note — or one that raced the
+    # recovery), it returns False and we halt loudly rather than overwrite the newer note or guess.
+    if os.path.exists(tmp) and not _claim_back(tmp, path):
+        print(json.dumps({"read": False, "error": "a previous consume crashed leaving a stranded steer claim (" + tmp + ") alongside a current note — resolve it (camus steer --show / --clear) before continuing"}))
+        return
 
     # Never delete here, so a retried read re-reads the same note (no loss on a relay flake).
     try:

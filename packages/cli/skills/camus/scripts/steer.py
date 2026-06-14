@@ -200,27 +200,57 @@ def main(argv=None):
         print("steer: %s" % err, file=sys.stderr)
         return 1
     path = steer_path(args.dir, feat_id)
+    # steer_read.py treats a `<feat>.json.consuming` claim file (a crashed consume) as PENDING steer
+    # state — a feat re-run recovers and applies it. So the human CLI must see the same state model
+    # (re-soak 2026-06-14, finding P2): --show surfaces it, --clear removes it, and a write refuses
+    # while it exists. Otherwise --clear would lie ("no note") while a re-run resurrects a "cleared"
+    # note, and a new steer would report success while leaving the next run halted on both files.
+    claim = path + ".consuming"
 
     if args.show:
         note, problem = _read_json(path)
         if problem == "corrupt":
             print("steer note for %s exists but is not valid JSON — `--clear` it" % feat_id)
             return 1
-        print(json.dumps(note, indent=2) if note else "no pending steer note for %s" % feat_id)
+        if note:
+            print(json.dumps(note, indent=2))
+        elif not os.path.exists(claim):
+            print("no pending steer note for %s" % feat_id)
+        if os.path.exists(claim):
+            cnote, cproblem = _read_json(claim)
+            detail = "" if (cproblem == "corrupt" or cnote is None) else (": " + json.dumps(cnote))
+            print("stranded steer claim present (a prior consume crashed) at %s%s — `camus steer "
+                  "--clear` to remove it, or a feat re-run will recover and apply it" % (claim, detail))
         return 0
     if args.clear:
-        try:
-            os.remove(path)
-            print("cleared steer note for %s" % feat_id)
-        except FileNotFoundError:
-            print("no pending steer note for %s" % feat_id)
-        except OSError as exc:
-            # Never report success-shaped output while the note survives — --clear is the
-            # escape hatch for a stuck pause note, so it lying would be uniquely bad.
-            print("steer: could NOT remove %s (%s) — the note is still pending" % (path, exc),
-                  file=sys.stderr)
+        removed, failed = [], False
+        for p, label in ((path, "note"), (claim, "stranded claim")):
+            try:
+                os.remove(p)
+                removed.append(label)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                # Never report success-shaped output while state survives — --clear is the escape
+                # hatch for a stuck note, so it lying would be uniquely bad.
+                print("steer: could NOT remove %s (%s) — it is still pending" % (p, exc),
+                      file=sys.stderr)
+                failed = True
+        if failed:
             return 1
+        print(("cleared steer %s for %s" % (" + ".join(removed), feat_id)) if removed
+              else "no pending steer note for %s" % feat_id)
         return 0
+
+    # A stranded claim is anomalous PENDING state (a crashed consume). Refuse to write a new note on
+    # top of it — recovery/merge would silently combine stale + new intent, and a blind write would
+    # leave the next feat run halted on both files while we reported success. Make the human resolve it.
+    if os.path.exists(claim):
+        print("steer: a stranded steer claim is present (%s) — a prior consume crashed. Resolve it "
+              "first: `camus steer --show` to inspect, `camus steer --clear` to remove, or re-run the "
+              "feat to recover it. Refusing to write a note the next run would halt on." % claim,
+              file=sys.stderr)
+        return 1
 
     if args.pause and (args.guidance or args.task):
         print("steer: --pause cannot be combined with guidance (pause first, steer on resume)",

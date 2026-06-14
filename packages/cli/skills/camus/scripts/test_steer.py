@@ -260,6 +260,65 @@ def test_write_note_merged_replaces_corrupt_with_warning():
         assert _note(base, "f1")["guidance"] == "go"
 
 
+# --- claim-awareness (re-soak 2026-06-14, finding P2): steer_read.py treats a `<feat>.json.consuming`
+#     claim file (a crashed consume) as PENDING state, so the human CLI must agree. ---------------
+
+def _claim_path(base, feat_id):
+    return os.path.join(base, "steer", "%s.json.consuming" % feat_id)
+
+
+def _write_raw(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def test_clear_removes_a_stranded_claim_too():
+    # The bug: --clear only removed <feat>.json, so a stranded claim survived and a re-run resurrected
+    # the "cleared" note. --clear must remove BOTH.
+    with tempfile.TemporaryDirectory() as base:
+        _feat(base, "f1")
+        _write_raw(_claim_path(base, "f1"), '{"guidance":"stranded"}')
+        out = StringIO()
+        with redirect_stdout(out):
+            assert ST.main(["--clear", "--dir", base]) == 0
+        assert not os.path.exists(_claim_path(base, "f1")), "the stranded claim must be cleared"
+        assert "stranded claim" in out.getvalue()
+
+
+def test_clear_reports_nothing_when_truly_empty():
+    with tempfile.TemporaryDirectory() as base:
+        _feat(base, "f1")
+        out = StringIO()
+        with redirect_stdout(out):
+            assert ST.main(["--clear", "--dir", base]) == 0
+        assert "no pending steer note" in out.getvalue()
+
+
+def test_show_surfaces_a_stranded_claim():
+    # --show must not lie: a stranded claim is pending state, so it has to appear (even with no live note).
+    with tempfile.TemporaryDirectory() as base:
+        _feat(base, "f1")
+        _write_raw(_claim_path(base, "f1"), '{"guidance":"stranded"}')
+        out = StringIO()
+        with redirect_stdout(out):
+            assert ST.main(["--show", "--dir", base]) == 0
+        text = out.getvalue()
+        assert "stranded steer claim" in text and "no pending steer note" not in text
+
+
+def test_write_refuses_while_a_claim_exists():
+    # A new steer while a claim is stranded must NOT report success and leave the run halted on both.
+    with tempfile.TemporaryDirectory() as base:
+        _feat(base, "f1")
+        _write_raw(_claim_path(base, "f1"), '{"guidance":"stranded"}')
+        err = StringIO()
+        with redirect_stdout(StringIO()), redirect_stderr(err):
+            assert ST.main(["new guidance", "--dir", base]) == 1
+        assert "stranded steer claim" in err.getvalue()
+        assert _note(base, "f1") is None, "no new live note is written while a claim is unresolved"
+
+
 # --- stdlib runner (no pytest required) ------------------------------------
 
 if __name__ == "__main__":
