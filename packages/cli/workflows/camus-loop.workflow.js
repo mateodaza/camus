@@ -67,6 +67,18 @@ const CONTAIN_CMD = `bash ${SKILL_SCRIPTS}/containment.sh`  // main-tree contain
 // (a preamble/error/budget stub looked like dirt) AND false-cleared real leaks (an empty reply on
 // agent failure looked like a clean tree). Now: ran:false ⇒ inconclusive, never a verdict.
 
+// SHELL-SAFETY (verification audit 2026-06-13, the injection class): values that get inlined into
+// a shell command the thin runner executes must not be able to expand $(…)/backticks. INSIDE
+// double quotes bash STILL expands those (JSON.stringify only quotes, it does not neutralize), so:
+//  - shellSafe(): reject the in-double-quote-dangerous set for PATH-shaped inputs (targetPath,
+//    agent-returned worktree paths) — a real path never contains these, so rejection is the right
+//    UX (a weird path is an error, not a value to sanitize).
+//  - shq(): POSIX single-quote a FREE-TEXT value (the review task context) that legitimately
+//    contains shell metacharacters and so cannot be rejected — nothing expands inside '…'.
+const _SHELL_UNSAFE = ['$', '`', '"', '\\', '\n', '\r']
+const shellSafe = (s) => typeof s === 'string' && s.length > 0 && !_SHELL_UNSAFE.some((c) => s.includes(c))
+const shq = (s) => `'${String(s).replace(/'/g, "'\\''")}'`
+
 // args may be a bare string or {task, targetPath}. A STRING that parses as a JSON object is
 // unwrapped first (live dogfood 2026-06-12, the loop-side F33): some callers stringify the
 // object, and without this the ENTIRE JSON became the task text — the branch slug read
@@ -77,6 +89,14 @@ if (typeof args === 'string' && args.trim().startsWith('{')) {
 }
 const TASK = typeof args === 'string' ? args : (args && args.task) || ''
 const TARGET = (args && typeof args === 'object' && args.targetPath) || ''
+// targetPath is inlined into REPO_CD's `cd "…"` (verification audit 2026-06-13): a path with
+// $(…)/backticks would execute. A real path never carries shell-dangerous chars, so REFUSE the run
+// rather than cd into an attacker-controlled expression. (Defense in depth — camus-feat also rejects
+// before forwarding; this protects a direct camus-loop call too.)
+if (TARGET && !shellSafe(TARGET)) {
+  return { status: 'aborted', stage: 'args', task: TASK,
+    note: 'targetPath contains shell-unsafe characters ($ ` " \\ or newline) — refusing to use it as a shell cd target. Pass a plain filesystem path.' }
+}
 // args.verifyCmd (field soak 2026-06-13, finding 3): a per-run verify override for HEADLESS runs
 // where there is no interactive shell to `export CAMUS_VERIFY_CMD`. Inlined as an ENV-ASSIGNMENT
 // PREFIX: CAMUS_VERIFY_CMD="<value>" cmd. SHELL-INJECTION GUARD (verification audit 2026-06-13):
@@ -86,8 +106,7 @@ const TARGET = (args && typeof args === 'object' && args.targetPath) || ''
 // which also closes the escalation where an LLM-grounded camus-plan verifyCmd reaches the gate as
 // arbitrary code execution. The accepted value is still JSON-quoted as belt.
 const _VERIFY_CMD_RAW = (args && typeof args === 'object' && typeof args.verifyCmd === 'string' && args.verifyCmd.trim()) ? args.verifyCmd : ''
-const _VERIFY_UNSAFE = ['$', '`', '"', '\\', '\n', '\r']
-const VERIFY_CMD_OVERRIDE = (_VERIFY_CMD_RAW && !_VERIFY_UNSAFE.some((ch) => _VERIFY_CMD_RAW.includes(ch))) ? _VERIFY_CMD_RAW : ''
+const VERIFY_CMD_OVERRIDE = shellSafe(_VERIFY_CMD_RAW) ? _VERIFY_CMD_RAW : ''
 if (_VERIFY_CMD_RAW && !VERIFY_CMD_OVERRIDE) log('⚠ Ignoring args.verifyCmd: it contains shell-unsafe characters ($ ` " \\ or newline). Falling back to auto-detected verify — bake the command into your repo\'s test script instead.')
 const VERIFY_ENV = VERIFY_CMD_OVERRIDE ? `CAMUS_VERIFY_CMD=${JSON.stringify(VERIFY_CMD_OVERRIDE)} ` : ''
 // REPO_CD (dogfood run-8 + field soak finding "garland", 2026-06-12/13): worktree identity and
@@ -340,7 +359,7 @@ if (LAND) {
   )
   const wtJ = extractJsonObject(wtRaw)
   let wt = (wtJ && wtJ.found === true && typeof wtJ.path === 'string') ? wtJ.path.trim() : ''
-  if (!wt || !wt.endsWith(WT_NAME)) {
+  if (!wt || !wt.endsWith(WT_NAME) || !shellSafe(wt)) {   // shellSafe: no $()/backtick before it hits a shell
     // RECREATE FROM THE BRANCH (live smoke run-4, 2026-06-12): the work's durable home is the
     // BRANCH — the worktree was always just a checkout, and lanes legitimately remove it (the
     // noop path did here) while the proven commits survive. A missing checkout must not abort a
@@ -355,7 +374,7 @@ if (LAND) {
     )
     const reJ = extractJsonObject(reRaw)
     const re = (reJ && reJ.ok === true && typeof reJ.path === 'string') ? reJ.path.trim() : ''
-    if (!re || !re.endsWith(WT_NAME)) {
+    if (!re || !re.endsWith(WT_NAME) || !shellSafe(re)) {   // shellSafe: no $()/backtick before it hits a shell
       // Quote the script's error VERBATIM (run-5, 2026-06-12: a permission denial was reported
       // as "branch missing" because the failure text was discarded — the note must carry the
       // real cause, whatever it is).
@@ -566,7 +585,7 @@ if (claimed.startsWith('FAILED')) {
       ? `Implement could not create ${BRANCH} / its worktree — the branch exists but holds NO commits of its own: empty residue of a previously failed worktree add (or a name collision with one of your refs — git's error: ${(impl && impl.summary) || 'not captured'}). Delete it and re-run:\n  git branch -D ${BRANCH}`
       : `Implement could not create ${BRANCH} / its worktree — a previous attempt's work exists there (${cnt} commit(s)) (${(impl && impl.summary) || 'no git error captured'}). Under a feat, re-run with the SAME args: the resume lanes land proven prior work. Standalone: merge or delete the branch, then re-run.` }
 }
-if (!claimed || !claimed.endsWith(WT_NAME)) {
+if (!claimed || !claimed.endsWith(WT_NAME) || !shellSafe(claimed)) {   // shellSafe (verification audit): an agent-returned path with $()/backtick must never reach a shell
   return { status: 'aborted', stage: 'implement', task: TASK, plan,
     note: `Implement agent returned ${claimed ? `an unexpected worktree path (${claimed})` : 'no worktree path'}; expected an absolute path ending in "${WT_NAME}". Refusing to cd/exec into it.` }
 }
@@ -665,7 +684,7 @@ function reviewerPrompt(attempt) {
 the worktree and return its stdout. Do NOT interpret, summarize, re-judge, or reformat.
 
 ${backoff}Run EXACTLY this one command (the worktree path is the argument — do NOT cd, do NOT add anything else):
-  ${HB_TOUCH}${REVIEW_CMD} ${JSON.stringify(WT)} ${JSON.stringify(REVIEW_TASK_CTX)} ${round} ${currentEffort}${POSTURE === 'oneshot' ? ' light' : ''}
+  ${HB_TOUCH}${REVIEW_CMD} ${JSON.stringify(WT)} ${shq(REVIEW_TASK_CTX)} ${round} ${currentEffort}${POSTURE === 'oneshot' ? ' light' : ''}
 
 Set the Bash tool's timeout PARAMETER to ${REVIEW_TIMEOUT_MS[currentEffort] || 600000} for this
 call — the review legitimately runs for minutes and the 2-minute default kills it mid-flight.

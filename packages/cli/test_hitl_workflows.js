@@ -1758,6 +1758,39 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       lp.res.status === 'done' && !(lp.prompts.verify || '').includes('CAMUS_VERIFY_CMD='), lp.res.status)
   }
 
+  // F46 (verification audit round-2, 2026-06-13): the SAME shell-expansion class on sibling paths.
+  // (a) targetPath inlined into REPO_CD `cd "…"`; (b) an agent-returned worktree path that only
+  // passed endsWith(WT_NAME); (c) the free-text task context inlined as a review.sh arg.
+  {
+    const evilPath = '/tmp/$(touch /tmp/PWN)/x'
+    // (a) feat REFUSES an injection targetPath before forwarding (throws)
+    let threw = false
+    try {
+      await runFeat({ feat: 'F', tasks: ['only task'], targetPath: evilPath }, featBase,
+        [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    } catch (_) { threw = true }
+    ok('F46a feat throws on a shell-unsafe targetPath (no forward)', threw)
+    // (a') loop ABORTS on an injection targetPath rather than cd-ing into it
+    const lt = await runLoop({ task: 't', targetPath: evilPath }, { ...cls, ...planOf('clear', ''), ...happyTail })
+    ok('F46a loop aborts on a shell-unsafe targetPath', lt.res.status === 'aborted' && lt.res.stage === 'args', lt.res.status + '/' + lt.res.stage)
+    // (b) an agent-returned worktree path with $() passes endsWith but is REFUSED by shellSafe
+    const evilWt = '/tmp/$(touch /tmp/PWN)/' + wtName('t')
+    const bad = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail,
+      implement: { worktree_path: evilWt, branch: 'b', summary: 's', decisions: [] } })
+    ok('F46b injection worktree path refused despite valid suffix', bad.res.status === 'aborted' && bad.res.stage === 'implement', bad.res.status + '/' + bad.res.stage)
+    // (c) a task containing $() reaches review.sh SINGLE-QUOTED (inert), never $()-expandable.
+    //     The whole stuck path runs; assert the review command wraps the ctx in '…' not "…$()…".
+    const evilReview = J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'x', code_location: 'a:1' }], nonblocking: [] })
+    const rc = await runLoop({ task: 'fix the $(whoami) call', roundCap: 1, idSalt: 'inj1' },
+      { ...clsStd, ...planOf('clear', ''),
+        implement: { worktree_path: wtPath('fix the $(whoami) call', 'inj1'), branch: 'b', summary: 's', decisions: [] },
+        review: evilReview, fix: '', containment: J({ ran: true, dirty: false, paths: '' }),
+        park: J({ committed: true, sha: 'p' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'p' }) })
+    const reviewPrompt = rc.prompts[reviewLbl(rc.calls, 1)] || ''
+    ok('F46c task text reaches review SINGLE-quoted (inert), not double-quoted',
+      reviewPrompt.includes("'fix the $(whoami) call") && !reviewPrompt.includes('"fix the $(whoami) call'), reviewPrompt.slice(0, 200))
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exit(fail ? 1 : 0)
 })().catch((e) => { console.error('HARNESS ERROR', e); process.exit(2) })

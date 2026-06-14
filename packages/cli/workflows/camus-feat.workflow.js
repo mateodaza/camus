@@ -52,6 +52,12 @@ if (!A || typeof A !== 'object' || Array.isArray(A)) {
 const FEAT = String(A.feat || '').trim()
 const TASKS = Array.isArray(A.tasks) ? A.tasks.map((t) => String(t).trim()).filter(Boolean) : []
 const TARGET = (A.targetPath && String(A.targetPath)) || ''
+// targetPath reaches the per-task loop's REPO_CD `cd "…"` (verification audit 2026-06-13): a path
+// with $(…)/backticks would execute. A real path never carries these; refuse before forwarding
+// poison downstream (the loop rejects it too — defense in depth).
+if (TARGET && ['$', '`', '"', '\\', '\n', '\r'].some((c) => TARGET.includes(c))) {
+  throw new Error('camus-feat: targetPath contains shell-unsafe characters ($ ` " \\ or newline) — pass a plain filesystem path.')
+}
 // args.verifyCmd (field soak 2026-06-13, finding 3): a per-run verify override for HEADLESS runs
 // (no interactive shell to `export CAMUS_VERIFY_CMD`). Persisted in resumeArgs, forwarded to every
 // per-task loop, and inlined as an ENV-ASSIGNMENT PREFIX: CAMUS_VERIFY_CMD="<value>" cmd.
