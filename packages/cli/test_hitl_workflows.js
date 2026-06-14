@@ -1612,6 +1612,44 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F51 resume skips the boundary check for already-done tasks', !resumeDone.calls.some((c) => c.startsWith('parent-tree')), resumeDone.calls.join(','))
   }
 
+  // F52 (re-soak 2026-06-14, finding P2): the steer read and consume are TWO steps; a human running
+  // `camus steer` BETWEEN them writes a NEWER note. The consume is SHA-GATED (--expect-sha), so it
+  // REFUSES to delete the changed note (reason:'changed') — the newer note survives — and the feat
+  // RE-READS and applies the CURRENT note, never the superseded one. (Old behavior: blind delete
+  // applied the stale note and silently destroyed the new one.)
+  {
+    const tid = taskIdOf('F', ['only task'], 'only task')
+    let rc = 0
+    const reads = [
+      J({ read: true, note: J({ guidance: 'OLD' }), sha: 'shaA' }),
+      J({ read: true, note: J({ guidance: 'NEW' }), sha: 'shaB' }),   // the human's re-steer
+    ]
+    let cc = 0
+    const consumes = [
+      J({ consumed: false, reason: 'changed', sha: 'shaB' }),  // 1st consume: note changed under us → nothing deleted
+      J({ consumed: true }),                                   // 2nd consume (after re-read): matched → deleted
+    ]
+    const { res, loopArgs, calls, prompts } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, steer: () => reads[Math.min(rc++, reads.length - 1)], 'steer-consume': () => consumes[Math.min(cc++, consumes.length - 1)] },
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    ok('F52 sha-mismatch triggers a RE-READ', calls.some((c) => /:reread1/.test(c)), calls.filter((c) => c.startsWith('steer')).join(','))
+    ok('F52 the NEWER note is applied (not the stale one)', !!loopArgs[0] && loopArgs[0].humanAnswer === 'NEW', J(loopArgs[0] && loopArgs[0].humanAnswer))
+    ok('F52 the superseded note is NEVER applied', !(loopArgs[0] && loopArgs[0].humanAnswer === 'OLD'))
+    ok('F52 consume is sha-gated (carries --expect-sha)', Object.entries(prompts).some(([k, v]) => k.startsWith('steer-consume') && /--expect-sha/.test(v)))
+    ok('F52 → done', res && res.status === 'done', res && res.status)
+  }
+  // F52b: a note that keeps changing every time Camus reads it (a human editing in a tight loop)
+  // must HALT named after the churn cap, never spin forever and never apply a half-written note.
+  {
+    const churning = J({ read: true, note: J({ guidance: 'moving target' }), sha: 'sha-x' })
+    const { res, calls, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, steer: churning, 'steer-consume': J({ consumed: false, reason: 'changed', sha: 'sha-y' }) },
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    ok('F52b a note that never settles → needs_human (stage steer)', res && res.status === 'needs_human' && res.stage === 'steer', res && (res.status + '/' + res.stage))
+    ok('F52b bounded — does not spin (re-reads then halts)', calls.filter((c) => c.startsWith('steer:')).length <= 5, String(calls.filter((c) => c.startsWith('steer:')).length))
+    ok('F52b nothing dispatched, note says nothing applied', workflowCalls === 0 && /NOTHING was applied/.test((res && res.note) || ''), String(workflowCalls))
+  }
+
   // F8: worktree cleanup contract — the headline "no more camus-wt-* litter" feature.
   {
     const tid = taskIdOf('F', ['only task'], 'only task')

@@ -835,47 +835,70 @@ for (let i = 0; i < state.tasks.length; i++) {
   //   {answers:{id:".."}} → merged into the run's answer map (may target later tasks)
   // Steered answers live only for THIS run — they are NOT persisted into resumeArgs and do
   // not survive a pause/resume (re-steer or pass answers explicitly on the re-run).
-  // Mechanical steer-read with a SENTINEL + RETRY (field soak 2026-06-13 item 7; read/consume SPLIT
-  // + retry from the live re-soak 2026-06-14 finding A). steer_read.py READS without consuming and
-  // emits {read,note}; the sentinel tells "note state obtained" (note null when absent) from "agent
-  // could not obtain it". Because the read no longer consumes, a transient thin-runner relay flake
-  // is RETRIED safely (the re-read finds the same un-consumed note — no loss), so ONE haiku hiccup
-  // no longer halts an unattended feat. We CONSUME (--consume) only after a confirmed parsed note.
-  const STEER_READ_TRIES = 2
-  let steerOuter = null
-  for (let attempt = 1; attempt <= STEER_READ_TRIES && (!steerOuter || steerOuter.read !== true); attempt++) {
-    const steerRaw = await agent(
-      `THIN steer-check runner. Run EXACTLY this one command and output its stdout VERBATIM (one JSON object {read,note}); no fences, no commentary:
+  // Mechanical steer-read with a SENTINEL + RETRY + SHA-GATED CONSUME (field soak 2026-06-13 item 7;
+  // read/consume SPLIT + retry, re-soak 2026-06-14 finding A; sha-gate, 2026-06-14 finding P2).
+  // steer_read.py READS without consuming and emits {read,note,sha}; the sentinel tells "note state
+  // obtained" (note null when absent) from "agent could not obtain it". Two failure modes are closed:
+  //   (A) a transient relay flake on the READ is RETRIED safely (the read no longer consumes, so a
+  //       re-read finds the same note — no loss), so ONE haiku hiccup no longer halts an unattended feat.
+  //   (P2) a human can run `camus steer` BETWEEN the read and the consume; a blind delete would apply
+  //       the OLD note and silently delete the NEW one. So consume is SHA-GATED (--expect-sha): it
+  //       deletes ONLY the exact bytes we read. If the note changed under us, the newer note survives
+  //       and we RE-READ + reprocess the current note (bounded), never applying a superseded one.
+  const STEER_READ_TRIES = 2     // retry a FLAKED read (no sentinel)
+  const STEER_CHURN_TRIES = 3    // re-read when the note changed between read and consume
+  let steer = {}
+  let steerNoteRaw = null        // the (final) raw note text we actually CONSUMED + apply, if any
+  for (let churn = 0; ; churn++) {
+    let steerOuter = null
+    for (let attempt = 1; attempt <= STEER_READ_TRIES && (!steerOuter || steerOuter.read !== true); attempt++) {
+      const steerRaw = await agent(
+        `THIN steer-check runner. Run EXACTLY this one command and output its stdout VERBATIM (one JSON object {read,note,sha}); no fences, no commentary:
   ${HB_TOUCH}python3 ${SKILL}/steer_read.py ${JSON.stringify(featId)}`,
-      { model: MODEL_RUNNER, phase: 'Tasks', label: `steer:${node.taskId}${attempt > 1 ? `:retry${attempt - 1}` : ''}` }
-    )
-    steerOuter = extractJsonObject(steerRaw)
-  }
-  if (!steerOuter || steerOuter.read !== true) {
-    // STILL no sentinel after retries → a persistent failure to obtain the steer state. This is NOT
-    // a bad note — the read-only check never consumed anything, so a re-run re-reads any note intact.
-    // Inconclusive halt (fail-closed), never a false countermand-drop.
-    note(`Task ${n}: could not READ the steer-note state after ${STEER_READ_TRIES} tries — halting inconclusive; nothing consumed.`)
-    return finalize('needs_human', {
-      stage: 'steer', haltedTask: node.taskId,
-      question: `Camus could not read the steer-note state before task ${n} (the check failed to run, ${STEER_READ_TRIES}×). Re-run the feat with the SAME args.`,
-      note: `The steer-note check before task ${n} could not be OBTAINED after ${STEER_READ_TRIES} tries (a persistently failing/garbled runner) — this is NOT a bad note, and NOTHING was consumed or applied. Re-run the feat with the SAME args to re-check; any \`camus steer\` note you left is intact.`,
-    })
-  }
-  const steerNoteRaw = steerOuter.note   // raw file text, or null when no note exists
-  const steerParsed = (typeof steerNoteRaw === 'string') ? extractJsonObject(steerNoteRaw) : null
-  // CONSUME only after a CONFIRMED read (a note applies once). A present note (parseable or not) is
-  // consumed now via --consume; a null note (no file) consumes nothing. The pause re-queue below
-  // re-writes any remainder, so pause fires once and the payload survives.
-  if (typeof steerNoteRaw === 'string') {
-    await agent(
+        { model: MODEL_RUNNER, phase: 'Tasks', label: `steer:${node.taskId}${churn > 0 ? `:reread${churn}` : ''}${attempt > 1 ? `:retry${attempt - 1}` : ''}` }
+      )
+      steerOuter = extractJsonObject(steerRaw)
+    }
+    if (!steerOuter || steerOuter.read !== true) {
+      // STILL no sentinel after retries → a persistent failure to obtain the steer state. This is NOT
+      // a bad note — the read-only check never consumed anything, so a re-run re-reads any note intact.
+      note(`Task ${n}: could not READ the steer-note state after ${STEER_READ_TRIES} tries — halting inconclusive; nothing consumed.`)
+      return finalize('needs_human', {
+        stage: 'steer', haltedTask: node.taskId,
+        question: `Camus could not read the steer-note state before task ${n} (the check failed to run, ${STEER_READ_TRIES}×). Re-run the feat with the SAME args.`,
+        note: `The steer-note check before task ${n} could not be OBTAINED after ${STEER_READ_TRIES} tries (a persistently failing/garbled runner) — this is NOT a bad note, and NOTHING was consumed or applied. Re-run the feat with the SAME args to re-check; any \`camus steer\` note you left is intact.`,
+      })
+    }
+    if (steerOuter.note == null) { steerNoteRaw = null; break }   // clean no-note → proceed
+    const candidate = steerOuter.note
+    // SHA-GATED CONSUME: delete ONLY the exact bytes we just read.
+    const consRaw = await agent(
       `THIN steer-consume runner. Run EXACTLY this one command and output its stdout VERBATIM ({consumed,...}); no fences, no commentary:
-  ${HB_TOUCH}python3 ${SKILL}/steer_read.py ${JSON.stringify(featId)} --consume`,
-      { model: MODEL_RUNNER, phase: 'Tasks', label: `steer-consume:${node.taskId}` }
+  ${HB_TOUCH}python3 ${SKILL}/steer_read.py ${JSON.stringify(featId)} --consume --expect-sha ${shq(String(steerOuter.sha || ''))}`,
+      { model: MODEL_RUNNER, phase: 'Tasks', label: `steer-consume:${node.taskId}${churn > 0 ? `:reread${churn}` : ''}` }
     )
+    const cons = extractJsonObject(consRaw)
+    if (cons && cons.consumed === false && cons.reason === 'changed') {
+      // The note CHANGED between read and consume — a human re-steered. We deleted NOTHING; the newer
+      // note survives on disk. Discard the stale read and re-read the CURRENT note (bounded), so the
+      // newest guidance is what applies — never the superseded one (the bug finding P2 names).
+      if (churn < STEER_CHURN_TRIES) { note(`Task ${n}: steer note changed during processing — re-reading the current note.`); continue }
+      note(`Task ${n}: steer note kept changing while Camus tried to consume it — halting; nothing applied.`)
+      return finalize('needs_human', {
+        stage: 'steer', haltedTask: node.taskId,
+        question: `A steer note kept changing while Camus tried to consume it before task ${n} — finish editing it, then re-run with the SAME args.`,
+        note: `The steer note before task ${n} changed every time Camus read it (it was edited ${STEER_CHURN_TRIES}× mid-consume) — NOTHING was applied and the latest note is intact on disk. Stop editing, then re-run the feat with the SAME args to apply it.`,
+      })
+    }
+    // consumed:true (deleted exactly what we read), OR absent/flaked (note is gone or the echo
+    // garbled, but consume is sha-gated so it could not have clobbered a NEWER note — a newer note
+    // would have reported 'changed' above). We hold the parsed content, so apply what we read.
+    steerNoteRaw = candidate
+    break
   }
+  const steerParsed = (typeof steerNoteRaw === 'string') ? extractJsonObject(steerNoteRaw) : null
   // A note FILE existed but its content is not parseable JSON — a real human note we can't read
-  // (now consumed, so the re-run won't re-halt on the same file). Halt asking for a re-issue.
+  // (consume already cleared it, so the re-run won't re-halt on the same file). Halt for a re-issue.
   if (typeof steerNoteRaw === 'string' && steerParsed == null) {
     note(`Task ${n}: a steer note was PRESENT but UNPARSEABLE — consumed; NOTHING was applied.`)
     return finalize('needs_human', {
@@ -884,11 +907,12 @@ for (let i = 0; i < state.tasks.length; i++) {
       note: `A steer note was present but could not be parsed before task ${n} — it was consumed and NOTHING was applied. Halting rather than running past your guidance. Re-issue it (\`camus steer ...\`) and re-run the feat with the SAME args to resume from here.`,
     })
   }
-  const steer = steerParsed || {}
+  steer = steerParsed || {}
   if (steer.pause === true) {
     // RE-QUEUE the rest of the note before halting (audit P1 2026-06-11): steer merges compose
-    // pause+answers into ONE note, but the --consume agent above already DELETED it — halting here
-    // would silently drop the answers/guidance riding alongside the pause. Write the remainder (minus
+    // pause+answers into ONE note, but the sha-gated consume above already DELETED the exact note we
+    // applied — halting here would silently drop the answers/guidance riding alongside the pause. So
+    // write the remainder (minus
     // pause) back to the steer path so the NEXT run's boundary check picks it up: pause fires
     // once, the payload survives the pause. Fail-soft but LOUD: a failed re-queue is named in
     // the halt note so the human knows to re-issue.
