@@ -69,6 +69,9 @@ async function runFeat(args, scripts, loopResults, budget) {
 }
 
 const J = (o) => JSON.stringify(o)
+// commit.sh emits a real 40-hex `git rev-parse HEAD`, and the commit-receipt gate now requires that shape;
+// fixtures use deterministic 40-hex fake hashes (readable seed → per-char hex, zero-padded to 40).
+const h40 = (seed) => { let x = ''; for (const c of String(seed)) x += c.charCodeAt(0).toString(16).padStart(2, '0'); return (x + '0'.repeat(40)).slice(0, 40) }
 // A containment / parent-tree stub that models a leak APPEARING AFTER the loop-start baseline: the
 // `:baseline` capture reads clean, the later leak-check reads dirty. Exercises the untracked-DELTA
 // (re-soak 2026-06-14) — only dirt that is new vs the baseline is a breach.
@@ -96,10 +99,10 @@ const taskIdOf = (feat, tasks, task) => `${slug(task)}-${fnv(featIdOf(feat, task
 const happyTail = {
   implement: { worktree_path: wtPath('t'), branch: 'b', summary: 's', decisions: [{ what: 'W', why: 'Y' }] },
   review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
-  commit: J({ committed: true, sha: 'abc123' }),
+  commit: J({ committed: true, sha: h40('abc123') }),
   prep: J({ prepped: true, ran: [] }),
   // head names the sha happyTail's commit stub seals — head-bound greens (publish audit P2).
-  verify: J({ pass: true, failures: [], head: 'abc123' }),
+  verify: J({ pass: true, failures: [], head: h40('abc123') }),
 }
 const cls = { classify: { tier: 'trivial', reason: 'x' } }
 // Ask-gate tests must NOT be trivial: a trivial tier SKIPS planning (clarity forced to 'clear'),
@@ -188,10 +191,10 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // Since the run-6 integrity work, the unresolved path PARKS FIRST (unconditionally) and then
   // verifies the parked commit — verify refuses uncommitted state, so the seal must precede the
   // ground-truth consult. Red attempts park too (protection, not a reward for green).
-  const parkOk = { park: J({ committed: true, sha: 'p4rk1234' }) }
+  const parkOk = { park: J({ committed: true, sha: h40('p4rk1234') }) }
   {
     // verify GREEN on a non-converged review → DECISION POINT (verifyClean:true), not a plain failure.
-    const { res, calls } = await runLoop({ task: 't', roundCap: 5 }, { ...stuckBase, ...parkOk, verify: J({ pass: true, failures: [], head: 'p4rk1234' }) })
+    const { res, calls } = await runLoop({ task: 't', roundCap: 5 }, { ...stuckBase, ...parkOk, verify: J({ pass: true, failures: [], head: h40('p4rk1234') }) })
     ok('S10a review_unresolved + verify GREEN → verifyClean true', res.status === 'review_unresolved' && res.verifyClean === true, res.status + '/' + res.verifyClean)
     ok('S10a verify actually ran on the halt (ground truth consulted)', calls.includes('verify'))
     ok('S10a park precedes verify (seal, then certify)', calls.indexOf('park') < calls.indexOf('verify'), calls.join(','))
@@ -205,7 +208,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const { res, calls } = await runLoop({ task: 't', roundCap: 5 }, { ...stuckBase, ...parkOk, verify: J({ pass: false, failures: [{ stage: 'verify', log_tail: 'boom' }] }) })
     ok('S10b review_unresolved + verify RED → verifyClean false', res.status === 'review_unresolved' && res.verifyClean === false, res.status + '/' + res.verifyClean)
     ok('S10b note says genuinely not done', /genuinely not done/.test(res.note || ''))
-    ok('S10b red attempt parks too (sealed before the verdict; note names it red)', calls.includes('park') && /parked as p4rk1234 .*verify-red/.test(res.note || ''), res.note)
+    ok('S10b red attempt parks too (sealed before the verdict; note names it red)', calls.includes('park') && (res.note || '').includes('parked as ' + h40('p4rk1234')) && /verify-red/.test(res.note || ''), res.note)
   }
   // S21 (0.2.5 item 2 + run-6 reorder): PARK seals the review-flagged worktree as a labeled
   // commit BEFORE verify, so proven work survives anything; land's empty-stage path finishes
@@ -213,12 +216,12 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // the NOTE carries it.
   {
     const { res, calls, prompts } = await runLoop({ task: 't', roundCap: 5 },
-      { ...stuckBase, verify: J({ pass: true, failures: [], head: 'p4rk1234' }), park: J({ committed: true, sha: 'p4rk1234' }) })
+      { ...stuckBase, verify: J({ pass: true, failures: [], head: h40('p4rk1234') }), park: J({ committed: true, sha: h40('p4rk1234') }) })
     ok('S21 verify-clean halt parks a commit', calls.includes('park'), calls.join(','))
     ok('S21 park message is the labeled chore (no verdict claimed pre-verify)',
       !!prompts.park && prompts.park.includes('chore(camus): park') && prompts.park.includes('(review-flagged)') && !prompts.park.includes('verify-green'))
-    ok('S21 parked sha surfaced on the halt', res.parkedSha === 'p4rk1234', res.parkedSha)
-    ok('S21 note says the work is parked', /PARKED as commit p4rk1234/.test(res.note || ''))
+    ok('S21 parked sha surfaced on the halt', res.parkedSha === h40('p4rk1234'), res.parkedSha)
+    ok('S21 note says the work is parked', (res.note || '').includes('PARKED as commit ' + h40('p4rk1234')))
   }
   {
     // a refused park now means verify CANNOT certify (uncommitted state) — the halt names the
@@ -300,13 +303,13 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // S12 (run-5 fix 2026-06-11): LAND MODE — commit already-proven work without re-running the loop.
   const landStubs = {
     'land-resolve': J({ found: true, path: wtPath('t') }),
-    commit: J({ committed: true, sha: 'land1' }),
+    commit: J({ committed: true, sha: h40('land1') }),
     prep: J({ prepped: true, ran: [] }),
-    verify: J({ pass: true, failures: [], head: 'land1' }),
+    verify: J({ pass: true, failures: [], head: h40('land1') }),
   }
   {
     const { res, calls } = await runLoop({ task: 't', land: true }, landStubs)
-    ok('S12a land → done with sha, rounds 0, landed flag', res.status === 'done' && res.commit_sha === 'land1' && res.rounds === 0 && res.landed === true, JSON.stringify({ s: res.status, sha: res.commit_sha }))
+    ok('S12a land → done with sha, rounds 0, landed flag', res.status === 'done' && res.commit_sha === h40('land1') && res.rounds === 0 && res.landed === true, JSON.stringify({ s: res.status, sha: res.commit_sha }))
     ok('S12a land skips classify/plan/implement/review entirely',
       !calls.some((c) => /^(classify|plan|implement|review|fix)/.test(c)), calls.join(','))
     ok('S12a verify still ran (gate unskippable)', calls.includes('verify'))
@@ -328,28 +331,32 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     // commit.sh names the live tip on empty and the verify is BOUND to it — the green must
     // certify that exact tip.
     const { res, calls } = await runLoop({ task: 't', land: true },
-      { ...landStubs, commit: J({ committed: false, reason: 'empty', sha: 't1pl1ve' }), verify: J({ pass: true, failures: [], head: 't1pl1ve' }) })
+      { ...landStubs, commit: J({ committed: false, reason: 'empty', sha: h40('t1pl1ve') }), verify: J({ pass: true, failures: [], head: h40('t1pl1ve') }) })
     ok('S12d land + empty stage → still done (already committed)', res.status === 'done' && res.commit_sha === null, res.status + '/' + res.commit_sha)
     ok('S12d verify still ran', calls.includes('verify'))
     // F36a (publish audit round-2 P1): the empty-stage land no longer believes unbound greens.
     const noHead = await runLoop({ task: 't', land: true },
-      { ...landStubs, commit: J({ committed: false, reason: 'empty', sha: 't1pl1ve' }), verify: J({ pass: true, failures: [] }) })
+      { ...landStubs, commit: J({ committed: false, reason: 'empty', sha: h40('t1pl1ve') }), verify: J({ pass: true, failures: [] }) })
     ok('F36a empty-stage land + unnamed green → verify_failed (head_missing)',
       noHead.res.status === 'verify_failed' && JSON.stringify(noHead.res.failures || []).includes('head_missing'), noHead.res.status)
     // F36b: expectHead (the ORIGINAL proof) outranks the live tip — a task-branch tip that moved
     // past the proof fails CLOSED with both shas named, never believed and merged.
-    const moved = await runLoop({ task: 't', land: true, expectHead: 'pr00f' },
-      { ...landStubs, commit: J({ committed: false, reason: 'empty', sha: 't1pmoved' }), verify: J({ pass: true, failures: [], head: 't1pmoved' }) })
+    const moved = await runLoop({ task: 't', land: true, expectHead: h40('pr00f') },
+      { ...landStubs, commit: J({ committed: false, reason: 'empty', sha: h40('t1pmoved') }), verify: J({ pass: true, failures: [], head: h40('t1pmoved') }) })
     ok('F36b tip moved past the proven commit → verify_failed naming both shas',
-      moved.res.status === 'verify_failed' && JSON.stringify(moved.res.failures || []).includes('pr00f') && JSON.stringify(moved.res.failures || []).includes('t1pmoved'), moved.res.status)
+      moved.res.status === 'verify_failed' && JSON.stringify(moved.res.failures || []).includes(h40('pr00f')) && JSON.stringify(moved.res.failures || []).includes(h40('t1pmoved')), moved.res.status)
     // …and a tip still AT the proof verifies green through the same binding.
-    const held = await runLoop({ task: 't', land: true, expectHead: 'pr00f' },
-      { ...landStubs, commit: J({ committed: false, reason: 'empty', sha: 'pr00f' }), verify: J({ pass: true, failures: [], head: 'pr00f' }) })
+    const held = await runLoop({ task: 't', land: true, expectHead: h40('pr00f') },
+      { ...landStubs, commit: J({ committed: false, reason: 'empty', sha: h40('pr00f') }), verify: J({ pass: true, failures: [], head: h40('pr00f') }) })
     ok('F36b tip still at the proven commit → done', held.res.status === 'done', held.res.status)
-    // Legacy gate shape (no sha on empty, no recorded proof) stays unbound — never a regression
-    // for old states; verify's internal invariants still apply.
-    const legacy = await runLoop({ task: 't', land: true }, { ...landStubs, commit: J({ committed: false, reason: 'empty' }) })
-    ok('F36c legacy empty (no sha, no proof) → unbound, still done', legacy.res.status === 'done', legacy.res.status)
+    // F36c (Mateo re-audit 2026-07-06): an empty stage that names NO valid sha is a RELAY CONTRACT VIOLATION
+    // (commit.sh emits a sha even on empty) — fail CLOSED, never a null-bound "legacy" done, UNLESS a recorded
+    // proof (expectHead) exists to bind the verify to.
+    const legacyNoSha = await runLoop({ task: 't', land: true }, { ...landStubs, commit: J({ committed: false, reason: 'empty' }) })
+    ok('F36c empty + no sha + no proof → infra_error, NOT an unbound done', legacyNoSha.res.status === 'infra_error' && /land commit failed/.test(legacyNoSha.res.error || ''), legacyNoSha.res.status + ' ' + (legacyNoSha.res.error || '').slice(0, 40))
+    const legacyWithProof = await runLoop({ task: 't', land: true, expectHead: h40('pr00f') },
+      { ...landStubs, commit: J({ committed: false, reason: 'empty' }), verify: J({ pass: true, failures: [], head: h40('pr00f') }) })
+    ok('F36c empty + no sha + valid expectHead → binds to the proof → done', legacyWithProof.res.status === 'done', legacyWithProof.res.status)
   }
   {
     // A real commit failure under land is still an INFRA error, never silently skipped.
@@ -473,7 +480,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       ...clsStd, ...planOf('clear', ''),
       implement: { worktree_path: wtPath('t', salt), branch: 'b', summary: 's', decisions: [] },
       review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
-      commit: J({ committed: true, sha: 'abc' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'abc' }),
+      commit: J({ committed: true, sha: h40('abc') }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: h40('abc') }),
       containment: J({ ran: true, dirty: false, paths: '' }),
     }
     const { res, calls, prompts } = await runLoop({ task: 't', idSalt: salt }, stubs)
@@ -515,7 +522,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     let r22 = 0
     const stubs = {
       ...clsStd, ...planOf('clear', ''), implement: happyTail.implement, ...cleanVerify,
-      commit: J({ committed: true, sha: 'abc123' }), verify: J({ pass: true, failures: [], head: 'abc123' }),
+      commit: J({ committed: true, sha: h40('abc123') }), verify: J({ pass: true, failures: [], head: h40('abc123') }),
       review: () => { r22++; return r22 <= 2 ? J({ pending: true, handle, last_event_age: 12 }) : J({ ran: true, clean: true, blocking: [], nonblocking: [] }) },
     }
     const { res, calls, prompts } = await runLoop({ task: 't' }, stubs)
@@ -546,7 +553,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     let rc = 0
     const stubs = {
       ...clsStd, ...planOf('clear', ''), implement: happyTail.implement, ...cleanVerify,
-      commit: J({ committed: true, sha: 'abc123' }), verify: J({ pass: true, failures: [], head: 'abc123' }),
+      commit: J({ committed: true, sha: h40('abc123') }), verify: J({ pass: true, failures: [], head: h40('abc123') }),
       review: () => { rc++; return rc === 1 ? J({ pending: true, handle, last_event_age: 4 }) : J({ ran: true, clean: true, blocking: [], nonblocking: [] }) },
     }
     const { res, calls } = await runLoop({ task: 't' }, stubs)
@@ -573,7 +580,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const calls2 = []
     await fn({ task: 't' }, makeAgent({ ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
       review: J({ ran: true, clean: true, blocking: [], nonblocking: [], usage: { input_tokens: 15655, output_tokens: 900, reasoning_output_tokens: 4000 } }),
-      commit: J({ committed: true, sha: 'abc123' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'abc123' }) }, calls2),
+      commit: J({ committed: true, sha: h40('abc123') }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: h40('abc123') }) }, calls2),
       () => {}, (m) => logs.push(m), async () => { throw new Error('no workflow') }, undefined)
     ok('S22d codex usage in the clean-round log', logs.some((m) => /codex ~16k in\/900 out \(4000 reasoning\)/.test(m)), logs.filter((m) => /CLEAN/.test(m)).join(' | '))
   }
@@ -591,19 +598,19 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const stubs = {
       ...clsStd, ...planOf('clear', ''), implement: happyTail.implement, fix: '',
       review: J({ ran: true, clean: false, blocking: [finding], nonblocking: [] }),
-      commit: J({ committed: true, sha: 'one5h0t' }), ...cleanVerify, verify: J({ pass: true, failures: [], head: 'one5h0t' }),
+      commit: J({ committed: true, sha: h40('one5h0t') }), ...cleanVerify, verify: J({ pass: true, failures: [], head: h40('one5h0t') }),
     }
     const { res, calls } = await runLoop({ task: 't', posture: 'oneshot', roundCap: 5 }, stubs)
     ok('S23b oneshot blocking → done_with_findings', res.status === 'done_with_findings', res.status)
     ok('S23b exactly ONE review + ONE fix (cap ignored)', calls.filter((c) => c.startsWith('review')).length === 1 && calls.filter((c) => c.startsWith('fix')).length === 1, calls.join(','))
     ok('S23b findings verbatim + honest resolution', res.findingsDeferred === 1 && res.resolution === 'fixed_unreviewed' && res.findings[0].title === 'edge case', JSON.stringify(res.findings))
-    ok('S23b committed (merged-ready) + note says NOT review-clean', res.commit_sha === 'one5h0t' && /NOT review-clean/.test(res.note || ''), res.note)
+    ok('S23b committed (merged-ready) + note says NOT review-clean', res.commit_sha === h40('one5h0t') && /NOT review-clean/.test(res.note || ''), res.note)
   }
   {
     const stubs = {
       ...clsStd, ...planOf('clear', ''), implement: happyTail.implement, fix: '',
       review: J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'x', code_location: 'a:1' }], nonblocking: [] }),
-      commit: J({ committed: true, sha: 'c' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: false, failures: [{ stage: 'verify', log_tail: 'boom' }] }),
+      commit: J({ committed: true, sha: h40('c') }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: false, failures: [{ stage: 'verify', log_tail: 'boom' }] }),
     }
     const { res } = await runLoop({ task: 't', posture: 'oneshot' }, stubs)
     ok('S23c oneshot + red verify → verify_failed (the floor holds)', res.status === 'verify_failed', res.status)
@@ -628,7 +635,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
       review: J({ ran: true, clean: false, blocking: [finding], nonblocking: [] }),
       fix: { resolutions: [{ title: 'edge case', resolution: 're-exported the symbol from the original module' }] },
-      commit: J({ committed: true, sha: 'c1' }), ...cleanVerify, verify: J({ pass: true, failures: [], head: 'c1' }),
+      commit: J({ committed: true, sha: h40('c1') }), ...cleanVerify, verify: J({ pass: true, failures: [], head: h40('c1') }),
     }
     const { res, prompts } = await runLoop({ task: 't', posture: 'oneshot' }, stubs)
     ok('S24 claimed resolution attached to the verbatim finding', res.status === 'done_with_findings' && res.findings[0].claimedResolution === 're-exported the symbol from the original module', JSON.stringify(res.findings))
@@ -648,7 +655,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       ...clsStd, ...planOf('clear', ''),
       implement: { worktree_path: wtPath('t', salt), branch: 'b', summary: 's', decisions: [] },
       review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
-      commit: J({ committed: true, sha: 'c1' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'c1' }),
+      commit: J({ committed: true, sha: h40('c1') }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: h40('c1') }),
     }
     const clean = await runLoop({ task: 't', idSalt: salt }, { ...base25, containment: J({ ran: true, dirty: false, paths: '' }) })
     ok('S25a clean main tree → done, containment checked', clean.res.status === 'done' && clean.calls.includes('containment:implement'), clean.res.status + ' ' + clean.calls.join(','))
@@ -690,7 +697,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       ...clsStd, ...planOf('clear', ''),
       implement: { worktree_path: wtPath('t', salt), branch: 'b', summary: 's', decisions: [] },
       review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
-      commit: J({ committed: true, sha: 'c1' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'c1' }),
+      commit: J({ committed: true, sha: h40('c1') }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: h40('c1') }),
     }
     // (a) an UNTRACKED file leaked after the baseline → breach (the exact finding)
     const r1 = await runLoop({ task: 't', idSalt: salt }, { ...base, containment: leakAfterBaseline('?? packages/ai/src/__tests__/model-selector.test.ts') })
@@ -913,7 +920,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   {
     const finding = { priority: 2, title: 'deferred edge', code_location: 'b.ts:2' }
     const r1 = await runFeat({ feat: 'F', tasks: ['only task'], posture: 'oneshot' }, featBase,
-      [{ status: 'done_with_findings', branch: 'camus/feat/x/only', decisions: [], findings: [finding], findingsDeferred: 1, resolution: 'fixed_unreviewed', commit_sha: 'c1' }])
+      [{ status: 'done_with_findings', branch: 'camus/feat/x/only', decisions: [], findings: [finding], findingsDeferred: 1, resolution: 'fixed_unreviewed', commit_sha: h40('c1') }])
     ok('F23 dwf task merges; feat ends done_with_findings', r1.res && r1.res.status === 'done_with_findings', r1.res && r1.res.status)
     ok('F23 findings verbatim in the report', JSON.stringify((r1.res && r1.res.deferredFindings) || []).includes('deferred edge'))
     ok('F23 node carries ◈-able status + count', !!r1.stateJSON && r1.stateJSON.tasks[0].status === 'done_with_findings' && r1.stateJSON.tasks[0].findingsDeferred === 1)
@@ -936,22 +943,22 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const finding = { priority: 1, title: 'laundered?', code_location: 'c.ts:3' }
     // (a) live run: the ready_to_merge MID-persist already carries provenStatus + findings.
     const r1 = await runFeat({ feat: 'F', tasks: ['only task'], posture: 'oneshot' }, featBase,
-      [{ status: 'done_with_findings', branch: 'camus/feat/x/only', decisions: [{ what: 'W', why: 'Y' }], findings: [finding], findingsDeferred: 1, resolution: 'fixed_unreviewed', commit_sha: 'c1' }])
+      [{ status: 'done_with_findings', branch: 'camus/feat/x/only', decisions: [{ what: 'W', why: 'Y' }], findings: [finding], findingsDeferred: 1, resolution: 'fixed_unreviewed', commit_sha: h40('c1') }])
     const mid = (r1.stateJSONs || [])
       .find((s) => s && s.tasks && s.tasks[0] && s.tasks[0].status === 'ready_to_merge')
     ok('F24a proof persist stashes provenStatus + findings BEFORE the merge',
       !!mid && mid.tasks[0].provenStatus === 'done_with_findings' && mid.tasks[0].findingsDeferred === 1 && JSON.stringify(mid.tasks[0].deferredFindings).includes('laundered'),
       mid && JSON.stringify(mid.tasks[0]))
     ok('F24a …and the proof\'s sha (publish audit round-2: the auto-land binds verify to it)',
-      !!mid && mid.tasks[0].provenCommit === 'c1', mid && mid.tasks[0].provenCommit)
+      !!mid && mid.tasks[0].provenCommit === h40('c1'), mid && mid.tasks[0].provenCommit)
     // (b) crash BEFORE the merge → resume auto-lands (land returns plain done) → verdict restored.
     const tid = taskIdOf('F', ['only task'], 'only task')
     const prior = JSON.parse(JSON.stringify(r1.stateJSON))
     prior.status = 'running'
-    prior.tasks[0] = { ...prior.tasks[0], status: 'ready_to_merge', provenStatus: 'done_with_findings', provenCommit: 'pr00f', findingsDeferred: 1, deferredFindings: [finding], decisions: [{ what: 'W', why: 'Y' }] }
+    prior.tasks[0] = { ...prior.tasks[0], status: 'ready_to_merge', provenStatus: 'done_with_findings', provenCommit: h40('pr00f'), findingsDeferred: 1, deferredFindings: [finding], decisions: [{ what: 'W', why: 'Y' }] }
     const featResume = { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(prior) } }
     const r2 = await runFeat({ feat: 'F', tasks: ['only task'], posture: 'oneshot' }, featResume,
-      [{ status: 'done', branch: 'camus/feat/x/only', commit_sha: 'land1', landed: true, decisions: [] }])
+      [{ status: 'done', branch: 'camus/feat/x/only', commit_sha: h40('land1'), landed: true, decisions: [] }])
     ok('F24b auto-land restores done_with_findings (never laundered to done)',
       !!r2.stateJSON && r2.stateJSON.tasks[0].status === 'done_with_findings' && r2.res && r2.res.status === 'done_with_findings',
       r2.stateJSON && r2.stateJSON.tasks[0].status + '/' + (r2.res && r2.res.status))
@@ -959,12 +966,12 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       !!r2.stateJSON && r2.stateJSON.tasks[0].findingsDeferred === 1 && JSON.stringify(r2.res.deferredFindings || []).includes('laundered') && r2.stateJSON.tasks[0].decisions.length === 1,
       r2.stateJSON && JSON.stringify(r2.stateJSON.tasks[0]))
     ok('F24b auto-land carries expectHead = the proven sha (publish audit round-2)',
-      !!(r2.loopArgs[0] && r2.loopArgs[0].land === true && r2.loopArgs[0].expectHead === 'pr00f'), JSON.stringify(r2.loopArgs[0] && { land: r2.loopArgs[0].land, expectHead: r2.loopArgs[0].expectHead }))
+      !!(r2.loopArgs[0] && r2.loopArgs[0].land === true && r2.loopArgs[0].expectHead === h40('pr00f')), JSON.stringify(r2.loopArgs[0] && { land: r2.loopArgs[0].land, expectHead: r2.loopArgs[0].expectHead }))
     // (c) crash AFTER the merge → already-up-to-date + prior-merge-commit evidence → same restore.
     const upToDateMerge = { merged: true, committed: false, alreadyUpToDate: true, priorMergeCommit: 'deadbeef', before: 'aaa', after: 'aaa' }
     const r3 = await runFeat({ feat: 'F', tasks: ['only task'], posture: 'oneshot' },
       { ...featResume, merge: upToDateMerge, 'merge-receipt': J(upToDateMerge), 'merge-head': upToDateMerge.after, 'integration-verify': J({ pass: true, failures: [], head: upToDateMerge.after }) },
-      [{ status: 'done', branch: 'camus/feat/x/only', commit_sha: 'land1', landed: true, decisions: [] }])
+      [{ status: 'done', branch: 'camus/feat/x/only', commit_sha: h40('land1'), landed: true, decisions: [] }])
     ok('F24c prior-merge evidence path restores done_with_findings too',
       !!r3.stateJSON && r3.stateJSON.tasks[0].status === 'done_with_findings' && r3.res && r3.res.status === 'done_with_findings',
       r3.stateJSON && r3.stateJSON.tasks[0].status + '/' + (r3.res && r3.res.status))
@@ -988,7 +995,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     }
     const featR = { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(prior) } }
     const r1 = await runFeat({ feat: 'F', tasks: ['only task'], posture: 'oneshot' }, featR,
-      [{ status: 'done', branch: `camus/feat/${fid}/${tid}`, commit_sha: 'land1', landed: true, decisions: [] }])
+      [{ status: 'done', branch: `camus/feat/${fid}/${tid}`, commit_sha: h40('land1'), landed: true, decisions: [] }])
     ok('F25 proven merge_failed → auto-land forwarded', !!(r1.loopArgs[0] && r1.loopArgs[0].land === true), JSON.stringify(r1.loopArgs[0] && r1.loopArgs[0].land))
     ok('F25 verdict + findings restored through the land', r1.res && r1.res.status === 'done_with_findings' && JSON.stringify(r1.res.deferredFindings || []).includes('deferred edge'), r1.res && r1.res.status)
   }
@@ -1024,6 +1031,29 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F34 failed land preserves ready_to_merge (the proof survives)', !!stateJSON && stateJSON.tasks[0].status === 'ready_to_merge', stateJSON && stateJSON.tasks[0].status)
     ok('F34 halt note says retry the land, not re-loop', res && res.status === 'halted' && !!stateJSON && (stateJSON.events || []).some((e) => /stays ready_to_merge/.test(e.msg || '')), res && res.status)
   }
+  // F34b (resume audit 2026-06-29): a land whose RE-VERIFY goes red/inconclusive (landed:true) must ALSO keep
+  // the ready_to_merge lane, not collapse to `failed` — which matches no resume lane and wedges the next
+  // resume in a full-loop branch collision. The auto-land re-verifies before merging, so it never false-merges.
+  {
+    const tid = taskIdOf('F', ['only task'], 'only task')
+    const fid = featIdOf('F', ['only task'])
+    const prior = {
+      featId: fid, feat: 'F', featBranch: 'camus/feat-' + fid, status: 'halted',
+      resumeArgs: { argsVersion: 1, feat: 'F', tasks: ['only task'], policy: 'ask_on_ambiguity' },
+      tasks: [{ taskId: tid, spec: 'only task', dependsOn: [], status: 'ready_to_merge', provenStatus: 'done', provenCommit: h40('pr00f'), branch: `camus/feat/${fid}/${tid}`, loopStatus: 'done', decisions: [] }],
+      events: [], eventSeq: 0,
+    }
+    const featR = { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(prior) } }
+    const red = await runFeat({ feat: 'F', tasks: ['only task'] }, featR,
+      [{ status: 'verify_failed', landed: true, failures: [{ stage: 'verify', log_tail: 'flaky' }] }])
+    ok('F34b land re-verify RED keeps ready_to_merge (not collapsed to failed → no wedge)',
+      !!red.stateJSON && red.stateJSON.tasks[0].status === 'ready_to_merge', red.stateJSON && red.stateJSON.tasks[0].status)
+    ok('F34b halt event points at camus land', red.res && red.res.status === 'halted' && (red.stateJSON && (red.stateJSON.events || []).some((e) => /camus land/.test(e.msg || ''))), red.res && red.res.status)
+    const inc = await runFeat({ feat: 'F', tasks: ['only task'] }, featR,
+      [{ status: 'verify_inconclusive', landed: true, failures: [{ stage: 'verify', log_tail: 'env' }] }])
+    ok('F34b land verify_inconclusive keeps ready_to_merge too', !!inc.stateJSON && inc.stateJSON.tasks[0].status === 'ready_to_merge', inc.stateJSON && inc.stateJSON.tasks[0].status)
+  }
+
   // F26 (smoke 2026-06-12): feat-level pauses reach the BOARD — finalize persists question+stage
   // on the state; the rec-why's trailing period is stripped (no more "defensible.. Review").
   {
@@ -1090,7 +1120,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const r = await runFeat({ feat: 'F', tasks: ['only task'] },
       { ...featBase, 'noop-audit': '3' },
       [{ status: 'no_changes', worktree: wtPath('only task') },
-       { status: 'done', branch: 'camus/feat/x/only', commit_sha: 'land1', landed: true, decisions: [] }])
+       { status: 'done', branch: 'camus/feat/x/only', commit_sha: h40('land1'), landed: true, decisions: [] }])
     ok('F27 unmerged commits → rescue re-enters as auto-land', r.workflowCalls === 2 && !!(r.loopArgs[1] && r.loopArgs[1].land === true), 'calls=' + r.workflowCalls + ' land=' + JSON.stringify(r.loopArgs[1] && r.loopArgs[1].land))
     ok('F27 rescued task ends merged-done, feat done', !!r.stateJSON && r.stateJSON.tasks[0].status === 'done' && r.res && r.res.status === 'done', r.stateJSON && r.stateJSON.tasks[0].status)
     ok('F27 the rescue is loud in the run log', !!r.stateJSON && (r.stateJSON.events || []).some((e) => /unmerged commit\(s\) — a prior run's proven work/.test(e.msg || '')))
@@ -1203,17 +1233,17 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     // (c) Run 1 halts verify-clean → persisted as needs_decision (the PROOF — since the
     // park-first reorder, with the PARKED sha riding the same persist)…
     const r1 = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
-      [{ status: 'review_unresolved', verifyClean: true, stuck: [], blocking: [], parkedSha: 'p4rk1234' }])
+      [{ status: 'review_unresolved', verifyClean: true, stuck: [], blocking: [], parkedSha: h40('p4rk1234') }])
     ok('F13c prior halt persisted as needs_decision', !!r1.stateJSON && r1.stateJSON.tasks[0].status === 'needs_decision', r1.stateJSON && r1.stateJSON.tasks[0].status)
     ok('F37a needs_decision persist stashes provenCommit = the parked sha (publish audit round-3)',
-      !!r1.stateJSON && r1.stateJSON.tasks[0].provenCommit === 'p4rk1234', r1.stateJSON && r1.stateJSON.tasks[0].provenCommit)
+      !!r1.stateJSON && r1.stateJSON.tasks[0].provenCommit === h40('p4rk1234'), r1.stateJSON && r1.stateJSON.tasks[0].provenCommit)
     // …(d) resume with land:[tid] → NOW authorized: land forwards, narration matches, feat lands+merges.
     const featResume = { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: JSON.stringify(r1.stateJSON) } }
     const r2 = await runFeat({ feat: 'F', tasks: ['only task'], land: [tid] }, featResume,
-      [{ status: 'done', branch: 'camus/feat/x/only', commit_sha: 'land1', landed: true, decisions: [] }])
+      [{ status: 'done', branch: 'camus/feat/x/only', commit_sha: h40('land1'), landed: true, decisions: [] }])
     ok('F13d proven needs_decision + land → land:true forwarded', !!(r2.loopArgs[0] && r2.loopArgs[0].land === true), JSON.stringify(r2.loopArgs[0] && r2.loopArgs[0].land))
     ok('F37b accepted decision lands head-bound: expectHead = the parked sha, never the live tip',
-      !!(r2.loopArgs[0] && r2.loopArgs[0].expectHead === 'p4rk1234'), JSON.stringify(r2.loopArgs[0] && r2.loopArgs[0].expectHead))
+      !!(r2.loopArgs[0] && r2.loopArgs[0].expectHead === h40('p4rk1234')), JSON.stringify(r2.loopArgs[0] && r2.loopArgs[0].expectHead))
     // (f) the FAILED halt stashes the park too — `camus land --proven` flips it to
     // ready_to_merge preserving fields, and the auto-land lane hydrates the same anchor.
     const rRed = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
@@ -1236,7 +1266,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     // PERSISTED (ready_to_merge) BEFORE the merge runs, and a resume from that state AUTO-lands —
     // no land list — instead of re-running the full loop into a branch/worktree collision.
     const r1 = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
-      [{ status: 'done', branch: 'camus/feat/x/only', commit_sha: 'c1', decisions: [] }])
+      [{ status: 'done', branch: 'camus/feat/x/only', commit_sha: h40('c1'), decisions: [] }])
     const mid = (r1.stateJSONs || []).find((s) => s && s.tasks && s.tasks[0] && s.tasks[0].status === 'ready_to_merge')
     ok('F14a ready_to_merge persisted BEFORE the merge', !!mid, JSON.stringify((r1.stateJSONs || []).map((s) => s && s.tasks && s.tasks[0] && s.tasks[0].status)))
     ok('F14a final state is done (merge completed)', !!r1.stateJSON && r1.stateJSON.tasks[0].status === 'done')
@@ -1342,12 +1372,12 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F38a implement worktree-create is cd-prefixed under targetPath',
       (r.prompts.implement || '').includes(cdp) && (r.prompts.implement || '').includes('/wt.sh create'), (r.prompts.implement || '').slice(460, 560))
     const r2 = await runLoop({ task: 't', land: true, targetPath: tp },
-      { 'land-resolve': J({ found: true, path: wtPath('t') }), commit: J({ committed: true, sha: 'land1' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'land1' }) })
+      { 'land-resolve': J({ found: true, path: wtPath('t') }), commit: J({ committed: true, sha: h40('land1') }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: h40('land1') }) })
     ok('F38b land-resolve is cd-prefixed under targetPath (identity resolves AT the target)',
       (r2.prompts['land-resolve'] || '').includes(cdp), (r2.prompts['land-resolve'] || '').slice(0, 200))
     ok('F38b …and still lands done', r2.res.status === 'done', r2.res.status)
     const r3 = await runLoop({ task: 't', land: true, targetPath: tp },
-      { 'land-resolve': J({ found: false, path: null }), 'land-recreate': J({ ok: true, path: wtPath('t') }), commit: J({ committed: true, sha: 'land1' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'land1' }) })
+      { 'land-resolve': J({ found: false, path: null }), 'land-recreate': J({ ok: true, path: wtPath('t') }), commit: J({ committed: true, sha: h40('land1') }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: h40('land1') }) })
     ok('F38c land-recreate is cd-prefixed under targetPath',
       (r3.prompts['land-recreate'] || '').includes(cdp) && (r3.prompts['land-recreate'] || '').includes('/wt.sh attach'), (r3.prompts['land-recreate'] || '').slice(0, 200))
     ok('F38c …and the recreated land completes', r3.res.status === 'done', r3.res.status)
@@ -1421,7 +1451,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const lpBad = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail, verify: J({ pass: true, failures: [], head: 'zzz' }) })
     ok('F35j loop verify green on the WRONG head → verify_failed with head_mismatch',
       lpBad.res.status === 'verify_failed' && JSON.stringify(lpBad.res.failures || []).includes('head_mismatch'), lpBad.res.status)
-    const lpGood = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail, verify: J({ pass: true, failures: [], head: 'abc123' }) })
+    const lpGood = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail, verify: J({ pass: true, failures: [], head: h40('abc123') }) })
     ok('F35j loop verify green on the sealed head → done', lpGood.res.status === 'done', lpGood.res.status)
     // F35k/l (publish audit P2): a sealed green with NO head is fail-CLOSED — accepting an
     // unnamed green re-opens the run-6 hole (a fabricated {pass:true} simply omits the field).
@@ -1640,6 +1670,26 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       { ...featBase, 'parent-tree': 'here is the output: (no changes)' },
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F51 non-JSON reply → inconclusive (cry-wolf/silent-clear both closed)', noJson.res && noJson.res.status === 'needs_human' && noJson.res.stage === 'task_boundary', noJson.res && (noJson.res.status + '/' + noJson.res.stage))
+    // F51b (PR2, 2026-06-29): a RELAY hallucination on the parent-tree check — `paths` as an ARRAY — must be
+    // rejected as inconclusive, NOT coerced into a false "concurrent editor" breach (which would set dirtyPaths).
+    let pn = 0
+    const phall = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, 'parent-tree': () => (++pn === 1 ? J({ ran: true, dirty: false, paths: '' })
+                                                      : J({ ran: true, dirty: false, paths: ['/repo/root'] })) },
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    ok('F51b array-paths hallucination → inconclusive task_boundary, NOT a false breach',
+      phall.res && phall.res.status === 'needs_human' && phall.res.stage === 'task_boundary'
+        && /could not/i.test(phall.res.note || '') && !phall.res.dirtyPaths,
+      phall.res && (phall.res.status + '/' + phall.res.stage + ' dirty=' + (phall.res.dirtyPaths || '∅')))
+    // a TRANSIENT hallucination on the feat boundary check self-heals via retry (mirrors F40b; baseline=call#1,
+    // boundary check=call#2). Without retry, call#2's array coerces to a fake dirt line → false breach; with
+    // retry, attempt 2 reads clean → the task dispatches and the feat completes.
+    let pr = 0
+    const precov = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, 'parent-tree': () => { pr++; return J(pr === 2 ? { ran: true, dirty: false, paths: ['/repo/root'] }
+                                                                    : { ran: true, dirty: false, paths: '' }) } },
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    ok('F51b transient hallucination on the boundary check → retry recovers → done', precov.res && precov.res.status === 'done', precov.res && precov.res.status)
     // already-done tasks (resume) skip the boundary check — a dirty tree must not block a no-op resume
     const resumeDone = await runFeat({ feat: 'F', tasks: ['only task'] },
       { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0,
@@ -1660,12 +1710,12 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const tid = taskIdOf('F', ['only task'], 'only task')
     let rc = 0
     const reads = [
-      J({ read: true, note: J({ guidance: 'OLD' }), sha: 'shaA' }),
-      J({ read: true, note: J({ guidance: 'NEW' }), sha: 'shaB' }),   // the human's re-steer
+      J({ read: true, note: J({ guidance: 'OLD' }), sha: h40('shaA') }),
+      J({ read: true, note: J({ guidance: 'NEW' }), sha: h40('shaB') }),   // the human's re-steer
     ]
     let cc = 0
     const consumes = [
-      J({ consumed: false, reason: 'changed', sha: 'shaB' }),  // 1st consume: note changed under us → nothing deleted
+      J({ consumed: false, reason: 'changed', sha: h40('shaB') }),  // 1st consume: note changed under us → nothing deleted
       J({ consumed: true }),                                   // 2nd consume (after re-read): matched → deleted
     ]
     const { res, loopArgs, calls, prompts } = await runFeat({ feat: 'F', tasks: ['only task'], steer: true },
@@ -1680,9 +1730,9 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // F52b: a note that keeps changing every time Camus reads it (a human editing in a tight loop)
   // must HALT named after the churn cap, never spin forever and never apply a half-written note.
   {
-    const churning = J({ read: true, note: J({ guidance: 'moving target' }), sha: 'sha-x' })
+    const churning = J({ read: true, note: J({ guidance: 'moving target' }), sha: h40('sha-x') })
     const { res, calls, workflowCalls } = await runFeat({ feat: 'F', tasks: ['only task'], steer: true },
-      { ...featBase, steer: churning, 'steer-consume': J({ consumed: false, reason: 'changed', sha: 'sha-y' }) },
+      { ...featBase, steer: churning, 'steer-consume': J({ consumed: false, reason: 'changed', sha: h40('sha-y') }) },
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F52b a note that never settles → needs_human (stage steer)', res && res.status === 'needs_human' && res.stage === 'steer', res && (res.status + '/' + res.stage))
     ok('F52b bounded — does not spin (re-reads then halts)', calls.filter((c) => c.startsWith('steer:')).length <= 5, String(calls.filter((c) => c.startsWith('steer:')).length))
@@ -1695,7 +1745,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   {
     let rc = 0
     const reads = [
-      J({ read: true, note: J({ guidance: 'RETRACTED' }), sha: 'shaA' }),
+      J({ read: true, note: J({ guidance: 'RETRACTED' }), sha: h40('shaA') }),
       J({ read: true, note: null, sha: null }),   // the human cleared it
     ]
     const { res, loopArgs, calls } = await runFeat({ feat: 'F', tasks: ['only task'], steer: true },
@@ -1827,8 +1877,8 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       ...clsStd, ...planOf('clear', ''),
       implement: { worktree_path: wtPath('t', salt), branch: 'b', summary: 's', decisions: [] },
       review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
-      fix: '', commit: J({ committed: true, sha: 'c1' }), prep: J({ prepped: true, ran: [] }),
-      verify: J({ pass: true, failures: [], head: 'c1' }),
+      fix: '', commit: J({ committed: true, sha: h40('c1') }), prep: J({ prepped: true, ran: [] }),
+      verify: J({ pass: true, failures: [], head: h40('c1') }),
     }
     const clean = await runLoop({ task: 't', idSalt: salt }, { ...base, containment: J({ ran: true, dirty: false, paths: '' }) })
     ok('F40 containment ran+clean → done', clean.res.status === 'done', clean.res.status)
@@ -1846,6 +1896,185 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const empty = await runLoop({ task: 't', idSalt: salt }, { ...base, containment: '' })
     ok('F40 containment empty reply → inconclusive (not read as clean)',
       empty.res.status === 'infra_error' && empty.res.containment === 'implement_inconclusive', empty.res.status)
+  }
+
+  // F40b (PR2, 2026-06-29): the RELAY itself can hallucinate a contract-violating receipt. The thin Haiku
+  // runner echoed `paths` as an ARRAY of the repo root (from its own `$(git rev-parse --show-toplevel)`);
+  // dirtLines(String(array)) coerced it into a fake dirt line → a FALSE breach on a clean tree. The
+  // receipt-contract validator rejects non-porcelain paths and retries → inconclusive, never a false breach.
+  {
+    const salt = 'pr2'
+    const base = {
+      ...clsStd, ...planOf('clear', ''),
+      implement: { worktree_path: wtPath('t', salt), branch: 'b', summary: 's', decisions: [] },
+      review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
+      fix: '', commit: J({ committed: true, sha: h40('c1') }), prep: J({ prepped: true, ran: [] }),
+      verify: J({ pass: true, failures: [], head: h40('c1') }),
+    }
+    // baseline reads the REAL clean receipt; later checks hallucinate `paths` as an ARRAY → must NOT breach.
+    let hn = 0
+    const halluc = await runLoop({ task: 't', idSalt: salt }, { ...base,
+      containment: () => (++hn === 1 ? J({ ran: true, dirty: false, paths: '' })
+                                     : J({ ran: true, dirty: false, paths: ['/repo/root'] })) })
+    ok('F40b array-paths hallucination → inconclusive, NOT a false breach',
+      halluc.res.status === 'infra_error' && halluc.res.containment === 'implement_inconclusive'
+        && /contract validation/i.test(halluc.res.note || ''),
+      halluc.res.status + '/' + halluc.res.containment + ' note=' + (halluc.res.note || '').slice(0, 40))
+    // a non-porcelain STRING (e.g. the bare repo path) is also rejected, not coerced into dirt:
+    let sn = 0
+    const strHalluc = await runLoop({ task: 't', idSalt: salt }, { ...base,
+      containment: () => (++sn === 1 ? J({ ran: true, dirty: false, paths: '' })
+                                     : J({ ran: true, dirty: true, paths: '/repo/root' })) })
+    ok('F40b non-porcelain string paths → inconclusive, NOT a breach',
+      strHalluc.res.status === 'infra_error' && strHalluc.res.containment === 'implement_inconclusive',
+      strHalluc.res.status + '/' + strHalluc.res.containment)
+    // a TRANSIENT hallucination self-heals — put it on the implement CHECK (call #2), NOT the baseline, so it
+    // actually locks the retry path: without retry, call #2's array coerces to a fake dirt line → breach; with
+    // retry, attempt 2 reads the real clean receipt → done. (On the baseline it would pass either way.)
+    let rn = 0
+    const recov = await runLoop({ task: 't', idSalt: salt }, { ...base,
+      containment: () => { rn++; return J(rn === 2 ? { ran: true, dirty: false, paths: ['/repo/root'] }
+                                                    : { ran: true, dirty: false, paths: '' }) } })
+    ok('F40b transient hallucination on the CHECK → retry recovers → done (locks the retry path)', recov.res.status === 'done', recov.res.status)
+    // a REAL unstaged-edit breach (" M f", X=space) still fires — validation must not reject legit porcelain:
+    const realLeak = await runLoop({ task: 't', idSalt: salt }, { ...base, containment: leakAfterBaseline(' M src/real-leak.ts') })
+    ok('F40b real unstaged-edit leak still breaches (no over-rejection)',
+      realLeak.res.status === 'infra_error' && realLeak.res.containment === 'implement' && /real-leak\.ts/.test(realLeak.res.note || ''),
+      realLeak.res.status + '/' + realLeak.res.containment)
+    // a STAGED edit "M  f" (X=M column) — proves the RAW-line regex accepts the X≠space shape, not just " M":
+    const stagedLeak = await runLoop({ task: 't', idSalt: salt }, { ...base, containment: leakAfterBaseline('M  src/staged.ts') })
+    ok('F40b staged-edit leak (X=M column) still breaches — RAW regex accepts it',
+      stagedLeak.res.status === 'infra_error' && stagedLeak.res.containment === 'implement' && /staged\.ts/.test(stagedLeak.res.note || ''),
+      stagedLeak.res.status + '/' + stagedLeak.res.containment)
+    // a RENAME "R  old -> new" (arrow-containing path) is real porcelain → must still breach:
+    const renameLeak = await runLoop({ task: 't', idSalt: salt }, { ...base, containment: leakAfterBaseline('R  old.ts -> new.ts') })
+    ok('F40b rename receipt (R  a -> b) accepted as porcelain → breach',
+      renameLeak.res.status === 'infra_error' && renameLeak.res.containment === 'implement' && /new\.ts/.test(renameLeak.res.note || ''),
+      renameLeak.res.status + '/' + renameLeak.res.containment)
+    // CONSISTENCY (the dangerous one): dirty:true but empty paths — WITHOUT the check this reads as CLEAN
+    // (false-clean!); the validator rejects the self-contradiction → inconclusive. Locks a false-clean direction.
+    let cn = 0
+    const dirtyEmpty = await runLoop({ task: 't', idSalt: salt }, { ...base,
+      containment: () => (++cn === 1 ? J({ ran: true, dirty: false, paths: '' })
+                                     : J({ ran: true, dirty: true, paths: '' })) })
+    ok('F40b dirty:true + empty paths → inconclusive, NEVER a false clean',
+      dirtyEmpty.res.status === 'infra_error' && dirtyEmpty.res.containment === 'implement_inconclusive',
+      dirtyEmpty.res.status + '/' + dirtyEmpty.res.containment)
+    // CONSISTENCY: dirty:false but real porcelain paths — a self-contradicting relay → inconclusive (don't guess):
+    let cm = 0
+    const cleanButDirty = await runLoop({ task: 't', idSalt: salt }, { ...base,
+      containment: () => (++cm === 1 ? J({ ran: true, dirty: false, paths: '' })
+                                     : J({ ran: true, dirty: false, paths: ' M leaked.ts' })) })
+    ok('F40b dirty:false + non-empty paths → inconclusive (self-contradiction distrusted)',
+      cleanButDirty.res.status === 'infra_error' && cleanButDirty.res.containment === 'implement_inconclusive',
+      cleanButDirty.res.status + '/' + cleanButDirty.res.containment)
+    // MISSING FIELD: no `dirty` key → fails the typeof guard → inconclusive (the next-likeliest malformed shape):
+    let mn = 0
+    const missingDirty = await runLoop({ task: 't', idSalt: salt }, { ...base,
+      containment: () => (++mn === 1 ? J({ ran: true, dirty: false, paths: '' })
+                                     : J({ ran: true, paths: ' M f.ts' })) })
+    ok('F40b receipt missing `dirty` → inconclusive',
+      missingDirty.res.status === 'infra_error' && missingDirty.res.containment === 'implement_inconclusive',
+      missingDirty.res.status + '/' + missingDirty.res.containment)
+    // BASELINE exhausts on a hallucination → empty allowed-set; a later REAL leak STILL fires. Baseline is the
+    // one call whose failure is swallowed (→ empty set) rather than surfaced, so prove it fails SAFE:
+    const badBaseline = await runLoop({ task: 't', idSalt: salt }, { ...base,
+      containment: (p, opts) => J(((opts && opts.label) || '').endsWith(':baseline')
+        ? { ran: true, dirty: false, paths: ['/repo/root'] }
+        : { ran: true, dirty: true, paths: ' M real-leak.ts' }) })
+    ok('F40b exhausted baseline → empty allowed-set, real later leak STILL breaches (fail-safe)',
+      badBaseline.res.status === 'infra_error' && badBaseline.res.containment === 'implement' && /real-leak\.ts/.test(badBaseline.res.note || ''),
+      badBaseline.res.status + '/' + badBaseline.res.containment)
+  }
+
+  // F40c (PR-relay audit 2026-06-29): the COMMIT relay has no receipt cross-check (unlike merge). A
+  // committed:true WITHOUT a valid sha sets COMMIT_SHA=null → prepAndVerify's head-binding SKIPS (it only
+  // runs `if (expectedHead && …)`) → a fabricated HEADLESS {pass:true} verify is believed as `done`,
+  // reopening the run-6 cover-up hole through the commit relay. A committed:true must name a sha or it's infra.
+  {
+    const cbase = {
+      ...clsStd, ...planOf('clear', ''),
+      implement: { worktree_path: wtPath('t'), branch: 'b', summary: 's', decisions: [] },
+      review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
+      fix: '', prep: J({ prepped: true, ran: [] }),
+      verify: J({ pass: true, failures: [] }),   // HEADLESS green — the run-6 fabrication shape
+    }
+    const noSha = await runLoop({ task: 't' }, { ...cbase, commit: J({ committed: true }) })
+    ok('F40c commit committed:true + NO sha → infra_error, NOT a false done',
+      noSha.res.status === 'infra_error' && /sha/i.test(noSha.res.error || ''), noSha.res.status + ' ' + (noSha.res.error || '').slice(0, 46))
+    const emptySha = await runLoop({ task: 't' }, { ...cbase, commit: J({ committed: true, sha: '' }) })
+    ok('F40c commit committed:true + empty sha → infra_error', emptySha.res.status === 'infra_error', emptySha.res.status)
+    const proseSha = await runLoop({ task: 't' }, { ...cbase, commit: J({ committed: true, sha: 'the tree is committed' }) })
+    ok('F40c commit committed:true + prose (spaces) sha → infra_error', proseSha.res.status === 'infra_error', proseSha.res.status)
+    const arrSha = await runLoop({ task: 't' }, { ...cbase, commit: J({ committed: true, sha: [h40('abc123')] }) })
+    ok('F40c commit committed:true + array sha → infra_error', arrSha.res.status === 'infra_error', arrSha.res.status)
+    // no over-rejection: a valid sha + a head-BOUND green → done
+    const good = await runLoop({ task: 't' }, { ...cbase, commit: J({ committed: true, sha: h40('abc123') }), verify: J({ pass: true, failures: [], head: h40('abc123') }) })
+    ok('F40c commit valid sha + head-bound green → done', good.res.status === 'done' && good.res.commit_sha === h40('abc123'), good.res.status + '/' + good.res.commit_sha)
+    // the gate makes head-binding non-optional: valid sha + a HEADLESS green → head_missing → verify_failed
+    const headless = await runLoop({ task: 't' }, { ...cbase, commit: J({ committed: true, sha: h40('abc123') }), verify: J({ pass: true, failures: [] }) })
+    ok('F40c valid sha + headless green → verify_failed (head-binding enforced, run-6 hole shut)', headless.res.status === 'verify_failed', headless.res.status)
+  }
+
+  // F40d (PR-relay audit): the PARK relay (review-unresolved path) has the same gate — a committed:true park
+  // WITHOUT a valid sha must NOT bind an unbound green into a false verifyClean:true (which nudges a human to
+  // accept unverified work). An empty stage is still legitimately unbound; only a garbled seal is a failure.
+  {
+    const stuckReview = J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'same', code_location: 'a.ts:1' }], nonblocking: [] })
+    const pbase = { ...cls, ...planOf('clear', ''), implement: happyTail.implement, review: stuckReview, fix: '', prep: J({ prepped: true, ran: [] }) }
+    // valid park sha + head-bound green → verifyClean:true (S10a behavior preserved — no over-rejection):
+    const okPark = await runLoop({ task: 't', roundCap: 2 }, { ...pbase, park: J({ committed: true, sha: h40('p4rk1234') }), verify: J({ pass: true, failures: [], head: h40('p4rk1234') }) })
+    ok('F40d park valid sha + head-bound green → verifyClean:true (unchanged)', okPark.res.status === 'review_unresolved' && okPark.res.verifyClean === true, okPark.res.status + '/' + okPark.res.verifyClean)
+    // committed:true park with NO sha → treated as park FAILURE (verifyClean null), never a false green:
+    const badPark = await runLoop({ task: 't', roundCap: 2 }, { ...pbase, park: J({ committed: true }), verify: J({ pass: true, failures: [] }) })
+    ok('F40d park committed:true + NO sha → verifyClean null (garbled seal ≠ shippable)',
+      badPark.res.status === 'review_unresolved' && badPark.res.verifyClean !== true, badPark.res.status + '/' + badPark.res.verifyClean)
+  }
+
+  // F40e (Mateo's audit 2026-07-06): the LAND path had the SAME null-sha hole — committed:true with no sha
+  // bound verify to null (head-binding skipped) → a headless green returned done, commit_sha:null. Now the
+  // centralized commitReceipt gate makes a sealless land infra, never a false done.
+  {
+    const landBase = {
+      'land-resolve': J({ found: true, path: wtPath('t') }),
+      prep: J({ prepped: true, ran: [] }),
+      verify: J({ pass: true, failures: [] }),   // HEADLESS green
+    }
+    const landNoSha = await runLoop({ task: 't', land: true }, { ...landBase, commit: J({ committed: true }) })
+    ok('F40e land committed:true + NO sha → infra_error, NOT a false done',
+      landNoSha.res.status === 'infra_error' && /sha/i.test(landNoSha.res.error || ''), landNoSha.res.status + ' ' + (landNoSha.res.error || '').slice(0, 46))
+    const landGood = await runLoop({ task: 't', land: true }, { ...landBase, commit: J({ committed: true, sha: h40('land1') }), verify: J({ pass: true, failures: [], head: h40('land1') }) })
+    ok('F40e land valid sha + head-bound green → done (no over-rejection)', landGood.res.status === 'done' && landGood.res.commit_sha === h40('land1'), landGood.res.status)
+  }
+
+  // F40f (Mateo's audit 2026-07-06): the PARK path IGNORED commit.sh's empty-stage sha and verified UNBOUND —
+  // a {committed:false, reason:"empty", sha:tip} + headless green returned verifyClean:true. Now it binds to
+  // that tip (like the land path), so a headless green is head_missing (not verifyClean) and a bound green certifies.
+  {
+    const stuckReview = J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'same', code_location: 'a.ts:1' }], nonblocking: [] })
+    const pbase = { ...cls, ...planOf('clear', ''), implement: happyTail.implement, review: stuckReview, fix: '', prep: J({ prepped: true, ran: [] }) }
+    const emptyHeadless = await runLoop({ task: 't', roundCap: 2 }, { ...pbase, park: J({ committed: false, reason: 'empty', sha: h40('tip1') }), verify: J({ pass: true, failures: [] }) })
+    ok('F40f park empty-stage + HEADLESS green → NOT verifyClean:true (binds to the empty-stage tip)',
+      emptyHeadless.res.status === 'review_unresolved' && emptyHeadless.res.verifyClean !== true, emptyHeadless.res.status + '/' + emptyHeadless.res.verifyClean)
+    const emptyBound = await runLoop({ task: 't', roundCap: 2 }, { ...pbase, park: J({ committed: false, reason: 'empty', sha: h40('tip1') }), verify: J({ pass: true, failures: [], head: h40('tip1') }) })
+    ok('F40f park empty-stage + tip-bound green → verifyClean:true (prior commit certified)',
+      emptyBound.res.status === 'review_unresolved' && emptyBound.res.verifyClean === true, emptyBound.res.status + '/' + emptyBound.res.verifyClean)
+  }
+
+  // F40g (Mateo re-audit 2026-07-06): the NORMAL path's empty stage must be PROVEN by a sha too — an empty
+  // stage with a valid HEAD sha is a benign no_changes, but a sha-less empty is a relay claiming "nothing to
+  // do" without evidence (a potential silent work-drop) → infra, never a false noop.
+  {
+    const nbase = {
+      ...clsStd, ...planOf('clear', ''),
+      implement: { worktree_path: wtPath('t'), branch: 'b', summary: 's', decisions: [] },
+      review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
+      fix: '', prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [] }),
+    }
+    const emptyWithSha = await runLoop({ task: 't' }, { ...nbase, commit: J({ committed: false, reason: 'empty', sha: h40('tip1') }) })
+    ok('F40g normal empty + valid HEAD sha → no_changes (benign)', emptyWithSha.res.status === 'no_changes', emptyWithSha.res.status)
+    const emptyNoSha = await runLoop({ task: 't' }, { ...nbase, commit: J({ committed: false, reason: 'empty' }) })
+    ok('F40g normal empty + NO sha → infra_error, NOT a false noop', emptyNoSha.res.status === 'infra_error' && /empty stage|no valid HEAD/i.test(emptyNoSha.res.error || ''), emptyNoSha.res.status + ' ' + (emptyNoSha.res.error || '').slice(0, 40))
   }
 
   // F41: MERGE NULL-RELAY recovery (item 2) — a dropped merge relay must NOT stamp merge_failed
@@ -1965,7 +2194,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       { ...clsStd, ...planOf('clear', ''),
         implement: { worktree_path: wtPath('fix the $(whoami) call', 'inj1'), branch: 'b', summary: 's', decisions: [] },
         review: evilReview, fix: '', containment: J({ ran: true, dirty: false, paths: '' }),
-        park: J({ committed: true, sha: 'p' }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: 'p' }) })
+        park: J({ committed: true, sha: h40('p') }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: h40('p') }) })
     const reviewPrompt = rc.prompts[reviewLbl(rc.calls, 1)] || ''
     ok('F46c task text reaches review SINGLE-quoted (inert), not double-quoted',
       reviewPrompt.includes("'fix the $(whoami) call") && !reviewPrompt.includes('"fix the $(whoami) call'), reviewPrompt.slice(0, 200))

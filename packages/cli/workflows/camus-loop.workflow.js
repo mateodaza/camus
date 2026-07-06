@@ -404,13 +404,20 @@ if (LAND) {
     { model: MODEL_RUNNER, phase: 'Commit', label: 'commit' }
   )
   const commitResult = extractJsonObject(commitRaw) || { committed: false, reason: 'unparseable' }
-  if (commitResult.committed !== true && commitResult.reason !== 'empty') {
+  const lrc = commitReceipt(commitResult)
+  // The feat's recorded proof (args.expectHead), SHA-VALIDATED (audit 2026-07-06 — was bound raw). This is the
+  // ONLY head an EMPTY stage (no fresh seal, no live tip) may bind to.
+  const landExpectSha = asSha(LAND_EXPECT)
+  // Fail CLOSED on anything with no certifiable head: a real failure, a committed:true with no sha, OR an empty
+  // stage that named NO valid HEAD and has no recorded proof (Mateo's re-audit: commit.sh emits a sha even on
+  // empty, so a sha-less empty is a relay contract violation — never a null-bound "legacy" done).
+  if (lrc.kind === 'failed' || lrc.kind === 'noSha' || (lrc.kind === 'empty' && !landExpectSha)) {
     return { status: 'infra_error', task: TASK, worktree: wt, branch: BRANCH, rounds: 0, landed: true,
-      error: `land commit failed: ${commitResult.reason || 'unknown'}`,
-      note: 'Land mode could not commit the worktree (git error/identity/hook, or unparseable output). Fix the cause and re-run with land:true — the worktree is untouched.' }
+      error: `land commit failed: ${lrc.kind === 'noSha' ? 'committed:true but no valid sha (got ' + JSON.stringify(commitResult.sha) + ')' : (lrc.kind === 'empty' ? 'empty stage named no valid HEAD sha and there is no expectHead proof to bind the verify to' : (lrc.reason || 'unknown'))}`,
+      note: 'Land mode could not obtain a certifiable commit (git error/identity/hook, unparseable output, a committed:true receipt with no valid git sha, or an empty stage with neither a HEAD sha nor a recorded proof — head-binding cannot certify an unnamed commit). Fix the cause and re-run with land:true — the worktree is untouched.' }
   }
-  const landSha = commitResult.committed === true ? (commitResult.sha || null) : null
-  log(commitResult.committed === true
+  const landSha = lrc.kind === 'sealed' ? lrc.head : null
+  log(landSha
     ? `Committed previously verified work (${landSha}) to ${BRANCH}.`
     : 'Land mode: stage was empty — the work was already committed on the branch; proceeding to verify.')
   // BINDING PRECEDENCE (publish audit round-2 P1 — the empty-stage land believed unbound
@@ -419,8 +426,9 @@ if (LAND) {
   // proof). The middle case is the auditor's scenario made fail-closed: a task-branch tip that
   // moved past the proof now FAILS the bound verify (head_mismatch names both shas) instead of
   // being believed and merged.
-  const liveTip = (typeof commitResult.sha === 'string' && commitResult.sha) ? commitResult.sha : null
-  const v = await prepAndVerify(wt, landSha || LAND_EXPECT || liveTip)
+  // The empty-stage HEAD commit.sh read, now SHA-VALIDATED (audit 2026-07-06 — was trusted as any string).
+  const liveTip = lrc.kind === 'priorHead' ? lrc.head : null
+  const v = await prepAndVerify(wt, landSha || landExpectSha || liveTip)
   if (v.ok === 'inconclusive') {
     return { status: 'verify_inconclusive', task: TASK, worktree: wt, branch: BRANCH, rounds: 0, landed: true, failures: v.failures,
       note: 'Land mode committed, but deterministic verify could not RUN (env not ready — see failures). Fix the environment and re-run with land:true.' }
@@ -441,13 +449,60 @@ if (LAND) {
 // (delta). Feat-scoped only (ID_SALT); a standalone loop never runs containment. An inconclusive
 // baseline → empty allowed-set: a real leak still fires, and we never manufacture a false clean.
 const dirtLines = (s) => String(s || '').split('\n').map((l) => l.trim()).filter(Boolean)
+// RELAY-RECEIPT VALIDATION (PR2, 2026-06-29): containment.sh is mechanical, but the workflow reads its
+// JSON through a thin Haiku runner that can HALLUCINATE a well-formed-but-contract-violating receipt —
+// observed live emitting `paths` as an ARRAY of the repo root (echoed from its own
+// `$(git rev-parse --show-toplevel)`), which dirtLines(String(array)) coerced into a fake dirt line → a
+// FALSE breach on a clean tree. This applies the "stop trusting relays, read receipts" discipline to the
+// containment receipt — the highest-stakes relay, since its hallucination directly fabricates a verdict (a
+// false breach/clean). The relay doctrine: a relay is a transcription to cross-check, never a source of truth.
+// Validate the receipt against containment.sh's contract and RETRY a malformed one; an unrecoverable receipt
+// becomes {ran:false} ⇒ inconclusive (never a false breach, never a false clean).
+const CONTAINMENT_TRIES = 3
+// git porcelain v1: every line is "XY <path>" — two status columns (each ∈ space M A D R C U ? !) then a
+// space. Validate RAW lines: the columns are position-significant (an unstaged edit is " M f", X=space), so
+// trimming first (as dirtLines does) would reject a legitimate receipt and turn a real breach into a
+// permanent inconclusive — exactly the kind of safety regression this check exists to prevent.
+const PORCELAIN_LINE = /^[ MADRCU?!][ MADRCU?!] ./
+function validContainmentReceipt(r) {
+  if (!r || typeof r !== 'object') return false
+  if (r.ran === false) return true                                   // an explicit unobtained answer is valid → inconclusive
+  if (r.ran !== true || typeof r.paths !== 'string' || typeof r.dirty !== 'boolean') return false
+  const lines = String(r.paths).split('\n').filter((l) => l.length > 0)
+  if (r.dirty !== (lines.length > 0)) return false                   // dirty must agree with paths
+  return lines.every((l) => PORCELAIN_LINE.test(l))                  // every dirt line must be real git porcelain
+}
+// COMMIT-RECEIPT → EXPECTED HEAD (relay audit 2026-06-29; centralized + hardened 2026-07-06 per Mateo's
+// audit). commit.sh emits a real `git rev-parse HEAD` in BOTH the fresh-seal case ({committed:true, sha})
+// AND the empty-stage case ({committed:false, reason:"empty", sha}: the work is a PRIOR commit at that HEAD).
+// Every gating verify MUST bind to that sha, or a headless / fabricated {pass:true} relay is believed (the
+// run-6 cover-up hole). A git object name is 40 (sha-1) or 64 (sha-256) hex — commit.sh never emits anything
+// else, so anything else is a garbled/hallucinated relay. ONE helper now serves the normal, park, AND land
+// paths (the earlier fix left land unbound and ignored the empty-stage sha, and its gate was too loose).
+// function declarations (not const) so the LAND path — which runs BEFORE this line textually — can call
+// them (hoisted; same reason prepAndVerify is a declaration). A const here is a temporal-dead-zone crash.
+function asSha(s) { return (typeof s === 'string' && /^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(s)) ? s : null }
+function commitReceipt(r) {
+  if (!r || typeof r !== 'object') return { kind: 'failed', reason: 'unparseable' }
+  if (r.committed === true) { const head = asSha(r.sha); return head ? { kind: 'sealed', head } : { kind: 'noSha' } }
+  if (r.reason === 'empty') { const head = asSha(r.sha); return head ? { kind: 'priorHead', head } : { kind: 'empty' } }
+  return { kind: 'failed', reason: r.reason || 'unknown' }
+}
 async function runContainment(label, grp) {
-  const raw = await agent(
-    `THIN containment runner. Run EXACTLY this one command and output its stdout VERBATIM as your entire reply (it is JSON — {ran,dirty,paths} or {ran,error}); no fences, no commentary:
+  let last = null
+  for (let attempt = 1; attempt <= CONTAINMENT_TRIES; attempt++) {
+    const raw = await agent(
+      `THIN containment runner. Run EXACTLY this one command and output its stdout VERBATIM as your entire reply (it is JSON — {ran,dirty,paths} or {ran,error}); no fences, no commentary:
   ${HB_TOUCH}${REPO_CD}${CONTAIN_CMD} "$(git rev-parse --show-toplevel)"`,
-    { model: MODEL_RUNNER, phase: grp || 'Review', label }
-  )
-  return extractJsonObject(raw)
+      { model: MODEL_RUNNER, phase: grp || 'Review', label }
+    )
+    const r = extractJsonObject(raw)
+    if (validContainmentReceipt(r)) return r
+    last = r
+    log(`Containment receipt failed contract validation (${label}, attempt ${attempt}/${CONTAINMENT_TRIES}) — likely a hallucinated relay.`)
+  }
+  // Every retry produced a contract-violating receipt — treat as UNOBTAINED (inconclusive), never a verdict.
+  return { ran: false, error: ('containment receipt failed contract validation after ' + CONTAINMENT_TRIES + ' tries (likely a hallucinated relay); last=' + JSON.stringify(last)).slice(0, 280) }
 }
 let containmentBaseline = new Set()
 if (ID_SALT) {
@@ -1101,12 +1156,18 @@ if (!reviewPassed && !oneshotFindings) {
     { model: MODEL_RUNNER, phase: 'Verify', label: 'park' }
   )
   const park = extractJsonObject(parkRaw) || { committed: false, reason: 'unparseable' }
-  const parkedSha = park.committed === true ? (park.sha || null) : null
-  const parkFailed = park.committed !== true && park.reason !== 'empty'
-  log(park.committed === true
+  // Bind the park's verify to a real sha (relay audit; centralized 2026-07-06 per Mateo). A fresh seal binds
+  // to its commit; an EMPTY stage means a prior commit already holds the work, so bind to THAT HEAD (commit.sh
+  // emits it) — NEVER verify unbound (the earlier fix ignored the empty-stage sha, so a headless green read as
+  // verifyClean:true). A committed:true without a valid sha, or a real commit failure, is a park FAILURE.
+  const prc = commitReceipt(park)
+  const parkedSha = prc.kind === 'sealed' ? prc.head : null           // a fresh seal we can name as "parked as <sha>"
+  const parkBindHead = (prc.kind === 'sealed' || prc.kind === 'priorHead') ? prc.head : null   // what verify binds to
+  const parkFailed = !parkBindHead                                     // no certifiable head (noSha / failed / unborn-empty)
+  log(parkedSha
     ? `Parked the review-flagged attempt as ${parkedSha} — sealed before the ground-truth verify.`
-    : (parkFailed ? `Park attempt FAILED (${park.reason || 'unknown'}) — the diff is uncommitted; verify cannot certify it.`
-      : 'Park: stage was empty — the attempt was already committed on the branch.'))
+    : (parkFailed ? `Park attempt FAILED (${prc.reason || 'no valid sha to bind the verify to'}) — the diff is not certifiably sealed; verify cannot bind to it.`
+      : `Park: stage was empty — the work is already committed at ${parkBindHead}; verify will certify that HEAD.`))
   const why = oscillating
     ? 'a finding RETURNED after vanishing for a round — the reviewer is oscillating (an unstable signal, not a stable disagreement)'
     : (stuckFindings
@@ -1133,7 +1194,7 @@ if (!reviewPassed && !oneshotFindings) {
   }
   // Head-bound to the park when THIS run sealed it; an empty stage means a prior run's commit
   // already holds the work (no in-run expectation — the internal invariants still apply).
-  const v = await prepAndVerify(WT, parkedSha)
+  const v = await prepAndVerify(WT, parkBindHead)
   if (v.ok === 'pass') {
     const parkLine = parkedSha
       ? ` The work is PARKED as commit ${parkedSha} on ${BRANCH} (review-flagged, verify-green) — it survives even if the worktree is lost.`
@@ -1160,23 +1221,34 @@ const commitRaw = await agent(
   { model: MODEL_RUNNER, phase: 'Commit', label: 'commit' }
 )
 const commitResult = extractJsonObject(commitRaw) || { committed: false, reason: 'unparseable' }
-if (commitResult.committed !== true) {
-  // Only a genuinely EMPTY diff is a benign no_changes. A failed commit (bad worktree, git
-  // identity/error, failing hook) or unparseable output is an INFRA failure — never a harmless
-  // no-op the feat can continue past. (Same infra-vs-findings discipline as the verifier.)
-  if (commitResult.reason === 'empty') {
-    return {
-      status: 'no_changes', task: TASK, worktree: WT, branch: BRANCH, rounds: round,
-      note: 'Review passed but the implement step produced no committable change (empty diff). no_changes, never a false done — nothing to merge.',
-    }
-  }
+const crc = commitReceipt(commitResult)
+// An empty stage PROVEN by a real HEAD sha (priorHead) is a benign no_changes: the normal path has no "land
+// prior work" semantics, so nothing to commit = nothing to merge, never a false done. An empty stage with NO
+// valid sha (kind 'empty') is NOT a trusted no-op — commit.sh emits a sha even on empty, so a sha-less empty
+// is a relay claiming "nothing to do" without evidence (could silently drop real work); it falls through to
+// the infra branch below (Mateo's re-audit 2026-07-06).
+if (crc.kind === 'priorHead') {
   return {
-    status: 'infra_error', task: TASK, worktree: WT, branch: BRANCH, rounds: round,
-    error: `commit gate failed: ${commitResult.reason || 'unknown'}`,
-    note: 'The commit step FAILED (bad worktree, git error/identity, failing hook, or unparseable output) — NOT an empty diff and NOT a benign no-op. Needs a human / infra check.',
+    status: 'no_changes', task: TASK, worktree: WT, branch: BRANCH, rounds: round,
+    note: 'Review passed but the implement step produced no committable change (empty diff). no_changes, never a false done — nothing to merge.',
   }
 }
-const COMMIT_SHA = commitResult.sha || null
+// A committed:true MUST name a real git sha (commit.sh always emits one) — else the receipt is garbled/
+// hallucinated and expectedHead would be null, silently disabling head-binding on the terminal success path
+// (the run-6 cover-up hole). A failed commit is likewise infra. Fail CLOSED: a done must name the sha its
+// verify certifies. (Same infra-vs-findings discipline as the verifier.)
+if (crc.kind !== 'sealed') {
+  return {
+    status: 'infra_error', task: TASK, worktree: WT, branch: BRANCH, rounds: round,
+    error: crc.kind === 'noSha'
+      ? `commit gate reported committed:true but named no valid sha (got: ${JSON.stringify(commitResult.sha)})`
+      : crc.kind === 'empty'
+        ? 'commit gate claimed an empty stage but named no valid HEAD sha — a relay reporting "nothing to do" without script evidence, not a trustworthy no-op'
+        : `commit gate failed: ${crc.reason || 'unknown'}`,
+    note: 'The commit step did not produce a certifiable seal (bad worktree, git error/identity, failing hook, unparseable output, a committed:true receipt with no valid git sha, or an empty stage that named no valid HEAD) — NOT a trustworthy no-op. A done must name the sha its verify certifies (head-binding); halted as infra, never a false done or a false noop. Re-run.',
+  }
+}
+const COMMIT_SHA = crc.head
 log(`Committed reviewed work (${COMMIT_SHA}) to ${BRANCH}${tokSuffix()}.`)
 
 // ── Phase 3.5 + 4: PREP + VERIFY (deterministic ground truth — final, non-negotiable gate) ─

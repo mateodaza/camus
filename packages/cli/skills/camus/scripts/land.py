@@ -39,6 +39,7 @@ an audit-trail decision naming the evidence. The FEAT status is deliberately lef
 import argparse
 import json
 import os
+import re
 import sys
 
 import reconcile as RC   # same home seam, same state discovery, same git shim — by construction
@@ -68,6 +69,12 @@ def evidence_check(repo, branch, feat_branch):
     residue; rev-list alone gives a confusing git error on a missing branch instead of a clean
     verdict. And the count must be STRICTLY > 0 — an empty-residue branch has nothing for the
     auto-land lane to merge, so flipping it would strand the resume in a no-op merge."""
+    # Guard the ref shape BEFORE it reaches git (poisoned ~/.camus state is a named threat): a leading-dash
+    # value would be parsed as an OPTION by rev-parse (info-disclosure), and `--` is NOT a fix here — for
+    # rev-parse `--` means "the rest are PATHS", which would make the ref unresolvable. Reject flag-shaped /
+    # non-ref values instead; a real camus branch is refs/heads/camus/… (audit 2026-06-29).
+    if not isinstance(branch, str) or not re.match(r"^[0-9A-Za-z._@/-]+$", branch) or branch.startswith("-"):
+        return None, ("branch %r is not a valid ref name — refusing to land without a clean ref" % branch)
     code, _out = RC._git(repo, "rev-parse", "--verify", "-q", branch)
     if code != 0:
         return None, ("branch %s does not exist in %s — branch holds no unmerged work — "

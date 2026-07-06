@@ -772,13 +772,38 @@ note(`Baseline green on ${featBranch}. Running ${state.tasks.length} task(s) str
 // and may have left un-ignored artifacts — those are NOT a leak. Capture the dirt set here, once, so
 // the boundary guard fires only on dirt that appears AFTER (delta), never on legit baseline artifacts.
 const dirtLines = (s) => String(s || '').split('\n').map((l) => l.trim()).filter(Boolean)
+// RELAY-RECEIPT VALIDATION (PR2, 2026-06-29): same hardening as camus-loop's runContainment — the parent-
+// tree receipt is echoed by a thin Haiku runner that can hallucinate a contract-violating object (`paths`
+// as an ARRAY → dirtLines coerces a fake dirt line → a false "concurrent editor" breach on a clean tree).
+// Validate against containment.sh's contract + retry; an unrecoverable receipt is {ran:false} ⇒
+// inconclusive, never a verdict (the relay doctrine: cross-check the relay, never trust it as a source of truth).
+const CONTAINMENT_TRIES = 3
+// git porcelain "XY <path>" — two positional status columns then a space. Validate RAW lines (NOT trimmed):
+// an unstaged edit is " M f" (X=space), so trimming first would reject a real receipt → false inconclusive.
+const PORCELAIN_LINE = /^[ MADRCU?!][ MADRCU?!] ./
+function validContainmentReceipt(r) {
+  if (!r || typeof r !== 'object') return false
+  if (r.ran === false) return true                                   // an explicit unobtained answer is valid → inconclusive
+  if (r.ran !== true || typeof r.paths !== 'string' || typeof r.dirty !== 'boolean') return false
+  const lines = String(r.paths).split('\n').filter((l) => l.length > 0)
+  if (r.dirty !== (lines.length > 0)) return false                   // dirty must agree with paths
+  return lines.every((l) => PORCELAIN_LINE.test(l))                  // every dirt line must be real git porcelain
+}
 async function featContainment(label) {
-  const raw = await agent(
-    `THIN parent-tree containment runner. Run EXACTLY this one command and output its stdout VERBATIM as your entire reply (it is JSON — {ran,dirty,paths} or {ran,error}); no fences, no commentary:
+  let last = null
+  for (let attempt = 1; attempt <= CONTAINMENT_TRIES; attempt++) {
+    const raw = await agent(
+      `THIN parent-tree containment runner. Run EXACTLY this one command and output its stdout VERBATIM as your entire reply (it is JSON — {ran,dirty,paths} or {ran,error}); no fences, no commentary:
   ${HB_TOUCH}${CONTAIN_CMD} ${REPO_ARG}`,
-    { model: MODEL_RUNNER, phase: 'Tasks', label: `parent-tree:${label}` }
-  )
-  return extractJsonObject(raw)
+      { model: MODEL_RUNNER, phase: 'Tasks', label: `parent-tree:${label}` }
+    )
+    const r = extractJsonObject(raw)
+    if (validContainmentReceipt(r)) return r
+    last = r
+    log(`Parent-tree containment receipt failed contract validation (parent-tree:${label}, attempt ${attempt}/${CONTAINMENT_TRIES}) — likely a hallucinated relay.`)
+  }
+  // Every retry produced a contract-violating receipt — treat as UNOBTAINED (inconclusive), never a verdict.
+  return { ran: false, error: ('parent-tree containment receipt failed contract validation after ' + CONTAINMENT_TRIES + ' tries (likely a hallucinated relay); last=' + JSON.stringify(last)).slice(0, 280) }
 }
 const featDirtBaseline = await (async () => {
   const b = await featContainment('baseline')
@@ -1124,7 +1149,15 @@ If the branch does not exist git errors — output that error line verbatim.`,
     // aborted/infra land means the MECHANICAL step failed — the proven commits on the branch
     // didn't change. Downgrading to `failed` here erased ready_to_merge, so the next resume
     // re-looped into a branch collision instead of retrying the (fixable) land. Keep the lane.
-    const landAbort = landAuthorized && res && (res.status === 'aborted' || res.status === 'infra_error')
+    // Extended (resume audit 2026-06-29): a land whose RE-VERIFY goes red/inconclusive (both landed:true,
+    // camus-loop:425/433) must ALSO keep the ready_to_merge lane, not collapse to `failed`. `failed` matches
+    // NO resume carry lane (:573/:585/:596) → the next resume reverts the node to pending and re-enters the
+    // FULL loop, colliding on the existing branch and re-halting forever with a note that (falsely) promises
+    // the lanes will land it. The auto-land RE-VERIFIES before merging, so a persistent red can never false-
+    // merge — it stays recoverable (retried each resume; `camus land <taskId>` is the manual escape), a
+    // strict improvement over the wedge. A land result never parks, so provenCommit (:1160) is untouched.
+    const landReVerifyFail = res && res.landed === true && (res.status === 'verify_failed' || res.status === 'verify_inconclusive')
+    const landAbort = landAuthorized && res && (res.status === 'aborted' || res.status === 'infra_error' || landReVerifyFail)
     node.status = verifyCleanHalt ? 'needs_decision' : (landAbort ? 'ready_to_merge' : 'failed')
     // PARKED PROOF's sha rides the halt persist (publish audit round-3, 2026-06-12): the accept
     // lane (needs_decision → human accepts → land) and the `camus land --proven` lane (failed →
@@ -1137,7 +1170,7 @@ If the branch does not exist git errors — output that error line verbatim.`,
     note(verifyCleanHalt
       ? `⚠ Task ${n} did not converge in review, BUT deterministic verify PASSES — a decision (accept vs refine), not a failure.`
       : (landAbort
-        ? `⚠ Task ${n}: the LAND attempt failed mechanically (${node.loopStatus}) — the task stays ready_to_merge (the proven work on its branch is untouched); fix the cause and re-run to retry the land.`
+        ? `⚠ Task ${n}: the LAND attempt did not complete (${node.loopStatus}) — the task stays ready_to_merge (the proven commits on its branch are untouched). Fix the cause (a mechanical abort, or a flaky/env-drift verify) and re-run to retry the land, or run \`camus land ${node.taskId}\`.`
         : `Task ${n} HALTED the feat — loop returned "${node.loopStatus}".`))
     return finalize('halted', {
       stage: 'task', haltedTask: node.taskId, haltReason: node.loopStatus, loopResult: res || null,

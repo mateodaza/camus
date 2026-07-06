@@ -42,7 +42,7 @@ fi
 # would commit a dangling 160000 gitlink with no .gitmodules — every future clone gets a broken
 # phantom submodule. Refuse with a named reason; a LEGIT submodule change updates .gitmodules.
 if git diff --cached --diff-filter=A --raw | grep -q ' 160000 ' \
-   && ! git diff --cached --name-only | grep -qx '.gitmodules'; then
+   && ! git diff --cached --name-only | grep -qxF '.gitmodules'; then
   printf '{"committed": false, "reason": "embedded_repo"}\n'
   exit 0
 fi

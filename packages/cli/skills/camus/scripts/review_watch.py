@@ -166,7 +166,9 @@ def cmd_start(args):
     os.makedirs(handle, exist_ok=True)
     p = _paths(handle)
     # Wrapper writes the real command's exit code where a non-child awaiter can read it.
-    script = "%s; echo $? > %s" % (shlex.join(args.cmd), shlex.quote(p["exit"]))
+    # shlex.join is Python 3.8+; this equivalent (its exact implementation) keeps the gate's floor at 3.6
+    # so the first review round doesn't AttributeError on older system/CI Python (RHEL8/Debian10/Ubuntu18.04).
+    script = "%s; echo $? > %s" % (" ".join(shlex.quote(c) for c in args.cmd), shlex.quote(p["exit"]))
     try:
         with open(p["events"], "wb") as out, open(p["err"], "wb") as err:
             proc = subprocess.Popen(
