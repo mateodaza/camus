@@ -89,6 +89,44 @@ Community-led growth compounds where paid cannot. Retention differs by cohort or
   assert.equal(cit2.status, 'pass', 'unused Sources entries are not dangling markers');
 }
 
+// --- gate: link classification against a local HTTP fixture ------------------
+// No external network: an in-process server plays the four personalities the
+// checker must distinguish — healthy, bot-blocked, dead, and HEAD-hostile.
+{
+  const { createServer } = await import('node:http');
+  const fixture = createServer((req, res) => {
+    if (req.url === '/ok') return res.writeHead(200).end('fine');
+    if (req.url === '/blocked') return res.writeHead(403).end('bots go away');
+    if (req.url === '/dead') return res.writeHead(404).end('gone');
+    if (req.url === '/head405') {
+      if (req.method === 'HEAD') return res.writeHead(405).end();
+      return res.writeHead(200).end('GET works');
+    }
+    res.writeHead(500).end();
+  });
+  await new Promise((r) => fixture.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${fixture.address().port}`;
+  const doc = (paths) => `Notes.\n\n${paths.map((p) => `- ${base}${p}`).join('\n')}\n`;
+  const linksCheck = async (paths) =>
+    (await runVerify(doc(paths), 'freeform', {})).checks.find((c) => c.id === 'links');
+
+  const healthy = await linksCheck(['/ok', '/head405']);
+  assert.equal(healthy.status, 'pass', 'HEAD 405 falls back to GET and passes');
+
+  const blocked = await linksCheck(['/ok', '/blocked']);
+  assert.equal(blocked.status, 'warn', '403 warns instead of failing');
+  assert.ok(blocked.detail.includes('403'), 'warn detail names the status');
+
+  const dead = await linksCheck(['/ok', '/dead']);
+  assert.equal(dead.status, 'fail', '404 fails the gate');
+  assert.ok(dead.detail.includes('404'), 'fail detail names the status');
+
+  const deadBeatsBlocked = await linksCheck(['/blocked', '/dead']);
+  assert.equal(deadBeatsBlocked.status, 'fail', 'a dead link outranks a blocked one');
+
+  fixture.close();
+}
+
 // --- gate: live link check (only when network is available) ------------------
 if (process.env.TEST_NETWORK === '1') {
   const dead = GOOD + '\n3. Archive — https://github.com/Myosin-xyz/does-not-exist-archive\n';
