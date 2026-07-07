@@ -84,7 +84,11 @@ async function startRun({ goal, lane, depth, ground }) {
     }
     if (type === 'cost') run.costUsd = data.costUsd;
     if (type === 'status') run.status = data.status;
+    // Server-side status must reflect a pending question, not just the UI's.
+    if (type === 'question') run.status = 'needs_human';
+    if (type === 'question_answered' && run.status === 'needs_human') run.status = 'running';
   };
+  state.emit = emit;
 
   const waitForAnswer = (question) => {
     const qid = `q-${state.events.filter((e) => e.type === 'question').length + 1}`;
@@ -231,8 +235,7 @@ const server = http.createServer(async (req, res) => {
         if (typeof answer !== 'string' || !answer.trim()) return json(res, 400, { error: 'answer is required' });
         const { qid, resolve } = state.answer;
         state.answer = null;
-        state.events.push({ type: 'question_answered', id: qid, at: Date.now() });
-        for (const sub of state.subscribers) sub.write(`data: ${JSON.stringify({ type: 'question_answered', id: qid })}\n\n`);
+        state.emit('question_answered', { id: qid }); // through emit → receipts + replay
         resolve(answer.trim());
         return json(res, 200, { ok: true });
       }
@@ -240,7 +243,12 @@ const server = http.createServer(async (req, res) => {
       if (action === 'stop' && req.method === 'POST') {
         if (!state) return json(res, 404, { error: 'unknown run' });
         state.abort.abort();
-        if (state.answer) { const { resolve } = state.answer; state.answer = null; resolve('Stop the run'); }
+        if (state.answer) {
+          const { qid, resolve } = state.answer;
+          state.answer = null;
+          state.emit('question_answered', { id: qid });
+          resolve('Stop the run');
+        }
         return json(res, 200, { ok: true });
       }
 

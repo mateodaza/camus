@@ -33,6 +33,11 @@ Community-led growth compounds where paid cannot. Retention differs by cohort or
   assert.ok(offenders.some((s) => s.includes('61%')), 'catches uncited percentage');
   assert.ok(offenders.some((s) => s.includes('3x')), 'catches uncited multiple');
   assert.equal(findUnsourcedStats(GOOD).length, 0, 'cited stats pass');
+
+  // Audit regression: a leading bare year must not exempt the stat behind it.
+  assert.equal(findUnsourcedStats('In 2024, retention rose 61% across cohorts.').length, 1, 'year-first sentence still flagged');
+  assert.equal(findUnsourcedStats('The program launched in 2024.').length, 0, 'bare year alone is not a claim');
+  assert.equal(findUnsourcedStats('In 2024, retention rose 61% across cohorts [1].').length, 0, 'cited year-first stat passes');
 }
 
 // --- unit: compliance -------------------------------------------------------
@@ -64,6 +69,24 @@ Community-led growth compounds where paid cannot. Retention differs by cohort or
 
   const good = await runVerify(GOOD, 'research_memo', { skipNetwork: true });
   assert.equal(good.pass, true, `clean doc passes the gate (got: ${JSON.stringify(good.checks.filter((c) => c.status === 'fail'))})`);
+}
+
+// --- gate: [Hn] markers must map to Hivemind entries under Sources ----------
+{
+  const withDanglingH = GOOD.replace('slower than airdrop cohorts [2]', 'slower than airdrop cohorts [2][H1]');
+  const bad = await runVerify(withDanglingH, 'research_memo', { skipNetwork: true });
+  const cit = bad.checks.find((c) => c.id === 'citations');
+  assert.equal(cit.status, 'fail', 'dangling [H1] fails');
+  assert.ok(cit.detail.includes('[H1]'), 'dangling detail names the H marker');
+
+  const withDefinedH = withDanglingH + '\n### Hivemind\n[H1] Community GTM playbook — Myosin network\n';
+  const ok = await runVerify(withDefinedH, 'research_memo', { skipNetwork: true });
+  assert.equal(ok.checks.find((c) => c.id === 'citations').status, 'pass', 'defined [H1] resolves');
+
+  // A Sources entry must not vouch for itself: marker only in Sources, none in body.
+  const srcOnly = GOOD + '\n[H2] Stray entry — nobody cites this\n';
+  const cit2 = (await runVerify(srcOnly, 'research_memo', { skipNetwork: true })).checks.find((c) => c.id === 'citations');
+  assert.equal(cit2.status, 'pass', 'unused Sources entries are not dangling markers');
 }
 
 // --- gate: live link check (only when network is available) ------------------

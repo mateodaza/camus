@@ -35,10 +35,10 @@ Useful env:
 The verify stage is mechanical — no model, no mercy ([lib/verify.mjs](lib/verify.mjs)):
 
 1. **Structure** — the deliverable type's required sections exist.
-2. **Links resolve** — every URL in the doc returns < 400.
-3. **Quantitative claims cite sources** — any sentence carrying %, $, multiples, or big counts must carry a `[n]` citation or inline link.
+2. **Links resolve** — every URL in the doc returns < 400. Confirmed-dead (404/410/5xx/DNS/timeout) fails; bot-blocked (401/403/429) warns, because the check can't verify those either way — open them yourself.
+3. **Quantitative claims cite sources** — any sentence carrying %, $, multiples, or big counts must carry a `[n]` citation or inline link (bare years alone don't count as claims, but they don't exempt a sentence either).
 4. **Web3 compliance phrases** — configurable wordlist ([checks/compliance.json](checks/compliance.json)): promissory claims fail, hype phrasing warns.
-5. **Citation integrity** — every `[n]` marker maps to a numbered entry under `## Sources`.
+5. **Citation integrity** — every `[n]` and `[Hn]` marker used in the body maps to an entry under `## Sources`.
 
 ## How the loop stops (ported from camus)
 
@@ -49,7 +49,7 @@ The verify stage is mechanical — no model, no mercy ([lib/verify.mjs](lib/veri
 
 ## Receipts
 
-Every run writes `runs/<id>/`: `events.jsonl` (the full event stream — the UI can replay finished runs from it), `rev-N.md` per revision, per-round codex verdicts, and `report.json`. Nothing about a run lives only in the browser.
+Every run writes `runs/<id>/`: `events.jsonl` (the full event stream — the UI can replay finished runs from it), `rev-N.md` per revision, per-round codex verdicts, and `report.json`. Every human choice — content decisions, retries, stuck-finding accepts, verify overrides — is recorded in both the event stream and the report's `answers` array, with its kind. Nothing about a run lives only in the browser.
 
 ## Hivemind
 
