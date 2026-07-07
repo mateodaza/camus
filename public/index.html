@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Camus Loop Studio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='11' fill='none' stroke='%23e0a458' stroke-width='3' stroke-dasharray='52 17'/%3E%3Ccircle cx='16' cy='16' r='4' fill='%233fb950'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <!-- ============ Launch view ============ -->
+  <main id="launch" class="launch">
+    <header class="brand">
+      <div class="wordmark"><span class="serif">Camus</span> Loop Studio</div>
+      <div class="tagline">Makes it work. Knows when to stop.</div>
+      <div class="pills">
+        <span id="pill-engine" class="pill">engine…</span>
+        <span id="pill-hivemind" class="pill">hivemind…</span>
+      </div>
+    </header>
+
+    <section class="card form">
+      <label class="lbl" for="goal">The goal — brief it like you'd brief a strategist</label>
+      <textarea id="goal" rows="3" placeholder="e.g. Should our client lead with community programs or paid acquisition for their consumer app this quarter? I need a memo I can defend on Thursday."></textarea>
+
+      <label class="lbl">Deliverable</label>
+      <div class="lanes" id="lanes">
+        <button class="lane selected" data-lane="research_memo">
+          <strong>Research memo</strong>
+          <span>Question in, defensible answer out. Every stat traced to a live source.</span>
+        </button>
+        <button class="lane" data-lane="competitor_teardown">
+          <strong>Competitor teardown</strong>
+          <span>Positioning, channels, and what we take from it.</span>
+        </button>
+        <button class="lane" data-lane="freeform">
+          <strong>Freeform</strong>
+          <span>Loop whatever you're into. Generic checks only.</span>
+        </button>
+      </div>
+
+      <div class="row">
+        <div>
+          <label class="lbl">Depth</label>
+          <div class="seg" id="depth">
+            <button data-v="quick" class="selected">Quick</button>
+            <button data-v="standard">Standard</button>
+          </div>
+        </div>
+        <div>
+          <label class="lbl">Grounding</label>
+          <label class="toggle" id="ground-wrap">
+            <input type="checkbox" id="ground" />
+            <span>Ground in Hivemind</span>
+          </label>
+          <div class="hint" id="ground-hint"></div>
+        </div>
+      </div>
+
+      <button id="start" class="primary">Run the loop</button>
+      <div id="form-error" class="form-error"></div>
+    </section>
+
+    <section id="recents" class="recents"></section>
+
+    <footer class="foot">
+      Draft by Claude · adversarial review by Codex — a different vendor, paid to disagree · verified by checks that can't be sweet-talked · receipts in <code>./runs/</code>
+    </footer>
+  </main>
+
+  <!-- ============ Run view ============ -->
+  <main id="runview" class="runview hidden">
+    <header class="runbar">
+      <button id="back" class="ghost" title="Back to launch">←</button>
+      <div class="rungoal" id="rungoal"></div>
+      <div class="runmeta">
+        <span id="run-status" class="pill status running">running</span>
+        <span id="run-timer" class="mono">0:00</span>
+        <span id="run-cost" class="mono muted"></span>
+        <button id="stop" class="danger">Stop</button>
+      </div>
+    </header>
+
+    <div class="grid">
+      <nav class="stages" id="stages"></nav>
+      <section class="feed-wrap">
+        <div class="feed" id="feed"></div>
+      </section>
+      <section class="doc-wrap">
+        <div class="doc-head">
+          <div class="revtabs" id="revtabs"></div>
+          <div class="doc-actions">
+            <button id="copy" class="ghost" title="Copy markdown">Copy</button>
+            <button id="download" class="ghost" title="Download .md">Download</button>
+          </div>
+        </div>
+        <article class="doc" id="doc"><div class="doc-empty">The deliverable appears here as the loop drafts it.</div></article>
+      </section>
+    </div>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

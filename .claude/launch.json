@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "loop-studio-rehearsal",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["ENGINE=mock", "OPEN=0", "node", "server.mjs"],
+      "port": 1913
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "camus-loop-studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local demo UI for the Camus loop applied to marketing deliverables: draft → adversarial review → deterministic verify → knows when to stop.",
+  "type": "module",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "rehearse": "ENGINE=mock node server.mjs",
+    "doctor": "node server.mjs --doctor",
+    "test": "node verify.test.mjs"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "findings", "questions_for_human"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["revise", "clean"]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "title", "detail", "suggestion"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["high", "medium", "low"] },
+          "title": { "type": "string", "description": "Short stable title — reuse the exact same title if re-raising an unresolved finding." },
+          "detail": { "type": "string", "description": "What is wrong, quoting the exact passage from the draft." },
+          "suggestion": { "type": "string", "description": "The concrete fix." }
+        }
+      }
+    },
+    "questions_for_human": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Plain-English questions only the goal owner can answer. Empty when none."
+    }
+  }
+}

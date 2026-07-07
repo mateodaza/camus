@@ -1,0 +1,20 @@
+{
+  "description": "Web3 marketing compliance wordlist. Each entry is a case-insensitive regex checked against the deliverable. Severity 'fail' blocks the verify gate; 'warn' surfaces without blocking. Tune per client/jurisdiction.",
+  "patterns": [
+    { "pattern": "guaranteed\\s+(returns?|profits?|gains?|yields?)", "label": "Guaranteed returns claim", "why": "Promissory financial claim — regulators treat this as a financial promotion red flag.", "severity": "fail" },
+    { "pattern": "risk[-\\s]?free", "label": "Risk-free claim", "why": "No crypto product is risk-free; this phrasing invites regulatory action.", "severity": "fail" },
+    { "pattern": "can'?t\\s+lose|no\\s+risk\\b", "label": "No-risk claim", "why": "Promissory claim about downside protection.", "severity": "fail" },
+    { "pattern": "assured\\s+(profit|return|income)", "label": "Assured profit claim", "why": "Promissory financial claim.", "severity": "fail" },
+    { "pattern": "\\b(10|100|1000)x\\b", "label": "Multiplier price talk", "why": "Price-performance promises read as investment advice.", "severity": "fail" },
+    { "pattern": "to\\s+the\\s+moon|mooning\\b", "label": "Moon talk", "why": "Hype phrasing that signals price speculation to regulators and platforms.", "severity": "warn" },
+    { "pattern": "get\\s+rich", "label": "Get-rich framing", "why": "Wealth-promise framing.", "severity": "fail" },
+    { "pattern": "passive\\s+income\\s+guaranteed|guaranteed\\s+passive\\s+income", "label": "Guaranteed passive income", "why": "Promissory yield claim.", "severity": "fail" },
+    { "pattern": "financial\\s+advice", "label": "Financial advice mention", "why": "Even 'not financial advice' jokes draw scrutiny; counsel should review any advice framing.", "severity": "warn" },
+    { "pattern": "buy\\s+\\$[A-Z]{2,10}\\b", "label": "Direct token buy call", "why": "Direct solicitation to purchase a token.", "severity": "fail" },
+    { "pattern": "presale\\s+bonus|private\\s+sale\\s+allocation", "label": "Presale solicitation", "why": "Unregistered-offering territory in several jurisdictions.", "severity": "warn" },
+    { "pattern": "airdrop\\s+(guaranteed|confirmed)", "label": "Guaranteed airdrop", "why": "Promissory claim about token distribution.", "severity": "warn" },
+    { "pattern": "insider\\s+(info|information|tip)", "label": "Insider information framing", "why": "Implies material non-public information.", "severity": "fail" },
+    { "pattern": "pump\\b(?!kin)", "label": "Pump language", "why": "Market-manipulation connotation.", "severity": "warn" },
+    { "pattern": "life[-\\s]?changing\\s+(gains|money|returns)", "label": "Life-changing gains", "why": "Wealth-promise framing.", "severity": "fail" }
+  ]
+}
