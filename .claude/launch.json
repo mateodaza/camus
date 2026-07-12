@@ -4,8 +4,23 @@
     {
       "name": "web-static",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "4173", "--directory", "apps/web/out"],
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "4173",
+        "--directory",
+        "apps/web/out"
+      ],
       "port": 4173
+    },
+    {
+      "name": "loop-studio-rehearsal",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd apps/loop-studio && ENGINE=mock OPEN=0 MOCK_SPEED=2 node server.mjs"
+      ],
+      "port": 1913
     }
   ]
 }

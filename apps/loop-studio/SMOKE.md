@@ -5,7 +5,7 @@ Ordered so each step proves a specific piece. Steps 1–5 cost nothing and need 
 ## 1. Self-test — the deterministic verifier (5s, offline)
 
 ```bash
-cd ~/Documents/Own/camus-loop-studio
+cd apps/loop-studio   # from the camus repo root
 npm test
 ```
 
