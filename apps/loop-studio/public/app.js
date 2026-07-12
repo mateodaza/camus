@@ -148,14 +148,93 @@ async function boot() {
       }).catch(() => {});
     }
   } catch {
-    // Not cosmetic in hosted-UI mode: an unreachable local server would
-    // otherwise look like a page that never finished loading.
-    $('pill-engine').textContent = API ? `studio unreachable at ${API}` : 'studio server unreachable';
+    // Not cosmetic in hosted-UI mode: an unreachable local server is the
+    // FIRST-RUN state — turn it into onboarding instead of a dead end.
+    $('pill-engine').textContent = 'studio: not running on this machine yet';
     $('pill-engine').classList.add('warn');
-    $('pill-hivemind').textContent = 'start it with: node server.mjs';
+    $('pill-hivemind').textContent = API ? `this page connects to ${API}` : 'local server';
     $('ground').disabled = true;
+    renderInstall();
   }
   loadRecents();
+}
+
+// ---------------------------------------------------------------------------
+// Install panel — shown when no local studio answers. Two paths: hand the
+// setup to Claude Code with one copied prompt, or paste three commands.
+// Auto-retries so the page springs to life the moment the server is up.
+// ---------------------------------------------------------------------------
+
+const CLAUDE_SETUP_PROMPT = `Set up Camus Loop Studio on my machine and start it:
+
+1. If ~/camus does not exist: git clone --depth 1 https://github.com/mateodaza/camus.git ~/camus — otherwise run git -C ~/camus pull.
+2. Start the studio server and keep it running: node ~/camus/apps/loop-studio/server.mjs (it listens on http://localhost:1913).
+3. Run node ~/camus/apps/loop-studio/server.mjs --doctor and fix anything it flags — it prints the exact commands (the Claude Code CLI and the Codex CLI must be installed and signed in once each).
+4. When http://localhost:1913/api/status answers, tell me — the page at camus.sh/studio connects to it automatically.`;
+
+const MANUAL_SETUP = `git clone --depth 1 https://github.com/mateodaza/camus.git ~/camus
+node ~/camus/apps/loop-studio/server.mjs`;
+
+let installRetry = null;
+
+function copyButton(label, text) {
+  const b = el('button', 'primary', label);
+  b.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      b.textContent = 'Copied';
+    } catch {
+      b.textContent = 'Copy failed — select it yourself';
+    }
+    setTimeout(() => (b.textContent = label), 1600);
+  };
+  return b;
+}
+
+function renderInstall() {
+  const box = $('setup-panel');
+  box.innerHTML = '';
+
+  box.appendChild(el('div', 'lbl', 'Get it running'));
+  box.appendChild(el('p', 'install-note',
+    'The studio runs on your machine — this page is only the glass. One server, one command, and your keys never leave your laptop.'));
+
+  // Path 1: let Claude do it
+  box.appendChild(el('div', 's-label install-head', 'Have Claude set it up'));
+  box.appendChild(el('p', 'install-note', 'Copy this prompt into Claude Code (or the Claude app with terminal access) and it will install, start, and check everything:'));
+  const promptPre = el('pre', 'install-block', CLAUDE_SETUP_PROMPT);
+  box.appendChild(promptPre);
+  box.appendChild(copyButton('Copy the prompt for Claude', CLAUDE_SETUP_PROMPT));
+
+  // Path 2: by hand
+  box.appendChild(el('div', 's-label install-head', 'Or run it yourself'));
+  const cmdPre = el('pre', 'install-block', MANUAL_SETUP);
+  box.appendChild(cmdPre);
+  const row = el('div', 'panel-actions');
+  row.appendChild(copyButton('Copy the commands', MANUAL_SETUP));
+  row.appendChild(el('span', 'hint', 'needs Node ≥ 18 — the in-page setup checks guide the rest once the server is up'));
+  box.appendChild(row);
+
+  // The waiting line: this page keeps knocking until the server answers.
+  const wait = el('div', 'install-wait');
+  wait.appendChild(el('span', 'dot'));
+  wait.appendChild(el('span', null, `waiting for the studio at ${API || 'http://localhost:1913'} — this page connects by itself once it's running`));
+  box.appendChild(wait);
+
+  box.classList.remove('hidden');
+
+  clearInterval(installRetry);
+  installRetry = setInterval(async () => {
+    try {
+      const res = await fetch(`${API}/api/status`);
+      if (!res.ok) return;
+      clearInterval(installRetry);
+      box.classList.add('hidden');
+      $('pill-engine').className = 'pill';
+      $('pill-hivemind').className = 'pill';
+      boot();
+    } catch { /* keep knocking */ }
+  }, 4000);
 }
 
 async function loadRecents() {
