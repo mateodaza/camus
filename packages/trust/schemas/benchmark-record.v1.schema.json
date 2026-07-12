@@ -1,62 +1,212 @@
 {
   "$id": "https://camus.sh/schemas/benchmark-record/v1",
   "title": "Auditor benchmark record",
-  "description": "One adjudicated audit round in the calibration corpus. Redacted by default at ingestion; sensitivity classified; clean controls and seeded defects live alongside historical rounds to defeat survivorship bias.",
+  "description": "One adjudicated audit round in the calibration corpus. TEMPORAL RULE (frozen 2026-07-12): judge each finding against the exact artifact state that was audited, using evidence from that state or its history \u2014 never current HEAD; a later repair proves maintainers acted, not the reviewer's mechanism, location, or severity. Truth (adjudication), severity (severity_after), reproducibility (deterministic_repro), and repair (repair_outcome) are SEPARATE judgments. Labels: confirmed = the claimed defect existed materially as described; partially_correct = a real issue existed but mechanism, scope, location, or severity was materially wrong; rejected = the audited artifact contradicts the finding; unresolved = evidence is insufficient (a strength, never missing work). Clean-VERDICT rounds are auditor outputs, never known-clean controls. Redacted by default at ingestion; sensitivity classified.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "id", "source", "executor", "auditor", "artifact_ref", "verdict", "findings", "sensitivity", "is_clean_control"],
+  "required": [
+    "schemaVersion",
+    "id",
+    "source",
+    "executor",
+    "auditor",
+    "artifact_ref",
+    "verdict",
+    "findings",
+    "sensitivity",
+    "is_clean_control"
+  ],
   "properties": {
-    "schemaVersion": { "const": 1 },
-    "id": { "type": "string" },
-    "source": { "enum": ["historical", "seeded_defect", "clean_control", "citation_failure", "malformed_receipt", "paraphrase_variant"] },
-    "executor": { "$ref": "#/$defs/identity" },
-    "auditor": { "$ref": "#/$defs/identity" },
+    "schemaVersion": {
+      "const": 1
+    },
+    "id": {
+      "type": "string"
+    },
+    "source": {
+      "enum": [
+        "historical",
+        "seeded_defect",
+        "clean_control",
+        "citation_failure",
+        "malformed_receipt",
+        "paraphrase_variant"
+      ]
+    },
+    "executor": {
+      "$ref": "#/$defs/identity"
+    },
+    "auditor": {
+      "$ref": "#/$defs/identity"
+    },
     "artifact_ref": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "artifact_id": { "type": ["string", "null"] },
-        "commit": { "type": ["string", "null"] },
-        "worktree": { "type": ["string", "null"] },
-        "round": { "type": ["integer", "null"] }
+        "artifact_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worktree": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "round": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
       }
     },
-    "verdict": { "type": ["string", "null"], "description": "the auditor's overall verdict as recorded (e.g. patch is correct/incorrect)" },
+    "verdict": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "the auditor's overall verdict as recorded (e.g. patch is correct/incorrect)"
+    },
     "findings": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["title", "adjudication"],
+        "required": [
+          "title",
+          "adjudication"
+        ],
         "properties": {
-          "title": { "type": "string" },
-          "body": { "type": ["string", "null"] },
-          "code_location": { "type": ["string", "null"] },
-          "priority": { "type": ["integer", "null"] },
-          "confidence": { "type": ["number", "null"] },
-          "adjudication": { "enum": ["confirmed", "rejected", "partially_correct", "unresolved"] },
-          "severity_before": { "type": ["integer", "null"] },
-          "severity_after": { "type": ["integer", "null"] },
-          "deterministic_repro": { "type": ["boolean", "null"], "description": "could a deterministic check reproduce it?" },
-          "repair_outcome": { "type": ["string", "null"] }
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code_location": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "priority": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "confidence": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "adjudication": {
+            "enum": [
+              "confirmed",
+              "rejected",
+              "partially_correct",
+              "unresolved"
+            ]
+          },
+          "severity_before": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "severity_after": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "deterministic_repro": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "could a deterministic check reproduce it?"
+          },
+          "repair_outcome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         }
       }
     },
-    "economics": { "type": ["object", "null"], "description": "economics/v1-shaped usage for the audit round, when recoverable" },
-    "sensitivity": { "enum": ["public", "internal", "secret_redacted"] },
-    "is_clean_control": { "type": "boolean", "description": "true only when a human asserts the artifact contains no intended defect" },
-    "verdict_clean": { "type": ["boolean", "null"], "description": "whether the recorded verdict was clean (NOT the same as a clean control)" },
-    "notes": { "type": ["string", "null"] }
+    "economics": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "economics/v1-shaped usage for the audit round, when recoverable"
+    },
+    "sensitivity": {
+      "enum": [
+        "public",
+        "internal",
+        "secret_redacted"
+      ]
+    },
+    "is_clean_control": {
+      "type": "boolean",
+      "description": "true only when a human asserts the artifact contains no intended defect"
+    },
+    "verdict_clean": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "whether the recorded verdict was clean (NOT the same as a clean control)"
+    },
+    "notes": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
   },
   "$defs": {
     "identity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["provider"],
+      "required": [
+        "provider"
+      ],
       "properties": {
-        "provider": { "type": ["string", "null"] },
-        "model": { "type": ["string", "null"] },
-        "effort": { "type": ["string", "null"] }
+        "provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "effort": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       }
     }
   }

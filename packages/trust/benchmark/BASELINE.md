@@ -9,23 +9,24 @@ Rates use the adjudicated subset only; unresolved findings are counted, never gu
 - findings: 70 — by priority: P0: 2, P1: 49, P2: 19
 
 ## Adjudication coverage
-- adjudicated: 11/70 (15.7%)
-- unresolved (awaiting human/evidence): 59 (84.3%)
+- adjudicated: 23/70 (32.9%)
+- unresolved (awaiting human/evidence): 47 (67.1%)
 
 ## Rates over the adjudicated subset
-- confirmation rate: 10/11 (90.9%)
-- rejection rate: 1/11 (9.1%)
-- partially correct: 0/11 (0.0%)
-- severity accuracy (confirmed, graded): 10/10 exact (100.0%), mean shift 0.00
-- deterministic reproducibility (confirmed, assessed): 2/4 (50.0%)
+- confirmation rate: 20/23 (87.0%)
+- rejection rate: 1/23 (4.3%)
+- partially correct: 2/23 (8.7%)
+- severity accuracy (confirmed, graded): 20/20 exact (100.0%), mean shift 0.00
+- deterministic reproducibility (confirmed, assessed): 12/14 (85.7%)
 
 ## Confirmed findings by priority
 - P0: 2
-- P1: 7
-- P2: 1
+- P1: 15
+- P2: 3
 
 ## Honest caveats
-- The adjudicated subset is evidence-selected (documented memory + repository archaeology), so the confirmation rate is biased toward findings that left traces — it is a floor of provenance, not an unbiased estimate.
+- Temporal rule (frozen): findings are judged against the exact artifact state that was audited — a later repair proves action, not the reviewer's mechanism.
+- The adjudicated subset is evidence-selected (documented memory + repository archaeology), so the confirmation rate is biased toward findings that left traces — it is a floor of provenance, not an unbiased estimate. No marketing claims and no routing decisions from these numbers until representative adjudication plus known-clean and seeded controls exist.
 - Historical rounds carry survivorship bias by construction; clean controls, seeded defects, and same-vendor baselines are still to be added as separate source-typed records.
 - All records currently share one pairing (anthropic executor / openai auditor, models unrecorded in the era's receipts) — no cross-pairing comparison is possible yet.
 

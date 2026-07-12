@@ -178,6 +178,26 @@ Tests, source evidence, and the human settle what models dispute. Multi-
 auditor panels are exceptional (security, P0 history, high risk), never the
 default.
 
+## Adjudication rules (frozen 2026-07-12)
+
+> Judge the finding against the exact artifact that was audited, using
+> evidence available from that state or its history — not current HEAD.
+
+A later repair confirms that maintainers acted on something; it does not
+alone prove the reviewer's original mechanism, location, or severity. Truth,
+severity, reproducibility, and repair are separate judgments.
+
+- `confirmed` — the claimed defect existed materially as described.
+- `partially_correct` — a real issue existed, but mechanism, scope, location,
+  or severity was materially wrong.
+- `rejected` — the audited artifact contradicts the finding.
+- `unresolved` — evidence is insufficient. Unresolved is a strength.
+
+Clean-verdict rounds are auditor outputs, never known-clean controls. The
+baseline is an evidence-selected provenance floor: no marketing and no
+routing decisions from it until representative adjudication plus known-clean
+and seeded controls exist.
+
 ## Implementation order (revised, adopted)
 
 0. ~~Studio pre-launch audit closure~~ — done at 179e0be.

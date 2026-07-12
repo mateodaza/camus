@@ -16,6 +16,7 @@ import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { redactFinding, scrubText } from './lib/redact.mjs';
 import { validateBenchmarkRecord } from './lib/validate.mjs';
+import { worksheetLines } from './worksheet.mjs';
 
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
@@ -39,6 +40,12 @@ const written = [];
 const skipped = [];
 
 for (const file of files.sort()) {
+  // Never overwrite an existing record: it may carry hand-made adjudications,
+  // which this tool cannot reconstruct. Delete a record file to re-ingest it.
+  if (existsSync(join(OUT_DIR, `${basename(file, '.json')}.json`))) {
+    skipped.push(`${file}: record already exists (adjudications preserved) — delete it to re-ingest`);
+    continue;
+  }
   let envelope;
   try {
     envelope = JSON.parse(await readFile(join(REVIEWS_DIR, file), 'utf8'));
@@ -112,21 +119,20 @@ for (const file of files.sort()) {
   written.push(record);
 }
 
-// The adjudication worksheet — the human's half of curation.
-const lines = [
-  '# Pending adjudication',
-  '',
-  'For each finding: set `adjudication` (confirmed | rejected | partially_correct | unresolved),',
-  '`severity_after`, `deterministic_repro`, and `repair_outcome` in the record file.',
-  'Mark records `sensitivity: "secret_redacted"` if anything sensitive survived scrubbing.',
-  'Clean controls and seeded defects are separate records (source: clean_control / seeded_defect) — historical rounds alone carry survivorship bias.',
-  '',
-];
-for (const r of written) {
-  lines.push(`- [ ] **${r.id}** — round ${r.artifact_ref.round}, verdict: ${r.verdict ?? 'unknown'}, ${r.findings.length} finding(s)`);
-  for (const f of r.findings) lines.push(`  - [ ] ${f.title}${f.priority != null ? ` (P${f.priority})` : ''}`);
+// The adjudication worksheet — the human's half of curation. Regenerated from
+// ALL records on disk (not just this run's writes) via the shared generator,
+// which carries the frozen adjudication rules in its header.
+const allRecords = [];
+for (const f of (await readdir(OUT_DIR)).filter((x) => x.endsWith('.json')).sort()) {
+  allRecords.push(JSON.parse(await readFile(join(OUT_DIR, f), 'utf8')));
 }
-await writeFile(join(import.meta.dirname, 'benchmark', 'PENDING-ADJUDICATION.md'), lines.join('\n') + '\n');
+// The worksheet follows the records dir (sibling for the default layout,
+// inside OUT_DIR otherwise) so a test or custom --out never clobbers the
+// real benchmark/PENDING-ADJUDICATION.md.
+const worksheetPath = basename(OUT_DIR) === 'records'
+  ? join(OUT_DIR, '..', 'PENDING-ADJUDICATION.md')
+  : join(OUT_DIR, 'PENDING-ADJUDICATION.md');
+await writeFile(worksheetPath, worksheetLines(allRecords).join('\n') + '\n');
 
 console.log(`ingested ${written.length} record(s) → ${OUT_DIR}`);
 console.log(`findings awaiting adjudication: ${written.reduce((n, r) => n + r.findings.length, 0)}`);
