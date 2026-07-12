@@ -202,15 +202,17 @@ function readBody(req, limit = 512 * 1024) {
   });
 }
 
-// Hosted-UI mode: the same UI served from a public origin (e.g. Vercel) can
-// drive THIS local server — execution and auth stay on the user's machine.
-// Set STUDIO_ALLOWED_ORIGIN to that origin; the browser's Local Network
-// Access permission plus this CORS allowlist are the whole handshake.
-const ALLOWED_ORIGIN = process.env.STUDIO_ALLOWED_ORIGIN?.replace(/\/$/, '') || null;
+// Hosted-UI mode: the same UI served from a public origin can drive THIS
+// local server — execution and auth stay on the user's machine. The browser's
+// Local Network Access permission plus this exact-origin CORS allowlist are
+// the whole handshake. Default origin: https://camus.sh (the deployed studio
+// UI — a decision, recorded here and in the README); STUDIO_ALLOWED_ORIGIN
+// overrides it.
+const ALLOWED_ORIGIN = (process.env.STUDIO_ALLOWED_ORIGIN || 'https://camus.sh').replace(/\/$/, '');
 
 function corsHeaders(req) {
   const origin = req.headers.origin;
-  if (!ALLOWED_ORIGIN || !origin || origin !== ALLOWED_ORIGIN) return {};
+  if (!origin || origin !== ALLOWED_ORIGIN) return {};
   return {
     'access-control-allow-origin': ALLOWED_ORIGIN,
     'access-control-allow-methods': 'GET, POST, OPTIONS',
@@ -358,7 +360,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   const hm = hivemind.hivemindStatus();
-  console.log(`\n  Camus Loop Studio\n  http://localhost:${PORT}\n  engine: ${ENGINE}${ENGINE === 'mock' ? ' (rehearsal)' : ''} · hivemind: ${hm.connected ? 'connected' : 'stub'} · receipts: ./runs/\n`);
+  console.log(`\n  Camus Loop Studio\n  http://localhost:${PORT}\n  engine: ${ENGINE}${ENGINE === 'mock' ? ' (rehearsal)' : ''} · hivemind: ${hm.connected ? 'connected' : 'stub'} · hosted origin: ${ALLOWED_ORIGIN} · receipts: ./runs/\n`);
   if (process.platform === 'darwin' && process.env.OPEN !== '0' && !process.env.CI) {
     spawn('open', [`http://localhost:${PORT}`], { stdio: 'ignore' }).on('error', () => {});
   }
