@@ -269,6 +269,58 @@ $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
           </div>
         </section>
 
+        <section className="sec" id="studio">
+          <div className="wrap">
+            <Reveal>
+              <div className="sec-head">
+                <div>
+                  <h2 className="sec-h2">
+                    The same loop,<br />
+                    <em>on words.</em>
+                  </h2>
+                  <p className="sec-sub">
+                    Loop Studio points the loop at marketing deliverables. Claude drafts, Codex tears
+                    the draft apart, and checks that cannot be argued with decide: links resolve,
+                    every number traces to a live source, promissory phrasing fails before a client
+                    sees it. Built for people who never open a terminal — the loop runs on your
+                    machine, watchable in a browser.
+                  </p>
+                </div>
+              </div>
+            </Reveal>
+
+            <div className="evs">
+              <Reveal className="ev">
+                <p className="ev-cap">
+                  The only questions that reach a human are the ones a machine should not answer.{' '}
+                  <em>Everything else is drafted, reviewed, and verified before you see it.</em>
+                </p>
+                <div className="term term--tree">
+                  <pre>
+{`loop-studio · "Community programs or paid acquisition this quarter?"
+
+  `}<span className="g">✓</span>{`  plan · draft rev 1
+  `}<span className="r">✗</span>{`  review r1: revise `}<span className="c">(3 blocking · codex)</span>{`
+  `}<span className="g">✓</span>{`  fix → rev 2 · review r2: 1 question
+  `}<span className="o">?</span>{`  THE LOOP IS ASKING YOU
+     `}<span className="p">"Base-first or multichain — which fits the Q3 goal?"</span>{`
+  `}<span className="g">✓</span>{`  human decided: Base-first → rev 3 · review r3: clean
+  `}<span className="g">✓</span>{`  verify · links · stats cite · compliance · structure → `}<span className="g">GREEN</span>{`
+  done · receipts in runs/20260712-082909/`}
+                  </pre>
+                </div>
+              </Reveal>
+            </div>
+
+            <Reveal>
+              <div className="cta-row cta-row--left">
+                <a className="cta" href="/studio/">Open Loop Studio</a>
+                <a className="cta-ghost" href="https://github.com/mateodaza/camus/tree/main/apps/loop-studio">apps/loop-studio &#8599;</a>
+              </div>
+            </Reveal>
+          </div>
+        </section>
+
         <section className="sec" id="run">
           <div className="wrap">
             <Reveal>

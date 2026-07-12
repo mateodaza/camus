@@ -5,7 +5,10 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "sync-studio": "rm -rf public/studio && cp -R ../loop-studio/public public/studio",
+    "predev": "npm run sync-studio",
+    "prebuild": "npm run sync-studio"
   },
   "dependencies": {
     "next": "^15.3.0",

@@ -6,7 +6,12 @@
 const API = (() => {
   const param = new URLSearchParams(location.search).get('api');
   if (param) localStorage.setItem('cls-api', param.replace(/\/$/, ''));
-  return localStorage.getItem('cls-api') || '';
+  const stored = localStorage.getItem('cls-api');
+  if (stored) return stored;
+  // Served from a public origin (camus.sh/studio): default to the local
+  // studio server — the boot check says so plainly when it isn't running.
+  const local = ['localhost', '127.0.0.1'].includes(location.hostname);
+  return local ? '' : 'http://localhost:1913';
 })();
 
 const $ = (id) => document.getElementById(id);

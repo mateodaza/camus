@@ -24,3 +24,6 @@ pytest-cache-files-*/
 
 # firecrawl MCP scratch/cache
 .firecrawl/
+
+# generated: the studio UI is synced into the landing's export at build time
+apps/web/public/studio/

@@ -59,6 +59,7 @@ a { color: inherit; text-decoration: none; }
 .tagline { display: block; font-family: var(--serif); font-weight: 400; font-size: clamp(20px, 2.8vw, 30px); line-height: 1.2; letter-spacing: -.006em; margin-top: 12px; text-wrap: pretty; }
 .hero-sub { margin-top: 18px; font-size: clamp(15px, 1.9vw, 17px); line-height: 1.55; color: var(--muted); max-width: 600px; text-wrap: pretty; }
 .cta-row { margin-top: 36px; display: flex; gap: 22px; align-items: center; flex-wrap: wrap; justify-content: center; }
+.cta-row--left { justify-content: flex-start; margin-top: 30px; }
 .cta { font-family: var(--mono); font-size: 13px; background: var(--red); color: #fff; padding: 13px 24px; transition: background .15s ease; }
 .cta:hover { background: var(--ink); }
 .cta-ghost { font-family: var(--mono); font-size: 13px; color: var(--muted); }
