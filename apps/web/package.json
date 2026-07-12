@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "sync-studio": "rm -rf public/studio && cp -R ../loop-studio/public public/studio",
+    "sync-studio": "node scripts/sync-studio.mjs",
     "predev": "npm run sync-studio",
     "prebuild": "npm run sync-studio"
   },

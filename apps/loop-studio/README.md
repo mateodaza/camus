@@ -96,7 +96,7 @@ The maker keeps `--strict-mcp-config`: its tool surface is exactly WebSearch, We
 
 The UI is static and lives at **https://camus.sh/studio/** (the landing's build syncs `public/` there — see `apps/web/package.json`) while runs, CLIs, and auth stay on each user's machine:
 
-1. Run the studio locally: `node server.mjs`. The server answers CORS preflights (including `Access-Control-Allow-Private-Network`) for exactly one origin — `https://camus.sh` by default, `STUDIO_ALLOWED_ORIGIN` to point elsewhere (previews, staging).
+1. Run the studio locally: `node server.mjs`. The server answers CORS preflights (including `Access-Control-Allow-Private-Network`) for exactly one origin — `https://camus.sh` and `https://www.camus.sh` by default, `STUDIO_ALLOWED_ORIGIN` to point elsewhere (comma-separated for several — previews, staging).
 2. Visit `https://camus.sh/studio/` — served from a public origin, the page defaults to `http://localhost:1913` (`?api=` overrides and persists) and drives the local server; the browser's local-network permission prompt is the user's grant.
 
 No key, no token, and no model auth ever leaves the laptop — the web app is glass, the machine does the work.

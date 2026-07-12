@@ -181,16 +181,19 @@ function readBody(req, limit = 512 * 1024) {
 // Hosted-UI mode: the same UI served from a public origin can drive THIS
 // local server — execution and auth stay on the user's machine. The browser's
 // Local Network Access permission plus this exact-origin CORS allowlist are
-// the whole handshake. Default origin: https://camus.sh (the deployed studio
-// UI — a decision, recorded here and in the README); STUDIO_ALLOWED_ORIGIN
-// overrides it.
-const ALLOWED_ORIGIN = (process.env.STUDIO_ALLOWED_ORIGIN || 'https://camus.sh').replace(/\/$/, '');
+// the whole handshake. Default origins: camus.sh with and without www (the
+// deployed studio UI — a decision, recorded here and in the README);
+// STUDIO_ALLOWED_ORIGIN overrides (comma-separated for several).
+const ALLOWED_ORIGINS = (process.env.STUDIO_ALLOWED_ORIGIN || 'https://camus.sh,https://www.camus.sh')
+  .split(',')
+  .map((o) => o.trim().replace(/\/$/, ''))
+  .filter(Boolean);
 
 function corsHeaders(req) {
   const origin = req.headers.origin;
-  if (!origin || origin !== ALLOWED_ORIGIN) return {};
+  if (!origin || !ALLOWED_ORIGINS.includes(origin)) return {};
   return {
-    'access-control-allow-origin': ALLOWED_ORIGIN,
+    'access-control-allow-origin': origin,
     'access-control-allow-methods': 'GET, POST, OPTIONS',
     'access-control-allow-headers': 'content-type',
     'access-control-allow-private-network': 'true',
@@ -365,7 +368,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   const hm = hivemind.hivemindStatus();
-  console.log(`\n  Camus Loop Studio\n  http://localhost:${PORT}\n  engine: ${ENGINE}${ENGINE === 'mock' ? ' (rehearsal)' : ''} · hivemind: ${hm.connected ? 'connected' : 'stub'} · hosted origin: ${ALLOWED_ORIGIN} · receipts: ./runs/\n`);
+  console.log(`\n  Camus Loop Studio\n  http://localhost:${PORT}\n  engine: ${ENGINE}${ENGINE === 'mock' ? ' (rehearsal)' : ''} · hivemind: ${hm.connected ? 'connected' : 'stub'} · hosted origins: ${ALLOWED_ORIGINS.join(', ')} · receipts: ./runs/\n`);
   if (process.platform === 'darwin' && process.env.OPEN !== '0' && !process.env.CI) {
     spawn('open', [`http://localhost:${PORT}`], { stdio: 'ignore' }).on('error', () => {});
   }
