@@ -35,7 +35,7 @@ Type any goal (a sentence or more), keep **Research memo** + **Quick**, hit **Ru
 | Draft | `rev 1` appears right pane | revision tracking, markdown renderer, `[n]` cite chips |
 | Review r1 | ✗ verdict, 3 finding cards — 2 HIGH ("Retention figure has no source", "Promissory phrasing: guaranteed returns") + 1 MEDIUM | adversarial review contract, severity chips |
 | Fix | `rev 2` — the 61% claim and "guaranteed returns" are gone | findings actually drive revisions |
-| Review r2 | 1 finding + **amber "THE LOOP IS ASKING YOU" card** | needs_human routing; header pill flips to `needs human`, `/api/runs` reports it too |
+| Review r2 | 1 finding + the **dark "THE LOOP IS ASKING YOU" card** | needs_human routing; header pill flips to `needs human`, `/api/runs` reports it too |
 | You answer | type e.g. `Base-first — client committed to Base for Q3` | answer threads into the next fix — look for it in rev 3's Summary |
 | Review r3 | ✓ clean | round loop exit |
 | Verify #1 | checks tick in; **links RED** — a real HTTP check catches the seeded dead GitHub URL (404) | the deterministic gate runs for real, even in rehearsal |
