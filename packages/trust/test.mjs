@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DIMENSIONS, HEADLINES, deriveHeadline, allCombinations, validStatus } from './lib/status.mjs';
-import { canonicalize, canonicalString, computeArtifactId, artifactMatches } from './lib/canonical.mjs';
+import { canonicalize, canonicalString, computeArtifactId, computeReceiptId, artifactMatches, receiptMatches, seal, artifactProjection } from './lib/canonical.mjs';
 import { scrubSecrets, scrubPaths, redactFinding } from './lib/redact.mjs';
 import { validateStatus, validatePairingManifest, validateEvidencePack, validateBenchmarkRecord, validateHumanDecision, validateEconomics } from './lib/validate.mjs';
 
@@ -86,12 +86,70 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
   assert.throws(() => canonicalString({ n: Infinity }), TypeError, 'non-finite numbers refused');
   assert.equal(canonicalize(-0), 0, '-0 canonicalizes to 0');
 
-  const bundle = { goal: 'g', artifact: { kind: 'research' }, statuses: { execution: 'completed' } };
-  const id = computeArtifactId(bundle);
-  assert.match(id, /^sha256:[0-9a-f]{64}$/);
-  assert.equal(computeArtifactId({ ...bundle, artifact_id: id, headline: 'verified' }), id, 'derived fields never affect the hash');
-  assert.ok(artifactMatches(bundle, id), 'the bundle matches its own id');
-  assert.ok(!artifactMatches({ ...bundle, goal: 'g2' }, id), 'any change of meaning expires the audit');
+}
+
+// --- the two identities: artifact vs receipt -----------------------------------
+{
+  const pairing = {
+    schemaVersion: 1,
+    executor: { requested: 'anthropic:balanced', resolved: 'anthropic:sonnet', actual: 'anthropic:sonnet' },
+    auditor: { requested: 'openai:balanced', resolved: 'openai:gpt-5.4', actual: 'openai:gpt-5.4' },
+    independence: 'cross_vendor',
+  };
+  const basePack = {
+    schemaVersion: 1,
+    goal: 'memo on community vs paid growth',
+    acceptance_contract: 'every stat cited to a live URL; no promissory phrasing',
+    artifact: {
+      kind: 'research',
+      deliverable_hash: 'sha256:' + 'a'.repeat(64),
+      claims: [{ claim: 'retention differs by cohort origin', marker: '[1]', url: 'https://example.com/r', evidence_hash: null, retrieved_at: 1, decision: 'supported' }],
+    },
+    verification: { checks: [{ id: 'links', status: 'pass' }] },
+    pairing,
+    statuses: { schemaVersion: 1, execution: 'completed', verification: 'passed', audit: 'independent_clean', publication: 'not_published' },
+    human_decisions: [{ schemaVersion: 1, kind: 'decision', question: 'audience?', answer: 'web3 marketers', at: 1 }],
+    economics: [],
+    created_at: 1,
+  };
+  const sealed = seal(basePack);
+  assert.match(sealed.artifact_id, /^sha256:[0-9a-f]{64}$/);
+  assert.match(sealed.receipt_id, /^sha256:[0-9a-f]{64}$/);
+  assert.notEqual(sealed.artifact_id, sealed.receipt_id);
+
+  // Judgment changes mint a NEW RECEIPT over the SAME ARTIFACT.
+  for (const mutate of [
+    (p) => ({ ...p, statuses: { ...p.statuses, audit: 'independent_findings' } }),
+    (p) => ({ ...p, human_decisions: [...p.human_decisions, { schemaVersion: 1, kind: 'adjudication', question: 'finding real?', answer: 'confirmed', at: 2 }] }),
+    (p) => ({ ...p, economics: [{ schemaVersion: 1, role: 'auditor', requested: 'openai:balanced', resolved: 'openai:gpt-5.4', actual: 'openai:gpt-5.4', billing_mode: 'subscription', estimated_cost_usd: 1 }] }),
+    (p) => ({ ...p, pairing: { ...p.pairing, auditor: { ...p.pairing.auditor, actual: 'openai:gpt-5.6-terra' } } }),
+    (p) => ({ ...p, artifact: { ...p.artifact, claims: [{ ...p.artifact.claims[0], decision: 'unsupported' }] } }),
+  ]) {
+    const changed = mutate(basePack);
+    assert.equal(computeArtifactId(changed), sealed.artifact_id, 'judgment never pretends the artifact changed');
+    const withId = { ...changed, artifact_id: sealed.artifact_id };
+    assert.notEqual(computeReceiptId(withId), sealed.receipt_id, 'judgment always mints a new receipt');
+  }
+
+  // Meaning changes expire the artifact (and therefore every receipt on it).
+  for (const mutate of [
+    (p) => ({ ...p, goal: 'a different goal' }),
+    (p) => ({ ...p, acceptance_contract: 'weaker contract' }),
+    (p) => ({ ...p, artifact: { ...p.artifact, deliverable_hash: 'sha256:' + 'b'.repeat(64) } }),
+    (p) => ({ ...p, artifact: { ...p.artifact, claims: [{ ...p.artifact.claims[0], url: 'https://example.com/other' }] } }),
+  ]) {
+    assert.notEqual(computeArtifactId(mutate(basePack)), sealed.artifact_id, 'meaning change expires the artifact');
+  }
+
+  // Unknown fields fail loudly — nothing is silently unhashed.
+  assert.throws(() => computeArtifactId({ ...basePack, novel_field: 1 }), /unknown field/, 'unknown top-level field refuses to hash');
+  assert.throws(() => computeArtifactId({ ...basePack, artifact: { ...basePack.artifact, surprise: true } }), /unknown field/, 'unknown artifact field refuses to hash');
+  assert.throws(() => computeReceiptId(basePack), /artifact_id must be set/, 'a receipt cannot exist before its artifact');
+  assert.equal(artifactProjection(basePack).projectionVersion, 1, 'projections are versioned');
+
+  assert.ok(artifactMatches(sealed, sealed.artifact_id));
+  assert.ok(receiptMatches(sealed, sealed.receipt_id));
+  assert.ok(!artifactMatches({ ...sealed, goal: 'g2' }, sealed.artifact_id), 'expiry check works');
 }
 
 // --- redaction ----------------------------------------------------------------
@@ -138,9 +196,11 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
     economics: [],
     created_at: 1,
   };
-  const pack = { ...bundle, artifact_id: computeArtifactId(bundle) };
+  const pack = seal(bundle);
   assert.ok(validateEvidencePack(pack).ok, JSON.stringify(validateEvidencePack(pack)));
   assert.ok(!validateEvidencePack({ ...pack, acceptance_contract: '' }).ok, 'no acceptance contract, no pack');
+  assert.ok(!validateEvidencePack({ ...bundle, artifact_id: pack.artifact_id }).ok, 'a pack without receipt_id is unsealed');
+  assert.ok(!validateEvidencePack({ ...pack, novel: 1 }).ok, 'validator rejects unknown top-level fields');
 
   const record = JSON.parse(readFileSync(new URL('./benchmark/SAMPLE.record.json', import.meta.url)));
   assert.ok(validateBenchmarkRecord(record).ok, 'the committed sample validates');

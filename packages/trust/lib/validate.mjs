@@ -71,10 +71,15 @@ export function validateEconomics(e, path = 'economics') {
   return OK;
 }
 
+const PACK_FIELDS = ['schemaVersion', 'artifact_id', 'receipt_id', 'goal', 'acceptance_contract', 'artifact', 'verification', 'session_log', 'pairing', 'statuses', 'human_decisions', 'economics', 'created_at'];
+
 export function validateEvidencePack(p, path = 'evidence_pack') {
   if (!isObj(p)) return err(path, 'must be an object');
   if (p.schemaVersion !== 1) return err(path, 'schemaVersion must be 1');
+  const unknown = Object.keys(p).filter((k) => !PACK_FIELDS.includes(k));
+  if (unknown.length) return err(path, `unknown field(s): ${unknown.join(', ')} — schema v1 does not know them; nothing enters or escapes a hash silently`);
   if (!/^sha256:[0-9a-f]{64}$/.test(p.artifact_id ?? '')) return err(`${path}.artifact_id`, 'must be sha256:<hex64>');
+  if (!/^sha256:[0-9a-f]{64}$/.test(p.receipt_id ?? '')) return err(`${path}.receipt_id`, 'must be sha256:<hex64>');
   if (typeof p.goal !== 'string' || !p.goal) return err(`${path}.goal`, 'required');
   if (typeof p.acceptance_contract !== 'string' || !p.acceptance_contract) return err(`${path}.acceptance_contract`, 'required — audits bottleneck on it');
   if (!isObj(p.artifact) || !['code', 'research'].includes(p.artifact.kind)) return err(`${path}.artifact.kind`, 'must be code | research');
