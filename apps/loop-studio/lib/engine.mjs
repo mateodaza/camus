@@ -6,11 +6,9 @@
 
 import { planPrompt, makePrompt, reviewPrompt, fixPrompt } from './prompts.mjs';
 import { runVerify } from './verify.mjs';
-import { MODELS } from './models.mjs';
+import { getModels } from './models.mjs';
 
-// NaN-proof: a typo'd ROUND_CAP must not skip the review loop entirely.
-const rawCap = Number(process.env.ROUND_CAP);
-const ROUND_CAP = Number.isFinite(rawCap) ? Math.min(6, Math.max(1, rawCap)) : 3;
+// Run decisions (models, effort, round cap) resolve per run via getModels().
 
 // Finding identity for repeat detection (camus findingKey, minus file paths —
 // content findings have stable titles instead of code locations).
@@ -21,12 +19,14 @@ function findingKey(f) {
 
 export async function runLoop(run, ctx) {
   const { emit, waitForAnswer, adapters, hivemind, signal } = ctx;
+  const ROUND_CAP = getModels().loop.roundCap;
   const answers = [];
   let costUsd = 0;
   let doneWithFindings = false;
 
   const stage = (name, status, extra = {}) => emit('stage', { name, status, ...extra });
   const log = (line) => emit('log', { line });
+  const sess = (actor) => (line) => emit('session', { actor, line });
 
   // Every human interaction goes through here so it lands in the receipts and
   // the report — content decisions and process overrides alike. Stop pressed
@@ -69,7 +69,7 @@ export async function runLoop(run, ctx) {
     // ---- Plan ------------------------------------------------------------
     stage('plan', 'active');
     const plan = await withRetries('plan', () =>
-      adapters.claude({ stage: 'plan', prompt: planPrompt(run), cwd: ctx.scratchDir, signal, onTick: log }),
+      adapters.claude({ stage: 'plan', prompt: planPrompt(run), cwd: ctx.scratchDir, signal, onTick: log, onSession: sess('maker') }),
     );
     costUsd += plan.costUsd || 0;
     emit('plan', { text: plan.text });
@@ -97,6 +97,7 @@ export async function runLoop(run, ctx) {
         cwd: ctx.scratchDir,
         signal,
         onTick: log,
+        onSession: sess('maker'),
       }),
     );
     costUsd += makeRes.costUsd || 0;
@@ -119,9 +120,10 @@ export async function runLoop(run, ctx) {
         adapters.codex({
           prompt: reviewPrompt({ goal: run.goal, lane: run.lane, draft, round, priorFindings, answers: contentAnswers() }),
           cwd: ctx.scratchDir,
-          effort: MODELS.reviewer.effort,
+          effort: getModels().reviewer.effort,
           signal,
           onTick: log,
+          onSession: sess('reviewer'),
           receiptDir: `${ctx.receiptsDir}/review-r${round}`,
         }),
       );
@@ -191,6 +193,7 @@ export async function runLoop(run, ctx) {
           cwd: ctx.scratchDir,
           signal,
           onTick: log,
+          onSession: sess('maker'),
         }),
       );
       costUsd += fixRes.costUsd || 0;
@@ -227,6 +230,7 @@ export async function runLoop(run, ctx) {
             cwd: ctx.scratchDir,
             signal,
             onTick: log,
+            onSession: sess('maker'),
           }),
         );
         costUsd += fixRes.costUsd || 0;

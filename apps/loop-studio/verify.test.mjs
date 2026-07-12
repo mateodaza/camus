@@ -412,6 +412,35 @@ Community-led growth compounds where paid cannot. Retention differs by cohort or
   }
 }
 
+// --- session-line parsers + runtime config resolution -------------------------
+{
+  const { sessionLineFromEvent } = await import('./lib/adapters/claude.mjs');
+  assert.equal(
+    sessionLineFromEvent({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'WebSearch', input: { query: 'crypto ad policy' } }] } }),
+    'WebSearch: crypto ad policy', 'claude tool_use becomes a session line');
+  assert.equal(
+    sessionLineFromEvent({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'mcp__hivemind__knowledge_search', input: { query: 'gtm' } }] } }),
+    'knowledge_search: gtm', 'mcp prefix stripped');
+  assert.equal(sessionLineFromEvent({ type: 'result', result: 'x' }), null, 'result events are not session lines');
+
+  const { sessionLineFromCodexEvent } = await import('./lib/adapters/codex.mjs');
+  assert.equal(
+    sessionLineFromCodexEvent(JSON.stringify({ type: 'item.completed', item: { type: 'reasoning', summary: 'checking the claim' } })),
+    'reasoning: checking the claim', 'codex reasoning surfaces');
+  assert.ok(
+    sessionLineFromCodexEvent(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } })).includes('10 in / 2 out'),
+    'token usage surfaces');
+  assert.equal(sessionLineFromCodexEvent('not json'), null, 'garbage lines are silent');
+
+  const { getModels } = await import('./lib/models.mjs');
+  const m = getModels();
+  assert.ok(m.maker.model && m.reviewer.model, 'models resolve from the decision record');
+  assert.ok(m.loop.roundCap >= 1 && m.loop.roundCap <= 6, 'round cap resolves in range');
+  process.env.ROUND_CAP = 'three';
+  assert.equal(getModels().loop.roundCap, 3, 'NaN cap falls back to 3, never skips review');
+  delete process.env.ROUND_CAP;
+}
+
 // --- gate: live link check (only when network is available) ------------------
 if (process.env.TEST_NETWORK === '1') {
   const dead = GOOD + '\n3. Archive — https://github.com/Myosin-xyz/does-not-exist-archive\n';

@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import { readFile, mkdir } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MODELS } from '../models.mjs';
+import { getModels } from '../models.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = join(__dirname, '..', '..', 'checks', 'review.schema.json');
@@ -62,7 +62,8 @@ export function normalizeReview(raw, exitCode) {
   };
 }
 
-export async function runCodexReview({ prompt, cwd, effort = MODELS.reviewer.effort, signal, onTick, receiptDir }) {
+export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSession, receiptDir }) {
+  effort ||= getModels().reviewer.effort;
   // codex resolves -o against ITS cwd, not ours — the path must be absolute.
   const dir = resolve(receiptDir);
   await mkdir(dir, { recursive: true });
@@ -70,7 +71,7 @@ export async function runCodexReview({ prompt, cwd, effort = MODELS.reviewer.eff
 
   // Model and effort are always named explicitly — the account default is
   // never reachable (it isn't a decision anyone made).
-  const args = ['exec', '--json', '-s', 'read-only', '-m', MODELS.reviewer.model, '-c', `model_reasoning_effort=${effort}`];
+  const args = ['exec', '--json', '-s', 'read-only', '-m', getModels().reviewer.model, '-c', `model_reasoning_effort=${effort}`];
   if (process.env.CAMUS_CODEX_TIER) args.push('-c', `service_tier=${process.env.CAMUS_CODEX_TIER}`);
   for (const id of (process.env.CAMUS_CODEX_DISABLE_MCP || '').split(',').filter(Boolean)) {
     args.push('-c', `mcp_servers.${id.trim()}.enabled=false`);
@@ -88,8 +89,17 @@ export async function runCodexReview({ prompt, cwd, effort = MODELS.reviewer.eff
     const poke = () => { clearTimeout(idleT); idleT = setTimeout(() => { child.kill('SIGKILL'); finish(-3); }, IDLE_KILL_MS); };
 
     let lastTick = 0;
+    let lineBuf = '';
     const onData = (buf) => {
       poke();
+      lineBuf += buf;
+      const lines = lineBuf.split('\n');
+      lineBuf = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const sess = sessionLineFromCodexEvent(line);
+        if (sess) onSession?.(sess);
+      }
       const now = Date.now();
       if (now - lastTick > 5000) {
         lastTick = now;
@@ -123,6 +133,30 @@ export async function runCodexReview({ prompt, cwd, effort = MODELS.reviewer.eff
     : normalizeReview(raw, exitCode);
   if (!norm.ran && stderrTail) norm.error += ` | codex stderr: ${stderrTail.trim().split('\n').pop()}`;
   return norm;
+}
+
+// One codex --json event in, at most one session line out. Exported for tests.
+export function sessionLineFromCodexEvent(line) {
+  try {
+    const ev = JSON.parse(line);
+    const t = ev.msg?.type || ev.type || '';
+    if (t === 'turn.started') return 'turn started';
+    if (t === 'turn.completed') {
+      const u = ev.usage ?? {};
+      return `turn done · ${u.input_tokens ?? '?'} in / ${u.output_tokens ?? '?'} out tokens`;
+    }
+    if (t === 'item.completed') {
+      const item = ev.item ?? {};
+      const text = String(item.summary ?? item.text ?? '').replace(/\s+/g, ' ').trim();
+      if (item.type === 'reasoning') return text ? `reasoning: ${text.slice(0, 110)}` : 'reasoning…';
+      if (item.type === 'agent_message') return `verdict drafted (${text.length} chars)`;
+      return text ? `${item.type}: ${text.slice(0, 90)}` : null;
+    }
+    if (/error/i.test(t)) return `error: ${String(ev.message ?? t).slice(0, 120)}`;
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function summarizeEvent(line) {

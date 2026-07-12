@@ -99,6 +99,7 @@ const state = {
   timerHandle: null,
   stageEls: new Map(),
   reviewRounds: 0,
+  sessionCount: 0,
 };
 
 const STAGE_DEFS = [
@@ -139,6 +140,13 @@ async function boot() {
         ? `Claude queries ${s.hivemind.base} itself, on its own connector auth`
         : `knowledge_search via ${s.hivemind.mode}: ${s.hivemind.base}`;
     }
+    if (s.engine !== 'mock') {
+      // Live engine: quietly check the machine and surface the setup panel
+      // only when something is actually missing.
+      fetch(`${API}/api/doctor`).then((r) => r.json()).then((report) => {
+        if (!report.ok) renderSetup(report);
+      }).catch(() => {});
+    }
   } catch {
     // Not cosmetic in hosted-UI mode: an unreachable local server would
     // otherwise look like a page that never finished loading.
@@ -167,6 +175,98 @@ async function loadRecents() {
     }
   } catch { /* cosmetic */ }
 }
+
+// ---------------------------------------------------------------------------
+// Setup panel — the doctor, rendered for people who don't debug PATHs
+// ---------------------------------------------------------------------------
+
+function renderSetup(report) {
+  const box = $('setup-panel');
+  box.innerHTML = '';
+  const head = el('div', 'panel-head');
+  head.appendChild(el('span', 'lbl', report.ok ? 'Setup — everything this machine needs is here' : 'Setup — this machine is missing pieces'));
+  const again = el('button', 'ghost', 'Check again');
+  again.onclick = () => openSetup(true);
+  head.appendChild(again);
+  box.appendChild(head);
+  for (const c of report.checks) {
+    const row = el('div', `setup-row ${c.ok ? 'ok' : 'miss'}`);
+    row.appendChild(el('span', 'ic', c.ok ? '✓' : '✕'));
+    row.appendChild(el('span', 's-label', c.label));
+    row.appendChild(el('span', 's-detail', c.detail));
+    box.appendChild(row);
+    if (!c.ok && c.fix) {
+      const fix = el('div', 'setup-fix');
+      const code = el('code', null, c.fix);
+      fix.appendChild(code);
+      box.appendChild(fix);
+    }
+  }
+  box.classList.remove('hidden');
+}
+
+async function openSetup(deep) {
+  try {
+    const report = await (await fetch(`${API}/api/doctor${deep ? '?deep=1' : ''}`)).json();
+    renderSetup(report);
+  } catch {
+    $('setup-panel').innerHTML = '';
+    $('setup-panel').appendChild(el('div', 's-detail', 'The studio server is unreachable, so setup cannot be checked. Start it with: node server.mjs'));
+    $('setup-panel').classList.remove('hidden');
+  }
+}
+
+$('open-setup').addEventListener('click', () => {
+  if (!$('setup-panel').classList.contains('hidden')) { $('setup-panel').classList.add('hidden'); return; }
+  openSetup(true);
+});
+
+// ---------------------------------------------------------------------------
+// Settings panel — the decision record, editable
+// ---------------------------------------------------------------------------
+
+async function openSettings() {
+  const panel = $('settings-panel');
+  if (!panel.classList.contains('hidden')) { panel.classList.add('hidden'); return; }
+  try {
+    const c = await (await fetch(`${API}/api/config`)).json();
+    $('set-maker').value = c.maker.model;
+    $('set-reviewer').value = c.reviewer.model;
+    $('set-effort').value = c.reviewer.effort;
+    $('set-roundcap').value = c.loop.roundCap;
+    $('settings-env').textContent = c.envOverrides.length
+      ? `note: ${c.envOverrides.join(', ')} set in the environment — env wins over these fields this session`
+      : '';
+    $('settings-note').textContent = '';
+    panel.classList.remove('hidden');
+  } catch {
+    $('settings-note').textContent = 'server unreachable';
+  }
+}
+
+$('open-settings').addEventListener('click', openSettings);
+
+$('save-settings').addEventListener('click', async () => {
+  $('settings-note').textContent = 'saving…';
+  try {
+    const res = await fetch(`${API}/api/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        maker: $('set-maker').value,
+        reviewer: $('set-reviewer').value,
+        effort: $('set-effort').value,
+        roundCap: Number($('set-roundcap').value),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    $('settings-note').textContent = 'saved — applies from the next run';
+    boot(); // pills reflect the new decisions
+  } catch (err) {
+    $('settings-note').textContent = `not saved: ${err.message}`;
+  }
+});
 
 $('lanes').addEventListener('click', (e) => {
   const btn = e.target.closest('.lane');
@@ -209,6 +309,9 @@ $('start').addEventListener('click', async () => {
 function attach(id, goal) {
   state.runId = id;
   state.revs = [];
+  state.sessionCount = 0;
+  $('session-pre').textContent = '';
+  $('session-toggle').textContent = 'Show the session';
   state.selectedRev = null;
   state.followRev = true;
   state.reviewRounds = 0;
@@ -261,6 +364,13 @@ function attach(id, goal) {
     }
   };
 }
+
+$('session-toggle').addEventListener('click', () => {
+  const box = $('session');
+  const open = box.classList.toggle('hidden');
+  $('session-toggle').textContent = open ? `Show the session (${state.sessionCount})` : 'Hide the session';
+  if (!open) box.scrollTop = box.scrollHeight;
+});
 
 $('back').addEventListener('click', () => {
   state.es?.close();
@@ -384,6 +494,19 @@ function handle(ev) {
     case 'log':
       feed(el('div', 'logline', ev.line));
       break;
+
+    case 'session': {
+      state.sessionCount += 1;
+      const pre = $('session-pre');
+      const glyph = ev.actor === 'reviewer' ? 'r' : 'm';
+      pre.appendChild(el('span', 'sm', `${glyph} · `));
+      pre.appendChild(document.createTextNode(`${ev.line}\n`));
+      while (pre.childNodes.length > 800) pre.removeChild(pre.firstChild);
+      const box = $('session');
+      if (!box.classList.contains('hidden')) box.scrollTop = box.scrollHeight;
+      if (box.classList.contains('hidden')) $('session-toggle').textContent = `Show the session (${state.sessionCount})`;
+      break;
+    }
 
     case 'plan': {
       feed(el('div', 'plancard', ev.text));

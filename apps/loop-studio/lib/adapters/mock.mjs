@@ -101,19 +101,33 @@ export function createMockAdapters() {
 
   return {
     name: 'mock',
-    async claude({ stage, signal, onTick }) {
+    async claude({ stage, signal, onTick, onSession }) {
       onTick?.(stage === 'plan' ? 'planning…' : 'drafting — researching sources…');
-      await sleep(stage === 'plan' ? 2500 : 6000, signal);
+      if (stage !== 'plan') {
+        onSession?.('WebSearch: crypto ad policy restrictions 2026');
+        await sleep(2500, signal);
+        onSession?.('WebFetch: https://a16zcrypto.com');
+        await sleep(2000, signal);
+        onSession?.('WebSearch: airdrop cohort retention decay');
+        await sleep(1500, signal);
+      } else {
+        await sleep(2500, signal);
+      }
       if (stage === 'plan') return { ok: true, error: null, text: PLAN, costUsd: 0.004 };
       claudeCalls += 1;
       const revs = [REV1, REV2, REV3, REV4];
       return { ok: true, error: null, text: revs[Math.min(claudeCalls - 1, revs.length - 1)], costUsd: 0.02 };
     },
-    async codex({ signal, onTick }) {
+    async codex({ signal, onTick, onSession }) {
       onTick?.('reviewer reading and drafting findings…');
+      onSession?.('turn started');
       await sleep(3000, signal);
+      onSession?.('reasoning: checking the retention claim against the cited sources');
       onTick?.('reviewer checking evidence…');
-      await sleep(4000, signal);
+      await sleep(3000, signal);
+      onSession?.('reasoning: scanning for promissory phrasing and unsupported multiples');
+      await sleep(1000, signal);
+      onSession?.('verdict drafted (412 chars)');
       const r = REVIEWS[Math.min(reviewCalls, REVIEWS.length - 1)];
       reviewCalls += 1;
       const findings = r.findings;

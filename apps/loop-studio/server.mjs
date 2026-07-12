@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Camus Loop Studio — local server. Zero dependencies: Node stdlib http serves
 // the UI, runs the loop, streams events over SSE, and writes receipts under
 // runs/<id>/ (events.jsonl + every revision + report.json) so each run leaves
@@ -15,7 +16,7 @@ import { runCodexReview } from './lib/adapters/codex.mjs';
 import { createMockAdapters } from './lib/adapters/mock.mjs';
 import * as hivemind from './lib/adapters/hivemind.mjs';
 import { LANES } from './lib/verify.mjs';
-import { MODELS, modelsSummary } from './lib/models.mjs';
+import { getModels, updateModels, modelsSummary } from './lib/models.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dirname, 'public');
@@ -30,41 +31,16 @@ const runs = new Map(); // id -> { run, events, subscribers, answer, abort }
 // ---------------------------------------------------------------------------
 
 if (process.argv.includes('--doctor')) {
-  const check = (cmd, args) =>
-    new Promise((resolve) =>
-      execFile(cmd, args, { timeout: 20_000 }, (err, stdout, stderr) =>
-        resolve(err ? `MISSING (${err.code ?? err.message})` : String(stdout || stderr).trim().split('\n')[0]),
-      ),
-    );
-  const [claudeV, codexV, gitV] = await Promise.all([
-    check('claude', ['--version']),
-    check('codex', ['--version']),
-    check('git', ['--version']),
-  ]);
-  const hm = hivemind.hivemindStatus();
-  let hmLine = hm.connected ? `connected (${hm.mode}: ${hm.base})` : 'not connected — stub adapter';
-  if (hm.mode === 'claude') {
-    // Via-claude rides the token stored by an interactive OAuth — verify the
-    // CLI actually has a server named "hivemind" registered.
-    const list = await new Promise((resolve) =>
-      execFile('claude', ['mcp', 'list'], { timeout: 45_000 }, (_e, stdout) => resolve(String(stdout || ''))),
-    );
-    const registered = /^hivemind:/m.test(list);
-    hmLine = registered
-      ? `via Claude MCP (no key) — "hivemind" registered in claude mcp list · ${hm.base}`
-      : `via Claude MCP requested, but no server named "hivemind" in claude mcp list.\n           One-time setup: claude mcp add --transport http hivemind ${hm.base}\n           then authenticate it in an interactive session (/mcp).`;
+  const { runDoctor } = await import('./lib/doctor.mjs');
+  const report = await runDoctor({ deep: true, engine: ENGINE });
+  console.log('camus-loop-studio doctor');
+  for (const c of report.checks) {
+    console.log(`  ${c.ok ? 'ok  ' : 'MISS'}  ${c.label.padEnd(28)} ${c.detail}`);
+    if (!c.ok && c.fix) console.log(`        fix: ${c.fix}`);
   }
-  console.log(`camus-loop-studio doctor
-  node     ${process.version}
-  claude   ${claudeV}
-  codex    ${codexV}
-  git      ${gitV}${gitV.startsWith('MISSING') ? ' — codex reviews will run outside a git repo' : ''}
-  models   ${modelsSummary()} — maker pinned by ${MODELS.maker.source}, reviewer by ${MODELS.reviewer.source}; account defaults are never used
-  hivemind ${hmLine}
-  engine   ${ENGINE}${ENGINE === 'mock' ? ' (rehearsal — no model calls)' : ''}`);
-  const broken = ENGINE === 'live' && (claudeV.startsWith('MISSING') || codexV.startsWith('MISSING'));
-  if (broken) console.log('\n  Live engine needs both CLIs on PATH. Rehearse with: npm run rehearse');
-  process.exit(broken ? 1 : 0);
+  console.log(`  engine ${ENGINE}${ENGINE === 'mock' ? ' (rehearsal — no model calls)' : ''}`);
+  if (!report.ok) console.log('\n  Live engine is missing pieces. Rehearse meanwhile with: npm run rehearse');
+  process.exit(report.ok ? 0 : 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -140,7 +116,7 @@ async function startRun({ goal, lane, depth, ground }) {
     ENGINE === 'mock' ? (() => { const m = createMockAdapters(); return { claude: m.claude, codex: m.codex }; })()
       : { claude: runClaude, codex: runCodexReview };
 
-  emit('run', { run: { id, goal, lane, depth, ground, engine: ENGINE, roundCap: process.env.ROUND_CAP || 3 } });
+  emit('run', { run: { id, goal, lane, depth, ground, engine: ENGINE, roundCap: getModels().loop.roundCap } });
   if (!gitOk) emit('log', { line: '⚠ git unavailable — codex reviews will run outside a git repo (different conditions than camus)' });
 
   runLoop(run, {
@@ -235,12 +211,41 @@ const server = http.createServer(async (req, res) => {
 
   try {
     // ---- API ----
+    if (path === '/api/doctor' && req.method === 'GET') {
+      const { runDoctor } = await import('./lib/doctor.mjs');
+      return json(res, 200, await runDoctor({ deep: url.searchParams.get('deep') === '1', engine: ENGINE }));
+    }
+
+    if (path === '/api/config' && req.method === 'GET') {
+      const m = getModels();
+      return json(res, 200, {
+        maker: m.maker, reviewer: m.reviewer, loop: m.loop,
+        envOverrides: ['CLAUDE_MODEL', 'CODEX_MODEL', 'CODEX_EFFORT', 'ROUND_CAP'].filter((k) => process.env[k] !== undefined),
+      });
+    }
+
+    if (path === '/api/config' && req.method === 'POST') {
+      const body = await readBody(req);
+      const effort = body.effort;
+      if (effort && !['low', 'medium', 'high', 'xhigh'].includes(effort)) {
+        return json(res, 400, { error: 'effort must be low, medium, high, or xhigh' });
+      }
+      const roundCap = body.roundCap === undefined ? undefined : Number(body.roundCap);
+      if (roundCap !== undefined && (!Number.isInteger(roundCap) || roundCap < 1 || roundCap > 6)) {
+        return json(res, 400, { error: 'roundCap must be an integer from 1 to 6' });
+      }
+      const maker = body.maker?.trim() || undefined;
+      const reviewer = body.reviewer?.trim() || undefined;
+      const m = updateModels({ maker, reviewer, effort, roundCap });
+      return json(res, 200, { maker: m.maker, reviewer: m.reviewer, loop: m.loop, note: 'applies from the next run' });
+    }
+
     if (path === '/api/status' && req.method === 'GET') {
       return json(res, 200, {
         engine: ENGINE,
-        models: { maker: MODELS.maker.model, reviewer: MODELS.reviewer.model, effort: MODELS.reviewer.effort },
+        models: { maker: getModels().maker.model, reviewer: getModels().reviewer.model, effort: getModels().reviewer.effort },
         hivemind: hivemind.hivemindStatus(),
-        roundCap: Number(process.env.ROUND_CAP || 3),
+        roundCap: getModels().loop.roundCap,
         lanes: Object.fromEntries(Object.entries(LANES).map(([k, v]) => [k, v.label])),
       });
     }

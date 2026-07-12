@@ -17,7 +17,43 @@
         <span id="pill-engine" class="pill">engine…</span>
         <span id="pill-hivemind" class="pill">hivemind…</span>
       </div>
+      <p class="scope">Research and analysis on any topic. Marketing is the first tuned lane — code comes later.</p>
+      <div class="tools">
+        <button id="open-setup" class="ghost">setup</button>
+        <button id="open-settings" class="ghost">settings</button>
+      </div>
     </header>
+
+    <section id="setup-panel" class="card panel hidden" aria-label="Setup checks"></section>
+
+    <section id="settings-panel" class="card panel hidden" aria-label="Run settings">
+      <div class="panel-head">
+        <span class="lbl">Run settings — decisions, recorded</span>
+        <span id="settings-note" class="hint"></span>
+      </div>
+      <div class="settings-grid">
+        <label>maker (drafts &amp; fixes)
+          <input id="set-maker" list="maker-models" autocomplete="off" />
+          <datalist id="maker-models"><option value="sonnet"/><option value="opus"/><option value="haiku"/></datalist>
+        </label>
+        <label>reviewer (codex)
+          <input id="set-reviewer" list="reviewer-models" autocomplete="off" />
+          <datalist id="reviewer-models"><option value="gpt-5.4"/><option value="gpt-5.5"/><option value="gpt-5.4-mini"/><option value="gpt-5.6-sol"/></datalist>
+        </label>
+        <label>reviewer effort
+          <select id="set-effort">
+            <option>low</option><option>medium</option><option>high</option><option>xhigh</option>
+          </select>
+        </label>
+        <label>review rounds (1–6)
+          <input id="set-roundcap" type="number" min="1" max="6" step="1" />
+        </label>
+      </div>
+      <div class="panel-actions">
+        <button id="save-settings" class="primary">Save decisions</button>
+        <span id="settings-env" class="hint"></span>
+      </div>
+    </section>
 
     <section class="card form">
       <label class="lbl" for="goal">The goal — brief it like you'd brief a strategist</label>
@@ -85,6 +121,10 @@
       <nav class="stages" id="stages"></nav>
       <section class="feed-wrap">
         <div class="feed" id="feed" role="log" aria-label="Run activity"></div>
+        <div class="session-wrap">
+          <button id="session-toggle" class="ghost">Show the session</button>
+          <div id="session" class="session hidden"><pre id="session-pre" aria-label="Raw model session"></pre></div>
+        </div>
       </section>
       <section class="doc-wrap">
         <div class="doc-head">

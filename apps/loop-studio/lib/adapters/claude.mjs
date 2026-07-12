@@ -6,7 +6,7 @@
 // the machine — including reads.
 
 import { spawn } from 'node:child_process';
-import { MODELS } from '../models.mjs';
+import { getModels } from '../models.mjs';
 import { viaClaude } from './hivemind.mjs';
 
 const TIMEOUTS = { plan: 120_000, make: 540_000, fix: 420_000 };
@@ -15,7 +15,22 @@ function fail(error) {
   return { ok: false, error, text: null, costUsd: 0 };
 }
 
-export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick }) {
+// One stream-json line in, at most one human-readable session line out.
+// Exported for tests.
+export function sessionLineFromEvent(ev) {
+  if (ev?.type !== 'assistant') return null;
+  for (const item of ev.message?.content ?? []) {
+    if (item.type === 'tool_use') {
+      const input = item.input ?? {};
+      const arg = input.query ?? input.url ?? input.prompt ?? Object.values(input)[0] ?? '';
+      const name = item.name.replace(/^mcp__[^_]+__/, '');
+      return `${name}: ${String(arg).slice(0, 110)}`;
+    }
+  }
+  return null;
+}
+
+export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, onSession }) {
   const hm = stage === 'plan' ? { enabled: false } : viaClaude();
   const builtins = stage === 'plan' ? '' : 'WebSearch,WebFetch';
   const mcpTools = hm.enabled
@@ -32,10 +47,11 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick })
   // interactive OAuth).
   const args = [
     '-p', prompt,
-    '--output-format', 'json',
+    '--output-format', 'stream-json',
+    '--verbose',
     '--max-turns', maxTurns,
     '--strict-mcp-config',
-    '--model', MODELS.maker.model,
+    '--model', getModels().maker.model,
     '--tools', builtins,
   ];
   if (hm.enabled) {
@@ -43,17 +59,33 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick })
   }
   if (allowed) args.push('--allowedTools', allowed);
 
-  const { exitCode, stdout, stderr } = await new Promise((resolve) => {
+  const { exitCode, stdout, stderr, resultEvent } = await new Promise((resolve) => {
     const child = spawn('claude', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
+    let lineBuf = '';
+    let result = null;
     let done = false;
     const finish = (code) => {
-      if (!done) { done = true; clearTimeout(t); clearInterval(tick); resolve({ exitCode: code, stdout: out, stderr: err }); }
+      if (!done) { done = true; clearTimeout(t); clearInterval(tick); resolve({ exitCode: code, stdout: out, stderr: err, resultEvent: result }); }
     };
     const t = setTimeout(() => { child.kill('SIGKILL'); finish(-2); }, TIMEOUTS[stage] ?? 540_000);
     const tick = setInterval(() => onTick?.(stage === 'plan' ? 'planning…' : 'drafting — researching sources…'), 8000);
-    child.stdout.on('data', (b) => { out += b; });
+    child.stdout.on('data', (b) => {
+      out += b;
+      lineBuf += b;
+      const lines = lineBuf.split('\n');
+      lineBuf = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const ev = JSON.parse(line);
+          if (ev.type === 'result') result = ev;
+          const sess = sessionLineFromEvent(ev);
+          if (sess) onSession?.(sess);
+        } catch { /* partial or non-JSON line */ }
+      }
+    });
     child.stderr.on('data', (b) => { err += b; });
     signal?.addEventListener('abort', () => { child.kill('SIGKILL'); finish(-4); }, { once: true });
     child.on('error', (e) => { err += `spawn error: ${e.code || e.message}`; finish(-1); });
@@ -65,13 +97,16 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick })
   if (exitCode === -4) return fail('aborted by user');
   if (exitCode !== 0) return fail(`claude exited ${exitCode}: ${(stderr || stdout).slice(0, 300)}`);
 
-  let data;
-  try {
-    data = JSON.parse(stdout);
-  } catch {
-    // Some versions prepend warnings; recover the trailing JSON object.
-    const start = stdout.indexOf('{');
-    try { data = JSON.parse(stdout.slice(start)); } catch { return fail(`unparseable claude output: ${stdout.slice(0, 200)}`); }
+  // stream-json: the terminal `result` event carries the final text; fall
+  // back to whole-output parse for older CLIs that ignore the format flag.
+  let data = resultEvent;
+  if (!data) {
+    try {
+      data = JSON.parse(stdout);
+    } catch {
+      const start = stdout.indexOf('{');
+      try { data = JSON.parse(stdout.slice(start)); } catch { return fail(`no result event and unparseable claude output: ${stdout.slice(0, 200)}`); }
+    }
   }
   if (data.is_error) return fail(`claude reported an error: ${String(data.result).slice(0, 300)}`);
   const text = String(data.result ?? '').trim();

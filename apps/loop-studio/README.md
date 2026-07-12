@@ -25,6 +25,14 @@ npm run rehearse           # mock engine: full scripted loop, no model calls, ~2
 npm test                   # deterministic-verifier self-test
 ```
 
+## For people who don't live in a terminal
+
+The setup is guided from inside the page. One command starts the studio (`node server.mjs`, or `npx camus-loop-studio` once published); everything after that happens in the browser:
+
+- The **setup** panel runs the same checks as `--doctor`, row by row, and every missing piece comes with the exact command to paste — install Claude Code, install Codex, sign in once each. "Check again" re-verifies without restarting anything.
+- The **settings** panel edits the run decisions (maker model, reviewer model, effort, review rounds) and writes them back to [checks/models.json](checks/models.json) with a stamped why — the decision record stays the source of truth, no file editing required.
+- **Show the session** (in a running view) opens the raw feed underneath the loop: the maker's live searches, the reviewer's reasoning, token counts — the "what is it actually doing right now" view.
+
 ## Models are decisions
 
 Every model is named explicitly on every call (`claude --model`, `codex -m`) — **account and CLI defaults are never reachable.** [checks/models.json](checks/models.json) is the decision record (current: maker `sonnet`, reviewer `gpt-5.4` at `low` effort, with the why and the date). Change a model there deliberately; `--doctor` and the UI status pill always show what's pinned.
