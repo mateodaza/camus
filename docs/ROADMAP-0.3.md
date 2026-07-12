@@ -1,5 +1,11 @@
 # Camus 0.3 — Roadmap
 
+> **Emphasis rerouted 2026-07-12 — see [DIRECTION-0.3-TRUST-LAYER.md](DIRECTION-0.3-TRUST-LAYER.md).**
+> The headline of 0.3 is executor/auditor independence with sealed, portable evidence —
+> Camus surrenders choreography, keeps custody. Every trust item below survives;
+> bookend/forward become audit-timing policies rather than the lead, and automatic
+> routing waits for calibration data. The revised implementation order lives there.
+
 Consolidated from VELOCITY-DIRECTION.md, HARNESS-DIRECTION.md, and the 0.2.5 smoke/audit
 arc (2026-06-12). Items are ordered by decided-ness, not by build order.
 

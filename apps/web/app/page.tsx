@@ -11,7 +11,7 @@ export default function Home() {
       <main id="top">
         <header className="hero">
           <div className="wrap hero-in">
-            <p className="hero-kicker">An agent gate for Claude Code</p>
+            <p className="hero-kicker">An independent trust layer for agent work</p>
             <h1 className="hero-h1">
               <span className="lockup">
                 <ClimbLoop />
@@ -30,7 +30,7 @@ export default function Home() {
               <a className="cta-ghost" href="https://github.com/mateodaza/camus">GitHub &#8599;</a>
             </div>
             <div className="hero-proof">
-              <b>cross-model review</b>
+              <b>cross-vendor audit</b>
               <b>isolated worktrees</b>
               <b>head-bound verify</b>
               <b>crash-safe resume</b>
@@ -86,8 +86,8 @@ export default function Home() {
                   <h2 className="sec-h2">Every change clears an outside reviewer.</h2>
                   <p className="sec-sub">
                     Real accountability comes from outside. Claude could run the whole loop and sign
-                    off on itself, so Camus pairs it with Codex, made by a competitor, and abides by
-                    its verdict. The pairing is the point.
+                    off on itself, so Camus pairs it with a rival — Codex today — and abides by the
+                    verdict. Models will change monthly; the independence is the point.
                   </p>
                 </div>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -262,7 +262,11 @@ $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
                   it tells one more round from a decision worth a human, because perfection is out
                   of reach and knowing when to stop is not.
                 </p>
-                <p>It runs on two rival models, so every change answers to an outside reviewer.</p>
+                <p>It pairs rival models, so every change answers to an outside auditor. The models will change; the independence stays.</p>
+                <p>
+                  It surrenders choreography and keeps custody: whoever&apos;s agents do the work,
+                  the artifact, the verdict, and the merge stay bound to evidence.
+                </p>
                 <p>It runs unwatched, so the checks are what let you trust a green run.</p>
               </div>
             </Reveal>

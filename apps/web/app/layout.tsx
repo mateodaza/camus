@@ -40,7 +40,7 @@ const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://camus.sh';
 
 const TITLE = 'Camus: makes it work, knows when to stop';
 const DESCRIPTION =
-  'Camus runs a coding task from plan to verified commit, unattended. A competing model reviews every change, your own tests have the final word — and when the judges disagree, you get a decision instead of churn.';
+  'Camus is an independent trust layer for agent work. A rival model audits every change, deterministic checks have the final word, and every green binds to the exact artifact it certified — so the receipts, and never the agents, answer whether to trust the work.';
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),

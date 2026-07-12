@@ -13,6 +13,7 @@ The studio is the loop's visual front door, and it grows in this order:
 1. **Words, any topic** (today) — research memos, teardowns, freeform analysis.
 2. **Marketing as the first tuned vertical** — the compliance wordlist ships web3-marketing defaults and grounding rides Myosin's Hivemind, because that is where the studio has real internal knowledge to stand on (and the two products co-market).
 3. **Back to code** (shipped, beta) — the Build lane points the camus gate at a git repo on this machine: isolated worktree, cross-model review, the repo's own tests as the verdict, needs_human pauses answered from the same question card. Next: one goal in, the studio decides build or research by itself.
+4. **One trust protocol, two languages** — executor/auditor for code, researcher/critic for words. Sealed evidence packs, a claims ledger for citations, and derived trust statuses land here first: the studio is where the receipts become visible. Direction: [docs/DIRECTION-0.3-TRUST-LAYER.md](../../docs/DIRECTION-0.3-TRUST-LAYER.md).
 
 ## Quickstart
 
