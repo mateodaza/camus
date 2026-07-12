@@ -186,6 +186,8 @@ function attach(id, goal) {
   $('launch').classList.add('hidden');
   $('runview').classList.remove('hidden');
   $('rungoal').textContent = goal || id;
+  $('run-cost').textContent = ''; // don't carry the previous run's spend
+  $('run-timer').textContent = '0:00';
   $('feed').innerHTML = '';
   $('revtabs').innerHTML = '';
   $('doc').innerHTML = '<div class="doc-empty">The deliverable appears here as the loop drafts it.</div>';
