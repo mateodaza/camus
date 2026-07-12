@@ -44,7 +44,7 @@ a { color: inherit; }
 /* ---------- Launch ---------- */
 .launch { max-width: 720px; margin: 0 auto; padding: 56px 24px 64px; display: flex; flex-direction: column; gap: 30px; }
 .brand { text-align: center; }
-.wordmark { font-family: var(--serif); font-weight: 500; font-size: 42px; line-height: 1; letter-spacing: -.02em; }
+.wordmark { font-family: var(--serif); font-weight: 500; font-size: 42px; line-height: 1; letter-spacing: -.03em; }
 .wordmark .serif { font-family: inherit; }
 .tagline { font-family: var(--serif); font-size: 19px; letter-spacing: -.006em; margin-top: 10px; }
 .pills { display: flex; gap: 8px; justify-content: center; margin-top: 18px; flex-wrap: wrap; }
