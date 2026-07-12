@@ -17,6 +17,10 @@ npm run rehearse           # mock engine: full scripted loop, no model calls, ~2
 npm test                   # deterministic-verifier self-test
 ```
 
+## Models are decisions
+
+Every model is named explicitly on every call (`claude --model`, `codex -m`) — **account and CLI defaults are never reachable.** [checks/models.json](checks/models.json) is the decision record (current: maker `sonnet`, reviewer `gpt-5.4` at `low` effort, with the why and the date). Change a model there deliberately; `--doctor` and the UI status pill always show what's pinned.
+
 Useful env:
 
 | Var | Effect |
@@ -25,9 +29,9 @@ Useful env:
 | `MOCK_SPEED=2` | Slow the rehearsal beats down (e.g. while narrating) |
 | `MOCK_OFFLINE=1` | Skip network link-checks (venue with no wifi) |
 | `ROUND_CAP=3` | Review round budget (1–6) |
-| `CODEX_EFFORT=medium` | Reviewer reasoning effort (`low`\|`medium`\|`high`) |
+| `CLAUDE_MODEL`, `CODEX_MODEL`, `CODEX_EFFORT` | Override the models.json decisions for one session |
 | `CAMUS_CODEX_TIER`, `CAMUS_CODEX_DISABLE_MCP` | Passed through to `codex exec` exactly as camus does |
-| `CLAUDE_MODEL` | Override the maker model |
+| `HIVEMIND_MCP_URL`, `HIVEMIND_API_KEY` | Ground drafts via the Hivemind MCP (see below) |
 | `PORT=1913` | Camus was born in 1913 |
 
 ## What the deterministic gate checks
@@ -51,20 +55,19 @@ The verify stage is mechanical — no model, no mercy ([lib/verify.mjs](lib/veri
 
 Every run writes `runs/<id>/`: `events.jsonl` (the full event stream — the UI can replay finished runs from it), `rev-N.md` per revision, per-round codex verdicts, and `report.json`. Every human choice — content decisions, retries, stuck-finding accepts, verify overrides — is recorded in both the event stream and the report's `answers` array, with its kind. Nothing about a run lives only in the browser.
 
-## Hivemind
+## Hivemind (MCP-first)
 
-[lib/adapters/hivemind.mjs](lib/adapters/hivemind.mjs) is the seam. Today it speaks REST when configured, otherwise it's an honest stub (UI shows "not connected"; runs proceed ungrounded):
+[lib/adapters/hivemind.mjs](lib/adapters/hivemind.mjs) is the seam, and it now speaks the Hivemind MCP natively via a zero-dependency client ([lib/mcp-client.mjs](lib/mcp-client.mjs)) that matches the hive-mind server contract: stateless streamable HTTP on `/api/mcp`, `x-api-key` auth, SSE-framed responses.
 
 ```bash
-export HIVEMIND_API_URL="https://<hivemind-host>"
-export HIVEMIND_API_KEY="..."
-# optional: HIVEMIND_SEARCH_PATH, HIVEMIND_ARTIFACT_PATH
+export HIVEMIND_MCP_URL="https://hivemind.myosin.xyz"   # /api/mcp is appended if omitted
+export HIVEMIND_API_KEY="hm_k_..."                       # admin-issued Hivemind knowledge key
 ```
 
-- **In**: `searchKnowledge(goal)` retrieves knowledge chunks that get injected into the draft prompt as `[H1]`-citable grounding.
-- **Out**: `publishArtifact()` writes the verified deliverable back as a Hivemind artifact.
+Resolution order per call: **MCP** → REST fallback (`HIVEMIND_API_URL`) → honest stub (UI shows "not connected"; runs proceed ungrounded, never silently).
 
-**When the Hivemind MCP server is live**: replace the bodies of those two functions with MCP calls — the engine only knows the interface, nothing else changes.
+- **In**: `searchKnowledge(goal)` calls the `knowledge_search` MCP tool and injects the returned chunks (title — author, excerpt, relevance) into the draft prompt as `[H1]`-citable grounding; the verifier checks those `[Hn]` markers resolve.
+- **Out**: `publishArtifact()` — the hive-mind MCP **deliberately defers artifact tools** for now, so publish uses REST when `HIVEMIND_API_URL` is also set and otherwise logs that the deliverable stayed local. When the artifact tool ships over MCP, it's one function body.
 
 ## Demo-day runbook
 

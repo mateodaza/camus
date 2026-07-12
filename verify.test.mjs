@@ -127,6 +127,60 @@ Community-led growth compounds where paid cannot. Retention differs by cohort or
   fixture.close();
 }
 
+// --- hivemind MCP adapter against a local fixture ----------------------------
+// The fixture mirrors the hive-mind /api/mcp contract: stateless streamable
+// HTTP, x-api-key auth, every response SSE-framed, knowledge_search results
+// JSON-stringified into content[0].text.
+{
+  const { createServer } = await import('node:http');
+  const CHUNKS = [
+    { chunk_id: 'c-1', title: 'Onchain GTM Stack', author: 'Tridog', content: 'Build community first, then raise capital.', score: 0.8, relevance: '80%' },
+    { chunk_id: 'c-2', title: 'Founder-led Marketing', author: 'Greg', content: 'In crypto, narrative is market share.', score: 0.5, relevance: '50%' },
+  ];
+  const sse = (obj) => `event: message\ndata: ${JSON.stringify(obj)}\n\n`;
+  const fixture = createServer(async (req, res) => {
+    if (req.method !== 'POST' || req.url !== '/api/mcp') return res.writeHead(405).end();
+    if (req.headers['x-api-key'] !== 'hm_k_test') return res.writeHead(401).end('{"error":"unauthorized"}');
+    let body = '';
+    for await (const c of req) body += c;
+    const msg = JSON.parse(body);
+    if (msg.method === 'notifications/initialized') return res.writeHead(202).end();
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    if (msg.method === 'initialize') {
+      return res.end(sse({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-03-26', capabilities: {}, serverInfo: { name: 'hivemind', version: '0.1.0' } } }));
+    }
+    if (msg.method === 'tools/call' && msg.params.name === 'knowledge_search') {
+      const payload = { success: true, data: { chunks: CHUNKS, total_results: 2, query: msg.params.arguments.query } };
+      return res.end(sse({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] } }));
+    }
+    res.end(sse({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'unknown method' } }));
+  });
+  await new Promise((r) => fixture.listen(0, '127.0.0.1', r));
+  const origin = `http://127.0.0.1:${fixture.address().port}`;
+
+  process.env.HIVEMIND_MCP_URL = origin; // bare origin — adapter must append /api/mcp
+  process.env.HIVEMIND_API_KEY = 'hm_k_test';
+  const { searchKnowledge, hivemindStatus } = await import('./lib/adapters/hivemind.mjs');
+
+  assert.deepEqual(hivemindStatus(), { connected: true, mode: 'mcp', base: `${origin}/api/mcp` }, 'status reports mcp mode');
+  const logs = [];
+  const items = await searchKnowledge('community vs paid', 4, (l) => logs.push(l));
+  assert.equal(items.length, 2, 'maps both chunks');
+  assert.equal(items[0].title, 'Onchain GTM Stack — Tridog', 'title carries author');
+  assert.equal(items[0].ref, 'c-1', 'ref is chunk_id');
+  assert.equal(items[0].score, 0.8, 'score preserved');
+  assert.ok(logs[0].includes('via mcp'), 'log names the transport');
+
+  // Wrong key → adapter degrades to ungrounded, never throws into the loop.
+  process.env.HIVEMIND_API_KEY = 'hm_k_wrong';
+  const denied = await searchKnowledge('anything', 4, () => {});
+  assert.equal(denied, null, '401 degrades to ungrounded');
+
+  delete process.env.HIVEMIND_MCP_URL;
+  delete process.env.HIVEMIND_API_KEY;
+  fixture.close();
+}
+
 // --- gate: live link check (only when network is available) ------------------
 if (process.env.TEST_NETWORK === '1') {
   const dead = GOOD + '\n3. Archive — https://github.com/Myosin-xyz/does-not-exist-archive\n';

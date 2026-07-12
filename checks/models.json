@@ -1,0 +1,12 @@
+{
+  "description": "The model decision record. Every model here is passed explicitly on every call (claude --model, codex -m) — account and CLI defaults are never reachable. Change a model by changing this file (or the env overrides CLAUDE_MODEL / CODEX_MODEL / CODEX_EFFORT), and say so in the commit.",
+  "maker": {
+    "model": "sonnet",
+    "why": "Claude Code alias, stable across CLI versions; drafts and fixes are research+writing work where Sonnet's speed/cost fits a live demo. Decided 2026-07-12."
+  },
+  "reviewer": {
+    "model": "gpt-5.4",
+    "effort": "low",
+    "why": "Verified working on codex-cli 0.137.0 (2026-07-12 live fire). The account default gpt-5.6-sol requires a newer CLI — after upgrading codex, revisit this pin deliberately. Effort low keeps demo rounds fast; raise to medium for real deliverables."
+  }
+}

@@ -15,6 +15,7 @@ import { runCodexReview } from './lib/adapters/codex.mjs';
 import { createMockAdapters } from './lib/adapters/mock.mjs';
 import * as hivemind from './lib/adapters/hivemind.mjs';
 import { LANES } from './lib/verify.mjs';
+import { MODELS, modelsSummary } from './lib/models.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dirname, 'public');
@@ -41,7 +42,8 @@ if (process.argv.includes('--doctor')) {
   node     ${process.version}
   claude   ${claudeV}
   codex    ${codexV}
-  hivemind ${hm.connected ? `connected (${hm.base})` : 'not connected — stub adapter (set HIVEMIND_API_URL + HIVEMIND_API_KEY)'}
+  models   ${modelsSummary()} — pinned by ${MODELS.reviewer.source}; account defaults are never used
+  hivemind ${hm.connected ? `connected (${hm.mode}: ${hm.base})` : 'not connected — stub adapter'}
   engine   ${ENGINE}${ENGINE === 'mock' ? ' (rehearsal — no model calls)' : ''}`);
   const broken = ENGINE === 'live' && (claudeV.startsWith('MISSING') || codexV.startsWith('MISSING'));
   if (broken) console.log('\n  Live engine needs both CLIs on PATH. Rehearse with: npm run rehearse');
@@ -167,6 +169,7 @@ const server = http.createServer(async (req, res) => {
     if (path === '/api/status' && req.method === 'GET') {
       return json(res, 200, {
         engine: ENGINE,
+        models: { maker: MODELS.maker.model, reviewer: MODELS.reviewer.model, effort: MODELS.reviewer.effort },
         hivemind: hivemind.hivemindStatus(),
         roundCap: Number(process.env.ROUND_CAP || 3),
         lanes: Object.fromEntries(Object.entries(LANES).map(([k, v]) => [k, v.label])),

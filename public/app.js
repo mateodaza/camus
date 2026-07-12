@@ -105,17 +105,19 @@ async function boot() {
   try {
     const s = await (await fetch('/api/status')).json();
     const eng = $('pill-engine');
-    eng.textContent = s.engine === 'mock' ? 'engine: rehearsal (mock)' : 'engine: live · claude + codex';
+    eng.textContent = s.engine === 'mock'
+      ? 'engine: rehearsal (mock)'
+      : `engine: live · ${s.models.maker} + ${s.models.reviewer} (${s.models.effort})`;
     eng.classList.add(s.engine === 'mock' ? 'warn' : 'ok');
     const hm = $('pill-hivemind');
-    hm.textContent = s.hivemind.connected ? 'hivemind: connected' : 'hivemind: not connected';
+    hm.textContent = s.hivemind.connected ? `hivemind: connected (${s.hivemind.mode})` : 'hivemind: not connected';
     hm.classList.add(s.hivemind.connected ? 'ok' : 'warn');
     if (!s.hivemind.connected) {
       $('ground').disabled = true;
-      $('ground-hint').textContent = 'Stub adapter — set HIVEMIND_API_URL + HIVEMIND_API_KEY (or swap in the MCP client) to ground drafts in Myosin knowledge.';
+      $('ground-hint').textContent = 'Set HIVEMIND_MCP_URL + HIVEMIND_API_KEY (an hm_k_… key) to ground drafts in Myosin knowledge over the Hivemind MCP.';
     } else {
       $('ground').checked = true;
-      $('ground-hint').textContent = `Knowledge search against ${s.hivemind.base}`;
+      $('ground-hint').textContent = `knowledge_search via ${s.hivemind.mode}: ${s.hivemind.base}`;
     }
   } catch { /* status is cosmetic */ }
   loadRecents();
