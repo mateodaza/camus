@@ -4,7 +4,7 @@ A local web UI that runs the Camus loop on marketing deliverables instead of cod
 
 **plan → draft (Claude) → adversarial review (Codex, a different vendor) → fix → deterministic verify → done — or a plain-English question routed to the human.**
 
-The loop's contract is ported from [camus](https://github.com/kilterset/camus) v2-lite: bounded review rounds, repeat findings halt instead of re-litigating, infrastructure failures are never a pass, and every green leaves receipts.
+The loop's contract is ported from [camus](https://github.com/mateodaza/camus) v2-lite: bounded review rounds, repeat findings halt instead of re-litigating, infrastructure failures are never a pass, and every green leaves receipts.
 
 ## Quickstart
 
@@ -39,7 +39,7 @@ Useful env:
 The verify stage is mechanical — no model, no mercy ([lib/verify.mjs](lib/verify.mjs)):
 
 1. **Structure** — the deliverable type's required sections exist.
-2. **Links resolve** — every URL in the doc returns < 400. Confirmed-dead (404/410/5xx/DNS/timeout) fails; bot-blocked (401/403/429) warns, because the check can't verify those either way — open them yourself.
+2. **Links resolve** — every URL in the doc returns < 400. Any other ≥ 400 status fails as dead; no answer at all (DNS failure, timeout) fails as unreachable — honestly labeled "could not verify", never "confirmed dead"; bot-blocked (401/403/429) warns, because the check can't verify those either way — open them yourself.
 3. **Quantitative claims cite sources** — any sentence carrying %, $, multiples, or big counts must carry a `[n]` citation or inline link (bare years alone don't count as claims, but they don't exempt a sentence either).
 4. **Web3 compliance phrases** — configurable wordlist ([checks/compliance.json](checks/compliance.json)): promissory claims fail, hype phrasing warns.
 5. **Citation integrity** — every `[n]` and `[Hn]` marker used in the body maps to an entry under `## Sources`.
@@ -53,13 +53,13 @@ The verify stage is mechanical — no model, no mercy ([lib/verify.mjs](lib/veri
 
 ## Receipts
 
-Every run writes `runs/<id>/`: `events.jsonl` (the full event stream — the UI can replay finished runs from it), `rev-N.md` per revision, per-round codex verdicts, and `report.json`. Every human choice — content decisions, retries, stuck-finding accepts, verify overrides — is recorded in both the event stream and the report's `answers` array, with its kind. Nothing about a run lives only in the browser.
+Every run writes `runs/<id>/`: `events.jsonl` (the full event stream — the UI can replay finished runs from it), `rev-N.md` per revision, per-round codex verdicts (live engine), and `report.json`. Every human choice — content decisions, retries, stuck-finding accepts, verify overrides — is recorded in both the event stream and the report's `answers` array, with its kind. Nothing about a run lives only in the browser.
 
 ## Hivemind
 
 [lib/adapters/hivemind.mjs](lib/adapters/hivemind.mjs) is the seam. Grounding modes, in resolution order:
 
-**1. Via Claude (preferred — no API key).** The maker *is* Claude Code, so the Hivemind MCP rides Claude's own connector auth. The studio retrieves nothing itself; the model runs `knowledge_search` mid-draft, cites what it used as `[Hn]`, and the verifier enforces that every marker maps to a `### Hivemind` entry under Sources.
+**1. Via Claude (preferred — no API key).** The maker *is* Claude Code, so the Hivemind MCP rides Claude's own connector auth. The studio retrieves nothing itself; the model runs `knowledge_search` mid-draft, cites what it used as `[Hn]`, and the verifier enforces that every marker maps to a `[Hn]` entry under Sources.
 
 ```bash
 # one-time, interactive (the OAuth consent is yours to give):

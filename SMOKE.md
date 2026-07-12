@@ -64,12 +64,13 @@ Ctrl-C the server, start it again, reload the page. **Recent runs** lists the fi
 ## 6. Live fire — the real loop (10–20 min; bills your claude auth + codex plan credits)
 
 ```bash
-CODEX_EFFORT=low node server.mjs     # cheap first fire; drop the env for medium
+node server.mjs                       # reviewer effort is pinned low in checks/models.json
+# CODEX_EFFORT=medium node server.mjs — raise it for real deliverables
 ```
 
-Pill reads `engine: live · claude + codex`. Give it a real goal on **Quick**. Differences from rehearsal you should expect:
+Pill names the pinned models, e.g. `engine: live · sonnet + gpt-5.4 (low)`. Give it a real goal on **Quick**. Differences from rehearsal you should expect:
 
-- Draft takes minutes (claude researches with WebSearch/WebFetch — tool surface is allowlisted to those two, it cannot touch files).
+- Draft takes minutes (claude researches with WebSearch/WebFetch — the built-in tool surface is restricted to those two via `--tools`, so it cannot touch local files).
 - Findings are real codex output, schema-enforced (`--output-schema`); malformed reviewer output becomes a visible infra card, never a silent pass.
 - Verify runs against the real cited URLs: confirmed-dead fails; bot-blocked corporate sites (403) **warn** with "open it yourself" — by design, the check refuses to claim what it can't verify.
 - The header shows real claude spend; codex burns plan credits.

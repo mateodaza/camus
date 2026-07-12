@@ -134,7 +134,14 @@ async function boot() {
         ? `Claude queries ${s.hivemind.base} itself, on its own connector auth`
         : `knowledge_search via ${s.hivemind.mode}: ${s.hivemind.base}`;
     }
-  } catch { /* status is cosmetic */ }
+  } catch {
+    // Not cosmetic in hosted-UI mode: an unreachable local server would
+    // otherwise look like a page that never finished loading.
+    $('pill-engine').textContent = API ? `studio unreachable at ${API}` : 'studio server unreachable';
+    $('pill-engine').classList.add('warn');
+    $('pill-hivemind').textContent = 'start it with: node server.mjs';
+    $('ground').disabled = true;
+  }
   loadRecents();
 }
 
@@ -215,8 +222,11 @@ function attach(id, goal) {
   state.es?.close();
   const es = new EventSource(`${API}/api/runs/${id}/events`);
   state.es = es;
+  state.sawTerminal = false;
   let opened = false;
+  let failedRetries = 0;
   es.onopen = () => {
+    failedRetries = 0;
     // SSE auto-reconnect replays the whole stream — rebuild instead of append.
     if (opened) {
       state.revs = [];
@@ -228,8 +238,23 @@ function attach(id, goal) {
     }
     opened = true;
   };
-  es.onmessage = (m) => { try { handle(JSON.parse(m.data)); } catch { /* skip bad line */ } };
-  es.onerror = () => { /* stream closes when the run ends; terminal status closes es */ };
+  es.onmessage = (m) => {
+    let ev;
+    try { ev = JSON.parse(m.data); } catch { return; } // only parse errors are skippable
+    handle(ev); // a renderer bug should surface in the console, not vanish
+  };
+  es.onerror = () => {
+    // Live stream ends → terminal status closed us already. Anything else is
+    // a lost connection, and pretending the run is still ticking is a lie.
+    if (state.sawTerminal || es.readyState === EventSource.CLOSED) return;
+    failedRetries += 1;
+    if (failedRetries >= 3) {
+      es.close();
+      stopTimer();
+      setStatus('disconnected');
+      feed(el('div', 'banner meh', 'LOST THE STUDIO SERVER — the page can no longer see the run. Restart the server and reopen this run from Recent runs.'));
+    }
+  };
 }
 
 $('back').addEventListener('click', () => {
@@ -240,13 +265,30 @@ $('back').addEventListener('click', () => {
   loadRecents();
 });
 
-$('stop').addEventListener('click', () => {
-  if (confirm('Stop this run?')) fetch(`${API}/api/runs/${state.runId}/stop`, { method: 'POST' });
+$('stop').addEventListener('click', async () => {
+  if (!confirm('Stop this run?')) return;
+  // A confirmed-destructive action must confirm it took effect.
+  try {
+    const res = await fetch(`${API}/api/runs/${state.runId}/stop`, { method: 'POST' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(`Couldn't stop the run: ${data.error || res.statusText}. If it's live, it may still be running.`);
+    }
+  } catch (err) {
+    alert(`Couldn't reach the studio server to stop the run (${err.message}). If it's live, it is still running.`);
+  }
 });
 
 $('copy').addEventListener('click', async () => {
   const md = current();
-  if (md) { await navigator.clipboard.writeText(md.markdown); $('copy').textContent = 'Copied'; setTimeout(() => ($('copy').textContent = 'Copy'), 1200); }
+  if (!md) return;
+  try {
+    await navigator.clipboard.writeText(md.markdown);
+    $('copy').textContent = 'Copied';
+  } catch {
+    $('copy').textContent = 'Copy failed';
+  }
+  setTimeout(() => ($('copy').textContent = 'Copy'), 1200);
 });
 
 $('download').addEventListener('click', () => {
@@ -285,7 +327,14 @@ function setStage(name, status, extra = {}) {
   const badge = s.querySelector('.badge');
   if (name === 'review' && extra.round) badge.textContent = `r${extra.round}`;
   if (name === 'verify' && extra.pass != null) badge.textContent = extra.pass ? 'green' : 'red';
-  if (name === 'ground') badge.textContent = extra.via === 'claude' ? 'claude' : extra.connected === false ? 'stub' : '';
+  if (name === 'ground') {
+    // Distinguish "nothing configured" (stub) from "configured but degraded".
+    badge.textContent = extra.via === 'claude'
+      ? 'claude'
+      : extra.connected === false
+        ? (extra.mode && extra.mode !== 'stub' ? `${extra.mode} ✕` : 'stub')
+        : '';
+  }
 }
 
 function setStatus(status) {
@@ -437,7 +486,22 @@ function handle(ev) {
       $('run-cost').textContent = ev.costUsd ? `claude $${ev.costUsd.toFixed(2)}` : '';
       break;
 
+    case 'replay_end':
+      // Disk replay finished. Without a terminal status the run crashed —
+      // close the stream (or it reconnect-loops) and say what this is.
+      state.sawTerminal = true;
+      state.es?.close();
+      stopTimer();
+      if (!document.querySelector('.banner')) {
+        setStatus('incomplete');
+        feed(el('div', 'banner meh', ev.empty
+          ? 'NO RECEIPTS — this run left no event stream.'
+          : 'REPLAY ENDED WITHOUT A VERDICT — the run was interrupted before it finished; the receipts stop here.'));
+      }
+      break;
+
     case 'status': {
+      state.sawTerminal = true;
       setStatus(ev.status);
       stopTimer();
       state.es?.close(); // terminal — otherwise EventSource reconnects and replays forever
@@ -459,6 +523,8 @@ function handle(ev) {
         a.target = '_blank';
         sub.appendChild(a);
         b.appendChild(sub);
+      } else if (ev.artifactPublished) {
+        b.appendChild(el('span', 'sub', `published to Hivemind artifacts · receipts in runs/${state.runId}/`));
       } else if (good) {
         b.appendChild(el('span', 'sub', `rev ${ev.rev} · receipts in runs/${state.runId}/`));
       }
@@ -478,14 +544,23 @@ function markAnswered(card, text) {
 }
 
 async function answer(qid, text, card) {
+  const showError = (msg) => {
+    let e = card.querySelector('.qerr');
+    if (!e) { e = el('div', 'qerr'); card.appendChild(e); }
+    e.textContent = msg;
+  };
   try {
     const res = await fetch(`${API}/api/runs/${state.runId}/answer`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ answer: text }),
     });
-    if (res.ok) markAnswered(card, text);
-  } catch { /* the question card stays live to retry */ }
+    if (res.ok) { markAnswered(card, text); return; }
+    const data = await res.json().catch(() => ({}));
+    showError(`Your answer didn't land: ${data.error || res.statusText}. Try again.`);
+  } catch (err) {
+    showError(`Couldn't reach the studio server (${err.message}) — the answer was not delivered. Try again.`);
+  }
 }
 
 function renderRev() {

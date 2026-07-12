@@ -36,7 +36,11 @@ if (process.argv.includes('--doctor')) {
         resolve(err ? `MISSING (${err.code ?? err.message})` : String(stdout || stderr).trim().split('\n')[0]),
       ),
     );
-  const [claudeV, codexV] = await Promise.all([check('claude', ['--version']), check('codex', ['--version'])]);
+  const [claudeV, codexV, gitV] = await Promise.all([
+    check('claude', ['--version']),
+    check('codex', ['--version']),
+    check('git', ['--version']),
+  ]);
   const hm = hivemind.hivemindStatus();
   let hmLine = hm.connected ? `connected (${hm.mode}: ${hm.base})` : 'not connected — stub adapter';
   if (hm.mode === 'claude') {
@@ -54,7 +58,8 @@ if (process.argv.includes('--doctor')) {
   node     ${process.version}
   claude   ${claudeV}
   codex    ${codexV}
-  models   ${modelsSummary()} — pinned by ${MODELS.reviewer.source}; account defaults are never used
+  git      ${gitV}${gitV.startsWith('MISSING') ? ' — codex reviews will run outside a git repo' : ''}
+  models   ${modelsSummary()} — maker pinned by ${MODELS.maker.source}, reviewer by ${MODELS.reviewer.source}; account defaults are never used
   hivemind ${hmLine}
   engine   ${ENGINE}${ENGINE === 'mock' ? ' (rehearsal — no model calls)' : ''}`);
   const broken = ENGINE === 'live' && (claudeV.startsWith('MISSING') || codexV.startsWith('MISSING'));
@@ -77,24 +82,43 @@ async function startRun({ goal, lane, depth, ground }) {
   const dir = join(RUNS_DIR, id);
   const scratchDir = join(dir, 'scratch');
   await mkdir(scratchDir, { recursive: true });
-  // codex runs with cwd inside a git repo (same conditions camus reviews under)
-  await new Promise((r) => spawn('git', ['init', '-q'], { cwd: scratchDir }).on('close', r));
+  // codex runs with cwd inside a git repo (same conditions camus reviews
+  // under). A missing/failing git must not crash the server — degrade loudly.
+  const gitOk = await new Promise((resolve) => {
+    const child = spawn('git', ['init', '-q'], { cwd: scratchDir });
+    child.on('error', () => resolve(false));
+    child.on('close', (code) => resolve(code === 0));
+  });
 
-  const run = { id, goal, lane, depth, ground, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0 };
+  const run = { id, goal, lane, depth, ground, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false };
   const state = { run, events: [], subscribers: new Set(), answer: null, abort: new AbortController(), writeChain: Promise.resolve() };
   runs.set(id, state);
+
+  // A failed receipt write must never be silent: receipts are the trust
+  // story. Loud on the console, visible in the live feed, flagged in the
+  // report (the flag survives even when the receipt file itself is the
+  // thing that cannot be written).
+  const persistFail = (what, err) => {
+    console.error(`[receipts] failed to write ${what} for run ${id}: ${err.message}`);
+    if (!run.receiptsDegraded) {
+      run.receiptsDegraded = true;
+      emit('log', { line: `⚠ receipts degraded — could not write ${what} (${err.code || err.message}); this run's paper trail is incomplete` });
+    }
+  };
 
   const emit = (type, data) => {
     const ev = { type, at: Date.now(), ...data };
     state.events.push(ev);
     const line = JSON.stringify(ev);
     // Receipts must read in the order things happened — serialize appends.
-    state.writeChain = state.writeChain.then(() => appendFile(join(dir, 'events.jsonl'), line + '\n')).catch(() => {});
+    state.writeChain = state.writeChain
+      .then(() => appendFile(join(dir, 'events.jsonl'), line + '\n'))
+      .catch((err) => persistFail('events.jsonl', err));
     for (const res of state.subscribers) res.write(`data: ${line}\n\n`);
     if (type === 'revision') {
       run.lastMarkdown = data.markdown;
       run.rev = data.rev;
-      writeFile(join(dir, `rev-${data.rev}.md`), data.markdown).catch(() => {});
+      writeFile(join(dir, `rev-${data.rev}.md`), data.markdown).catch((err) => persistFail(`rev-${data.rev}.md`, err));
     }
     if (type === 'cost') run.costUsd = data.costUsd;
     if (type === 'status') run.status = data.status;
@@ -117,6 +141,7 @@ async function startRun({ goal, lane, depth, ground }) {
       : { claude: runClaude, codex: runCodexReview };
 
   emit('run', { run: { id, goal, lane, depth, ground, engine: ENGINE, roundCap: process.env.ROUND_CAP || 3 } });
+  if (!gitOk) emit('log', { line: '⚠ git unavailable — codex reviews will run outside a git repo (different conditions than camus)' });
 
   runLoop(run, {
     emit,
@@ -128,14 +153,19 @@ async function startRun({ goal, lane, depth, ground }) {
     receiptsDir: dir,
   }).then(async (result) => {
     await state.writeChain; // receipt stream flushed before the report seals the run
-    await writeFile(
-      join(dir, 'report.json'),
-      JSON.stringify(
-        { id, goal, lane, depth, ground, engine: ENGINE, ...result, draft: undefined, deliverable: run.lastMarkdown, startedAt: run.startedAt, endedAt: Date.now() },
-        null,
-        2,
-      ),
-    ).catch(() => {});
+    const report = JSON.stringify(
+      { id, goal, lane, depth, ground, engine: ENGINE, ...result, draft: undefined, deliverable: run.lastMarkdown, receiptsDegraded: run.receiptsDegraded, startedAt: run.startedAt, endedAt: Date.now() },
+      null,
+      2,
+    );
+    try {
+      await writeFile(join(dir, 'report.json'), report);
+    } catch (err) {
+      // One retry, then say it plainly — a sealed-looking run with no report
+      // would otherwise vanish from Recent runs with no explanation.
+      await new Promise((r) => setTimeout(r, 500));
+      await writeFile(join(dir, 'report.json'), report).catch((err2) => persistFail('report.json', err2));
+    }
     for (const res of state.subscribers) res.end();
     state.subscribers.clear();
   });
@@ -255,8 +285,11 @@ const server = http.createServer(async (req, res) => {
           return;
         }
         // Finished run from a previous server session: replay the receipt.
+        // The replay_end sentinel lets the client close instead of
+        // auto-reconnecting forever on runs whose receipt has no terminal
+        // status (e.g. the server crashed mid-run).
         const file = join(RUNS_DIR, id, 'events.jsonl');
-        if (!existsSync(file)) { res.end(); return; }
+        if (!existsSync(file)) { res.write(`data: ${JSON.stringify({ type: 'replay_end', empty: true })}\n\n`); res.end(); return; }
         const stream = createReadStream(file, 'utf8');
         let buf = '';
         stream.on('data', (c) => {
@@ -265,7 +298,9 @@ const server = http.createServer(async (req, res) => {
           buf = lines.pop();
           for (const l of lines) if (l.trim()) res.write(`data: ${l}\n\n`);
         });
-        stream.on('end', () => res.end());
+        const finish = () => { res.write(`data: ${JSON.stringify({ type: 'replay_end' })}\n\n`); res.end(); };
+        stream.on('end', finish);
+        stream.on('error', finish); // a torn read must not crash the server
         return;
       }
 
@@ -295,8 +330,11 @@ const server = http.createServer(async (req, res) => {
       if (action === 'report' && req.method === 'GET') {
         try {
           return json(res, 200, JSON.parse(await readFile(join(RUNS_DIR, id, 'report.json'), 'utf8')));
-        } catch {
-          return json(res, 404, { error: 'no report yet' });
+        } catch (err) {
+          // Missing = still pending; unreadable/corrupt = data loss. Say which.
+          return err.code === 'ENOENT'
+            ? json(res, 404, { error: 'no report yet' })
+            : json(res, 500, { error: `report exists but is unreadable: ${err.message}` });
         }
       }
     }

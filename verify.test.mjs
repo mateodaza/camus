@@ -204,6 +204,214 @@ Community-led growth compounds where paid cannot. Retention differs by cohort or
   delete process.env.HIVEMIND_VIA_CLAUDE;
 }
 
+// --- normalizeReview: no path from broken reviewer output to a verdict -------
+{
+  const { normalizeReview } = await import('./lib/adapters/codex.mjs');
+  const infra = (raw, code, why) => assert.equal(normalizeReview(raw, code).ran, false, why);
+
+  infra('', 0, 'empty output is infra');
+  infra('not json', 0, 'unparseable is infra');
+  infra('[]', 0, 'non-object is infra');
+  infra('{"verdict":"approve","findings":[],"questions_for_human":[]}', 0, 'unknown verdict is infra');
+  infra(JSON.stringify({ verdict: 'clean', findings: [{ severity: 'high', title: 'x', detail: 'd', suggestion: 's' }], questions_for_human: [] }), 0,
+    'clean-with-blocking is infra, never APPROVED');
+  infra(JSON.stringify({ verdict: 'revise', findings: [], questions_for_human: [] }), 0,
+    'revise with nothing actionable is infra');
+  infra(JSON.stringify({ verdict: 'revise', findings: [{ severity: 'critical', title: 'x', detail: 'd', suggestion: 's' }], questions_for_human: [] }), 0,
+    'unknown severity is infra');
+  infra(JSON.stringify({ verdict: 'clean', findings: [], questions_for_human: [] }), 1, 'nonzero exit is infra even with valid JSON');
+
+  const clean = normalizeReview(JSON.stringify({ verdict: 'clean', findings: [{ severity: 'low', title: 'nit', detail: 'd', suggestion: 's' }], questions_for_human: ['', '  ', 'real?'] }), 0);
+  assert.equal(clean.ran, true);
+  assert.equal(clean.verdict, 'APPROVED', 'clean + low only approves');
+  assert.equal(clean.nonblocking.length, 1, 'low is nonblocking');
+  assert.deepEqual(clean.questions, ['real?'], 'blank questions filtered');
+
+  const fenced = normalizeReview('```json\n{"verdict":"revise","findings":[{"severity":"medium","title":"t","detail":"d","suggestion":"s"}],"questions_for_human":[]}\n```', 0);
+  assert.equal(fenced.ran, true, 'fenced JSON still parses');
+  assert.equal(fenced.blocking.length, 1);
+}
+
+// --- engine harness: stop rules, containment, and answer integrity -----------
+{
+  const { runLoop } = await import('./lib/engine.mjs');
+
+  // Drafts verify offline: freeform lane, no URLs (warn, not fail).
+  const CLEAN_DRAFT = 'Notes.\n\nCommunity first, paid second.\n';
+  const BAD_DRAFT = 'Notes.\n\nRetention rose 61% across cohorts.\n'; // uncited stat → deterministic fail
+
+  function harness({ claudeQueue, codexQueue, answerQueue, abortOnAsk = false }) {
+    const events = [];
+    const prompts = { claude: [], codex: [] };
+    const published = [];
+    const abort = new AbortController();
+    const review = (verdict, findings = [], questions = []) => ({
+      ran: true, error: null,
+      verdict, findings,
+      blocking: findings.filter((f) => f.severity !== 'low'),
+      nonblocking: findings.filter((f) => f.severity === 'low'),
+      questions,
+    });
+    const ctx = {
+      emit: (type, data) => events.push({ type, ...data }),
+      waitForAnswer: async (q) => {
+        events.push({ type: '_asked', kind: q.kind, options: q.options ?? null });
+        if (abortOnAsk) abort.abort();
+        const next = answerQueue.shift();
+        if (next === undefined) throw new Error(`no scripted answer for: ${q.text}`);
+        return next;
+      },
+      adapters: {
+        claude: async ({ prompt }) => {
+          prompts.claude.push(prompt);
+          const next = claudeQueue.shift();
+          if (next === undefined) throw new Error('claude called more times than scripted');
+          return { ok: true, error: null, text: next, costUsd: 0 };
+        },
+        codex: async ({ prompt }) => {
+          prompts.codex.push(prompt);
+          const next = codexQueue.shift();
+          if (next === undefined) throw new Error('codex called more times than scripted');
+          return next;
+        },
+      },
+      hivemind: {
+        searchKnowledge: async () => null,
+        publishArtifact: async (a) => { published.push(a); return { published: true, url: null }; },
+        hivemindStatus: () => ({ connected: false, mode: 'stub', base: null }),
+      },
+      signal: abort.signal,
+      scratchDir: '.',
+      receiptsDir: 'runs/_engine-test',
+    };
+    const run = { id: 'engine-test', goal: 'test goal', lane: 'freeform', depth: 'quick', ground: false };
+    return { run: () => runLoop(run, ctx), events, prompts, published, review, abort };
+  }
+
+  const f = (severity, title) => ({ severity, title, detail: 'd', suggestion: 's' });
+  const review = harness({ claudeQueue: [], codexQueue: [], answerQueue: [] }).review;
+
+  // --- Case A: verify containment (approve r1, bad draft, ship-anyway) ---
+  {
+    const h4 = harness({
+      claudeQueue: ['- plan', BAD_DRAFT, BAD_DRAFT], // plan, make, ONE verify-fix (still bad)
+      codexQueue: [review('APPROVED')],
+      answerQueue: ['Ship anyway (recorded as verify_failed)'],
+    });
+    const res = await h4.run();
+    assert.equal(res.status, 'verify_failed', 'ship-anyway records verify_failed');
+    assert.equal(h4.published.length, 0, 'a red is never published');
+    const verifyAsk = h4.events.find((e) => e.type === '_asked' && e.kind === 'verify');
+    assert.ok(verifyAsk, 'verify override question asked');
+    assert.equal(h4.prompts.claude.length, 3, 'exactly one verify-fix pass before the human (budget=1)');
+    assert.ok(res.answers.some((a) => a.kind === 'verify' && a.answer.startsWith('Ship anyway')), 'override recorded with kind');
+    assert.ok(!h4.events.some((e) => e.type === 'status' && (e.status === 'done' || e.status === 'done_with_findings')), 'no green status ever emitted');
+  }
+
+  // --- Case B: verify fail → fix succeeds → done, publish exactly once ---
+  {
+    const h5 = harness({
+      claudeQueue: ['- plan', BAD_DRAFT, CLEAN_DRAFT],
+      codexQueue: [review('APPROVED')],
+      answerQueue: [],
+    });
+    const res = await h5.run();
+    assert.equal(res.status, 'done', 'fixable red ends done');
+    assert.equal(h5.published.length, 1, 'published exactly once');
+  }
+
+  // --- Case C: done_with_findings lanes ---
+  {
+    // C1: APPROVED with a low finding → done_with_findings
+    const h6 = harness({
+      claudeQueue: ['- plan', CLEAN_DRAFT],
+      codexQueue: [review('APPROVED', [f('low', 'nit')])],
+      answerQueue: [],
+    });
+    assert.equal((await h6.run()).status, 'done_with_findings', 'approved-with-lows is not a plain done');
+
+    // C2: stuck (same title twice) → accept → done_with_findings
+    const h7 = harness({
+      claudeQueue: ['- plan', CLEAN_DRAFT, CLEAN_DRAFT],
+      codexQueue: [
+        review('REVISE', [f('high', 'Retention figure has no source.')]),
+        review('REVISE', [f('high', 'retention figure has NO source')]), // case/punct differ — same key
+      ],
+      answerQueue: ['Accept and ship (with findings on record)'],
+    });
+    const res7 = await h7.run();
+    assert.equal(res7.status, 'done_with_findings', 'stuck-accept is done_with_findings');
+    const stuckAsk = h7.events.find((e) => e.type === '_asked' && e.kind === 'stuck');
+    assert.ok(stuckAsk, 'stuck card fired on normalized-title repeat');
+
+    // C3: fresh titles every round → round cap card at ROUND_CAP, accept
+    const h8 = harness({
+      claudeQueue: ['- plan', CLEAN_DRAFT, CLEAN_DRAFT, CLEAN_DRAFT],
+      codexQueue: [
+        review('REVISE', [f('high', 'A')]),
+        review('REVISE', [f('high', 'B')]),
+        review('REVISE', [f('high', 'C')]),
+      ],
+      answerQueue: ['Accept and ship (with findings on record)'],
+    });
+    const res8 = await h8.run();
+    assert.equal(res8.status, 'done_with_findings', 'cap-accept is done_with_findings');
+    assert.equal(h8.prompts.codex.length, 3, 'review ran exactly ROUND_CAP times');
+    const capAsk = h8.events.filter((e) => e.type === '_asked' && e.kind === 'stuck');
+    assert.equal(capAsk.length, 1, 'exactly one human prompt on the final round (no double-fire)');
+    assert.equal(capAsk[0].options.length, 2, 'final-round card offers no "one more round"');
+  }
+
+  // --- Case D: oscillation A → B → A halts ---
+  {
+    const h9 = harness({
+      claudeQueue: ['- plan', CLEAN_DRAFT, CLEAN_DRAFT, CLEAN_DRAFT],
+      codexQueue: [
+        review('REVISE', [f('high', 'A')]),
+        review('REVISE', [f('high', 'B')]),
+        review('REVISE', [f('high', 'A')]), // returns after vanishing
+      ],
+      answerQueue: ['Stop the run'],
+    });
+    const res9 = await h9.run();
+    assert.equal(res9.status, 'stopped', 'human stopped at the oscillation card');
+    assert.ok(h9.events.some((e) => e.type === '_asked' && e.kind === 'stuck'), 'oscillating finding halts');
+  }
+
+  // --- Case E: answer threading + process/content separation ---
+  {
+    const h10 = harness({
+      claudeQueue: ['- plan', CLEAN_DRAFT, CLEAN_DRAFT],
+      codexQueue: [
+        review('REVISE', [f('high', 'Unanchored')], ['Base-first or multichain?']),
+        review('APPROVED'),
+      ],
+      answerQueue: ['Base-first.'],
+    });
+    const res10 = await h10.run();
+    assert.equal(res10.status, 'done');
+    const fixPromptText = h10.prompts.claude[2]; // plan, make, fix
+    assert.ok(fixPromptText.includes('Base-first.'), 'decision lands in the fix prompt');
+    assert.ok(h10.prompts.codex[1].includes('Base-first.'), 'decision lands in the next review prompt');
+    assert.ok(h10.prompts.codex[1].includes('do NOT re-raise'), 'reviewer told decisions are settled');
+    assert.deepEqual(res10.answers.map((a) => a.kind), ['decision'], 'only the decision recorded');
+  }
+
+  // --- Case F: Stop during a pending question → stopped, nothing recorded, nothing published ---
+  {
+    const h11 = harness({
+      claudeQueue: ['- plan', CLEAN_DRAFT],
+      codexQueue: [review('APPROVED', [], ['Which audience?'])], // clean verdict + lingering question
+      answerQueue: ['Stop the run'], // what the /stop handler resolves with
+      abortOnAsk: true, // abort() fires before the answer resolves, like the real handler
+    });
+    const res11 = await h11.run();
+    assert.equal(res11.status, 'stopped', 'stop during a question stops the run');
+    assert.equal(h11.published.length, 0, 'nothing published after stop');
+    assert.equal(res11.answers.length, 0, 'no fabricated decision in the receipts');
+  }
+}
+
 // --- gate: live link check (only when network is available) ------------------
 if (process.env.TEST_NETWORK === '1') {
   const dead = GOOD + '\n3. Archive — https://github.com/Myosin-xyz/does-not-exist-archive\n';

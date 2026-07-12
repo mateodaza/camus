@@ -120,6 +120,9 @@ textarea:focus { outline: none; border-color: var(--ink); }
 .pill.status.done, .pill.status.done_with_findings { background: var(--ink); color: var(--paper); }
 .pill.status.verify_failed, .pill.status.failed { color: var(--red); background: transparent; box-shadow: inset 0 0 0 1px var(--red); }
 .pill.status.stopped { color: var(--faint); }
+.pill.status.disconnected, .pill.status.incomplete { color: var(--red); background: transparent; box-shadow: inset 0 0 0 1px var(--rule); }
+
+.qcard .qerr { font-family: var(--mono); font-size: 12px; color: var(--term-soft); margin-top: 8px; }
 
 .grid { flex: 1; display: grid; grid-template-columns: 190px minmax(360px, 1fr) minmax(380px, 1.15fr); min-height: 0; }
 
