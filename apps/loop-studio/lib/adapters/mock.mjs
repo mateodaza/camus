@@ -140,3 +140,58 @@ export function createMockAdapters() {
     },
   };
 }
+
+
+// Scripted build-lane run: the gate's beats without the gate, so the code
+// lane rehearses on any machine. Mirrors runCodeLoop's event shapes.
+export async function runMockCodeLoop(run, ctx) {
+  const { emit, waitForAnswer, signal } = ctx;
+  const answers = [];
+  const stage = (name, status, extra = {}) => emit('stage', { name, status, ...extra });
+  const log = (line) => emit('log', { line });
+  const sess = (line) => emit('session', { actor: 'gate', line });
+  try {
+    stage('gate', 'active');
+    sess(`invocation: /camus-loop {"task":"${run.goal.slice(0, 60)}…","targetPath":"${run.targetPath}"}`);
+    await sleep(2000, signal);
+    sess('Bash: git -C . status --porcelain');
+    sess('Bash: bash ~/.claude/skills/camus/scripts/wt.sh create camus-wt-mock ~/.camus/worktrees/…');
+    log('gate preflight clean — worktree created, baseline verified');
+    await sleep(3000, signal);
+    sess('Edit: src/embedding.ts — guard empty input before the provider call');
+    sess('Bash: pnpm test  (baseline + new spec)');
+    await sleep(2500, signal);
+    emit('round', { round: 1, cap: 3 });
+    stage('review', 'done', { round: 1 });
+    log('gate review round 1: revise (2 blocking)');
+    sess('reviewer: missing empty-array guard on the batch path');
+    await sleep(2000, signal);
+    const q = 'Two callers expect different shapes from the guard. Which contract should win — throw on empty, or return an empty embedding set?';
+    const answer = await waitForAnswer({ kind: 'decision', text: q });
+    if (signal.aborted) throw new Error('stopped_by_human');
+    answers.push({ kind: 'decision', question: q, answer });
+    emit('answer', { kind: 'decision', question: q, answer });
+    stage('gate', 'active');
+    sess('resuming with humanAnswer — gate continues from its receipts');
+    await sleep(2500, signal);
+    emit('round', { round: 2, cap: 3 });
+    stage('review', 'done', { round: 2 });
+    log('gate review round 2: clean');
+    sess('Bash: pnpm test  — 163 passed · head-bound a1f9c2e');
+    await sleep(1500, signal);
+    const report = { status: 'done', branch: 'camus-wt-guard-empty-input-mock42', commit: 'a1f9c2e', report: '~/.camus/reviews/camus-wt-guard-empty-input-mock42-r2.json' };
+    stage('gate', 'done', { pass: true });
+    stage('ship', 'done');
+    emit('gate_report', { report });
+    emit('status', { status: 'done', rev: 0, costUsd: 0 });
+    return { status: 'done', report, answers };
+  } catch (err) {
+    if (err.message === 'aborted' || err.message === 'stopped_by_human' || signal.aborted) {
+      emit('status', { status: 'stopped', costUsd: 0 });
+      return { status: 'stopped', answers };
+    }
+    emit('error', { message: String(err) });
+    emit('status', { status: 'failed', costUsd: 0 });
+    return { status: 'failed', answers };
+  }
+}

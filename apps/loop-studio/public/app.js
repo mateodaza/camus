@@ -102,15 +102,22 @@ const state = {
   sessionCount: 0,
 };
 
-const STAGE_DEFS = [
-  ['plan', 'Plan'],
-  ['ground', 'Ground'],
-  ['make', 'Draft'],
-  ['review', 'Review'],
-  ['fix', 'Fix'],
-  ['verify', 'Verify'],
-  ['ship', 'Ship'],
-];
+const STAGE_DEFS = {
+  words: [
+    ['plan', 'Plan'],
+    ['ground', 'Ground'],
+    ['make', 'Draft'],
+    ['review', 'Review'],
+    ['fix', 'Fix'],
+    ['verify', 'Verify'],
+    ['ship', 'Ship'],
+  ],
+  build: [
+    ['gate', 'Gate'],
+    ['review', 'Review'],
+    ['ship', 'Ship'],
+  ],
+};
 
 // ---------------------------------------------------------------------------
 // Launch view
@@ -139,6 +146,11 @@ async function boot() {
       $('ground-hint').textContent = s.hivemind.mode === 'claude'
         ? `Claude queries ${s.hivemind.base} itself, on its own connector auth`
         : `knowledge_search via ${s.hivemind.mode}: ${s.hivemind.base}`;
+    }
+    const buildLane = $('lane-build');
+    if (buildLane && s.gate && !s.gate.installed) {
+      buildLane.classList.add('disabled');
+      buildLane.title = 'The camus gate is not installed — see Setup';
     }
     if (s.engine !== 'mock') {
       // Live engine: quietly check the machine and surface the setup panel
@@ -349,9 +361,10 @@ $('save-settings').addEventListener('click', async () => {
 
 $('lanes').addEventListener('click', (e) => {
   const btn = e.target.closest('.lane');
-  if (!btn) return;
+  if (!btn || btn.classList.contains('disabled')) return;
   state.lane = btn.dataset.lane;
   document.querySelectorAll('.lane').forEach((l) => l.classList.toggle('selected', l === btn));
+  $('target-wrap').classList.toggle('hidden', state.lane !== 'build');
 });
 
 $('depth').addEventListener('click', (e) => {
@@ -369,7 +382,7 @@ $('start').addEventListener('click', async () => {
     const res = await fetch(`${API}/api/runs`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ goal, lane: state.lane, depth: state.depth, ground: $('ground').checked }),
+      body: JSON.stringify({ goal, lane: state.lane, depth: state.depth, ground: $('ground').checked, targetPath: state.lane === 'build' ? $('target-path').value : undefined }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
@@ -498,11 +511,11 @@ function current() {
   return state.revs.find((r) => r.rev === state.selectedRev) ?? state.revs[state.revs.length - 1];
 }
 
-function buildStages() {
+function buildStages(lane) {
   const nav = $('stages');
   nav.innerHTML = '';
   state.stageEls.clear();
-  for (const [key, label] of STAGE_DEFS) {
+  for (const [key, label] of STAGE_DEFS[lane === 'build' ? 'build' : 'words']) {
     const s = el('div', 'stage');
     s.appendChild(el('span', 'dot'));
     s.appendChild(el('span', null, label));
@@ -563,7 +576,9 @@ function handle(ev) {
     case 'run':
       if (ev.run?.goal) $('rungoal').textContent = ev.run.goal;
       if (ev.at) startTimer(ev.at);
-      if (ev.run && !ev.run.ground) state.stageEls.get('ground')?.remove();
+      buildStages(ev.run?.lane);
+      if (ev.run?.lane !== 'build' && ev.run && !ev.run.ground) state.stageEls.get('ground')?.remove();
+      if (ev.run?.lane === 'build') $('doc').innerHTML = '<div class="doc-empty">The gate works inside the target repo — the session below is the live view; its report lands here.</div>';
       break;
 
     case 'stage':
@@ -577,7 +592,7 @@ function handle(ev) {
     case 'session': {
       state.sessionCount += 1;
       const pre = $('session-pre');
-      const glyph = ev.actor === 'reviewer' ? 'r' : 'm';
+      const glyph = ev.actor === 'reviewer' ? 'r' : ev.actor === 'gate' ? 'g' : 'm';
       pre.appendChild(el('span', 'sm', `${glyph} · `));
       pre.appendChild(document.createTextNode(`${ev.line}\n`));
       while (pre.childNodes.length > 800) pre.removeChild(pre.firstChild);
@@ -689,6 +704,26 @@ function handle(ev) {
       feed(el('div', `vsummary ${ev.pass ? 'pass' : 'fail'}`,
         ev.pass ? 'DETERMINISTIC GATE: GREEN — every check passed' : 'DETERMINISTIC GATE: RED — sending back for a fix'));
       break;
+
+    case 'gate_report': {
+      const r = ev.report ?? {};
+      const md = [
+        '## Gate report',
+        '',
+        `- status: ${r.status ?? 'unknown'}`,
+        r.branch ? `- branch: ${r.branch}` : null,
+        r.commit ? `- commit: ${r.commit}` : null,
+        r.report ? `- receipts: ${r.report}` : null,
+        r.question ? `- question: ${r.question}` : null,
+        r.note ? `- note: ${r.note}` : null,
+        '',
+        '```',
+        JSON.stringify(r, null, 2).slice(0, 4000),
+        '```',
+      ].filter((l) => l !== null).join('\n');
+      $('doc').innerHTML = renderMd(md);
+      break;
+    }
 
     case 'cost':
       $('run-cost').textContent = ev.costUsd ? `claude $${ev.costUsd.toFixed(2)}` : '';

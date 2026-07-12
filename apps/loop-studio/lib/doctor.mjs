@@ -6,6 +6,7 @@
 import { execFile } from 'node:child_process';
 import { getModels, modelsSummary } from './models.mjs';
 import { hivemindStatus } from './adapters/hivemind.mjs';
+import { gateInstalled } from './code-lane.mjs';
 
 const probe = (cmd, args, timeout = 20_000) =>
   new Promise((resolve) =>
@@ -43,6 +44,13 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
     gitV ? null : 'xcode-select --install   # macOS; or install git from git-scm.com',
   );
 
+  const gate = gateInstalled();
+  add(
+    'gate', 'Camus gate (Build lane)', gate,
+    gate ? 'installed in ~/.claude — the Build lane can ignite it' : 'not installed — the Build lane stays off (words lanes work without it)',
+    gate ? null : 'npm install -g camus-cli && camus install',
+  );
+
   let models;
   try {
     models = getModels();
@@ -73,7 +81,7 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
     );
   }
 
-  const required = checks.filter((c) => !['hivemind'].includes(c.id));
+  const required = checks.filter((c) => !['hivemind', 'gate'].includes(c.id)); // both optional: words lanes run without them
   return {
     engine,
     ok: engine === 'mock' || required.every((c) => c.ok),

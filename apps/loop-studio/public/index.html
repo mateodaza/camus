@@ -74,6 +74,16 @@
           <strong>Freeform</strong>
           <span>Loop whatever you're into. Generic checks only.</span>
         </button>
+        <button class="lane" data-lane="build" id="lane-build">
+          <strong>Build — code</strong>
+          <span>Points the camus gate at a git repo on this machine. Beta.</span>
+        </button>
+      </div>
+
+      <div id="target-wrap" class="hidden">
+        <label class="lbl" for="target-path">Target repository</label>
+        <input id="target-path" class="path-input" placeholder="~/path/to/a/git/repo" autocomplete="off" />
+        <div class="hint">The gate runs in that repo: isolated worktree, cross-model review, your tests as the verdict. Stop is safe — its receipts survive and Resume continues.</div>
       </div>
 
       <div class="row">

@@ -11,6 +11,8 @@ import { createReadStream, existsSync } from 'node:fs';
 import { join, dirname, extname, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runLoop } from './lib/engine.mjs';
+import { runCodeLoop, validateBuildTarget, gateInstalled } from './lib/code-lane.mjs';
+import { runMockCodeLoop } from './lib/adapters/mock.mjs';
 import { runClaude } from './lib/adapters/claude.mjs';
 import { runCodexReview } from './lib/adapters/codex.mjs';
 import { createMockAdapters } from './lib/adapters/mock.mjs';
@@ -53,7 +55,9 @@ function newId() {
   return `${t.getFullYear()}${pad(t.getMonth() + 1)}${pad(t.getDate())}-${pad(t.getHours())}${pad(t.getMinutes())}${pad(t.getSeconds())}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-async function startRun({ goal, lane, depth, ground }) {
+const activeBuilds = new Set();
+
+async function startRun({ goal, lane, depth, ground, targetPath = null, targetToplevel = null }) {
   const id = newId();
   const dir = join(RUNS_DIR, id);
   const scratchDir = join(dir, 'scratch');
@@ -66,7 +70,7 @@ async function startRun({ goal, lane, depth, ground }) {
     child.on('close', (code) => resolve(code === 0));
   });
 
-  const run = { id, goal, lane, depth, ground, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false };
+  const run = { id, goal, lane, depth, ground, targetPath, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false };
   const state = { run, events: [], subscribers: new Set(), answer: null, abort: new AbortController(), writeChain: Promise.resolve() };
   runs.set(id, state);
 
@@ -116,10 +120,11 @@ async function startRun({ goal, lane, depth, ground }) {
     ENGINE === 'mock' ? (() => { const m = createMockAdapters(); return { claude: m.claude, codex: m.codex }; })()
       : { claude: runClaude, codex: runCodexReview };
 
-  emit('run', { run: { id, goal, lane, depth, ground, engine: ENGINE, roundCap: getModels().loop.roundCap } });
+  emit('run', { run: { id, goal, lane, depth, ground, targetPath, engine: ENGINE, roundCap: getModels().loop.roundCap } });
   if (!gitOk) emit('log', { line: '⚠ git unavailable — codex reviews will run outside a git repo (different conditions than camus)' });
 
-  runLoop(run, {
+  const runner = lane === 'build' ? (ENGINE === 'mock' ? runMockCodeLoop : runCodeLoop) : runLoop;
+  runner(run, {
     emit,
     waitForAnswer,
     adapters,
@@ -128,6 +133,7 @@ async function startRun({ goal, lane, depth, ground }) {
     scratchDir,
     receiptsDir: dir,
   }).then(async (result) => {
+    if (targetToplevel) activeBuilds.delete(targetToplevel);
     await state.writeChain; // receipt stream flushed before the report seals the run
     const report = JSON.stringify(
       { id, goal, lane, depth, ground, engine: ENGINE, ...result, draft: undefined, deliverable: run.lastMarkdown, receiptsDegraded: run.receiptsDegraded, startedAt: run.startedAt, endedAt: Date.now() },
@@ -248,6 +254,7 @@ const server = http.createServer(async (req, res) => {
         engine: ENGINE,
         models: { maker: getModels().maker.model, reviewer: getModels().reviewer.model, effort: getModels().reviewer.effort },
         hivemind: hivemind.hivemindStatus(),
+        gate: { installed: ENGINE === 'mock' ? true : gateInstalled() },
         roundCap: getModels().loop.roundCap,
         lanes: Object.fromEntries(Object.entries(LANES).map(([k, v]) => [k, v.label])),
       });
@@ -257,8 +264,28 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const goal = String(body.goal || '').trim();
       if (goal.length < 12) return json(res, 400, { error: 'Write the goal like you would brief a strategist — a sentence or two.' });
-      const lane = LANES[body.lane] ? body.lane : 'freeform';
-      const id = await startRun({ goal, lane, depth: body.depth === 'standard' ? 'standard' : 'quick', ground: !!body.ground });
+      const lane = body.lane === 'build' ? 'build' : LANES[body.lane] ? body.lane : 'freeform';
+
+      let targetPath = null;
+      let targetToplevel = null;
+      if (lane === 'build') {
+        if (ENGINE === 'mock') {
+          targetPath = String(body.targetPath || '~/demo-repo').trim();
+        } else {
+          if (!gateInstalled()) {
+            return json(res, 400, { error: 'The camus gate is not installed on this machine. Fix: npm i -g camus-cli && camus install (then check Setup).' });
+          }
+          const v = await validateBuildTarget(body.targetPath);
+          if (!v.ok) return json(res, 400, { error: v.error });
+          targetPath = v.path;
+          if (activeBuilds.has(v.toplevel)) {
+            return json(res, 409, { error: 'A build run is already working in that repository — one gate per repo at a time.' });
+          }
+          activeBuilds.add(v.toplevel);
+          targetToplevel = v.toplevel;
+        }
+      }
+      const id = await startRun({ goal, lane, depth: body.depth === 'standard' ? 'standard' : 'quick', ground: !!body.ground, targetPath, targetToplevel });
       return json(res, 201, { id });
     }
 

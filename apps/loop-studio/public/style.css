@@ -97,8 +97,15 @@ textarea {
 }
 textarea::placeholder { color: var(--faint); }
 textarea:focus { outline: none; border-color: var(--ink); }
+.path-input {
+  width: 100%; font-family: var(--mono); font-size: 13px; color: var(--ink); background: var(--paper);
+  border: 1px solid var(--code-line); border-radius: 2px; padding: 10px 12px; margin-top: 6px;
+}
+.path-input:focus { outline: none; border-color: var(--ink); }
+.lane.disabled { opacity: .45; cursor: default; }
+.lane.disabled:hover { border-color: var(--rule); }
 
-.lanes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.lanes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
 .lane {
   text-align: left; background: var(--paper); border: 1px solid var(--rule); border-radius: 3px;
   padding: 13px 14px; display: flex; flex-direction: column; gap: 5px; transition: border-color .15s;

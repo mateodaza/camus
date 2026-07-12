@@ -441,6 +441,47 @@ Community-led growth compounds where paid cannot. Retention differs by cohort or
   delete process.env.ROUND_CAP;
 }
 
+// --- build lane: spend-free refusals + fail-closed report parsing ------------
+{
+  const { validateBuildTarget, parseGateReport } = await import('./lib/code-lane.mjs');
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { execFileSync } = await import('node:child_process');
+  const { join } = await import('node:path');
+
+  assert.equal((await validateBuildTarget('')).ok, false, 'empty path refused');
+  assert.equal((await validateBuildTarget('~/no/such/dir-9x7q')).ok, false, 'missing dir refused');
+  assert.ok((await validateBuildTarget('/tmp/evil"; rm -rf /')).error.includes('shell-unsafe'), 'shell-unsafe path refused');
+
+  const plain = mkdtempSync(join(tmpdir(), 'cls-plain-'));
+  assert.ok((await validateBuildTarget(plain)).error.includes('not a git repository'), 'non-git dir refused');
+
+  const repo = mkdtempSync(join(tmpdir(), 'cls-repo-'));
+  execFileSync('git', ['-C', repo, 'init', '-q']);
+  execFileSync('git', ['-C', repo, 'commit', '-q', '--allow-empty', '-m', 'seed'], {
+    env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' },
+  });
+  const good = await validateBuildTarget(repo);
+  assert.equal(good.ok, true, 'clean git repo accepted');
+  assert.ok(good.toplevel, 'toplevel resolved for the concurrency guard');
+
+  execFileSync('git', ['-C', repo, 'checkout', '-q', '--detach']);
+  assert.ok((await validateBuildTarget(repo)).error.includes('detached'), 'detached HEAD refused');
+  rmSync(plain, { recursive: true, force: true });
+  rmSync(repo, { recursive: true, force: true });
+
+  // Report parsing: a run whose status we cannot read is NEVER done.
+  assert.equal(parseGateReport('{"status":"done","commit":"a1f9c2e"}').status, 'done', 'clean JSON report parses');
+  assert.equal(parseGateReport('The loop finished: status "done_with_findings", branch camus-wt-x.').status, 'done_with_findings', 'prose-wrapped status parses');
+  assert.equal(parseGateReport('I made it work and everything looks great!').status, 'infra_error', 'no readable status is infra, never done');
+  assert.equal(parseGateReport('').status, 'infra_error', 'empty output is infra');
+  const q = parseGateReport('Paused. {"status":"needs_human","question":"Two callers expect different shapes. Which contract should win?"}');
+  assert.equal(q.status, 'needs_human');
+  assert.ok(q.question.includes('Which contract'), 'question extracted for the card');
+  // done_with_findings must not be shadowed by its 'done' suffix
+  assert.equal(parseGateReport('status: done_with_findings').status, 'done_with_findings', 'longest status wins');
+}
+
 // --- gate: live link check (only when network is available) ------------------
 if (process.env.TEST_NETWORK === '1') {
   const dead = GOOD + '\n3. Archive — https://github.com/Myosin-xyz/does-not-exist-archive\n';
