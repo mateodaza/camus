@@ -1,5 +1,14 @@
 /* Camus Loop Studio front-end. No framework: one SSE stream in, DOM out. */
 
+// Hosted-UI mode: when this page is served from a public origin, ?api=
+// points it at the local studio server (persisted after the first visit).
+// Same-origin (the normal local case) leaves API empty.
+const API = (() => {
+  const param = new URLSearchParams(location.search).get('api');
+  if (param) localStorage.setItem('cls-api', param.replace(/\/$/, ''));
+  return localStorage.getItem('cls-api') || '';
+})();
+
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
@@ -103,21 +112,27 @@ const STAGE_DEFS = [
 
 async function boot() {
   try {
-    const s = await (await fetch('/api/status')).json();
+    const s = await (await fetch(`${API}/api/status`)).json();
     const eng = $('pill-engine');
     eng.textContent = s.engine === 'mock'
       ? 'engine: rehearsal (mock)'
       : `engine: live · ${s.models.maker} + ${s.models.reviewer} (${s.models.effort})`;
     eng.classList.add(s.engine === 'mock' ? 'warn' : 'ok');
     const hm = $('pill-hivemind');
-    hm.textContent = s.hivemind.connected ? `hivemind: connected (${s.hivemind.mode})` : 'hivemind: not connected';
+    hm.textContent = !s.hivemind.connected
+      ? 'hivemind: not connected'
+      : s.hivemind.mode === 'claude'
+        ? 'hivemind: via Claude MCP (no key)'
+        : `hivemind: connected (${s.hivemind.mode})`;
     hm.classList.add(s.hivemind.connected ? 'ok' : 'warn');
     if (!s.hivemind.connected) {
       $('ground').disabled = true;
-      $('ground-hint').textContent = 'Set HIVEMIND_MCP_URL + HIVEMIND_API_KEY (an hm_k_… key) to ground drafts in Myosin knowledge over the Hivemind MCP.';
+      $('ground-hint').textContent = 'HIVEMIND_VIA_CLAUDE=1 grounds drafts through Claude’s own Hivemind connector (no key); or set HIVEMIND_MCP_URL + HIVEMIND_API_KEY.';
     } else {
       $('ground').checked = true;
-      $('ground-hint').textContent = `knowledge_search via ${s.hivemind.mode}: ${s.hivemind.base}`;
+      $('ground-hint').textContent = s.hivemind.mode === 'claude'
+        ? `Claude queries ${s.hivemind.base} itself, on its own connector auth`
+        : `knowledge_search via ${s.hivemind.mode}: ${s.hivemind.base}`;
     }
   } catch { /* status is cosmetic */ }
   loadRecents();
@@ -125,7 +140,7 @@ async function boot() {
 
 async function loadRecents() {
   try {
-    const { runs } = await (await fetch('/api/runs')).json();
+    const { runs } = await (await fetch(`${API}/api/runs`)).json();
     const box = $('recents');
     box.innerHTML = '';
     if (!runs.length) return;
@@ -160,7 +175,7 @@ $('start').addEventListener('click', async () => {
   $('form-error').textContent = '';
   $('start').disabled = true;
   try {
-    const res = await fetch('/api/runs', {
+    const res = await fetch(`${API}/api/runs`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ goal, lane: state.lane, depth: state.depth, ground: $('ground').checked }),
@@ -198,7 +213,7 @@ function attach(id, goal) {
   startTimer(Date.now());
 
   state.es?.close();
-  const es = new EventSource(`/api/runs/${id}/events`);
+  const es = new EventSource(`${API}/api/runs/${id}/events`);
   state.es = es;
   let opened = false;
   es.onopen = () => {
@@ -226,7 +241,7 @@ $('back').addEventListener('click', () => {
 });
 
 $('stop').addEventListener('click', () => {
-  if (confirm('Stop this run?')) fetch(`/api/runs/${state.runId}/stop`, { method: 'POST' });
+  if (confirm('Stop this run?')) fetch(`${API}/api/runs/${state.runId}/stop`, { method: 'POST' });
 });
 
 $('copy').addEventListener('click', async () => {
@@ -270,7 +285,7 @@ function setStage(name, status, extra = {}) {
   const badge = s.querySelector('.badge');
   if (name === 'review' && extra.round) badge.textContent = `r${extra.round}`;
   if (name === 'verify' && extra.pass != null) badge.textContent = extra.pass ? 'green' : 'red';
-  if (name === 'ground') badge.textContent = extra.connected === false ? 'stub' : '';
+  if (name === 'ground') badge.textContent = extra.via === 'claude' ? 'claude' : extra.connected === false ? 'stub' : '';
 }
 
 function setStatus(status) {
@@ -464,7 +479,7 @@ function markAnswered(card, text) {
 
 async function answer(qid, text, card) {
   try {
-    const res = await fetch(`/api/runs/${state.runId}/answer`, {
+    const res = await fetch(`${API}/api/runs/${state.runId}/answer`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ answer: text }),

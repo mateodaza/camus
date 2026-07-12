@@ -55,19 +55,36 @@ The verify stage is mechanical — no model, no mercy ([lib/verify.mjs](lib/veri
 
 Every run writes `runs/<id>/`: `events.jsonl` (the full event stream — the UI can replay finished runs from it), `rev-N.md` per revision, per-round codex verdicts, and `report.json`. Every human choice — content decisions, retries, stuck-finding accepts, verify overrides — is recorded in both the event stream and the report's `answers` array, with its kind. Nothing about a run lives only in the browser.
 
-## Hivemind (MCP-first)
+## Hivemind
 
-[lib/adapters/hivemind.mjs](lib/adapters/hivemind.mjs) is the seam, and it now speaks the Hivemind MCP natively via a zero-dependency client ([lib/mcp-client.mjs](lib/mcp-client.mjs)) that matches the hive-mind server contract: stateless streamable HTTP on `/api/mcp`, `x-api-key` auth, SSE-framed responses.
+[lib/adapters/hivemind.mjs](lib/adapters/hivemind.mjs) is the seam. Grounding modes, in resolution order:
+
+**1. Via Claude (preferred — no API key).** The maker *is* Claude Code, so the Hivemind MCP rides Claude's own connector auth. The studio retrieves nothing itself; the model runs `knowledge_search` mid-draft, cites what it used as `[Hn]`, and the verifier enforces that every marker maps to a `### Hivemind` entry under Sources.
 
 ```bash
-export HIVEMIND_MCP_URL="https://hivemind.myosin.xyz"   # /api/mcp is appended if omitted
-export HIVEMIND_API_KEY="hm_k_..."                       # admin-issued Hivemind knowledge key
+# one-time, interactive (the OAuth consent is yours to give):
+claude mcp add --transport http hivemind https://staging-hivemind.myosin.xyz/api/mcp
+#   then authenticate it via /mcp in an interactive claude session
+export HIVEMIND_VIA_CLAUDE=1        # optional: HIVEMIND_MCP_URL to point at prod when it ships
 ```
 
-Resolution order per call: **MCP** → REST fallback (`HIVEMIND_API_URL`) → honest stub (UI shows "not connected"; runs proceed ungrounded, never silently).
+The maker keeps `--strict-mcp-config`: its tool surface is exactly WebSearch, WebFetch, and the hivemind tools — nothing else from your MCP config leaks in. `--doctor` checks the `hivemind` server is registered and prints the setup line if not.
 
-- **In**: `searchKnowledge(goal)` calls the `knowledge_search` MCP tool and injects the returned chunks (title — author, excerpt, relevance) into the draft prompt as `[H1]`-citable grounding; the verifier checks those `[Hn]` markers resolve.
-- **Out**: `publishArtifact()` — the hive-mind MCP **deliberately defers artifact tools** for now, so publish uses REST when `HIVEMIND_API_URL` is also set and otherwise logs that the deliverable stayed local. When the artifact tool ships over MCP, it's one function body.
+**2. Studio-side MCP (`HIVEMIND_MCP_URL` + `HIVEMIND_API_KEY`).** The studio calls `/api/mcp` itself through a zero-dependency client ([lib/mcp-client.mjs](lib/mcp-client.mjs)) with an admin-issued `hm_k_…` key — for headless or hosted setups with no Claude connector.
+
+**3. REST fallback (`HIVEMIND_API_URL`), then honest stub** — the UI shows "not connected"; runs proceed ungrounded, never silently.
+
+`publishArtifact()`: the hive-mind MCP **deliberately defers artifact tools** for now, so publish uses REST when configured and otherwise logs that the deliverable stayed local. When the artifact tool ships over MCP, it's one function body.
+
+## Hosted UI (web app, local execution)
+
+The UI is static — it can be deployed anywhere (e.g. Vercel) while runs, CLIs, and auth stay on each user's machine:
+
+1. Locally: `STUDIO_ALLOWED_ORIGIN=https://loop.example.com node server.mjs` — the server answers CORS preflights (including `Access-Control-Allow-Private-Network`) for exactly that origin.
+2. Deploy `public/` to that origin.
+3. Visit `https://loop.example.com/?api=http://localhost:1913` — the page stores the API base and drives the local server; the browser's local-network permission prompt is the user's grant.
+
+No key, no token, and no model auth ever leaves the laptop — the web app is glass, the machine does the work.
 
 ## Demo-day runbook
 

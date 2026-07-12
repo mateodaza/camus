@@ -181,6 +181,29 @@ Community-led growth compounds where paid cannot. Retention differs by cohort or
   fixture.close();
 }
 
+// --- hivemind via-claude mode: no key, grounding delegated to the maker ------
+{
+  process.env.HIVEMIND_VIA_CLAUDE = '1';
+  const { searchKnowledge, hivemindStatus, viaClaude } = await import('./lib/adapters/hivemind.mjs');
+  const { makePrompt, fixPrompt } = await import('./lib/prompts.mjs');
+
+  const st = hivemindStatus();
+  assert.equal(st.mode, 'claude', 'mode is claude');
+  assert.ok(st.base.endsWith('/api/mcp'), 'base points at an /api/mcp endpoint');
+  assert.deepEqual(viaClaude(), { enabled: true, url: st.base, serverName: 'hivemind' }, 'viaClaude exposes the wiring');
+
+  const marker = await searchKnowledge('anything', 4, () => {});
+  assert.equal(marker, 'claude', 'retrieval is delegated, not performed');
+
+  const mk = makePrompt({ goal: 'g', lane: 'research_memo', depth: 'quick', grounding: 'claude', answers: [] });
+  assert.ok(mk.includes('mcp__hivemind__knowledge_search'), 'make prompt names the MCP tool');
+  assert.ok(mk.includes('never fabricate'), 'make prompt forbids fabricated [Hn]');
+  const fx = fixPrompt({ goal: 'g', lane: 'research_memo', draft: 'd', findings: [], answers: [], viaClaude: true });
+  assert.ok(fx.includes('mcp__hivemind__knowledge_search'), 'fix prompt keeps the tool available');
+
+  delete process.env.HIVEMIND_VIA_CLAUDE;
+}
+
 // --- gate: live link check (only when network is available) ------------------
 if (process.env.TEST_NETWORK === '1') {
   const dead = GOOD + '\n3. Archive — https://github.com/Myosin-xyz/does-not-exist-archive\n';

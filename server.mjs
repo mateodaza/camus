@@ -38,12 +38,24 @@ if (process.argv.includes('--doctor')) {
     );
   const [claudeV, codexV] = await Promise.all([check('claude', ['--version']), check('codex', ['--version'])]);
   const hm = hivemind.hivemindStatus();
+  let hmLine = hm.connected ? `connected (${hm.mode}: ${hm.base})` : 'not connected — stub adapter';
+  if (hm.mode === 'claude') {
+    // Via-claude rides the token stored by an interactive OAuth — verify the
+    // CLI actually has a server named "hivemind" registered.
+    const list = await new Promise((resolve) =>
+      execFile('claude', ['mcp', 'list'], { timeout: 45_000 }, (_e, stdout) => resolve(String(stdout || ''))),
+    );
+    const registered = /^hivemind:/m.test(list);
+    hmLine = registered
+      ? `via Claude MCP (no key) — "hivemind" registered in claude mcp list · ${hm.base}`
+      : `via Claude MCP requested, but no server named "hivemind" in claude mcp list.\n           One-time setup: claude mcp add --transport http hivemind ${hm.base}\n           then authenticate it in an interactive session (/mcp).`;
+  }
   console.log(`camus-loop-studio doctor
   node     ${process.version}
   claude   ${claudeV}
   codex    ${codexV}
   models   ${modelsSummary()} — pinned by ${MODELS.reviewer.source}; account defaults are never used
-  hivemind ${hm.connected ? `connected (${hm.mode}: ${hm.base})` : 'not connected — stub adapter'}
+  hivemind ${hmLine}
   engine   ${ENGINE}${ENGINE === 'mock' ? ' (rehearsal — no model calls)' : ''}`);
   const broken = ENGINE === 'live' && (claudeV.startsWith('MISSING') || codexV.startsWith('MISSING'));
   if (broken) console.log('\n  Live engine needs both CLIs on PATH. Rehearse with: npm run rehearse');
@@ -160,9 +172,34 @@ function readBody(req, limit = 512 * 1024) {
   });
 }
 
+// Hosted-UI mode: the same UI served from a public origin (e.g. Vercel) can
+// drive THIS local server — execution and auth stay on the user's machine.
+// Set STUDIO_ALLOWED_ORIGIN to that origin; the browser's Local Network
+// Access permission plus this CORS allowlist are the whole handshake.
+const ALLOWED_ORIGIN = process.env.STUDIO_ALLOWED_ORIGIN?.replace(/\/$/, '') || null;
+
+function corsHeaders(req) {
+  const origin = req.headers.origin;
+  if (!ALLOWED_ORIGIN || !origin || origin !== ALLOWED_ORIGIN) return {};
+  return {
+    'access-control-allow-origin': ALLOWED_ORIGIN,
+    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    'access-control-allow-headers': 'content-type',
+    'access-control-allow-private-network': 'true',
+    vary: 'Origin',
+  };
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname;
+
+  const cors = corsHeaders(req);
+  if (req.method === 'OPTIONS') {
+    res.writeHead(Object.keys(cors).length ? 204 : 405, cors);
+    return res.end();
+  }
+  for (const [k, v] of Object.entries(cors)) res.setHeader(k, v);
 
   try {
     // ---- API ----
