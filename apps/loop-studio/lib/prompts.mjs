@@ -39,7 +39,7 @@ export function makePrompt({ goal, lane, depth, grounding, answers }) {
         .join('\n')}`
     : '';
 
-  return `You are a senior strategist at a web3 marketing collective, drafting a deliverable a client will read tomorrow.
+  return `You are a senior researcher and strategist drafting a deliverable the goal owner will defend tomorrow.
 
 GOAL:
 ${goal}
@@ -88,7 +88,7 @@ THE DRAFT (${LANES[lane]?.label ?? 'Freeform'}):
 ${draft}
 ---
 
-Attack it on: (a) claims that are unsupported, overstated, or likely hallucinated; (b) sources that do not plausibly say what is claimed; (c) missing angles a competent strategist would be embarrassed to have missed; (d) internal contradictions; (e) voice — hype, filler, or AI-sounding patterns; (f) anything a regulator or platform would flag.
+Attack it on: (a) claims that are unsupported, overstated, or likely hallucinated; (b) sources that do not plausibly say what is claimed; (c) missing angles a competent analyst would be embarrassed to have missed; (d) internal contradictions; (e) voice — hype, filler, or AI-sounding patterns; (f) anything a regulator or platform would flag.
 
 Do NOT nitpick style trivia. Raise only findings that change whether the client should trust or act on this.
 

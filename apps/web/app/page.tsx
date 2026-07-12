@@ -279,13 +279,26 @@ $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
                     <em>on words.</em>
                   </h2>
                   <p className="sec-sub">
-                    Loop Studio points the loop at marketing deliverables. Claude drafts, Codex tears
-                    the draft apart, and checks that cannot be argued with decide: links resolve,
-                    every number traces to a live source, promissory phrasing fails before a client
-                    sees it. Built for people who never open a terminal — the loop runs on your
-                    machine, watchable in a browser.
+                    Loop Studio points the loop at words — research and analysis on any topic, the
+                    deliverables you stake your name on. Claude drafts, Codex tears the draft apart,
+                    and checks that cannot be argued with decide: links resolve, every number traces
+                    to a live source. It needs no terminal and runs on your machine, watchable in a
+                    browser.
                   </p>
                 </div>
+              </div>
+            </Reveal>
+
+            <Reveal>
+              <div className="pol">
+                <span>
+                  <b>first tuned lane</b> marketing, grounded in Hivemind
+                </span>
+                <span>·</span>
+                <span>
+                  <b>later</b> the same studio, pointed back at code — one goal in, the studio
+                  decides build or research
+                </span>
               </div>
             </Reveal>
 

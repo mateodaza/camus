@@ -1,10 +1,18 @@
 # Camus Loop Studio
 
-A local web UI that runs the Camus loop on marketing deliverables instead of code, so non-technical people can watch it work:
+A local web UI that runs the Camus loop on words instead of code — research and analysis on any topic — so non-technical people can watch it work:
 
 **plan → draft (Claude) → adversarial review (Codex, a different vendor) → fix → deterministic verify → done — or a plain-English question routed to the human.**
 
 The loop's contract is ported from [camus](https://github.com/mateodaza/camus) v2-lite: bounded review rounds, repeat findings halt instead of re-litigating, infrastructure failures are never a pass, and every green leaves receipts.
+
+## Direction
+
+The studio is the loop's visual front door, and it grows in this order:
+
+1. **Words, any topic** (today) — research memos, teardowns, freeform analysis.
+2. **Marketing as the first tuned vertical** — the compliance wordlist ships web3-marketing defaults and grounding rides Myosin's Hivemind, because that is where the studio has real internal knowledge to stand on (and the two products co-market).
+3. **Back to code** (later) — one goal in, the studio decides: research/analyze runs this loop; build hands off to the camus code gate, on the same watchable surface.
 
 ## Quickstart
 
