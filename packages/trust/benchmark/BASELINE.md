@@ -9,20 +9,20 @@ Rates use the adjudicated subset only; unresolved findings are counted, never gu
 - findings: 70 — by priority: P0: 2, P1: 49, P2: 19
 
 ## Adjudication coverage
-- adjudicated: 23/70 (32.9%)
-- unresolved (awaiting human/evidence): 47 (67.1%)
+- adjudicated: 28/70 (40.0%)
+- unresolved (awaiting human/evidence): 42 (60.0%)
 
 ## Rates over the adjudicated subset
-- confirmation rate: 20/23 (87.0%)
-- rejection rate: 1/23 (4.3%)
-- partially correct: 2/23 (8.7%)
-- severity accuracy (confirmed, graded): 20/20 exact (100.0%), mean shift 0.00
-- deterministic reproducibility (confirmed, assessed): 12/14 (85.7%)
+- confirmation rate: 25/28 (89.3%)
+- rejection rate: 1/28 (3.6%)
+- partially correct: 2/28 (7.1%)
+- severity accuracy (confirmed, graded): 25/25 exact (100.0%), mean shift 0.00
+- deterministic reproducibility (confirmed, assessed): 17/19 (89.5%)
 
 ## Confirmed findings by priority
 - P0: 2
-- P1: 15
-- P2: 3
+- P1: 19
+- P2: 4
 
 ## Honest caveats
 - Temporal rule (frozen): findings are judged against the exact artifact state that was audited — a later repair proves action, not the reviewer's mechanism.
