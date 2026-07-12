@@ -78,9 +78,11 @@ textarea:focus { outline: none; border-color: var(--ink); }
 .row { display: flex; gap: 36px; align-items: flex-start; flex-wrap: wrap; }
 .seg { display: inline-flex; border: 1px solid var(--code-line); border-radius: 2px; overflow: hidden; font-family: var(--mono); font-size: 12.5px; }
 .seg button { padding: 7px 16px; color: var(--muted); }
+.seg button:hover { color: var(--ink); }
 .seg button.selected { background: var(--ink); color: var(--paper); }
 .toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; padding: 5px 0; }
 .toggle input { accent-color: var(--ink); width: 15px; height: 15px; }
+.toggle:has(input:disabled) { opacity: .45; cursor: default; }
 .hint { font-size: 12.5px; color: var(--faint); margin-top: 3px; max-width: 380px; line-height: 1.5; }
 
 .primary {
@@ -141,17 +143,18 @@ textarea:focus { outline: none; border-color: var(--ink); }
 /* feed */
 .feed-wrap { min-height: 0; display: flex; }
 .feed { flex: 1; overflow-y: auto; padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; }
-.logline { font-family: var(--mono); font-size: 12px; color: var(--faint); }
+.logline { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 .logline::before { content: "· "; color: var(--code-line); }
 
-.fcard { background: var(--code); border: 1px solid var(--code-line); border-left: 3px solid var(--faint); border-radius: 3px; padding: 11px 14px; animation: in .25s ease-out; }
+.fcard { background: var(--code); border: 1px solid var(--code-line); border-radius: 3px; padding: 11px 14px; animation: in .25s ease-out; }
 @keyframes in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
 .fcard .fhead { display: flex; gap: 9px; align-items: baseline; margin-bottom: 4px; }
 .fcard .sev { font-family: var(--mono); font-size: 10px; letter-spacing: .08em; padding: 2px 7px; border-radius: 2px; border: 1px solid; }
-.fcard.high { border-left-color: var(--red); } .fcard.high .sev { color: var(--red); border-color: var(--red); }
-.fcard.medium { border-left-color: var(--ink); } .fcard.medium .sev { color: var(--ink); border-color: var(--faint); }
-.fcard.low { border-left-color: var(--code-line); } .fcard.low .sev { color: var(--faint); border-color: var(--code-line); }
+.fcard.high .sev { color: var(--red); border-color: var(--red); }
+.fcard.medium .sev { color: var(--ink); border-color: var(--faint); }
+.fcard.low .sev { color: var(--faint); border-color: var(--code-line); }
 .fcard .ftitle { font-weight: 600; font-size: 14px; }
+.fcard.high .ftitle { color: var(--red); }
 .fcard .fbody { font-size: 13px; color: var(--muted); line-height: 1.55; }
 .fcard .fix { font-size: 13px; margin-top: 5px; line-height: 1.55; }
 .fcard .fix b { color: var(--red); font-weight: 500; font-family: var(--mono); font-size: 12px; }
@@ -189,7 +192,7 @@ textarea:focus { outline: none; border-color: var(--ink); }
 .vcheck.pass .ic { color: var(--ink); } .vcheck.fail .ic { color: var(--red); }
 .vcheck.warn .ic { color: var(--muted); } .vcheck.skip .ic { color: var(--faint); }
 .vcheck.fail { color: var(--red); }
-.vcheck .vdetail { color: var(--faint); font-size: 12.5px; }
+.vcheck .vdetail { color: var(--muted); font-size: 12.5px; }
 
 /* verdict + final banners: dark terminal blocks, like the landing receipts */
 .vsummary { font-family: var(--mono); font-size: 12.5px; padding: 10px 14px; border-radius: 3px; background: var(--ink); }
@@ -208,7 +211,8 @@ textarea:focus { outline: none; border-color: var(--ink); }
 .doc-wrap { border-left: 1px solid var(--rule); display: flex; flex-direction: column; min-height: 0; background: var(--paper); }
 .doc-head { display: flex; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--rule); gap: 10px; }
 .revtabs { display: flex; gap: 6px; flex: 1; flex-wrap: wrap; }
-.revtabs button { font-family: var(--mono); font-size: 11px; padding: 3px 10px; border-radius: 2px; border: 1px solid var(--rule); color: var(--faint); }
+.revtabs button { font-family: var(--mono); font-size: 11px; padding: 4px 11px; border-radius: 2px; border: 1px solid var(--rule); color: var(--faint); transition: color .15s ease-out, border-color .15s ease-out; }
+.revtabs button:hover { color: var(--ink); border-color: var(--faint); }
 .revtabs button.selected { color: var(--ink); border-color: var(--ink); }
 .doc-actions { display: flex; gap: 6px; }
 .doc { flex: 1; overflow-y: auto; padding: 26px 30px; max-width: 72ch; }
@@ -233,4 +237,9 @@ textarea:focus { outline: none; border-color: var(--ink); }
   .doc-wrap { border-left: none; border-top: 1px solid var(--rule); }
   .lanes { grid-template-columns: 1fr; }
   .doc { padding: 20px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fcard, .plancard, .qcard, .vcheck, .banner { animation: none; }
+  .stage.active .dot, .pill.status.needs_human { animation: none; }
 }

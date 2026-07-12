@@ -431,6 +431,7 @@ function handle(ev) {
         const ta = el('textarea');
         ta.rows = 2;
         ta.placeholder = 'Your call — one or two lines is enough.';
+        ta.setAttribute('aria-label', 'Your answer to the loop');
         const send = el('button', 'send', 'Answer');
         send.onclick = () => ta.value.trim() && answer(ev.id, ta.value.trim(), c);
         c.appendChild(ta);

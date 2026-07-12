@@ -71,10 +71,10 @@
   <!-- ============ Run view ============ -->
   <main id="runview" class="runview hidden">
     <header class="runbar">
-      <button id="back" class="ghost" title="Back to launch">←</button>
+      <button id="back" class="ghost" title="Back to launch" aria-label="Back to launch">←</button>
       <div class="rungoal" id="rungoal"></div>
       <div class="runmeta">
-        <span id="run-status" class="pill status running">running</span>
+        <span id="run-status" class="pill status running" aria-live="polite">running</span>
         <span id="run-timer" class="mono">0:00</span>
         <span id="run-cost" class="mono muted"></span>
         <button id="stop" class="danger">Stop</button>
@@ -84,7 +84,7 @@
     <div class="grid">
       <nav class="stages" id="stages"></nav>
       <section class="feed-wrap">
-        <div class="feed" id="feed"></div>
+        <div class="feed" id="feed" role="log" aria-label="Run activity"></div>
       </section>
       <section class="doc-wrap">
         <div class="doc-head">
