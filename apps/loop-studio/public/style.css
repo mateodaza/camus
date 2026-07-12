@@ -279,6 +279,12 @@ textarea:focus { outline: none; border-color: var(--ink); }
 .doc pre { background: var(--code); border: 1px solid var(--code-line); border-radius: 3px; padding: 12px 14px; overflow-x: auto; margin: 10px 0; font-family: var(--mono); font-size: 12.5px; line-height: 1.7; }
 .doc hr { border: none; border-top: 1px solid var(--rule); margin: 16px 0; }
 
+@media (max-width: 640px) {
+  .runbar { flex-wrap: wrap; row-gap: 6px; }
+  .rungoal { flex-basis: 100%; order: 2; white-space: normal; font-size: 15px; line-height: 1.35; }
+  .runmeta { margin-left: auto; }
+}
+
 @media (max-width: 980px) {
   .grid { grid-template-columns: 1fr; grid-template-rows: auto 1fr 1fr; }
   .stages { flex-direction: row; flex-wrap: wrap; border-right: none; border-bottom: 1px solid var(--rule); padding: 12px 14px; }

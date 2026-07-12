@@ -28,15 +28,31 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
     probe('git', ['--version']),
   ]);
 
+  // Installed is not signed-in: both CLIs expose spend-free auth probes.
+  const fullProbe = (cmd, args) =>
+    new Promise((r) => execFile(cmd, args, { timeout: 20_000 }, (err, so, se) => r(err ? null : String(so || se).trim())));
+  const [claudeAuthRaw, codexAuthRaw] = await Promise.all([
+    claudeV ? fullProbe('claude', ['auth', 'status']) : Promise.resolve(null),
+    codexV ? fullProbe('codex', ['login', 'status']) : Promise.resolve(null),
+  ]);
+  const claudeAuthed = claudeAuthRaw === null ? null : /loggedIn"?\s*:\s*true|logged in/i.test(claudeAuthRaw);
+  const codexAuthed = codexAuthRaw === null ? null : /logged in/i.test(codexAuthRaw);
+
   add(
-    'claude', 'Claude Code CLI', !!claudeV,
-    claudeV ?? 'not found on PATH — the maker cannot run',
-    claudeV ? null : 'npm install -g @anthropic-ai/claude-code   # then run `claude` once and sign in',
+    'claude', 'Claude Code CLI', !!claudeV && claudeAuthed !== false,
+    !claudeV ? 'not found on PATH — the maker cannot run'
+      : claudeAuthed === false ? `${claudeV} installed, but not signed in`
+      : `${claudeV}${claudeAuthed ? ' · signed in' : ''}`,
+    !claudeV ? 'npm install -g @anthropic-ai/claude-code   # then run `claude` once and sign in'
+      : claudeAuthed === false ? 'claude   # opens the sign-in flow' : null,
   );
   add(
-    'codex', 'Codex CLI (the reviewer)', !!codexV,
-    codexV ?? 'not found on PATH — nothing can review the drafts',
-    codexV ? null : 'npm install -g @openai/codex   # then run `codex` once and sign in',
+    'codex', 'Codex CLI (the reviewer)', !!codexV && codexAuthed !== false,
+    !codexV ? 'not found on PATH — nothing can review the drafts'
+      : codexAuthed === false ? `${codexV} installed, but not signed in`
+      : `${codexV}${codexAuthed ? ' · signed in' : ''}`,
+    !codexV ? 'npm install -g @openai/codex   # then run `codex` once and sign in'
+      : codexAuthed === false ? 'codex login' : null,
   );
   add(
     'git', 'git', !!gitV,
@@ -54,7 +70,17 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   let models;
   try {
     models = getModels();
-    add('models', 'Model decisions', true, modelsSummary(), null);
+    let note = modelsSummary();
+    try {
+      const { readFileSync } = await import('node:fs');
+      const { homedir } = await import('node:os');
+      const cache = JSON.parse(readFileSync(`${homedir()}/.codex/models_cache.json`, 'utf8'));
+      const slugs = (cache.models ?? []).map((m) => m.slug).filter(Boolean);
+      if (slugs.length && !slugs.includes(models.reviewer.model)) {
+        note += ` — reviewer "${models.reviewer.model}" is not in codex's model cache (${slugs.slice(0, 3).join(', ')}…); a run may fail at review`;
+      }
+    } catch { /* cache absent — cannot judge, stay quiet */ }
+    add('models', 'Model decisions', true, note, null);
   } catch (err) {
     add('models', 'Model decisions', false, err.message, 'open Settings in the studio and pick the models');
   }

@@ -253,25 +253,41 @@ export async function runVerify(markdown, lane = 'freeform', { onCheck, skipNetw
   const nMarkers = [...new Set([...bodyOnly.matchAll(/\[(\d+)\]/g)].map((m) => m[1]))];
   const hMarkers = [...new Set([...bodyOnly.matchAll(/\[H(\d+)\]/gi)].map((m) => m[1]))];
   if (nMarkers.length || hMarkers.length) {
-    const defined = new Set([...srcSection.matchAll(/^\s*(?:\[?(\d+)\]?[.:)\]]\s|\[(\d+)\]\s)/gm)].map((m) => m[1] || m[2]));
+    // Parse entries structurally: entry number -> its line's URL (if any).
+    // A used [n] must map to an entry that itself carries an http(s) URL —
+    // an unrelated link elsewhere in the doc must never vouch for it.
+    // [Hn] entries cite internal Hivemind knowledge and carry no URL.
+    const entryUrls = new Map();
+    for (const line of srcSection.split('\n')) {
+      const num = line.match(/^\s*(?:\[?(\d+)\]?[.:)\]]\s|\[(\d+)\]\s)/);
+      if (!num) continue;
+      const url = line.match(/https?:\/\/[^\s<>)\]"']+/);
+      entryUrls.set(num[1] || num[2], url ? url[0] : null);
+    }
     const hDefined = new Set([...srcSection.matchAll(/\[H(\d+)\]/gi)].map((m) => m[1]));
     const dangling = [
-      ...nMarkers.filter((n) => !defined.has(n)).map((n) => `[${n}]`),
+      ...nMarkers.filter((n) => !entryUrls.has(n)).map((n) => `[${n}]`),
       ...hMarkers.filter((n) => !hDefined.has(n)).map((n) => `[H${n}]`),
     ];
+    const urlless = nMarkers.filter((n) => entryUrls.has(n) && !entryUrls.get(n));
     emit({
       id: 'citations',
-      label: 'Citation markers map to Sources',
-      status: dangling.length ? 'fail' : 'pass',
-      detail: dangling.length
-        ? `Marker(s) ${dangling.join(', ')} have no matching entry under Sources.`
-        : `${nMarkers.length + hMarkers.length} citation marker(s) all resolve to Sources entries.`,
-      evidence: dangling,
+      label: 'Citation markers map to sourced URLs',
+      status: dangling.length || urlless.length ? 'fail' : 'pass',
+      detail: dangling.length || urlless.length
+        ? [
+            dangling.length ? `Marker(s) ${dangling.join(', ')} have no matching entry under Sources.` : '',
+            urlless.length ? `Source entr${urlless.length > 1 ? 'ies' : 'y'} [${urlless.join('], [')}] carr${urlless.length > 1 ? 'y' : 'ies'} no URL — a citation must point at something checkable.` : '',
+          ].filter(Boolean).join(' · ')
+        : `${nMarkers.length + hMarkers.length} citation marker(s) all resolve to sourced entries.`,
+      evidence: [...dangling, ...urlless.map((n) => `[${n}] (no URL)`)],
     });
   } else {
-    emit({ id: 'citations', label: 'Citation markers map to Sources', status: 'skip', detail: 'No [n] markers used.', evidence: [] });
+    emit({ id: 'citations', label: 'Citation markers map to sourced URLs', status: 'skip', detail: 'No [n] markers used.', evidence: [] });
   }
 
   const pass = checks.every((c) => c.status !== 'fail');
-  return { pass, checks };
+  const warnings = checks.filter((c) => c.status === 'warn').length;
+  const skipped = checks.filter((c) => c.status === 'skip').length;
+  return { pass, warnings, skipped, checks };
 }

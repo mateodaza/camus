@@ -15,6 +15,10 @@ const API = (() => {
 })();
 
 const $ = (id) => document.getElementById(id);
+// Per-session capability token: /api/status hands it only to pages the
+// browser allows to read it; every POST must carry it.
+let TOKEN = '';
+const postHeaders = () => ({ 'content-type': 'application/json', 'x-studio-token': TOKEN });
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -126,6 +130,7 @@ const STAGE_DEFS = {
 async function boot() {
   try {
     const s = await (await fetch(`${API}/api/status`)).json();
+    TOKEN = s.token || '';
     const eng = $('pill-engine');
     eng.textContent = s.engine === 'mock'
       ? 'engine: rehearsal (mock)'
@@ -342,7 +347,7 @@ $('save-settings').addEventListener('click', async () => {
   try {
     const res = await fetch(`${API}/api/config`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: postHeaders(),
       body: JSON.stringify({
         maker: $('set-maker').value,
         reviewer: $('set-reviewer').value,
@@ -381,7 +386,7 @@ $('start').addEventListener('click', async () => {
   try {
     const res = await fetch(`${API}/api/runs`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: postHeaders(),
       body: JSON.stringify({ goal, lane: state.lane, depth: state.depth, ground: $('ground').checked, targetPath: state.lane === 'build' ? $('target-path').value : undefined }),
     });
     const data = await res.json();
@@ -412,6 +417,8 @@ function attach(id, goal) {
   $('rungoal').textContent = goal || id;
   $('run-cost').textContent = ''; // don't carry the previous run's spend
   $('run-timer').textContent = '0:00';
+  $('stop').classList.remove('hidden');
+  state.runStartAt = null;
   $('feed').innerHTML = '';
   $('revtabs').innerHTML = '';
   $('doc').innerHTML = '<div class="doc-empty">The deliverable appears here as the loop drafts it.</div>';
@@ -476,7 +483,7 @@ $('stop').addEventListener('click', async () => {
   if (!confirm('Stop this run?')) return;
   // A confirmed-destructive action must confirm it took effect.
   try {
-    const res = await fetch(`${API}/api/runs/${state.runId}/stop`, { method: 'POST' });
+    const res = await fetch(`${API}/api/runs/${state.runId}/stop`, { method: 'POST', headers: postHeaders() });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       alert(`Couldn't stop the run: ${data.error || res.statusText}. If it's live, it may still be running.`);
@@ -496,6 +503,21 @@ $('copy').addEventListener('click', async () => {
     $('copy').textContent = 'Copy failed';
   }
   setTimeout(() => ($('copy').textContent = 'Copy'), 1200);
+});
+
+$('download-report').addEventListener('click', async () => {
+  try {
+    const res = await fetch(`${API}/api/runs/${state.runId}/report`);
+    if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+    const blob = new Blob([JSON.stringify(await res.json(), null, 2)], { type: 'application/json' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `run-${state.runId}-evidence.json`;
+    link.click();
+  } catch (err) {
+    $('download-report').textContent = 'no report yet';
+    setTimeout(() => ($('download-report').textContent = 'Evidence'), 1500);
+  }
 });
 
 $('download').addEventListener('click', () => {
@@ -575,8 +597,9 @@ function handle(ev) {
   switch (ev.type) {
     case 'run':
       if (ev.run?.goal) $('rungoal').textContent = ev.run.goal;
-      if (ev.at) startTimer(ev.at);
+      if (ev.at) { state.runStartAt = ev.at; startTimer(ev.at); }
       state.runLane = ev.run?.lane;
+      state.runTargetPath = ev.run?.targetPath ?? null;
       buildStages(ev.run?.lane);
       if (ev.run?.lane !== 'build' && ev.run && !ev.run.ground) state.stageEls.get('ground')?.remove();
       if (ev.run?.lane === 'build') $('doc').innerHTML = '<div class="doc-empty">The gate works inside the target repo — the session below is the live view; its report lands here.</div>';
@@ -671,9 +694,13 @@ function handle(ev) {
       break;
     }
 
-    case 'answer':
+    case 'answer': {
       feed(el('div', 'logline', `human decided: ${ev.answer}`));
+      const card = [...document.querySelectorAll('.qcard.answered')].reverse()
+        .find((c) => !c.querySelector('.qanswer'));
+      if (card) card.appendChild(el('div', 'qanswer', `answered: ${ev.answer}`));
       break;
+    }
 
     case 'revision': {
       const existing = state.revs.find((r) => r.rev === ev.rev);
@@ -701,10 +728,16 @@ function handle(ev) {
       break;
     }
 
-    case 'verify_result':
-      feed(el('div', `vsummary ${ev.pass ? 'pass' : 'fail'}`,
-        ev.pass ? 'DETERMINISTIC GATE: GREEN — every check passed' : 'DETERMINISTIC GATE: RED — sending back for a fix'));
+    case 'verify_result': {
+      const caveats = (ev.warnings || 0) + (ev.skipped || 0);
+      const label = !ev.pass
+        ? 'DETERMINISTIC GATE: RED — sending back for a fix'
+        : caveats
+          ? `DETERMINISTIC GATE: GREEN, with caveats — ${ev.warnings || 0} warning(s), ${ev.skipped || 0} check(s) could not run`
+          : 'DETERMINISTIC GATE: GREEN — every check passed';
+      feed(el('div', `vsummary ${ev.pass ? 'pass' : 'fail'}`, label));
       break;
+    }
 
     case 'gate_report': {
       const r = ev.report ?? {};
@@ -712,6 +745,7 @@ function handle(ev) {
         '## Gate report',
         '',
         `- status: ${r.status ?? 'unknown'}`,
+        state.runTargetPath ? `- repository: ${state.runTargetPath}` : null,
         r.branch ? `- branch: ${r.branch}` : null,
         r.commit ? `- commit: ${r.commit}` : null,
         r.report ? `- receipts: ${r.report}` : null,
@@ -748,13 +782,18 @@ function handle(ev) {
       state.sawTerminal = true;
       setStatus(ev.status);
       stopTimer();
+      $('stop').classList.add('hidden');
+      if (state.runStartAt && ev.at) {
+        const s = Math.max(0, Math.floor((ev.at - state.runStartAt) / 1000));
+        $('run-timer').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+      }
       state.es?.close(); // terminal — otherwise EventSource reconnects and replays forever
       setStage('ship', ev.status.startsWith('done') ? 'done' : 'idle');
       const good = ev.status === 'done' || ev.status === 'done_with_findings';
       const cls = good ? 'good' : ev.status === 'stopped' ? 'meh' : 'bad';
       const label = {
-        done: 'DONE — reviewed, verified, shipped.',
-        done_with_findings: 'DONE WITH FINDINGS — verified green; accepted findings are on the record.',
+        done: 'DONE — reviewed and verified.',
+        done_with_findings: 'DONE WITH FINDINGS — green, with findings or caveats on the record.',
         verify_failed: 'VERIFY FAILED — shipped by human override, recorded as red.',
         failed: 'FAILED — the loop refused to fake a green.',
         stopped: 'STOPPED by human.',
@@ -766,7 +805,7 @@ function handle(ev) {
         resume.onclick = async () => {
           resume.textContent = 'resuming…';
           try {
-            const res = await fetch(`${API}/api/runs/${state.runId}/resume`, { method: 'POST' });
+            const res = await fetch(`${API}/api/runs/${state.runId}/resume`, { method: 'POST', headers: postHeaders() });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || res.statusText);
             attach(data.id, $('rungoal').textContent);
@@ -814,7 +853,7 @@ async function answer(qid, text, card) {
   try {
     const res = await fetch(`${API}/api/runs/${state.runId}/answer`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: postHeaders(),
       body: JSON.stringify({ answer: text }),
     });
     if (res.ok) { markAnswered(card, text); return; }

@@ -27,7 +27,7 @@ npm test                   # deterministic-verifier self-test
 
 ## For people who don't live in a terminal
 
-The setup is guided from inside the page. One command starts the studio (`node server.mjs`, or `npx camus-loop-studio` once published); everything after that happens in the browser:
+The setup is guided from inside the page. One command starts the studio (`node server.mjs`, or `npx camus-loop-studio` once published) — that first command is still a terminal step until a packaged launcher ships; everything after it happens in the browser:
 
 - The **setup** panel runs the same checks as `--doctor`, row by row, and every missing piece comes with the exact command to paste — install Claude Code, install Codex, sign in once each. "Check again" re-verifies without restarting anything.
 - The **settings** panel edits the run decisions (maker model, reviewer model, effort, review rounds) and writes them back to [checks/models.json](checks/models.json) with a stamped why — the decision record stays the source of truth, no file editing required.

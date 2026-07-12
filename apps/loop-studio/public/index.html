@@ -97,9 +97,10 @@
         <div>
           <label class="lbl">Depth</label>
           <div class="seg" id="depth">
-            <button data-v="quick" class="selected">Quick</button>
-            <button data-v="standard">Standard</button>
+            <button data-v="quick" class="selected" title="≈700–1,100 words, 4–6 sources">Quick</button>
+            <button data-v="standard" title="≈1,200–1,800 words, 6–10 sources">Standard</button>
           </div>
+          <div class="hint">Quick ≈ 700–1,100 words, 4–6 sources · Standard ≈ 1,200–1,800, 6–10</div>
         </div>
         <div>
           <label class="lbl">Grounding</label>
@@ -150,6 +151,7 @@
           <div class="doc-actions">
             <button id="copy" class="ghost" title="Copy markdown">Copy</button>
             <button id="download" class="ghost" title="Download .md">Download</button>
+            <button id="download-report" class="ghost" title="Download the evidence report (JSON)">Evidence</button>
           </div>
         </div>
         <article class="doc" id="doc"><div class="doc-empty">The deliverable appears here as the loop drafts it.</div></article>

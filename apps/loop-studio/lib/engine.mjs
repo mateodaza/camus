@@ -213,10 +213,16 @@ export async function runLoop(run, ctx) {
         onCheck: (c) => emit('verify_check', c),
         skipNetwork: process.env.MOCK_OFFLINE === '1',
       });
-      emit('verify_result', { pass: result.pass, checks: result.checks });
+      emit('verify_result', { pass: result.pass, warnings: result.warnings, skipped: result.skipped, checks: result.checks });
       stage('verify', 'done', { pass: result.pass });
 
-      if (result.pass) break;
+      if (result.pass) {
+        if (result.warnings || result.skipped) {
+          doneWithFindings = true;
+          log(`Verify green with caveats: ${result.warnings} warning(s), ${result.skipped} skipped check(s) — recorded, not hidden.`);
+        }
+        break;
+      }
 
       const failures = result.checks.filter((c) => c.status === 'fail');
       log(`Verify failed: ${failures.map((f) => f.label).join('; ')}`);

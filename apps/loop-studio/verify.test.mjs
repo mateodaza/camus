@@ -89,6 +89,24 @@ Community-led growth compounds where paid cannot. Retention differs by cohort or
   assert.equal(cit2.status, 'pass', 'unused Sources entries are not dangling markers');
 }
 
+// --- audit regression: a citation must bind to a checked URL -----------------
+{
+  const doc = `## Summary
+Retention improved 61% [1]. Unrelated reading: https://example.com
+
+## Key Findings
+1. See above [1].
+
+## Sources
+1. Internal memo, Q3 planning meeting
+`;
+  const res = await runVerify(doc, 'freeform', { skipNetwork: true });
+  const cit = res.checks.find((c) => c.id === 'citations');
+  assert.equal(cit.status, 'fail', 'a source entry without a URL fails — an unrelated link cannot vouch for [1]');
+  assert.ok(cit.detail.includes('no URL'), 'the reason names the missing URL');
+  assert.equal(res.pass, false, 'the gate is red');
+}
+
 // --- gate: link classification against a local HTTP fixture ------------------
 // No external network: an in-process server plays the four personalities the
 // checker must distinguish — healthy, bot-blocked, dead, and HEAD-hostile.
@@ -316,7 +334,9 @@ Community-led growth compounds where paid cannot. Retention differs by cohort or
       answerQueue: [],
     });
     const res = await h5.run();
-    assert.equal(res.status, 'done', 'fixable red ends done');
+    // Freeform drafts with no URLs verify green WITH caveats (links warn,
+    // structure/citations skip) — and caveats are never hidden as plain done.
+    assert.equal(res.status, 'done_with_findings', 'fixable red ends green-with-caveats');
     assert.equal(h5.published.length, 1, 'published exactly once');
   }
 
@@ -389,7 +409,7 @@ Community-led growth compounds where paid cannot. Retention differs by cohort or
       answerQueue: ['Base-first.'],
     });
     const res10 = await h10.run();
-    assert.equal(res10.status, 'done');
+    assert.equal(res10.status, 'done_with_findings'); // freeform caveats, as above
     const fixPromptText = h10.prompts.claude[2]; // plan, make, fix
     assert.ok(fixPromptText.includes('Base-first.'), 'decision lands in the fix prompt');
     assert.ok(h10.prompts.codex[1].includes('Base-first.'), 'decision lands in the next review prompt');

@@ -124,12 +124,18 @@ export async function runCodeLoop(run, ctx) {
 
     const t0 = Date.now();
     const seenRounds = new Set();
+    let wtPrefix = null; // first receipt names the worktree; later rounds must match
     let lastActivity = Date.now();
 
     const watcher = setInterval(async () => {
       // Round receipts are the gate's own truth — surface them as they land.
+      // The studio enforces one gate at a time, and the first receipt binds
+      // this run to its worktree so a stray file never cross-contaminates.
       for (const r of await reviewRoundsSince(t0)) {
         if (seenRounds.has(r.file)) continue;
+        const prefix = r.file.replace(/-r\d+\.json$/, '');
+        if (wtPrefix === null) wtPrefix = prefix;
+        else if (prefix !== wtPrefix) continue;
         seenRounds.add(r.file);
         lastActivity = Date.now();
         let verdictNote = 'verdict recorded';

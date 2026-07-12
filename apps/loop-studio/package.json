@@ -11,7 +11,8 @@
     "start": "node server.mjs",
     "rehearse": "ENGINE=mock node server.mjs",
     "doctor": "node server.mjs --doctor",
-    "test": "node verify.test.mjs"
+    "test": "node verify.test.mjs && node api.test.mjs",
+    "test:verify": "node verify.test.mjs"
   },
   "bin": {
     "camus-loop-studio": "./server.mjs"

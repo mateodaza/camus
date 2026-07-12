@@ -5,6 +5,7 @@
 // a paper trail a skeptic can replay.
 
 import http from 'node:http';
+import { randomBytes } from 'node:crypto';
 import { spawn, execFile } from 'node:child_process';
 import { readFile, writeFile, appendFile, mkdir, readdir } from 'node:fs/promises';
 import { createReadStream, existsSync } from 'node:fs';
@@ -71,6 +72,9 @@ async function startRun({ goal, lane, depth, ground, targetPath = null, targetTo
   });
 
   const run = { id, goal, lane, depth, ground, targetPath, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false };
+  // The run exists on disk from second zero — a crash must not orphan it.
+  writeFile(join(dir, 'run.json'), JSON.stringify({ id, goal, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, startedAt: run.startedAt }, null, 2))
+    .catch((err) => console.error(`[receipts] failed to write run.json for ${id}: ${err.message}`));
   const state = { run, events: [], subscribers: new Set(), answer: null, abort: new AbortController(), writeChain: Promise.resolve() };
   runs.set(id, state);
 
@@ -184,24 +188,75 @@ function readBody(req, limit = 512 * 1024) {
   });
 }
 
-// Hosted-UI mode: the same UI served from a public origin can drive THIS
-// local server — execution and auth stay on the user's machine. The browser's
-// Local Network Access permission plus this exact-origin CORS allowlist are
-// the whole handshake. Default origins: camus.sh with and without www (the
-// deployed studio UI — a decision, recorded here and in the README);
+// The trust boundary. This server starts runs that spend money, so the API
+// is AUTHORIZED, not just CORS-decorated — CORS headers only govern what a
+// browser lets a page read; they never stop a request from executing.
+//
+// Layers (each independently sufficient against the drive-by-webpage class):
+//   1. loopback bind by default (STUDIO_BIND to widen, explicitly)
+//   2. Host allowlist (kills DNS-rebinding when loopback-bound)
+//   3. Origin allowlist enforced BEFORE routing — a disallowed Origin gets
+//      403, not merely "no CORS headers"
+//   4. POST bodies must be application/json (no-cors requests cannot send it)
+//   5. browser POSTs carry a per-session capability token, distributed only
+//      via /api/status (which only allowed origins can read)
+// Plus spend hygiene: goal-size cap and an active-run ceiling.
+const BIND = process.env.STUDIO_BIND || '127.0.0.1';
+const SESSION_TOKEN = randomBytes(16).toString('hex');
+const MAX_ACTIVE_RUNS = Number(process.env.STUDIO_MAX_ACTIVE || 3);
+const MAX_GOAL_CHARS = 2000;
+
+// Hosted-UI default origins: camus.sh with and without www (the deployed
+// studio UI — a decision, recorded here and in the README);
 // STUDIO_ALLOWED_ORIGIN overrides (comma-separated for several).
-const ALLOWED_ORIGINS = (process.env.STUDIO_ALLOWED_ORIGIN || 'https://camus.sh,https://www.camus.sh')
+const REMOTE_ORIGINS = (process.env.STUDIO_ALLOWED_ORIGIN || 'https://camus.sh,https://www.camus.sh')
   .split(',')
   .map((o) => o.trim().replace(/\/$/, ''))
   .filter(Boolean);
 
+function actualPort() {
+  return server.address()?.port ?? PORT;
+}
+function selfOrigins() {
+  const p = actualPort();
+  return [`http://localhost:${p}`, `http://127.0.0.1:${p}`];
+}
+function allowedOrigins() {
+  return [...REMOTE_ORIGINS, ...selfOrigins()];
+}
+
+// Returns an error response spec when the request must not run.
+function authorize(req) {
+  const bindIsLoopback = ['127.0.0.1', 'localhost', '::1'].includes(BIND);
+  const host = (req.headers.host || '').toLowerCase();
+  if (bindIsLoopback && host && !host.startsWith('localhost:') && !host.startsWith('127.0.0.1:') && host !== 'localhost' && host !== '127.0.0.1') {
+    return { code: 421, error: 'unrecognized Host header' }; // DNS rebinding
+  }
+  const origin = req.headers.origin;
+  if (origin && !allowedOrigins().includes(origin)) {
+    return { code: 403, error: 'origin not allowed' };
+  }
+  if (req.method === 'POST') {
+    const ctype = String(req.headers['content-type'] || '');
+    if (!ctype.startsWith('application/json')) {
+      return { code: 415, error: 'POST bodies must be application/json' };
+    }
+    // Browser requests (they always carry Origin on POST) must present the
+    // session token; non-browser local tools have machine access anyway.
+    if (origin && req.headers['x-studio-token'] !== SESSION_TOKEN) {
+      return { code: 401, error: 'missing or wrong session token — reload the page' };
+    }
+  }
+  return null;
+}
+
 function corsHeaders(req) {
   const origin = req.headers.origin;
-  if (!origin || !ALLOWED_ORIGINS.includes(origin)) return {};
+  if (!origin || !allowedOrigins().includes(origin)) return {};
   return {
     'access-control-allow-origin': origin,
     'access-control-allow-methods': 'GET, POST, OPTIONS',
-    'access-control-allow-headers': 'content-type',
+    'access-control-allow-headers': 'content-type, x-studio-token',
     'access-control-allow-private-network': 'true',
     vary: 'Origin',
   };
@@ -213,8 +268,13 @@ const server = http.createServer(async (req, res) => {
 
   const cors = corsHeaders(req);
   if (req.method === 'OPTIONS') {
-    res.writeHead(Object.keys(cors).length ? 204 : 405, cors);
+    res.writeHead(Object.keys(cors).length ? 204 : 403, cors);
     return res.end();
+  }
+  const denied = authorize(req);
+  if (denied) {
+    for (const [k, v] of Object.entries(cors)) res.setHeader(k, v);
+    return json(res, denied.code, { error: denied.error });
   }
   for (const [k, v] of Object.entries(cors)) res.setHeader(k, v);
 
@@ -252,6 +312,7 @@ const server = http.createServer(async (req, res) => {
     if (path === '/api/status' && req.method === 'GET') {
       return json(res, 200, {
         engine: ENGINE,
+        token: SESSION_TOKEN,
         models: { maker: getModels().maker.model, reviewer: getModels().reviewer.model, effort: getModels().reviewer.effort },
         hivemind: hivemind.hivemindStatus(),
         gate: { installed: ENGINE === 'mock' ? true : gateInstalled() },
@@ -264,6 +325,9 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const goal = String(body.goal || '').trim();
       if (goal.length < 12) return json(res, 400, { error: 'Write the goal like you would brief a strategist — a sentence or two.' });
+      if (goal.length > MAX_GOAL_CHARS) return json(res, 400, { error: `That goal is ${goal.length} characters — keep it under ${MAX_GOAL_CHARS}; a brief is not a corpus.` });
+      const active = [...runs.values()].filter((s2) => ['running', 'needs_human'].includes(s2.run.status)).length;
+      if (active >= MAX_ACTIVE_RUNS) return json(res, 429, { error: `${active} runs are already active — the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}.` });
       const lane = body.lane === 'build' ? 'build' : LANES[body.lane] ? body.lane : 'freeform';
 
       let targetPath = null;
@@ -278,8 +342,8 @@ const server = http.createServer(async (req, res) => {
           const v = await validateBuildTarget(body.targetPath);
           if (!v.ok) return json(res, 400, { error: v.error });
           targetPath = v.path;
-          if (activeBuilds.has(v.toplevel)) {
-            return json(res, 409, { error: 'A build run is already working in that repository — one gate per repo at a time.' });
+          if (activeBuilds.size > 0) {
+            return json(res, 409, { error: 'A build run is already going — the studio runs one gate at a time (its receipt watch is per-machine).' });
           }
           activeBuilds.add(v.toplevel);
           targetToplevel = v.toplevel;
@@ -298,7 +362,14 @@ const server = http.createServer(async (req, res) => {
           try {
             const r = JSON.parse(await readFile(join(RUNS_DIR, d, 'report.json'), 'utf8'));
             list.push({ id: d, goal: r.goal, lane: r.lane, status: r.status, startedAt: r.startedAt, live: false });
-          } catch { /* unfinished run without a report — skip */ }
+          } catch {
+            // No sealed report: if start metadata exists, this run was
+            // interrupted — list it honestly instead of hiding it.
+            try {
+              const r = JSON.parse(await readFile(join(RUNS_DIR, d, 'run.json'), 'utf8'));
+              list.push({ id: d, goal: r.goal, lane: r.lane, status: 'incomplete', startedAt: r.startedAt, live: false });
+            } catch { /* neither file — not a run */ }
+          }
         }
       }
       list.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
@@ -371,7 +442,10 @@ const server = http.createServer(async (req, res) => {
         let meta = state?.run;
         if (!meta) {
           try { meta = JSON.parse(await readFile(join(RUNS_DIR, id, 'report.json'), 'utf8')); }
-          catch { return json(res, 404, { error: 'unknown run — nothing to resume' }); }
+          catch {
+            try { meta = JSON.parse(await readFile(join(RUNS_DIR, id, 'run.json'), 'utf8')); }
+            catch { return json(res, 404, { error: 'unknown run — nothing to resume' }); }
+          }
         }
         if (meta.lane !== 'build') return json(res, 400, { error: 'only build runs resume through the gate' });
         if (!meta.idSalt) return json(res, 400, { error: 'this run predates resumable receipts — start a fresh build run instead (the gate itself still skips finished work)' });
@@ -381,7 +455,7 @@ const server = http.createServer(async (req, res) => {
         if (ENGINE !== 'mock') {
           const v = await validateBuildTarget(meta.targetPath);
           if (!v.ok) return json(res, 400, { error: `the original target no longer validates: ${v.error}` });
-          if (activeBuilds.has(v.toplevel)) return json(res, 409, { error: 'a build run is already working in that repository' });
+          if (activeBuilds.size > 0) return json(res, 409, { error: 'a build run is already going — one gate at a time' });
           activeBuilds.add(v.toplevel);
           const newId = await startRun({ goal: meta.goal, lane: 'build', depth: 'quick', ground: false, targetPath: v.path, targetToplevel: v.toplevel, idSalt: meta.idSalt });
           return json(res, 201, { id: newId });
@@ -428,9 +502,10 @@ server.on('error', (err) => {
   throw err;
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, BIND, () => {
   const hm = hivemind.hivemindStatus();
-  console.log(`\n  Camus Loop Studio\n  http://localhost:${PORT}\n  engine: ${ENGINE}${ENGINE === 'mock' ? ' (rehearsal)' : ''} · hivemind: ${hm.connected ? 'connected' : 'stub'} · hosted origins: ${ALLOWED_ORIGINS.join(', ')} · receipts: ./runs/\n`);
+  const p = actualPort();
+  console.log(`\n  Camus Loop Studio\n  http://localhost:${p}\n  bind: ${BIND} · engine: ${ENGINE}${ENGINE === 'mock' ? ' (rehearsal)' : ''} · hivemind: ${hm.connected ? 'connected' : 'stub'} · hosted origins: ${REMOTE_ORIGINS.join(', ')} · receipts: ./runs/\n`);
   if (process.platform === 'darwin' && process.env.OPEN !== '0' && !process.env.CI) {
     spawn('open', [`http://localhost:${PORT}`], { stdio: 'ignore' }).on('error', () => {});
   }

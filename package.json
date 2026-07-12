@@ -9,5 +9,10 @@
     "web:build": "pnpm --filter web build",
     "cli:pack": "pnpm --filter camus-cli exec npm pack --dry-run",
     "release:tag": "bash scripts/release-tag.sh"
+  },
+  "pnpm": {
+    "overrides": {
+      "postcss": "^8.4.47"
+    }
   }
 }

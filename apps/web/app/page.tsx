@@ -47,7 +47,7 @@ export default function Home() {
                 <div>
                   <h2 className="sec-h2">Watch it work.</h2>
                   <p className="sec-sub">
-                    It ships as a skill and two workflows, so it runs wherever skills run. Every phase
+                    It ships as a skill and three workflows, so it runs wherever skills run. Every phase
                     of every task is on screen as it happens.
                   </p>
                 </div>
