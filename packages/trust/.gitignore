@@ -1,0 +1,5 @@
+# Benchmark records derived from real reviews may contain proprietary code
+# references and private research — the corpus stays local (or in a private
+# repo later). Only schemas, tools, and the synthetic sample are public.
+benchmark/records/
+benchmark/PENDING-ADJUDICATION.md

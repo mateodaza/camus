@@ -1,0 +1,29 @@
+{
+  "$id": "https://camus.sh/schemas/economics/v1",
+  "title": "Role economics",
+  "description": "Per-role spend record. Dollar figures are ESTIMATES ONLY — subscription-backed runs may have zero marginal dollar cost while consuming rate limits or weekly credits; calibration compares quality, latency, token pressure, and billing impact, never dollars alone.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "role", "requested", "resolved", "actual", "billing_mode"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "role": { "enum": ["executor", "auditor"] },
+    "requested": { "type": "string", "description": "provider:alias, e.g. openai:balanced" },
+    "resolved": { "type": "string", "description": "provider:model, e.g. openai:gpt-5.6-terra" },
+    "actual": { "type": "string", "description": "what actually ran (fallbacks make this differ from resolved)" },
+    "effort": { "type": ["string", "null"] },
+    "fallback": { "type": ["string", "null"], "description": "why actual differs from resolved, when it does" },
+    "usage": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": { "type": ["integer", "null"] },
+        "output_tokens": { "type": ["integer", "null"] },
+        "cached_input_tokens": { "type": ["integer", "null"] }
+      }
+    },
+    "billing_mode": { "enum": ["subscription", "usage_credits", "api", "unknown"] },
+    "estimated_cost_usd": { "type": ["number", "null"], "description": "estimate only; null when the billing mode makes dollars meaningless" },
+    "duration_ms": { "type": ["integer", "null"] }
+  }
+}

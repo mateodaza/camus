@@ -1,0 +1,12 @@
+{
+  "name": "camus-trust",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The Camus trust-layer protocol artifacts: versioned schemas, status derivation, artifact canonicalization/hashing, and redact-by-default corpus ingestion. Zero dependencies.",
+  "type": "module",
+  "engines": { "node": ">=18.17" },
+  "scripts": {
+    "test": "node test.mjs",
+    "ingest": "node ingest-reviews.mjs"
+  }
+}

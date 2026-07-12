@@ -1,0 +1,15 @@
+{
+  "$id": "https://camus.sh/schemas/status/v1",
+  "title": "Orthogonal status dimensions",
+  "description": "Raw dimensions are permanent evidence; headlines are derived, disposable presentation (lib/status.mjs deriveHeadline). Never persist a headline in place of its dimensions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "execution", "verification", "audit", "publication"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "execution": { "enum": ["pending", "running", "completed", "interrupted", "failed"] },
+    "verification": { "enum": ["not_run", "passed", "passed_with_caveats", "failed", "infra_failed"] },
+    "audit": { "enum": ["not_run", "independent_clean", "independent_findings", "advisory_clean", "advisory_findings", "infra_failed"] },
+    "publication": { "enum": ["not_published", "published"] }
+  }
+}

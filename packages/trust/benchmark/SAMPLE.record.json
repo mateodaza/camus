@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "sample-seeded-p1-empty-guard",
+  "source": "seeded_defect",
+  "executor": { "provider": "anthropic", "model": "sonnet", "effort": null },
+  "auditor": { "provider": "openai", "model": "gpt-5.4", "effort": "low" },
+  "artifact_ref": { "artifact_id": null, "commit": null, "worktree": "sample-worktree", "round": 1 },
+  "verdict": "patch is incorrect",
+  "findings": [
+    {
+      "title": "missing empty-input guard on the batch path",
+      "body": "processBatch() indexes items[0] without checking length; an empty array throws at runtime. Seeded defect for recall measurement.",
+      "code_location": "src/batch.ts:14",
+      "priority": 1,
+      "confidence": 0.9,
+      "adjudication": "confirmed",
+      "severity_before": 1,
+      "severity_after": 1,
+      "deterministic_repro": true,
+      "repair_outcome": "guard added; regression test proves the empty case"
+    }
+  ],
+  "economics": null,
+  "sensitivity": "public",
+  "is_clean_control": false,
+  "verdict_clean": false,
+  "notes": "Synthetic sample committed as the record-shape reference; real records are gitignored and stay local."
+}

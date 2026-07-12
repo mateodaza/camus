@@ -1,0 +1,16 @@
+{
+  "$id": "https://camus.sh/schemas/human-decision/v1",
+  "title": "Human decision",
+  "description": "One entry in the human-decisions ledger. A verdict without the calls a human made is missing provenance; the ledger is part of the sealed evidence bundle.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "question", "answer", "at"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "enum": ["decision", "infra", "stuck", "verify", "adjudication"] },
+    "question": { "type": "string" },
+    "answer": { "type": "string" },
+    "at": { "type": "integer", "description": "epoch ms" },
+    "run_id": { "type": ["string", "null"] }
+  }
+}

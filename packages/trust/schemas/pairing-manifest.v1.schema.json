@@ -1,0 +1,26 @@
+{
+  "$id": "https://camus.sh/schemas/pairing-manifest/v1",
+  "title": "Executor x auditor pairing manifest",
+  "description": "Both identities appear on every receipt. Aliases resolve through capability profiles, never hardcoded enums. Same-vendor pairing is only ever an explicitly labeled advisory mode.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "executor", "auditor", "independence"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "executor": { "$ref": "#/$defs/role" },
+    "auditor": { "$ref": "#/$defs/role" },
+    "independence": { "enum": ["cross_vendor", "same_vendor_advisory", "none"] }
+  },
+  "$defs": {
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested", "resolved", "actual"],
+      "properties": {
+        "requested": { "type": "string" },
+        "resolved": { "type": "string" },
+        "actual": { "type": "string" }
+      }
+    }
+  }
+}

@@ -1,0 +1,71 @@
+{
+  "$id": "https://camus.sh/schemas/evidence-pack/v1",
+  "title": "Sealed evidence pack",
+  "description": "The provider-independent audit artifact. The auditor receives THIS in a clean read-only context — never the executor's persuasive self-summary. artifact_id = sha256 of the canonicalized bundle excluding derived fields (lib/canonical.mjs); any modification creates a new artifact_id and expires prior audits. Raw status dimensions are permanent; derived headlines are recomputable presentation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "artifact_id", "goal", "acceptance_contract", "artifact", "verification", "pairing", "statuses", "human_decisions", "economics", "created_at"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "artifact_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "goal": { "type": "string" },
+    "acceptance_contract": { "type": "string", "description": "the properties the work must satisfy — audit quality bottlenecks on this" },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["code", "research"] },
+        "repo": { "type": ["string", "null"] },
+        "head": { "type": ["string", "null"], "description": "full commit sha the verdict binds to (code)" },
+        "diff_hash": { "type": ["string", "null"] },
+        "changed_files": { "type": ["array", "null"], "items": { "type": "string" } },
+        "deliverable_hash": { "type": ["string", "null"], "description": "hash of the final deliverable text (research)" },
+        "claims": {
+          "type": ["array", "null"],
+          "description": "the claims ledger: claim -> marker -> exact URL -> captured evidence -> freshness -> decision",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["claim", "marker"],
+            "properties": {
+              "claim": { "type": "string" },
+              "marker": { "type": "string" },
+              "url": { "type": ["string", "null"] },
+              "evidence_hash": { "type": ["string", "null"] },
+              "retrieved_at": { "type": ["integer", "null"] },
+              "decision": { "enum": ["supported", "unsupported", "unchecked", null] }
+            }
+          }
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checks"],
+      "properties": {
+        "command": { "type": ["string", "null"] },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "status"],
+            "properties": {
+              "id": { "type": "string" },
+              "status": { "enum": ["pass", "fail", "warn", "skip"] },
+              "detail": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "session_log": { "type": ["array", "null"], "items": { "type": "string" }, "description": "relevant runtime lines: tool failures, fallbacks, permission denials, interruptions" },
+    "pairing": { "type": "object", "description": "pairing-manifest/v1 instance" },
+    "statuses": { "type": "object", "description": "status/v1 instance — raw dimensions, permanent" },
+    "human_decisions": { "type": "array", "items": { "type": "object" }, "description": "human-decision/v1 instances" },
+    "economics": { "type": "array", "items": { "type": "object" }, "description": "economics/v1 instances, one per role" },
+    "created_at": { "type": "integer" }
+  }
+}
