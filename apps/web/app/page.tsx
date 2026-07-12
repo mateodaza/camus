@@ -296,8 +296,8 @@ $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
                 </span>
                 <span>·</span>
                 <span>
-                  <b>later</b> the same studio, pointed back at code — one goal in, the studio
-                  decides build or research
+                  <b>and now, in beta</b> the same studio pointed back at code — the Build lane
+                  ignites the camus gate on a repo of yours
                 </span>
               </div>
             </Reveal>

@@ -576,6 +576,7 @@ function handle(ev) {
     case 'run':
       if (ev.run?.goal) $('rungoal').textContent = ev.run.goal;
       if (ev.at) startTimer(ev.at);
+      state.runLane = ev.run?.lane;
       buildStages(ev.run?.lane);
       if (ev.run?.lane !== 'build' && ev.run && !ev.run.ground) state.stageEls.get('ground')?.remove();
       if (ev.run?.lane === 'build') $('doc').innerHTML = '<div class="doc-empty">The gate works inside the target repo — the session below is the live view; its report lands here.</div>';
@@ -759,6 +760,24 @@ function handle(ev) {
         stopped: 'STOPPED by human.',
       }[ev.status] || ev.status;
       const b = el('div', `banner ${cls}`, label);
+      if (state.runLane === 'build' && ['stopped', 'failed', 'verify_failed'].includes(ev.status)) {
+        const sub = el('span', 'sub');
+        const resume = el('button', 'resume-btn', 'Resume the gate');
+        resume.onclick = async () => {
+          resume.textContent = 'resuming…';
+          try {
+            const res = await fetch(`${API}/api/runs/${state.runId}/resume`, { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || res.statusText);
+            attach(data.id, $('rungoal').textContent);
+          } catch (err) {
+            resume.textContent = `couldn't resume: ${String(err.message).slice(0, 60)}`;
+          }
+        };
+        sub.appendChild(resume);
+        sub.appendChild(document.createTextNode(' camus is crash-safe — finished work skips, proven work lands, only unproven work re-runs.'));
+        b.appendChild(sub);
+      }
       if (ev.artifactUrl) {
         const sub = el('span', 'sub');
         const a = el('a', null, 'Published to Hivemind artifacts →');

@@ -12,7 +12,7 @@ The studio is the loop's visual front door, and it grows in this order:
 
 1. **Words, any topic** (today) — research memos, teardowns, freeform analysis.
 2. **Marketing as the first tuned vertical** — the compliance wordlist ships web3-marketing defaults and grounding rides Myosin's Hivemind, because that is where the studio has real internal knowledge to stand on (and the two products co-market).
-3. **Back to code** (later) — one goal in, the studio decides: research/analyze runs this loop; build hands off to the camus code gate, on the same watchable surface.
+3. **Back to code** (shipped, beta) — the Build lane points the camus gate at a git repo on this machine: isolated worktree, cross-model review, the repo's own tests as the verdict, needs_human pauses answered from the same question card. Next: one goal in, the studio decides build or research by itself.
 
 ## Quickstart
 

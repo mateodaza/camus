@@ -22,7 +22,7 @@ export function sessionLineFromEvent(ev) {
   for (const item of ev.message?.content ?? []) {
     if (item.type === 'tool_use') {
       const input = item.input ?? {};
-      const arg = input.query ?? input.url ?? input.prompt ?? Object.values(input)[0] ?? '';
+      const arg = input.query ?? input.url ?? input.prompt ?? input.command ?? input.file_path ?? input.path ?? Object.values(input).find((v) => typeof v === 'string') ?? '';
       const name = item.name.replace(/^mcp__[^_]+__/, '');
       return `${name}: ${String(arg).slice(0, 110)}`;
     }

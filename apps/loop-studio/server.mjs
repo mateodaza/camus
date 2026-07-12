@@ -57,7 +57,7 @@ function newId() {
 
 const activeBuilds = new Set();
 
-async function startRun({ goal, lane, depth, ground, targetPath = null, targetToplevel = null }) {
+async function startRun({ goal, lane, depth, ground, targetPath = null, targetToplevel = null, idSalt = null }) {
   const id = newId();
   const dir = join(RUNS_DIR, id);
   const scratchDir = join(dir, 'scratch');
@@ -70,7 +70,7 @@ async function startRun({ goal, lane, depth, ground, targetPath = null, targetTo
     child.on('close', (code) => resolve(code === 0));
   });
 
-  const run = { id, goal, lane, depth, ground, targetPath, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false };
+  const run = { id, goal, lane, depth, ground, targetPath, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false };
   const state = { run, events: [], subscribers: new Set(), answer: null, abort: new AbortController(), writeChain: Promise.resolve() };
   runs.set(id, state);
 
@@ -136,7 +136,7 @@ async function startRun({ goal, lane, depth, ground, targetPath = null, targetTo
     if (targetToplevel) activeBuilds.delete(targetToplevel);
     await state.writeChain; // receipt stream flushed before the report seals the run
     const report = JSON.stringify(
-      { id, goal, lane, depth, ground, engine: ENGINE, ...result, draft: undefined, deliverable: run.lastMarkdown, receiptsDegraded: run.receiptsDegraded, startedAt: run.startedAt, endedAt: Date.now() },
+      { id, goal, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, ...result, draft: undefined, deliverable: run.lastMarkdown, receiptsDegraded: run.receiptsDegraded, startedAt: run.startedAt, endedAt: Date.now() },
       null,
       2,
     );
@@ -305,7 +305,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { runs: list.slice(0, 30) });
     }
 
-    const m = path.match(/^\/api\/runs\/([\w-]+)\/(events|answer|stop|report)$/);
+    const m = path.match(/^\/api\/runs\/([\w-]+)\/(events|answer|stop|report|resume)$/);
     if (m) {
       const [, id, action] = m;
       const state = runs.get(id);
@@ -364,6 +364,32 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { ok: true });
       }
 
+      if (action === 'resume' && req.method === 'POST') {
+        // Build-lane only: camus is crash-safe, so a stopped/failed run
+        // resumes by re-invoking the gate with the SAME identity (idSalt) —
+        // finished work skips, proven work lands, only unproven work re-runs.
+        let meta = state?.run;
+        if (!meta) {
+          try { meta = JSON.parse(await readFile(join(RUNS_DIR, id, 'report.json'), 'utf8')); }
+          catch { return json(res, 404, { error: 'unknown run — nothing to resume' }); }
+        }
+        if (meta.lane !== 'build') return json(res, 400, { error: 'only build runs resume through the gate' });
+        if (!meta.idSalt) return json(res, 400, { error: 'this run predates resumable receipts — start a fresh build run instead (the gate itself still skips finished work)' });
+        if (state && ['running', 'needs_human'].includes(state.run.status)) {
+          return json(res, 409, { error: 'that run is still going' });
+        }
+        if (ENGINE !== 'mock') {
+          const v = await validateBuildTarget(meta.targetPath);
+          if (!v.ok) return json(res, 400, { error: `the original target no longer validates: ${v.error}` });
+          if (activeBuilds.has(v.toplevel)) return json(res, 409, { error: 'a build run is already working in that repository' });
+          activeBuilds.add(v.toplevel);
+          const newId = await startRun({ goal: meta.goal, lane: 'build', depth: 'quick', ground: false, targetPath: v.path, targetToplevel: v.toplevel, idSalt: meta.idSalt });
+          return json(res, 201, { id: newId });
+        }
+        const newId = await startRun({ goal: meta.goal, lane: 'build', depth: 'quick', ground: false, targetPath: meta.targetPath, idSalt: meta.idSalt });
+        return json(res, 201, { id: newId });
+      }
+
       if (action === 'report' && req.method === 'GET') {
         try {
           return json(res, 200, JSON.parse(await readFile(join(RUNS_DIR, id, 'report.json'), 'utf8')));
@@ -391,6 +417,15 @@ const server = http.createServer(async (req, res) => {
   } catch (err) {
     json(res, 500, { error: String(err.message || err) });
   }
+});
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n  Port ${PORT} is already in use — another studio server is probably running.`);
+    console.error('  Stop it (or start this one on another port: PORT=1914 node server.mjs).\n');
+    process.exit(1);
+  }
+  throw err;
 });
 
 server.listen(PORT, () => {

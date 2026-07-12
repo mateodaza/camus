@@ -480,6 +480,12 @@ Community-led growth compounds where paid cannot. Retention differs by cohort or
   assert.ok(q.question.includes('Which contract'), 'question extracted for the card');
   // done_with_findings must not be shadowed by its 'done' suffix
   assert.equal(parseGateReport('status: done_with_findings').status, 'done_with_findings', 'longest status wins');
+  // Live-fire regression (2026-07-12): camus wraps statuses in backticks —
+  // the studio misread a real green as infra_error until this passed.
+  assert.equal(
+    parseGateReport('**The Camus loop closed green: `done` — review clean in 1 round, deterministic verify passed.** The gated change sits on branch `camus/greet-x`.').status,
+    'done', 'backtick-wrapped status parses (the real gate output shape)');
+  assert.equal(parseGateReport('halted: [needs_human]').status, 'needs_human', 'bracket-wrapped status parses');
 }
 
 // --- gate: live link check (only when network is available) ------------------

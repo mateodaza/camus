@@ -53,18 +53,20 @@ export async function validateBuildTarget(rawPath) {
 export function parseGateReport(text) {
   const statuses = ['done_with_findings', 'needs_human', 'needs_decision', 'review_unresolved', 'verify_failed', 'verify_inconclusive', 'infra_error', 'paused_by_user', 'aborted', 'done'];
   let report = null;
-  // Prefer a parseable JSON object that carries a known status.
-  const jsonMatches = text.match(/\{[\s\S]*\}/);
-  if (jsonMatches) {
+  // Prefer a parseable JSON object that carries a known status: try flat
+  // objects first, then the greedy whole-text candidate.
+  const candidates = [...(text.match(/\{[^{}]*\}/g) ?? []), ...(text.match(/\{[\s\S]*\}/) ?? [])];
+  for (const c of candidates) {
     try {
-      const obj = JSON.parse(jsonMatches[0]);
-      if (obj && statuses.includes(obj.status)) report = obj;
-    } catch { /* prose-wrapped — fall through to keyword scan */ }
+      const obj = JSON.parse(c);
+      if (obj && statuses.includes(obj.status)) { report = obj; break; }
+    } catch { /* not this one */ }
   }
   if (!report) {
-    // Statuses are ordered longest-first, so done_with_findings wins over done;
-    // string edges count as boundaries (a status can end the output).
-    const found = statuses.find((st) => new RegExp(`(^|["'\\s:{,])${st}($|["'\\s,.}])`).test(text));
+    // Statuses are ordered longest-first, so done_with_findings wins over
+    // done. Camus prose wraps statuses in backticks or brackets and a status
+    // can end the output — all of those count as boundaries.
+    const found = statuses.find((st) => new RegExp(`(^|[\`"'\\s:{,(\\[])${st}($|[\`"'\\s,.;)\\]}])`).test(text));
     if (found) report = { status: found };
   }
   if (!report) return { status: 'infra_error', note: 'gate returned no readable status', raw: text.slice(0, 400) };
@@ -107,7 +109,7 @@ export async function runCodeLoop(run, ctx) {
     return reply;
   }
 
-  const idSalt = `studio-${run.id.replace(/[^a-zA-Z0-9-]/g, '')}`;
+  const idSalt = run.idSalt || `studio-${run.id.replace(/[^a-zA-Z0-9-]/g, '')}`;
   const hbPath = join(homedir(), '.camus', 'feats', `${idSalt}.hb`);
   const roundCap = getModels().loop.roundCap;
 
@@ -130,12 +132,13 @@ export async function runCodeLoop(run, ctx) {
         if (seenRounds.has(r.file)) continue;
         seenRounds.add(r.file);
         lastActivity = Date.now();
-        let verdictNote = '';
+        let verdictNote = 'verdict recorded';
         try {
           const raw = JSON.parse(await readFile(join(REVIEWS_DIR, r.file), 'utf8'));
           const blocking = (raw.findings ?? []).filter((f) => Number(f.priority) <= 2).length;
-          verdictNote = raw.overall_correctness === 'patch is correct' ? 'clean' : `revise (${blocking} blocking)`;
-        } catch { verdictNote = 'verdict recorded'; }
+          if (raw.overall_correctness === 'patch is correct') verdictNote = 'clean';
+          else if (raw.overall_correctness === 'patch is incorrect') verdictNote = `revise (${blocking} blocking)`;
+        } catch { /* receipt shape drift — stay honest */ }
         stage('review', 'done', { round: r.round });
         emit('round', { round: r.round, cap: roundCap });
         feedVerdict(r.round, verdictNote);

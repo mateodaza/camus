@@ -252,6 +252,8 @@ textarea:focus { outline: none; border-color: var(--ink); }
 .banner .sub { display: block; font-size: 12px; color: var(--term-dim); margin-top: 6px; font-weight: 400; }
 .banner.meh .sub { color: var(--faint); }
 .banner .sub a { color: inherit; text-decoration: underline; }
+.banner .resume-btn { font-family: var(--mono); font-size: 12px; background: var(--red); color: #fff; padding: 6px 14px; margin-right: 8px; }
+.banner .resume-btn:hover { background: #fff; color: var(--ink); }
 
 /* deliverable */
 .doc-wrap { border-left: 1px solid var(--rule); display: flex; flex-direction: column; min-height: 0; background: var(--paper); }
