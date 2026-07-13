@@ -1,6 +1,6 @@
 # Auditor baseline — first cut
 
-Computed 2026-07-12 over 59 records / 70 findings.
+Computed 2026-07-13 over 59 records / 70 findings.
 Rates use the adjudicated subset only; unresolved findings are counted, never guessed.
 
 ## Corpus
@@ -9,20 +9,20 @@ Rates use the adjudicated subset only; unresolved findings are counted, never gu
 - findings: 70 — by priority: P0: 2, P1: 49, P2: 19
 
 ## Adjudication coverage
-- adjudicated: 28/70 (40.0%)
-- unresolved (awaiting human/evidence): 42 (60.0%)
+- adjudicated: 32/70 (45.7%)
+- unresolved (awaiting human/evidence): 38 (54.3%)
 
 ## Rates over the adjudicated subset
-- confirmation rate: 25/28 (89.3%)
-- rejection rate: 1/28 (3.6%)
-- partially correct: 2/28 (7.1%)
-- severity accuracy (confirmed, graded): 25/25 exact (100.0%), mean shift 0.00
-- deterministic reproducibility (confirmed, assessed): 17/19 (89.5%)
+- confirmation rate: 29/32 (90.6%)
+- rejection rate: 1/32 (3.1%)
+- partially correct: 2/32 (6.3%)
+- severity accuracy (confirmed, graded): 29/29 exact (100.0%), mean shift 0.00
+- deterministic reproducibility (confirmed, assessed): 21/23 (91.3%)
 
 ## Confirmed findings by priority
 - P0: 2
 - P1: 19
-- P2: 4
+- P2: 8
 
 ## Honest caveats
 - Temporal rule (frozen): findings are judged against the exact artifact state that was audited — a later repair proves action, not the reviewer's mechanism.

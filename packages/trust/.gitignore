@@ -2,4 +2,5 @@
 # references and private research — the corpus stays local (or in a private
 # repo later). Only schemas, tools, and the synthetic sample are public.
 benchmark/records/
+adjudicate-*.mjs
 benchmark/PENDING-ADJUDICATION.md
