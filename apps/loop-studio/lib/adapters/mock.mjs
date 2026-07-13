@@ -179,21 +179,29 @@ export async function runMockCodeLoop(run, ctx) {
     log('gate review round 2: clean');
     sess('Bash: pnpm test  — 163 passed · head-bound (simulated)');
     await sleep(1500, signal);
-    // Rehearsal identifiers are deliberately non-real: no branch, commit, or
-    // receipt is created. The UI labels this run SIMULATED end to end.
-    const report = { status: 'done', simulated: true, branch: 'rehearsal-demo (not a real branch)', commit: 'SIMULATED', report: 'none — rehearsal writes no receipt' };
+    // Rehearsal creates no gate branch, commit, or gate receipt. Studio still
+    // writes its local simulation trace (run.json, events.jsonl, report.json)
+    // so the scripted session can be replayed honestly.
+    const report = {
+      status: 'done',
+      simulated: true,
+      branch: null,
+      commit: null,
+      report: null,
+      note: 'No gate evidence was created; Studio saved only a local simulation trace.',
+    };
     stage('gate', 'done', { pass: true });
     stage('ship', 'done');
     emit('gate_report', { report });
     emit('status', { status: 'done', rev: 0, costUsd: 0 });
-    return { status: 'done', report, answers };
+    return { status: 'done', simulated: true, costUsd: 0, report, answers };
   } catch (err) {
     if (err.message === 'aborted' || err.message === 'stopped_by_human' || signal.aborted) {
       emit('status', { status: 'stopped', costUsd: 0 });
-      return { status: 'stopped', answers };
+      return { status: 'stopped', simulated: true, costUsd: 0, answers };
     }
     emit('error', { message: String(err) });
     emit('status', { status: 'failed', costUsd: 0 });
-    return { status: 'failed', answers };
+    return { status: 'failed', simulated: true, costUsd: 0, answers };
   }
 }

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import http from 'node:http';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -108,6 +108,7 @@ try {
     await new Promise((r) => setTimeout(r, 400));
     const list = await (await fetch(`${base}/api/runs`)).json();
     assert.ok(list.runs.some((x) => x.id === runId), 'the in-flight run is listed');
+    assert.ok(existsSync(join(tmp, runId, 'run.json')), 'the run is written inside the isolated test directory');
   });
 
   await check('answering with no pending question is a 409', async () => {

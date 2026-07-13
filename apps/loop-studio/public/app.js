@@ -606,7 +606,7 @@ function handle(ev) {
       if (state.simulated) {
         const sb = $('sim-banner');
         // Static literal — no user input — so innerHTML is safe here.
-        sb.innerHTML = '<b>REHEARSAL — SIMULATED.</b> A scripted demo of the loop. No models run, your brief is not processed, nothing on your machine changes, and no money is spent. Every draft, verdict, identifier, and receipt below is fabricated for the demo — the session is a script, not real output.';
+        sb.innerHTML = '<b>REHEARSAL — SIMULATED.</b> A scripted demo of the loop. No models run, your brief is not processed, your target files and repository are not changed, and no model spend occurs. Studio saves a local simulation trace under runs/; every draft, verdict, branch, commit, and gate receipt shown is scripted and is not evidence of real work.';
         sb.classList.remove('hidden');
         $('run-cost').textContent = 'rehearsal · no real spend';
       }
@@ -755,7 +755,7 @@ function handle(ev) {
       const md = [
         sim ? '## Gate report — SIMULATED' : '## Gate report',
         '',
-        sim ? '> Rehearsal only. No repository was touched; the branch, commit, and receipt below are fabricated for the demo.' : null,
+        sim ? '> Rehearsal only. No target repository was touched. Studio saved a local simulation trace; no gate branch, commit, or gate receipt exists.' : null,
         sim ? '' : null,
         `- status: ${r.status ?? 'unknown'}${sim ? ' (simulated)' : ''}`,
         state.runTargetPath ? `- repository: ${state.runTargetPath}${sim ? ' (not modified)' : ''}` : null,
@@ -809,7 +809,7 @@ function handle(ev) {
       const label = state.simulated
         ? (ev.status === 'stopped'
             ? 'REHEARSAL STOPPED — a simulation; nothing ran.'
-            : 'REHEARSAL COMPLETE — a simulation. No models ran, nothing on your machine changed, no real evidence, no spend. The identifiers and receipt are fabricated for the demo.')
+            : 'REHEARSAL COMPLETE — a scripted simulation. No models or target-repository commands ran; Studio saved only a local simulation trace. No real evidence or model spend.')
         : ({
             done: 'DONE — reviewed and verified.',
             done_with_findings: 'DONE WITH FINDINGS — green, with findings or caveats on the record.',
@@ -847,7 +847,7 @@ function handle(ev) {
         b.appendChild(el('span', 'sub', `published to Hivemind artifacts · receipts in runs/${state.runId}/`));
       } else if (good) {
         b.appendChild(el('span', 'sub', state.simulated
-          ? `simulated receipts (not real evidence) in runs/${state.runId}/`
+          ? `local simulation trace (not evidence) in runs/${state.runId}/`
           : `rev ${ev.rev} · receipts in runs/${state.runId}/`));
       }
       feed(b);

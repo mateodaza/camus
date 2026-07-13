@@ -516,4 +516,36 @@ if (process.env.TEST_NETWORK === '1') {
   assert.equal(links.status, 'fail', 'dead link fails the gate');
 }
 
+// --- rehearsal honesty: no spend and no fabricated gate evidence ------------
+{
+  const previousMockSpeed = process.env.MOCK_SPEED;
+  process.env.MOCK_SPEED = '0';
+  const { createMockAdapters, runMockCodeLoop } = await import('./lib/adapters/mock.mjs');
+  const adapters = createMockAdapters();
+  const noop = () => {};
+  const plan = await adapters.claude({ stage: 'plan', onTick: noop, onSession: noop });
+  const draft = await adapters.claude({ stage: 'make', onTick: noop, onSession: noop });
+  assert.equal(plan.costUsd, 0, 'rehearsal planning reports zero model spend');
+  assert.equal(draft.costUsd, 0, 'rehearsal drafting reports zero model spend');
+
+  const events = [];
+  const result = await runMockCodeLoop(
+    { goal: 'exercise the scripted build rehearsal', targetPath: '/tmp/real-looking-repository' },
+    {
+      emit: (type, data) => events.push({ type, ...data }),
+      waitForAnswer: async () => 'Return an empty embedding set.',
+      signal: new AbortController().signal,
+    },
+  );
+  assert.equal(result.report.simulated, true, 'gate report is explicitly simulated');
+  assert.equal(result.report.branch, null, 'rehearsal invents no branch identifier');
+  assert.equal(result.report.commit, null, 'rehearsal invents no commit identifier');
+  assert.equal(result.report.report, null, 'rehearsal invents no gate receipt path');
+  assert.ok(result.report.note.includes('local simulation trace'), 'report distinguishes the local trace from gate evidence');
+  assert.equal(result.costUsd, 0, 'sealed rehearsal report records zero model spend');
+  assert.ok(events.some((e) => e.type === 'status' && e.status === 'done' && e.costUsd === 0), 'terminal rehearsal status keeps spend at zero');
+  if (previousMockSpeed === undefined) delete process.env.MOCK_SPEED;
+  else process.env.MOCK_SPEED = previousMockSpeed;
+}
+
 console.log('verify.test: all assertions passed');
