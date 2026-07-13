@@ -37,7 +37,7 @@ try {
     const r = await fetch(`${base}/api/status`);
     assert.equal(r.status, 200);
     const d = await r.json();
-    assert.ok(d.token && d.token.length >= 16, 'token present');
+    assert.ok(d.token && d.token.length >= 32, 'token present (16 bytes as hex)');
     TOKEN = d.token;
   });
 
