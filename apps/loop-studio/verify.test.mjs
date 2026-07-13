@@ -675,7 +675,7 @@ if (process.env.TEST_NETWORK === '1') {
   const incompleteDoneC = receiptCompleteness({ lane: 'build', evidence: incompleteDone, writeFailed: false });
   assert.equal(incompleteDoneC.degraded, true, 'done without the structured audit and verify evidence is degraded');
   assert.match(incompleteDoneC.note, /independent review verdict/);
-  assert.match(incompleteDoneC.note, /green verification result/);
+  assert.match(incompleteDoneC.note, /green verification bound/);
 
   const good = deriveEvidence([
     { type: 'round', round: 1, cap: 3 },
@@ -686,6 +686,25 @@ if (process.env.TEST_NETWORK === '1') {
   assert.equal(good.rounds[0].rawVerdict, 'patch is correct', 'raw auditor semantics survive evidence derivation');
   assert.equal(good.verify[0].warnings, null, 'unknown verification counts survive as null');
   assert.equal(receiptCompleteness({ lane: 'build', evidence: good, writeFailed: false }).degraded, false, 'a fully bound build receipt is complete');
+
+  // Completeness must agree with the sealed dimensions (audit found these): a
+  // receipt cannot read complete while the dimensions say the audit broke or
+  // verification never applied.
+  const atu = deriveEvidence([
+    { type: 'review', round: 1, verdict: 'APPROVED', rawVerdict: 'patch is correct', source: 'camus_gate_review', findings: [] },
+    { type: 'review', round: 2, verdict: 'UNKNOWN', rawVerdict: null, source: 'camus_gate_review', findings: [] },
+    { type: 'verify_result', pass: true, source: 'gate_report_status', commitSha: 'c92d002521e09bab' },
+    { type: 'gate_report', report: { status: 'done', commit_sha: 'c92d002521e09bab' } },
+  ]);
+  assert.equal(receiptCompleteness({ lane: 'build', evidence: atu, writeFailed: false }).degraded, true, 'APPROVED then UNKNOWN is a broken audit — the receipt is not complete');
+
+  const wrongSha = deriveEvidence([
+    { type: 'review', round: 1, verdict: 'APPROVED', rawVerdict: 'patch is correct', source: 'camus_gate_review', findings: [] },
+    { type: 'verify_result', pass: true, source: 'gate_report_status', commitSha: 'deadbeef00000000' },
+    { type: 'gate_report', report: { status: 'done', commit_sha: 'c92d002521e09bab' } },
+  ]);
+  assert.equal(receiptCompleteness({ lane: 'build', evidence: wrongSha, writeFailed: false }).degraded, true, 'a green bound to the wrong SHA never applied — the receipt is not complete');
+
   assert.equal(receiptCompleteness({ lane: 'research_memo', evidence: wev, writeFailed: true }).degraded, true, 'a receipt write failure always degrades');
 }
 

@@ -270,7 +270,17 @@ export async function runCodeLoop(run, ctx) {
           else if (review.verdict === 'REVISE') verdictNote = `revise (${blocking} blocking)`;
           for (const finding of review.findings) emit('finding', finding);
           emit('review', review);
-        } catch { /* receipt shape drift — stay honest */ }
+        } catch (err) {
+          // The review receipt exists but could not be read or parsed — that is a
+          // broken audit, not an absent one. Emit an UNKNOWN camus_gate_review so
+          // the sealed dimensions read infra_failed, never not_run.
+          verdictNote = 'unreadable receipt';
+          emit('review', {
+            round: r.round, verdict: 'UNKNOWN', rawVerdict: null, confidence: null,
+            explanation: `unreadable review receipt: ${String(err.message).slice(0, 120)}`,
+            findings: [], source: 'camus_gate_review',
+          });
+        }
         feedVerdict(r.round, verdictNote);
       }
       try {

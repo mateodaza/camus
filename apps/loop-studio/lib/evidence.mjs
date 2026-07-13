@@ -3,6 +3,8 @@
 // owns the I/O. This is what makes report.json a receipt a skeptic can read,
 // not a summary that hides what was contested.
 
+import { verificationAndAudit } from './status-dims.mjs';
+
 export function deriveEvidence(events) {
   const of = (t) => events.filter((e) => e.type === t);
   const reviews = of('review').map((r) => ({
@@ -54,15 +56,20 @@ export function receiptCompleteness({ lane, evidence, writeFailed }) {
       return { degraded: true, note: 'the gate produced no terminal report — there is nothing here to verify' };
     }
     if (['done', 'done_with_findings'].includes(evidence.gateReport.status)) {
+      // Judge completeness by the SAME dimensions the receipt seals, so a
+      // receipt can never read complete while its permanent dimensions say the
+      // audit broke (infra_failed) or verification never applied (not_run).
+      // This subsumes the latest-verdict and SHA-binding checks.
+      const { verification, audit } = verificationAndAudit('build', evidence);
       const missing = [];
-      const structuredRounds = evidence.rounds.filter((r) => r.verdict && r.verdict !== 'UNKNOWN');
-      if (structuredRounds.length === 0) missing.push('an independent review verdict');
-      else if (evidence.gateReport.status === 'done' && structuredRounds.at(-1)?.verdict !== 'APPROVED') {
+      if (audit !== 'independent_clean' && audit !== 'independent_findings') {
+        missing.push('a usable independent review verdict');
+      } else if (evidence.gateReport.status === 'done' && audit !== 'independent_clean') {
         missing.push('a final clean review verdict');
       }
-      if (!evidence.verify.some((v) => v.pass === true)) missing.push('a green verification result');
-      const commitSha = evidence.gateReport.commit_sha ?? evidence.gateReport.commit;
-      if (typeof commitSha !== 'string' || !/^[0-9a-f]{7,64}$/i.test(commitSha)) missing.push('a bound commit SHA');
+      if (verification !== 'passed' && verification !== 'passed_with_caveats') {
+        missing.push('a green verification bound to the committed SHA');
+      }
       if (missing.length) {
         return { degraded: true, note: `the successful gate report is missing ${missing.join(', ')} — do not treat it as a complete receipt` };
       }

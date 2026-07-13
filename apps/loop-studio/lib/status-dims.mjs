@@ -53,9 +53,27 @@ function verificationFrom(v, boundSha = null) {
   return v.warnings || v.skipped ? 'passed_with_caveats' : 'passed';
 }
 
-export function deriveStatusDimensions({ lane, status, evidence, published = false }) {
-  const gr = evidence?.gateReport ?? null;
+// The verification and audit dimensions for a lane, from its evidence. This is
+// the SHARED source of truth: both the sealed dimensions and evidence.mjs's
+// receiptCompleteness() go through it, so a receipt can never claim complete
+// while its permanent dimensions say the audit broke or verification never
+// applied. Build binds verification to the committed SHA and gates the audit to
+// camus_gate_review receipts; words binds verification to the deliverable.
+export function verificationAndAudit(lane, evidence) {
+  if (lane === 'build') {
+    const gr = evidence?.gateReport ?? null;
+    const committed = gr && (gr.commit_sha ?? gr.commit);
+    const boundSha = typeof committed === 'string' && SHA_RE.test(committed) ? committed : '';
+    const v = (evidence?.verify ?? []).find((x) => x.source === 'gate_report_status') ?? (evidence?.verify ?? []).at(-1) ?? null;
+    return { verification: verificationFrom(v, boundSha), audit: auditFromReviews(evidence?.rounds, { requireGateSource: true }) };
+  }
+  return {
+    verification: verificationFrom((evidence?.verify ?? []).at(-1) ?? null, null),
+    audit: auditFromReviews(evidence?.rounds, { requireGateSource: false }),
+  };
+}
 
+export function deriveStatusDimensions({ lane, status, evidence, published = false }) {
   // execution is the run lifecycle — `stopped`/`failed` are the concrete signals
   // that a human aborted or the process died. This is the one dimension the
   // terminal status legitimately reports; verification and audit never are.
@@ -64,17 +82,7 @@ export function deriveStatusDimensions({ lane, status, evidence, published = fal
       : ['done', 'done_with_findings', 'verify_failed'].includes(status) ? 'completed'
         : 'failed';
 
-  let verification, audit;
-  if (lane === 'build') {
-    const committed = gr && (gr.commit_sha ?? gr.commit);
-    const boundSha = typeof committed === 'string' && SHA_RE.test(committed) ? committed : '';
-    const v = (evidence?.verify ?? []).find((x) => x.source === 'gate_report_status') ?? (evidence?.verify ?? []).at(-1) ?? null;
-    verification = verificationFrom(v, boundSha);
-    audit = auditFromReviews(evidence?.rounds, { requireGateSource: true });
-  } else {
-    verification = verificationFrom((evidence?.verify ?? []).at(-1) ?? null, null);
-    audit = auditFromReviews(evidence?.rounds, { requireGateSource: false });
-  }
+  const { verification, audit } = verificationAndAudit(lane, evidence);
 
   // Publication is only ever set by real publication evidence. Committing to a
   // gate branch is NOT publishing — the branch must be merged (build) or the
