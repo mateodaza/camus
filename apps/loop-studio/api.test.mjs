@@ -14,7 +14,9 @@ const HOST = '127.0.0.1';
 const tmp = mkdtempSync(join(tmpdir(), 'cls-api-'));
 
 const server = spawn(process.execPath, ['server.mjs'], {
-  env: { ...process.env, ENGINE: 'mock', MOCK_SPEED: '0.15', OPEN: '0', PORT: '0', STUDIO_ALLOWED_ORIGIN: 'https://camus.sh', STUDIO_MAX_ACTIVE: '2' },
+  // STUDIO_RUNS_DIR points the server at the throwaway tmp dir, so test runs
+  // never pollute the product's real runs/ (the temp dir is removed in finally).
+  env: { ...process.env, ENGINE: 'mock', MOCK_SPEED: '0.15', OPEN: '0', PORT: '0', STUDIO_ALLOWED_ORIGIN: 'https://camus.sh', STUDIO_MAX_ACTIVE: '2', STUDIO_RUNS_DIR: tmp },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let base = '';

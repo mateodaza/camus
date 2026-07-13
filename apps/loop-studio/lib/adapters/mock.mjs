@@ -113,10 +113,10 @@ export function createMockAdapters() {
       } else {
         await sleep(2500, signal);
       }
-      if (stage === 'plan') return { ok: true, error: null, text: PLAN, costUsd: 0.004 };
+      if (stage === 'plan') return { ok: true, error: null, text: PLAN, costUsd: 0 }; // rehearsal spends nothing
       claudeCalls += 1;
       const revs = [REV1, REV2, REV3, REV4];
-      return { ok: true, error: null, text: revs[Math.min(claudeCalls - 1, revs.length - 1)], costUsd: 0.02 };
+      return { ok: true, error: null, text: revs[Math.min(claudeCalls - 1, revs.length - 1)], costUsd: 0 }; // rehearsal spends nothing
     },
     async codex({ signal, onTick, onSession }) {
       onTick?.('reviewer reading and drafting findings…');
@@ -177,9 +177,11 @@ export async function runMockCodeLoop(run, ctx) {
     emit('round', { round: 2, cap: 3 });
     stage('review', 'done', { round: 2 });
     log('gate review round 2: clean');
-    sess('Bash: pnpm test  — 163 passed · head-bound a1f9c2e');
+    sess('Bash: pnpm test  — 163 passed · head-bound (simulated)');
     await sleep(1500, signal);
-    const report = { status: 'done', branch: 'camus-wt-guard-empty-input-mock42', commit: 'a1f9c2e', report: '~/.camus/reviews/camus-wt-guard-empty-input-mock42-r2.json' };
+    // Rehearsal identifiers are deliberately non-real: no branch, commit, or
+    // receipt is created. The UI labels this run SIMULATED end to end.
+    const report = { status: 'done', simulated: true, branch: 'rehearsal-demo (not a real branch)', commit: 'SIMULATED', report: 'none — rehearsal writes no receipt' };
     stage('gate', 'done', { pass: true });
     stage('ship', 'done');
     emit('gate_report', { report });

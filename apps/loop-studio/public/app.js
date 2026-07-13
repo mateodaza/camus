@@ -422,6 +422,8 @@ function attach(id, goal) {
   $('feed').innerHTML = '';
   $('revtabs').innerHTML = '';
   $('doc').innerHTML = '<div class="doc-empty">The deliverable appears here as the loop drafts it.</div>';
+  state.simulated = false;
+  { const sb = $('sim-banner'); sb.classList.add('hidden'); sb.textContent = ''; }
   setStatus('running');
   buildStages();
   startTimer(Date.now());
@@ -600,6 +602,14 @@ function handle(ev) {
       if (ev.at) { state.runStartAt = ev.at; startTimer(ev.at); }
       state.runLane = ev.run?.lane;
       state.runTargetPath = ev.run?.targetPath ?? null;
+      state.simulated = ev.run?.engine === 'mock';
+      if (state.simulated) {
+        const sb = $('sim-banner');
+        // Static literal — no user input — so innerHTML is safe here.
+        sb.innerHTML = '<b>REHEARSAL — SIMULATED.</b> A scripted demo of the loop. No models run, your brief is not processed, nothing on your machine changes, and no money is spent. Every draft, verdict, identifier, and receipt below is fabricated for the demo — the session is a script, not real output.';
+        sb.classList.remove('hidden');
+        $('run-cost').textContent = 'rehearsal · no real spend';
+      }
       buildStages(ev.run?.lane);
       if (ev.run?.lane !== 'build' && ev.run && !ev.run.ground) state.stageEls.get('ground')?.remove();
       if (ev.run?.lane === 'build') $('doc').innerHTML = '<div class="doc-empty">The gate works inside the target repo — the session below is the live view; its report lands here.</div>';
@@ -741,11 +751,14 @@ function handle(ev) {
 
     case 'gate_report': {
       const r = ev.report ?? {};
+      const sim = state.simulated;
       const md = [
-        '## Gate report',
+        sim ? '## Gate report — SIMULATED' : '## Gate report',
         '',
-        `- status: ${r.status ?? 'unknown'}`,
-        state.runTargetPath ? `- repository: ${state.runTargetPath}` : null,
+        sim ? '> Rehearsal only. No repository was touched; the branch, commit, and receipt below are fabricated for the demo.' : null,
+        sim ? '' : null,
+        `- status: ${r.status ?? 'unknown'}${sim ? ' (simulated)' : ''}`,
+        state.runTargetPath ? `- repository: ${state.runTargetPath}${sim ? ' (not modified)' : ''}` : null,
         r.branch ? `- branch: ${r.branch}` : null,
         r.commit ? `- commit: ${r.commit}` : null,
         r.report ? `- receipts: ${r.report}` : null,
@@ -761,7 +774,9 @@ function handle(ev) {
     }
 
     case 'cost':
-      $('run-cost').textContent = ev.costUsd ? `claude $${ev.costUsd.toFixed(2)}` : '';
+      $('run-cost').textContent = state.simulated
+        ? 'rehearsal · no real spend'
+        : ev.costUsd ? `claude $${ev.costUsd.toFixed(2)}` : '';
       break;
 
     case 'replay_end':
@@ -790,14 +805,18 @@ function handle(ev) {
       state.es?.close(); // terminal — otherwise EventSource reconnects and replays forever
       setStage('ship', ev.status.startsWith('done') ? 'done' : 'idle');
       const good = ev.status === 'done' || ev.status === 'done_with_findings';
-      const cls = good ? 'good' : ev.status === 'stopped' ? 'meh' : 'bad';
-      const label = {
-        done: 'DONE — reviewed and verified.',
-        done_with_findings: 'DONE WITH FINDINGS — green, with findings or caveats on the record.',
-        verify_failed: 'VERIFY FAILED — shipped by human override, recorded as red.',
-        failed: 'FAILED — the loop refused to fake a green.',
-        stopped: 'STOPPED by human.',
-      }[ev.status] || ev.status;
+      const cls = state.simulated ? 'meh' : good ? 'good' : ev.status === 'stopped' ? 'meh' : 'bad';
+      const label = state.simulated
+        ? (ev.status === 'stopped'
+            ? 'REHEARSAL STOPPED — a simulation; nothing ran.'
+            : 'REHEARSAL COMPLETE — a simulation. No models ran, nothing on your machine changed, no real evidence, no spend. The identifiers and receipt are fabricated for the demo.')
+        : ({
+            done: 'DONE — reviewed and verified.',
+            done_with_findings: 'DONE WITH FINDINGS — green, with findings or caveats on the record.',
+            verify_failed: 'VERIFY FAILED — shipped by human override, recorded as red.',
+            failed: 'FAILED — the loop refused to fake a green.',
+            stopped: 'STOPPED by human.',
+          }[ev.status] || ev.status);
       const b = el('div', `banner ${cls}`, label);
       if (state.runLane === 'build' && ['stopped', 'failed', 'verify_failed'].includes(ev.status)) {
         const sub = el('span', 'sub');
@@ -827,7 +846,9 @@ function handle(ev) {
       } else if (ev.artifactPublished) {
         b.appendChild(el('span', 'sub', `published to Hivemind artifacts · receipts in runs/${state.runId}/`));
       } else if (good) {
-        b.appendChild(el('span', 'sub', `rev ${ev.rev} · receipts in runs/${state.runId}/`));
+        b.appendChild(el('span', 'sub', state.simulated
+          ? `simulated receipts (not real evidence) in runs/${state.runId}/`
+          : `rev ${ev.rev} · receipts in runs/${state.runId}/`));
       }
       feed(b);
       break;
@@ -841,7 +862,9 @@ function handle(ev) {
 
 function markAnswered(card, text) {
   card.classList.add('answered');
-  if (text) card.appendChild(el('div', 'qanswer', `answered: ${text}`));
+  // Idempotent: the POST response and the SSE `answer` event race, so guard
+  // against a second "answered: …" line landing on the same card.
+  if (text && !card.querySelector('.qanswer')) card.appendChild(el('div', 'qanswer', `answered: ${text}`));
 }
 
 async function answer(qid, text, card) {

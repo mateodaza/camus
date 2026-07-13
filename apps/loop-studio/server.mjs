@@ -23,7 +23,9 @@ import { getModels, updateModels, modelsSummary } from './lib/models.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dirname, 'public');
-const RUNS_DIR = join(__dirname, 'runs');
+// Receipts live here. Tests and embeddings override it so a run never writes
+// into the product's real runs/ directory (STUDIO_RUNS_DIR).
+const RUNS_DIR = process.env.STUDIO_RUNS_DIR || join(__dirname, 'runs');
 const PORT = Number(process.env.PORT || 1913); // Camus, b. 1913
 const ENGINE = process.env.ENGINE === 'mock' ? 'mock' : 'live';
 
