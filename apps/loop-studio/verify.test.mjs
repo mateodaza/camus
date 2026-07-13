@@ -511,7 +511,8 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   assert.equal(boundArgs.identitySalt, 'studio-run-1', 'Studio binds standalone custody with identitySalt');
   assert.equal('idSalt' in boundArgs, false, 'Studio never impersonates camus-feat ownership');
   const igniterArgs = gateIgniterCliArgs('/camus-loop {}');
-  assert.deepEqual(igniterArgs.slice(igniterArgs.indexOf('--tools'), igniterArgs.indexOf('--tools') + 2), ['--tools', 'Workflow'], 'outer igniter can use only the Workflow tool');
+  assert.equal(igniterArgs.includes('--tools'), false, 'process-wide tools stay inherited so camus-loop child agents retain Bash/Read/Edit');
+  assert.deepEqual(igniterArgs.slice(igniterArgs.indexOf('--allowedTools'), igniterArgs.indexOf('--allowedTools') + 2), ['--allowedTools', 'Workflow'], 'only the outer Workflow call is pre-approved');
   assert.ok(igniterArgs.includes('--append-system-prompt'), 'outer igniter receives the custody contract as system policy');
   assert.equal(gateSupportsStudio({ workflow: 'const STANDALONE_ID_SALT = x', worktreeGate: 'create|ensure|attach|resolve' }), true, 'new installed gate advertises both custody capabilities');
   assert.equal(gateSupportsStudio({ workflow: 'const ID_SALT = x', worktreeGate: 'create|attach|resolve' }), false, 'older installed gate is refused instead of silently ignoring identitySalt');

@@ -56,7 +56,12 @@ export function gateIgniterCliArgs(invocation) {
     '--output-format', 'stream-json',
     '--verbose',
     '--permission-mode', 'auto',
-    '--tools', 'Workflow',
+    // Do not narrow the process-wide built-in surface with --tools. Claude's
+    // Workflow runtime inherits that surface, so "--tools Workflow" also
+    // strips Bash/Read/Edit from camus-loop's child agents and makes the gate
+    // fail before it can create its worktree. The system contract plus the
+    // stream custody guard below constrain the OUTER igniter; the workflow
+    // keeps the tools it needs to implement and verify.
     '--allowedTools', 'Workflow',
     '--append-system-prompt', GATE_CUSTODY_PROMPT,
   ];
