@@ -173,6 +173,9 @@ export function reviewEventFromGateReceipt(raw, round) {
     explanation: typeof parsed.overall_explanation === 'string' ? parsed.overall_explanation : null,
     findings,
     source: 'camus_gate_review',
+    // The reviewer's ACTUAL model — only from a review that actually ran (ran===true)
+    // carrying the recorded pin. Unknown evidence never becomes a claimed model.
+    reviewerModel: envelope.ran === true && typeof envelope.reviewer_model === 'string' && envelope.reviewer_model ? envelope.reviewer_model : null,
   };
 }
 

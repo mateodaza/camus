@@ -32,7 +32,7 @@ def _int(x):
         return x
 
 
-def build_record(wt, rnd, status, raw):
+def build_record(wt, rnd, status, raw, reviewer_model=None):
     try:
         parsed = json.loads(raw) if raw.strip() else None
     except (ValueError, TypeError):
@@ -51,6 +51,9 @@ def build_record(wt, rnd, status, raw):
         "round": _int(rnd),
         "codex_exit": _int(status),
         "ran": ran,
+        # The reviewer model the caller pinned for this round (identity slice). The
+        # consumer trusts it only when ran is True — unknown never becomes claimed.
+        "reviewer_model": reviewer_model or None,
         "codex_raw": raw,
         "codex_parsed": parsed,
     }
@@ -61,8 +64,9 @@ def main(argv=None):
     if len(argv) < 4:
         return 2
     audit_path, wt, rnd, status = argv[0], argv[1], argv[2], argv[3]
+    reviewer_model = argv[4] if len(argv) > 4 else None
     raw = sys.stdin.read()
-    rec = build_record(wt, rnd, status, raw)
+    rec = build_record(wt, rnd, status, raw, reviewer_model)
     # Atomic publish: write a same-directory temp file, fsync, then os.replace()
     # onto the final path — a reader (e.g. the Studio watcher) ever sees the OLD
     # complete file or the NEW complete file, never a truncated mid-write JSON.

@@ -53,7 +53,7 @@ except Exception: print("")' 2>/dev/null)"
       exit_code="$(printf '%s' "$envelope" | python3 -c 'import json,sys; print(int(json.load(sys.stdin).get("exit",1)))' 2>/dev/null || echo 1)"
       raw="$(cat "$watch_dir/last.txt" 2>/dev/null)"
       mkdir -p "$review_dir" 2>/dev/null && \
-        printf '%s' "$raw" | python3 "$here/_review_audit.py" "$audit_file" "$target_dir" "$round" "$exit_code" 2>/dev/null || true
+        printf '%s' "$raw" | python3 "$here/_review_audit.py" "$audit_file" "$target_dir" "$round" "$exit_code" "${CAMUS_CODEX_MODEL:-}" 2>/dev/null || true
       # Gate JSON + the honest codex-side usage from turn.completed (estimate source, never a bill).
       printf '%s' "$raw" | python3 "$here/adapter.py" from-codex --exit "$exit_code" \
         | python3 -c 'import json,sys
@@ -72,7 +72,7 @@ print(json.dumps({"pending": True, "handle": sys.argv[1],
     idle_killed|aborted|error|*)
       # Killed / never started / unreadable envelope → INFRA, never a verdict (adapter discipline).
       mkdir -p "$review_dir" 2>/dev/null && \
-        printf '' | python3 "$here/_review_audit.py" "$audit_file" "$target_dir" "$round" 124 2>/dev/null || true
+        printf '' | python3 "$here/_review_audit.py" "$audit_file" "$target_dir" "$round" 124 "${CAMUS_CODEX_MODEL:-}" 2>/dev/null || true
       printf '%s' "$envelope" | python3 -c 'import json,sys
 try: e = json.load(sys.stdin)
 except Exception: e = {}
@@ -239,6 +239,23 @@ codex_review_args="${CAMUS_CODEX_ARGS:--c model_reasoning_effort=$effort}"
 if [[ -n "${CAMUS_CODEX_LIGHT_MODEL:-}" && "$effort" == "medium" ]]; then
   codex_review_args="$codex_review_args -m $CAMUS_CODEX_LIGHT_MODEL"
 fi
+# STUDIO IDENTITY PIN (identity slice): CAMUS_CODEX_MODEL is the reviewer model the
+# caller (e.g. Studio) recorded for this run. It is AUTHORITATIVE — validated,
+# appended LAST so it wins over any prior lever, and we REFUSE to run when a -m is
+# already present rather than let a silent override make a sealed pairing lie about
+# what actually reviewed. Use this dedicated channel, not a -m folded into
+# CAMUS_CODEX_ARGS/CAMUS_CODEX_LIGHT_MODEL.
+if [[ -n "${CAMUS_CODEX_MODEL:-}" ]]; then
+  if [[ ! "$CAMUS_CODEX_MODEL" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+    echo "codex_review: CAMUS_CODEX_MODEL is not a valid model identifier: '$CAMUS_CODEX_MODEL'" >&2
+    exit 2
+  fi
+  if [[ "$codex_review_args" == *" -m "* ]]; then
+    echo "codex_review: CAMUS_CODEX_MODEL ($CAMUS_CODEX_MODEL) conflicts with a -m already in the review args — refusing rather than silently override the recorded reviewer identity" >&2
+    exit 2
+  fi
+  codex_review_args="$codex_review_args -m $CAMUS_CODEX_MODEL"
+fi
 # SERVICE-TIER PIN (experiment 3 mechanism — the billing DECISION stays the user's): since
 # codex 0.124, eligible ChatGPT plans default to the FAST service tier (2.5x credit burn on
 # GPT-5.5). This pin makes the review lane's tier deliberate — e.g. CAMUS_CODEX_TIER=standard
@@ -361,8 +378,10 @@ last_file="$watch_dir/last.txt"
 # of a resumable id.
 python3 -c 'import json,sys
 m = {"target_dir": sys.argv[2], "round": sys.argv[3], "effort": sys.argv[4], "scope": sys.argv[5]}
+if len(sys.argv) > 6 and sys.argv[6]:
+    m["reviewer_model"] = sys.argv[6]  # persist the pinned reviewer so pending/resumed paths carry it
 json.dump(m, open(sys.argv[1], "w"), indent=2)' \
-  "$watch_dir/meta.json" "$target_dir" "$round" "$effort" "$scope"
+  "$watch_dir/meta.json" "$target_dir" "$round" "$effort" "$scope" "${CAMUS_CODEX_MODEL:-}"
 
 # Chunk by effort: medium reviews are short (and the orchestrator instructs a 360s tool timeout
 # for them — the chunk must FIT under it); high/xhigh get the full window under 600s.

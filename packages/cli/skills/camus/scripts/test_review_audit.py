@@ -72,6 +72,15 @@ def test_includes_raw_and_timestamp():
     assert rec["codex_raw"] == "{}" and isinstance(rec["ran_at"], int)
 
 
+def test_reviewer_model_recorded_only_when_pinned():
+    # The identity slice records the pinned reviewer model; with no pin it stays
+    # null (a caller reads it only when ran is True — unknown never becomes claimed).
+    rec = A.build_record("/x/wt", "1", "0",
+                         '{"findings":[],"overall_correctness":"patch is correct"}', "gpt-5.4")
+    assert rec["reviewer_model"] == "gpt-5.4" and rec["ran"] is True
+    assert A.build_record("/x/wt", "1", "0", "{}")["reviewer_model"] is None
+
+
 def test_main_writes_complete_json_and_leaves_no_temp_file():
     # The write must be atomic: readers see a complete file (never a truncated
     # mid-write), and no .tmp file is left behind after os.replace().
