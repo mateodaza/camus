@@ -169,6 +169,8 @@ try {
     assert.ok(report.evidence && Array.isArray(report.evidence.rounds), 'the receipt carries an evidence object with a rounds array');
     assert.equal(typeof report.receiptsDegraded, 'boolean', 'receiptsDegraded is a real judgement, never absent');
     assert.ok('receiptsNote' in report, 'receiptsNote is present (null when complete)');
+    assert.ok(report.statuses && typeof report.statuses.execution === 'string', 'the receipt seals the raw status dimensions');
+    assert.ok(!('headline' in report), 'the headline is derived at render — never sealed into the evidence');
   });
 } finally {
   server.kill('SIGKILL');

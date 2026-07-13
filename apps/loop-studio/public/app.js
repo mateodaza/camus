@@ -264,6 +264,7 @@ async function loadRecents() {
     for (const r of runs) {
       const b = el('button', 'recent');
       b.appendChild(el('span', `pill status ${r.status}`, r.status.replace(/_/g, ' ')));
+      if (r.headline) b.appendChild(el('span', 'headline-tag', r.headline.replace(/_/g, ' ')));
       b.appendChild(el('span', 'g', r.goal));
       b.appendChild(el('span', 'mono muted', new Date(r.startedAt).toLocaleTimeString()));
       b.onclick = () => attach(r.id, r.goal);
@@ -857,6 +858,14 @@ function handle(ev) {
           : `rev ${ev.rev} · receipts in runs/${state.runId}/`));
       }
       feed(b);
+      // The four raw dimensions rode this terminal event. The one-word headline
+      // (Recent runs) is derived from them at render, never stored — so it can
+      // never drift from the evidence.
+      if (ev.dimensions) {
+        const nice = (s) => String(s).replace(/_/g, ' ');
+        const d = ev.dimensions;
+        feed(el('div', 'dims', `status dimensions — execution: ${nice(d.execution)} · verification: ${nice(d.verification)} · audit: ${nice(d.audit)} · publication: ${nice(d.publication)}`));
+      }
       break;
     }
 

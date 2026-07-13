@@ -689,4 +689,51 @@ if (process.env.TEST_NETWORK === '1') {
   assert.equal(receiptCompleteness({ lane: 'research_memo', evidence: wev, writeFailed: true }).degraded, true, 'a receipt write failure always degrades');
 }
 
+// --- item #1: orthogonal status dimensions, derived from concrete evidence ---
+// Dimensions come from evidence, never the flat status; the headline is derived
+// (deriveHeadline), never sealed. Each guardrail contradiction is pinned here.
+{
+  const { deriveStatusDimensions, deriveHeadline } = await import('./lib/status-dims.mjs');
+  const head = (d) => deriveHeadline({ execution: d.execution, verification: d.verification, audit: d.audit, publication: d.publication });
+  const buildEv = (over) => ({ gateReport: { status: 'done', commit_sha: 'c92d002abc123' }, verify: [{ pass: true, commitSha: 'c92d002abc123', source: 'gate_report_status' }], rounds: [{ verdict: 'APPROVED', source: 'camus_gate_review' }], revisions: [], ...over });
+
+  // The smoke's true state: green + independent-clean + bound SHA, branch NOT merged.
+  const smoke = deriveStatusDimensions({ lane: 'build', status: 'done', published: false, evidence: buildEv() });
+  assert.equal(smoke.publication, 'not_published', 'a committed-but-unmerged branch is NOT published');
+  assert.equal(head(smoke), 'verified', 'green + independent-clean + bound SHA reads verified (but not published)');
+
+  // done WITHOUT review evidence — audit is not_run, never inferred from `done`.
+  const noReview = deriveStatusDimensions({ lane: 'build', status: 'done', evidence: buildEv({ rounds: [] }) });
+  assert.equal(noReview.audit, 'not_run', 'done without a readable review is not an audit');
+  assert.equal(head(noReview), 'unverified', 'a done build with no audit is unverified, not verified');
+
+  // green verification on the WRONG commit verifies nothing here.
+  const wrongCommit = deriveStatusDimensions({ lane: 'build', status: 'done', evidence: buildEv({ verify: [{ pass: true, commitSha: 'deadbeef012', source: 'gate_report_status' }] }) });
+  assert.equal(wrongCommit.verification, 'not_run', 'a green on the wrong commit is not verification of this work');
+  assert.equal(head(wrongCommit), 'unverified');
+
+  // an UNKNOWN (unreadable) review verdict is not an audit.
+  const unreadable = deriveStatusDimensions({ lane: 'build', status: 'done', evidence: buildEv({ rounds: [{ verdict: 'UNKNOWN', source: 'camus_gate_review' }] }) });
+  assert.equal(unreadable.audit, 'not_run', 'an unreadable review verdict is not an audit');
+  assert.equal(head(unreadable), 'unverified');
+
+  // deterministic red under a clean review → a human settles it.
+  const disagree = deriveStatusDimensions({ lane: 'build', status: 'verify_failed', evidence: buildEv({ gateReport: { status: 'verify_failed', commit_sha: 'c92d002abc123' }, verify: [{ pass: false, commitSha: 'c92d002abc123', source: 'gate_report_status' }] }) });
+  assert.equal(head(disagree), 'needs_decision', 'tests red but reviewer clean → needs_decision');
+
+  // published-but-unverified is a loud needs_decision, never a quiet pass.
+  const pubUnverified = deriveStatusDimensions({ lane: 'build', status: 'done', published: true, evidence: buildEv({ verify: [], rounds: [] }) });
+  assert.equal(head(pubUnverified), 'needs_decision', 'published-but-unverified never flattens to a pass');
+
+  // words lane: no commit SHA — the deliverable itself is the artifact.
+  const words = deriveStatusDimensions({ lane: 'research_memo', status: 'done', evidence: { gateReport: null, verify: [{ pass: true }], rounds: [{ verdict: 'APPROVED' }], revisions: [{ rev: 1 }] } });
+  assert.equal(words.verification, 'passed', 'words verification binds to the deliverable, not a SHA');
+  assert.equal(head(words), 'verified');
+
+  // an interrupted run is unverified, whatever else is present.
+  const stopped = deriveStatusDimensions({ lane: 'build', status: 'stopped', evidence: { gateReport: null, verify: [], rounds: [], revisions: [] } });
+  assert.equal(stopped.execution, 'interrupted');
+  assert.equal(head(stopped), 'unverified');
+}
+
 console.log('verify.test: all assertions passed');

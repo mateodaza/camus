@@ -20,6 +20,7 @@ import { createMockAdapters } from './lib/adapters/mock.mjs';
 import * as hivemind from './lib/adapters/hivemind.mjs';
 import { LANES } from './lib/verify.mjs';
 import { deriveEvidence, receiptCompleteness } from './lib/evidence.mjs';
+import { deriveStatusDimensions, deriveHeadline } from './lib/status-dims.mjs';
 import { getModels, updateModels, modelsSummary } from './lib/models.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -61,6 +62,12 @@ function newId() {
 
 const activeBuilds = new Set();
 
+// Headlines are DERIVED at render from the sealed raw dimensions, never stored.
+// null for a live or legacy run that has no dimensions yet.
+const headlineOf = (statuses) => {
+  try { return statuses ? deriveHeadline(statuses) : null; } catch { return null; }
+};
+
 async function startRun({ goal, lane, depth, ground, targetPath = null, targetToplevel = null, idSalt = null }) {
   const id = newId();
   const dir = join(RUNS_DIR, id);
@@ -95,6 +102,21 @@ async function startRun({ goal, lane, depth, ground, targetPath = null, targetTo
 
   const emit = (type, data) => {
     const ev = { type, at: Date.now(), ...data };
+    if (type === 'status') {
+      run.status = data.status;
+      // Ride the four orthogonal raw dimensions on the terminal status event,
+      // derived from the evidence gathered so far. The headline is derived from
+      // these at render, never sealed; report.json seals the same object below.
+      try {
+        run.statuses = deriveStatusDimensions({
+          lane,
+          status: data.status,
+          evidence: deriveEvidence(state.events),
+          published: !!(data.artifactPublished || data.artifactUrl),
+        });
+        ev.dimensions = run.statuses;
+      } catch { /* best-effort on the live event; the sealed report is authoritative */ }
+    }
     state.events.push(ev);
     const line = JSON.stringify(ev);
     // Receipts must read in the order things happened — serialize appends.
@@ -108,7 +130,6 @@ async function startRun({ goal, lane, depth, ground, targetPath = null, targetTo
       writeFile(join(dir, `rev-${data.rev}.md`), data.markdown).catch((err) => persistFail(`rev-${data.rev}.md`, err));
     }
     if (type === 'cost') run.costUsd = data.costUsd;
-    if (type === 'status') run.status = data.status;
     // Server-side status must reflect a pending question, not just the UI's.
     if (type === 'question') run.status = 'needs_human';
     if (type === 'question_answered' && run.status === 'needs_human') run.status = 'running';
@@ -147,8 +168,15 @@ async function startRun({ goal, lane, depth, ground, targetPath = null, targetTo
     const evidence = deriveEvidence(state.events);
     const { degraded: receiptsDegraded, note: receiptsNote } =
       receiptCompleteness({ lane, evidence, writeFailed: run.receiptsDegraded });
+    // The dimensions rode the terminal status event (computed in emit); the
+    // receipt seals the same object. Fall back to a fresh derivation only if a
+    // run somehow ended without a status event. The headline is NEVER sealed.
+    const statuses = run.statuses ?? deriveStatusDimensions({
+      lane, status: run.status, evidence,
+      published: !!(result?.artifactPublished || result?.artifactUrl),
+    });
     const report = JSON.stringify(
-      { id, goal, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, ...result, draft: undefined, deliverable: run.lastMarkdown, evidence, receiptsDegraded, receiptsNote, startedAt: run.startedAt, endedAt: Date.now() },
+      { id, goal, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, ...result, draft: undefined, deliverable: run.lastMarkdown, evidence, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt: Date.now() },
       null,
       2,
     );
@@ -369,7 +397,7 @@ const server = http.createServer(async (req, res) => {
           if (runs.has(d)) continue;
           try {
             const r = JSON.parse(await readFile(join(RUNS_DIR, d, 'report.json'), 'utf8'));
-            list.push({ id: d, goal: r.goal, lane: r.lane, status: r.status, startedAt: r.startedAt, live: false });
+            list.push({ id: d, goal: r.goal, lane: r.lane, status: r.status, headline: headlineOf(r.statuses), startedAt: r.startedAt, live: false });
           } catch {
             // No sealed report: if start metadata exists, this run was
             // interrupted — list it honestly instead of hiding it.
