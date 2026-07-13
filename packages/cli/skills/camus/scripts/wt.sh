@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Worktree gate: mint (create), re-attach (attach), or resolve (locate) a Camus task worktree.
+# Worktree gate: mint (create), custody-resume (ensure), re-attach (attach), or resolve (locate)
+# a Camus task worktree.
 #   wt.sh create  <branch> <dest-dir>  # implement phase: NEW branch from current HEAD
+#   wt.sh ensure  <branch> <dest-dir>  # standalone custody: create once, then reuse exact branch+dest
 #   wt.sh attach  <branch> <dest-dir>  # land recreate: check out an EXISTING branch's commits
 #   wt.sh resolve <branch> <dest-dir>  # land-resolve: READ-ONLY — is the worktree there? emit its path
 #
@@ -24,15 +26,16 @@
 # reported as "branch missing" because the real error text was discarded — never again).
 set -uo pipefail
 
-mode="${1:?usage: wt.sh create|attach <branch> <dest-dir>}"
-branch="${2:?usage: wt.sh create|attach <branch> <dest-dir>}"
-dest="${3:?usage: wt.sh create|attach <branch> <dest-dir>}"
+mode="${1:?usage: wt.sh create|ensure|attach|resolve <branch> <dest-dir>}"
+branch="${2:?usage: wt.sh create|ensure|attach|resolve <branch> <dest-dir>}"
+dest="${3:?usage: wt.sh create|ensure|attach|resolve <branch> <dest-dir>}"
 
 # Single emission points — python3 does the JSON escaping (git errors carry quotes, newlines,
 # arbitrary paths); the ~300-char error cap is applied AFTER decoding, never mid-character.
-emit_ok() { # $1 = absolute worktree path
+emit_ok() { # $1 = absolute worktree path; $2 = true when an existing custody branch/worktree was reused
+  reused="${2:-false}"
   printf '%s' "$1" | python3 -c 'import json,sys
-print(json.dumps({"ok": True, "path": sys.stdin.buffer.read().decode("utf-8", "replace")}))'
+print(json.dumps({"ok": True, "path": sys.stdin.buffer.read().decode("utf-8", "replace"), "reused": sys.argv[1] == "true"}))' "$reused"
   exit 0
 }
 emit_err() { # $1 = error text
@@ -42,8 +45,8 @@ print(json.dumps({"ok": False, "error": sys.stdin.buffer.read().decode("utf-8", 
 }
 
 case "$mode" in
-  create|attach|resolve) ;;
-  *) emit_err "usage: wt.sh create|attach|resolve <branch> <dest-dir> (unknown mode '$mode')" ;;
+  create|ensure|attach|resolve) ;;
+  *) emit_err "usage: wt.sh create|ensure|attach|resolve <branch> <dest-dir> (unknown mode '$mode')" ;;
 esac
 
 # ── Guard fence ───────────────────────────────────────────────────────────────────────────────
@@ -90,6 +93,38 @@ print(json.dumps({"found": True, "path": sys.stdin.buffer.read().decode("utf-8",
   exit 0
 fi
 
+# ensure: the Studio/standalone custody lane. Re-running the SAME deterministic identity must
+# return the SAME coherent worktree, never mint a sibling. Reuse is allowed only when all three
+# bindings agree: this repo's common-dir, the exact requested branch, and the exact destination.
+# A branch with no active checkout is re-attached at the deterministic destination; an active
+# checkout elsewhere is refused by git rather than silently redirected.
+reused=false
+git_mode="$mode"
+if [ "$mode" = "ensure" ]; then
+  abs_existing="$(cd "$dest" 2>/dev/null && pwd -P)"
+  if [ -n "$abs_existing" ]; then
+    if [ ! -f "$abs_existing/.git" ]; then
+      emit_err "custody refused: existing dest '$abs_existing' is not a linked git worktree"
+    fi
+    repo_common="$(_camus_common_dir "$PWD")" || true
+    dest_common="$(_camus_common_dir "$abs_existing")" || true
+    dest_branch="$(git -C "$abs_existing" symbolic-ref --quiet --short HEAD 2>/dev/null)" || true
+    if [ -z "$repo_common" ] || [ "$repo_common" != "$dest_common" ]; then
+      emit_err "custody refused: existing dest '$abs_existing' is not a worktree of the current repo"
+    fi
+    if [ "$dest_branch" != "$branch" ]; then
+      emit_err "custody refused: existing dest '$abs_existing' is on '$dest_branch', expected '$branch'"
+    fi
+    emit_ok "$abs_existing" true
+  fi
+  if git show-ref --verify --quiet "refs/heads/$branch"; then
+    git_mode=attach
+    reused=true
+  else
+    git_mode=create
+  fi
+fi
+
 # The centralized worktree home (~/.camus/worktrees/<repo>/) may not exist yet — the dest's
 # PARENT is gate-owned. A refusal here (e.g. permission denied) is a verdict, reported verbatim.
 mkerr="$(mkdir -p -- "$(dirname "$dest")" 2>&1)" || emit_err "$mkerr"
@@ -98,7 +133,7 @@ mkerr="$(mkdir -p -- "$(dirname "$dest")" 2>&1)" || emit_err "$mkerr"
 # stdout must carry exactly one JSON object). On success the progress chatter is discarded.
 tmp="$(mktemp "${TMPDIR:-/tmp}/camus-wt-err.XXXXXX")" || emit_err "mktemp failed — cannot capture git stderr"
 trap 'rm -f "$tmp"' EXIT
-if [ "$mode" = "create" ]; then
+if [ "$git_mode" = "create" ]; then
   git -c core.hooksPath=/dev/null worktree add -b "$branch" "$dest" >/dev/null 2>"$tmp"
 else
   git -c core.hooksPath=/dev/null worktree add "$dest" "$branch" >/dev/null 2>"$tmp"
@@ -113,4 +148,4 @@ fi
 # before they will cd/exec into it; symlinked tmpdirs (macOS /var → /private/var) must not skew it.
 abs="$(cd "$dest" 2>/dev/null && pwd -P)" \
   || emit_err "git worktree add succeeded but the dest is not enterable: $dest"
-emit_ok "$abs"
+emit_ok "$abs" "$reused"

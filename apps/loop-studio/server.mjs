@@ -345,7 +345,7 @@ const server = http.createServer(async (req, res) => {
           targetPath = String(body.targetPath || '~/demo-repo').trim();
         } else {
           if (!gateInstalled()) {
-            return json(res, 400, { error: 'The camus gate is not installed on this machine. Fix: npm i -g camus-cli && camus install (then check Setup).' });
+            return json(res, 400, { error: 'The camus gate is missing or too old for Studio custody. Fix: npm i -g camus-cli && camus install (from this repo: bash packages/cli/install.sh), then check Setup.' });
           }
           const v = await validateBuildTarget(body.targetPath);
           if (!v.ok) return json(res, 400, { error: v.error });

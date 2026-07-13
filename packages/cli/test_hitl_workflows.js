@@ -494,6 +494,30 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const { calls, prompts } = await runLoop({ task: 't' }, { ...cls, ...planOf('clear', ''), ...happyTail })
     ok('S17b standalone (no idSalt) → no heartbeat anywhere', !(prompts[reviewLbl(calls, 1)] || '').includes('.hb') && !(prompts.implement || '').includes('.hb'))
   }
+  // Studio needs stable custody without impersonating a feat. identitySalt binds the branch,
+  // worktree and heartbeat, but deliberately skips feat-only main-tree containment and uses the
+  // idempotent ensure lane so a replay returns to the same partial work.
+  {
+    const identity = 'studio-run-123'
+    const hb = `touch "$HOME/.camus/feats/${identity}.hb"`
+    const stubs = {
+      ...clsStd, ...planOf('clear', ''),
+      implement: { worktree_path: wtPath('t', identity), branch: 'b', summary: 's', decisions: [] },
+      review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
+      commit: J({ committed: true, sha: h40('studio') }), prep: J({ prepped: true, ran: [] }),
+      verify: J({ pass: true, failures: [], head: h40('studio') }),
+      containment: J({ ran: true, dirty: true, paths: ' M should-not-run.ts' }),
+    }
+    const { res, calls, prompts } = await runLoop({ task: 't', identitySalt: identity }, stubs)
+    ok('S17c identitySalt → deterministic salted worktree completes', res.status === 'done', res.status)
+    ok('S17c identitySalt → implement uses idempotent ensure', (prompts.implement || '').includes('/wt.sh ensure'))
+    ok('S17c identitySalt → heartbeat remains visible', (prompts.implement || '').includes(hb) && (prompts.verify || '').includes(hb))
+    ok('S17c identitySalt is NOT feat containment', !calls.some((c) => c.startsWith('containment')), calls.join(','))
+  }
+  {
+    const { res } = await runLoop({ task: 't', idSalt: 'feat123', identitySalt: 'studio123' }, {})
+    ok('S17d feat idSalt + standalone identitySalt is refused as ambiguous custody', res.status === 'aborted' && res.stage === 'args', res.status + '/' + res.stage)
+  }
   // S19 (fixlet 2026-06-11): SIBLING-TASK CONTEXT — the feat's other-task briefs reach the review
   // context AND the fix prompt as "owned elsewhere — don't flag / don't touch".
   {
@@ -2211,6 +2235,8 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F47a2 branchPrefix with ; refused (unquoted word-split class)', semi.res.status === 'aborted' && semi.res.stage === 'args', semi.res.status)
     const as = await runLoop({ task: 't', idSalt: '$(touch /tmp/PWN)x' }, { ...cls, ...planOf('clear', ''), ...happyTail })
     ok('F47b injection idSalt → loop aborts (stage:args)', as.res.status === 'aborted' && as.res.stage === 'args', as.res.status + '/' + as.res.stage)
+    const ais = await runLoop({ task: 't', identitySalt: '$(touch /tmp/PWN)x' }, { ...cls, ...planOf('clear', ''), ...happyTail })
+    ok('F47b2 injection identitySalt → loop aborts (stage:args)', ais.res.status === 'aborted' && ais.res.stage === 'args', ais.res.status + '/' + ais.res.stage)
     // feat: an agent-returned mergeBranch with $() is SINGLE-quoted in the merge command (inert)
     const tid = taskIdOf('F', ['only task'], 'only task')
     const fr = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,

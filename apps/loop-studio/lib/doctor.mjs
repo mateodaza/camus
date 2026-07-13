@@ -63,8 +63,8 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   const gate = gateInstalled();
   add(
     'gate', 'Camus gate (Build lane)', gate,
-    gate ? 'installed in ~/.claude — the Build lane can ignite it' : 'not installed yet — the Build lane needs it (the words lanes run without it)',
-    gate ? null : 'npm install -g camus-cli && camus install',
+    gate ? 'installed in ~/.claude with standalone custody support' : 'missing or too old — Build requires the identity-bound custody gate (the words lanes run without it)',
+    gate ? null : 'npm install -g camus-cli && camus install   # or, from this repo: bash packages/cli/install.sh',
   );
 
   let models;

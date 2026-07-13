@@ -463,7 +463,7 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
 
 // --- build lane: spend-free refusals + fail-closed report parsing ------------
 {
-  const { validateBuildTarget, parseGateReport } = await import('./lib/code-lane.mjs');
+  const { validateBuildTarget, parseGateReport, gateArgsForRun, gateIgniterCliArgs, gateSupportsStudio } = await import('./lib/code-lane.mjs');
   const { mkdtempSync, rmSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { execFileSync } = await import('node:child_process');
@@ -506,6 +506,48 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
     parseGateReport('**The Camus loop closed green: `done` — review clean in 1 round, deterministic verify passed.** The gated change sits on branch `camus/greet-x`.').status,
     'done', 'backtick-wrapped status parses (the real gate output shape)');
   assert.equal(parseGateReport('halted: [needs_human]').status, 'needs_human', 'bracket-wrapped status parses');
+
+  const boundArgs = gateArgsForRun({ goal: 't', targetPath: '/tmp/repo', idSalt: 'studio-run-1' }, 3);
+  assert.equal(boundArgs.identitySalt, 'studio-run-1', 'Studio binds standalone custody with identitySalt');
+  assert.equal('idSalt' in boundArgs, false, 'Studio never impersonates camus-feat ownership');
+  const igniterArgs = gateIgniterCliArgs('/camus-loop {}');
+  assert.deepEqual(igniterArgs.slice(igniterArgs.indexOf('--tools'), igniterArgs.indexOf('--tools') + 2), ['--tools', 'Workflow'], 'outer igniter can use only the Workflow tool');
+  assert.ok(igniterArgs.includes('--append-system-prompt'), 'outer igniter receives the custody contract as system policy');
+  assert.equal(gateSupportsStudio({ workflow: 'const STANDALONE_ID_SALT = x', worktreeGate: 'create|ensure|attach|resolve' }), true, 'new installed gate advertises both custody capabilities');
+  assert.equal(gateSupportsStudio({ workflow: 'const ID_SALT = x', worktreeGate: 'create|attach|resolve' }), false, 'older installed gate is refused instead of silently ignoring identitySalt');
+}
+
+// --- build lane: the outer igniter cannot fork or mutate custody ------------
+{
+  const { createGateCustodyGuard } = await import('./lib/gate-custody.mjs');
+  const expected = { task: 't', targetPath: '/tmp/repo', policy: 'ask_on_ambiguity', roundCap: 3, identitySalt: 'studio-run-1' };
+  const tool = (name, input) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', name, input }] } });
+
+  const good = createGateCustodyGuard(expected);
+  assert.equal(good.inspect(tool('Workflow', { name: 'camus-loop', args: JSON.stringify({ identitySalt: 'studio-run-1', roundCap: 3, policy: 'ask_on_ambiguity', targetPath: '/tmp/repo', task: 't' }) })), null, 'one fresh workflow with equivalent JSON args is accepted');
+  assert.equal(good.inspect(tool('Workflow', { scriptPath: '/tmp/camus-loop-wf_abc.js', resumeFromRunId: 'wf_abc', args: JSON.stringify(expected) })), null, 'same async workflow may resume with the same args');
+  assert.equal(good.finish(), null, 'one bound workflow produces a valid custody trail');
+
+  const dropped = createGateCustodyGuard(expected);
+  assert.match(dropped.inspect(tool('Workflow', { name: 'camus-loop', args: JSON.stringify({ ...expected, identitySalt: undefined }) })), /args changed/, 'dropping identitySalt is refused before a second worktree can be trusted');
+
+  const forked = createGateCustodyGuard(expected);
+  forked.inspect(tool('Workflow', { name: 'camus-loop', args: JSON.stringify(expected) }));
+  assert.match(forked.inspect(tool('Workflow', { name: 'camus-loop', args: JSON.stringify(expected) })), /second fresh/, 'a second fresh workflow is a custody breach even with identical args');
+
+  const historical = createGateCustodyGuard(expected);
+  historical.inspect(tool('Workflow', { name: 'camus-loop', args: JSON.stringify(expected) }));
+  historical.inspect(tool('Workflow', { scriptPath: '/tmp/camus-loop-wf_old.js', resumeFromRunId: 'wf_old', args: JSON.stringify(expected) }));
+  assert.match(historical.inspect(tool('Workflow', { name: 'camus-loop', args: JSON.stringify({ task: 't', targetPath: '/tmp/repo', policy: 'ask_on_ambiguity', roundCap: 3 }) })), /args changed/, 'the exact live-smoke failure — a fresh unsalted retry after resume — is stopped');
+
+  const switched = createGateCustodyGuard(expected);
+  switched.inspect(tool('Workflow', { name: 'camus-loop', args: JSON.stringify(expected) }));
+  switched.inspect(tool('Workflow', { scriptPath: '/tmp/camus-loop-wf_a.js', resumeFromRunId: 'wf_a', args: JSON.stringify(expected) }));
+  assert.match(switched.inspect(tool('Workflow', { scriptPath: '/tmp/camus-loop-wf_b.js', resumeFromRunId: 'wf_b', args: JSON.stringify(expected) })), /switched run identity/, 'resume cannot jump to another workflow run');
+
+  const escaped = createGateCustodyGuard(expected);
+  assert.match(escaped.inspect(tool('Bash', { command: 'git status' })), /non-Workflow/, 'the igniter cannot inspect or repair the repo itself');
+  assert.match(createGateCustodyGuard(expected).finish(), /without one fresh/, 'prose without a workflow never becomes a gate result');
 }
 
 // --- gate: live link check (only when network is available) ------------------
@@ -583,6 +625,8 @@ if (process.env.TEST_NETWORK === '1') {
   const emptyC = receiptCompleteness({ lane: 'build', evidence: empty, writeFailed: false });
   assert.equal(emptyC.degraded, true, 'a gate ignition with no round and no report is degraded, not clean');
   assert.match(emptyC.note, /nothing here to verify/);
+  const emptyWordsC = receiptCompleteness({ lane: 'research_memo', evidence: empty, writeFailed: false });
+  assert.equal(emptyWordsC.degraded, true, 'a words run with no independent review round is also degraded');
 
   // A build run that produced a gate report is a real receipt; a write failure
   // always degrades whatever the trail.

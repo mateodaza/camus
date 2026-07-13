@@ -79,6 +79,20 @@ check "create: branch exists" yes "$(git -C "$R" show-ref --verify -q refs/heads
 check "create: worktree registered" yes "$(git -C "$R" worktree list --porcelain | grep -q 'camus-wt-alpha' && echo yes || echo no)"
 check "create: new branch starts at current HEAD" "$(git -C "$R" rev-parse HEAD)" "$(git -C "$WTS/deep/camus-wt-alpha" rev-parse HEAD)"
 
+# ensure: one standalone custody identity creates once, then returns that exact worktree and
+# preserves its partial diff. A second destination for the same branch is refused — never forked.
+out="$(run_wt ensure camus/studio/beta "$WTS/studio/camus-wt-beta")"
+check "ensure: fresh identity creates" true "$(jget "$out" ok)"
+check "ensure: fresh identity is not labeled reused" false "$(jget "$out" reused)"
+echo partial > "$WTS/studio/camus-wt-beta/partial.txt"
+out="$(run_wt ensure camus/studio/beta "$WTS/studio/camus-wt-beta")"
+check "ensure: replay returns the existing worktree" true "$(jget "$out" ok)"
+check "ensure: replay is labeled reused" true "$(jget "$out" reused)"
+check "ensure: replay preserves the partial diff" yes "$([ -f "$WTS/studio/camus-wt-beta/partial.txt" ] && echo yes || echo no)"
+out="$(run_wt ensure camus/studio/beta "$WTS/other/camus-wt-beta")"
+check "ensure: same identity at a second destination is refused" false "$(jget "$out" ok)"
+check "ensure: refused replay does not mint a sibling worktree" no "$([ -d "$WTS/other/camus-wt-beta" ] && echo yes || echo no)"
+
 # guard refusal: non-camus branch (and nothing was created)
 out="$(run_wt create feature/raw "$WTS/camus-wt-raw")"
 check "create: non-camus branch refused" false "$(jget "$out" ok)"

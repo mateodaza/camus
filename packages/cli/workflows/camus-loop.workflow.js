@@ -121,21 +121,34 @@ const VERIFY_ENV = VERIFY_CMD_OVERRIDE ? `CAMUS_VERIFY_CMD=${JSON.stringify(VERI
 // the sentinel makes the failure real). In a `cmd1 && cmd2` list bash expands cmd2's words AFTER
 // cmd1 runs, so the $(git rev-parse …) inside WT_DEST resolves at the toplevel, the entire point.
 const REPO_CD = `cd "$( (cd ${TARGET ? JSON.stringify(TARGET) : '.'} && git rev-parse --show-toplevel) || echo /nonexistent/camus-not-a-repo )" && `
-// Identity composability: a caller (e.g. the M1 feat-runner) can feat-scope this task's branch
-// and worktree by passing branchPrefix (default 'camus/') and idSalt (default '' = standalone).
+// Identity composability has TWO deliberately separate seams:
+//   - idSalt: feat ownership. It salts identity AND enables the feat-only main-tree
+//     containment contract (the parent checkout is a camus/feat-* branch).
+//   - identitySalt: standalone custody. It salts identity and heartbeat only; it does NOT
+//     impersonate a feat. Studio uses this so stop/resume returns to one worktree without
+//     running a containment check whose preconditions a standalone main checkout cannot meet.
+// Passing both is refused: one run cannot be both parent-feat-owned and standalone-owned.
 // SHELL-SAFETY (verification audit round-2, 2026-06-13): both are caller args that flow into
 // commands the thin runner executes — branchPrefix → BRANCH, inlined UNQUOTED into wt.sh
-// create/resolve/attach (so a `;`/space/$() in it runs); idSalt → HB_TOUCH's `touch "…${idSalt}.hb"`
-// (where $(…) expands inside the double quotes). A branch namespace / id-salt is a STRUCTURED value,
+// create/resolve/attach (so a `;`/space/$() in it runs); either salt → HB_TOUCH's heartbeat
+// path (where $(…) expands inside double quotes). These are STRUCTURED values,
 // so enforce a strict allowlist (letters, digits, / _ -) and abort rather than sanitize. This makes
 // BRANCH entirely safe-charset at every site, quoted or not.
 const _ID_OK = /^[A-Za-z0-9/_-]+$/
 const BRANCH_PREFIX = (args && typeof args === 'object' && args.branchPrefix) || 'camus/'
-const ID_SALT = (args && typeof args === 'object' && args.idSalt) || ''
-if ((args && typeof args === 'object' && args.branchPrefix && !_ID_OK.test(String(args.branchPrefix)))
-    || (ID_SALT && !_ID_OK.test(String(ID_SALT)))) {
+const FEAT_ID_SALT = (args && typeof args === 'object' && args.idSalt) || ''
+const STANDALONE_ID_SALT = (args && typeof args === 'object' && args.identitySalt) || ''
+if (FEAT_ID_SALT && STANDALONE_ID_SALT) {
   return { status: 'aborted', stage: 'args',
-    note: 'branchPrefix / idSalt may contain only letters, digits, and / _ - (they become a git branch name and a shell path). Refusing a value with other characters.' }
+    note: 'Pass either idSalt (feat-owned) or identitySalt (standalone custody), never both.' }
+}
+const IDENTITY_SALT = FEAT_ID_SALT || STANDALONE_ID_SALT
+const FEAT_SCOPED = Boolean(FEAT_ID_SALT)
+if ((args && typeof args === 'object' && args.branchPrefix && !_ID_OK.test(String(args.branchPrefix)))
+    || (FEAT_ID_SALT && !_ID_OK.test(String(FEAT_ID_SALT)))
+    || (STANDALONE_ID_SALT && !_ID_OK.test(String(STANDALONE_ID_SALT)))) {
+  return { status: 'aborted', stage: 'args',
+    note: 'branchPrefix / idSalt / identitySalt may contain only letters, digits, and / _ - (they become a git branch name and a shell path). Refusing a value with other characters.' }
 }
 // HITL: policy governs when the loop PAUSES to ask a human vs. acting and LOGGING the decision.
 //   autonomous       — never ask; every notable call is recorded in `decisions`, human reviews at merge.
@@ -213,7 +226,7 @@ function fnv1a(str) {
   return h.toString(36)
 }
 // Salt makes the id feat-unique for a caller; empty salt preserves exact standalone hashing.
-const RUN_ID = fnv1a(ID_SALT ? ID_SALT + '::' + TASK : TASK).slice(0, 6)
+const RUN_ID = fnv1a(IDENTITY_SALT ? IDENTITY_SALT + '::' + TASK : TASK).slice(0, 6)
 const SLUG = slugify(TASK)
 const BRANCH = `${BRANCH_PREFIX}${SLUG}-${RUN_ID}`
 const WT_NAME = `camus-wt-${SLUG}-${RUN_ID}`
@@ -240,15 +253,16 @@ const WT_PARENT_EXPR = `$HOME/.camus/worktrees/$(basename "$(git rev-parse --sho
 const WT_PARENT = `"${WT_PARENT_EXPR}"`
 const WT_DEST = `"${WT_PARENT_EXPR}/${WT_NAME}"`
 
-// HEARTBEAT (0.2.5 item 1 — "`running` must mean running"): under a feat (ID_SALT = featId) every
-// thin-runner command line and every think-phase prompt touches ~/.camus/feats/<featId>.hb FIRST,
+// HEARTBEAT (0.2.5 item 1 — "`running` must mean running"): under a feat or a custody-bound
+// standalone run, every thin-runner command line and every think-phase prompt touches
+// ~/.camus/feats/<identity>.hb FIRST,
 // so that file's MTIME is a phase-boundary liveness signal status/watch read with NO transcript
 // dependency (the 2026-06-11 smoke sat "state updated 19m ago" mid-task with no way to tell churn
 // from death). Wall-clock lives in the FILE's mtime, never in this script — Date is banned here
 // (resume determinism), which is exactly why the stamp is a side effect of the agents' shells.
 // Standalone loops (no salt) skip it: the .hb name is feat identity.
-const HB_TOUCH = ID_SALT ? `touch "$HOME/.camus/feats/${ID_SALT}.hb" 2>/dev/null; ` : ''
-const HB_LINE = ID_SALT ? `\nFirst, run \`touch "$HOME/.camus/feats/${ID_SALT}.hb"\` (liveness heartbeat — ignore any failure), then proceed.\n` : ''
+const HB_TOUCH = IDENTITY_SALT ? `touch "$HOME/.camus/feats/${IDENTITY_SALT}.hb" 2>/dev/null; ` : ''
+const HB_LINE = IDENTITY_SALT ? `\nFirst, run \`touch "$HOME/.camus/feats/${IDENTITY_SALT}.hb"\` (liveness heartbeat — ignore any failure), then proceed.\n` : ''
 
 // ── Schemas (only where the script needs structured fields) ──────────────────
 const CLASSIFY_SCHEMA = {
@@ -446,7 +460,7 @@ if (LAND) {
 // untracked leak breaks the merge), but the parent tree may legitimately hold un-ignored artifacts the
 // feat's baseline-verify wrote BEFORE this task. So capture the dirt set ONCE at loop start (before any
 // phase that could leak — classify is Phase 0) and treat ONLY dirt that appears AFTER as a breach
-// (delta). Feat-scoped only (ID_SALT); a standalone loop never runs containment. An inconclusive
+// (delta). Feat-scoped only; a standalone loop never runs containment. An inconclusive
 // baseline → empty allowed-set: a real leak still fires, and we never manufacture a false clean.
 const dirtLines = (s) => String(s || '').split('\n').map((l) => l.trim()).filter(Boolean)
 // RELAY-RECEIPT VALIDATION (PR2, 2026-06-29): containment.sh is mechanical, but the workflow reads its
@@ -505,7 +519,7 @@ async function runContainment(label, grp) {
   return { ran: false, error: ('containment receipt failed contract validation after ' + CONTAINMENT_TRIES + ' tries (likely a hallucinated relay); last=' + JSON.stringify(last)).slice(0, 280) }
 }
 let containmentBaseline = new Set()
-if (ID_SALT) {
+if (FEAT_SCOPED) {
   const b = await runContainment('containment:baseline', 'Classify')
   containmentBaseline = new Set((b && b.ran === true) ? dirtLines(b.paths) : [])
 }
@@ -620,6 +634,11 @@ const decisionGuidance = HUMAN_ANSWER
     ? `\nThis task has an unresolved point we are NOT pausing for (policy ${POLICY}). Pick the most reasonable interpretation, proceed, and RECORD that choice in decisions (what / why / alternative). Open point: ${plan.question || plan.clarity}\n`
     : '')
 phase('Implement')
+// A custody-bound standalone caller (Studio) owns one deterministic worktree across stop/resume.
+// `ensure` creates it once, then returns that exact coherent worktree on replay. Feat-owned and
+// ordinary standalone loops keep the stricter historical `create` behavior; their own state or
+// the human resolves collisions explicitly.
+const WT_CREATE_MODE = STANDALONE_ID_SALT ? 'ensure' : 'create'
 const impl = await agent(
   `Implement ONE Camus task in an ISOLATED git worktree so review/verify can run against it cleanly.
 ${HB_LINE}
@@ -631,19 +650,21 @@ ${plan.plan}
 Files in scope: ${plan.relevant_files.join(', ') || (planSkipped ? 'discover the files yourself' : '(discover from the plan)')}
 
 Steps:
-1. From the repo root, run EXACTLY this one command and NOTHING ELSE (it creates the new branch
-   from the current HEAD and prints ONE JSON object):
-     ${REPO_CD}${WT_CMD} create ${JSON.stringify(BRANCH)} ${WT_DEST}
+1. From the repo root, run EXACTLY this one command and NOTHING ELSE (it creates the branch/worktree
+   once${STANDALONE_ID_SALT ? ', or returns the same custody-bound worktree on resume,' : ''} and prints ONE JSON object):
+     ${REPO_CD}${WT_CMD} ${WT_CREATE_MODE} ${JSON.stringify(BRANCH)} ${WT_DEST}
    If the JSON says "ok": false, STOP IMMEDIATELY — do NOT improvise any git commands (no
    \`worktree add\`, no checkout: attaching a previous attempt's branch silently reuses its
    commits and corrupts the run — live smoke 2026-06-12). Return worktree_path "FAILED" with
    the JSON's COMPLETE "error" text as the summary.
 2. Use the JSON's "path" value as worktree_path.
-3. Make the change ONLY inside that worktree. Stay within the planned files unless the
+3. If the JSON says "reused": true, inspect and preserve the existing diff first: it is partial
+   work from this exact custody identity, not disposable residue. Complete the task from there.
+4. Make the change ONLY inside that worktree. Stay within the planned files unless the
    plan clearly requires touching an adjacent file.
-4. Do NOT run type-check, tests, or codex review — later phases own that.
-5. Return worktree_path (absolute), branch ("${BRANCH}"), and a one-paragraph summary.
-6. Record any notable DECISIONS in decisions[{what, why, alternative}] — a chosen default for an
+5. Do NOT run type-check, tests, or codex review — later phases own that.
+6. Return worktree_path (absolute), branch ("${BRANCH}"), and a one-paragraph summary.
+7. Record any notable DECISIONS in decisions[{what, why, alternative}] — a chosen default for an
    unspecified case, a signature/API change, a tradeoff, an assumption. EMPTY if wholly mechanical.
 ${softBudget}`,
   { model: thinkModel, phase: 'Implement', label: 'implement', schema: IMPL_SCHEMA }
@@ -694,7 +715,7 @@ log(`Implemented in worktree ${WT} (branch ${BRANCH})${tokSuffix()}.`)
 // main tree is guaranteed CLEAN at task start (preflight demands it; merges commit), so ANY
 // porcelain output mid-task is a breach — an agent leak, or a human editing mid-run, both
 // merge-fatal. Halt LOUDLY at the phase that caused it; never auto-discard (the dirt could be
-// the human's). Feat-scoped only (ID_SALT): a standalone loop on a deliberately-dirty repo is
+// the human's). Feat-scoped only: a standalone loop on a deliberately-dirty repo is
 // the user's own working style, not a breach. NOTE: a repo whose TESTS dirty the tree will trip
 // this — that was always merge-fatal; now it fails early with the files named.
 // --ignore-submodules=all (git audit 2026-06-12, P2): a merged submodule-pointer bump leaves a
@@ -721,7 +742,7 @@ async function containmentLeak(phaseName) {
   if (newDirt.length) return { kind: 'breach', paths: newDirt.join('\n') }
   return null   // no NEW dirt vs the baseline → genuinely clean
 }
-if (ID_SALT) {
+if (FEAT_SCOPED) {
   const c = await containmentLeak('implement')
   if (c && c.kind === 'breach') {
     return { status: 'infra_error', task: TASK, worktree: WT, branch: BRANCH, rounds: 0, containment: 'implement',
@@ -1056,7 +1077,7 @@ ${softBudget}`,
 // Post-fix containment (smoke 2026-06-12): the fix agent was the SECOND leaker — same guard,
 // run once after the loop whenever any fix dispatched. Checked BEFORE the unresolved/commit
 // paths on purpose: a leak poisons the NEXT task's merge even when this task halts.
-if (ID_SALT && fixesRan) {
+if (FEAT_SCOPED && fixesRan) {
   const c = await containmentLeak('fix')
   if (c && c.kind === 'breach') {
     return { status: 'infra_error', task: TASK, worktree: WT, branch: BRANCH, rounds: round, containment: 'fix',

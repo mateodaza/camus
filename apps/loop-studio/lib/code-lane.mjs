@@ -7,22 +7,59 @@
 
 import { spawn } from 'node:child_process';
 import { readFile, readdir, stat } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { sessionLineFromEvent } from './adapters/claude.mjs';
+import { createGateCustodyGuard } from './gate-custody.mjs';
 import { getModels } from './models.mjs';
 
 const HARD_TIMEOUT_MS = Number(process.env.CODE_LANE_TIMEOUT_MS || 90 * 60_000);
 const IDLE_KILL_MS = Number(process.env.CODE_LANE_IDLE_MS || 8 * 60_000);
 const REVIEWS_DIR = join(homedir(), '.camus', 'reviews');
 
+export function gateSupportsStudio({ workflow, worktreeGate }) {
+  return workflow.includes('const STANDALONE_ID_SALT') && worktreeGate.includes('create|ensure|attach|resolve');
+}
+
 export function gateInstalled() {
-  return (
-    existsSync(join(homedir(), '.claude', 'skills', 'camus', 'SKILL.md')) &&
-    existsSync(join(homedir(), '.claude', 'workflows', 'camus-loop.workflow.js'))
-  );
+  const root = join(homedir(), '.claude');
+  const skill = join(root, 'skills', 'camus', 'SKILL.md');
+  const workflow = join(root, 'workflows', 'camus-loop.workflow.js');
+  const worktreeGate = join(root, 'skills', 'camus', 'scripts', 'wt.sh');
+  if (![skill, workflow, worktreeGate].every(existsSync)) return false;
+  try {
+    return gateSupportsStudio({ workflow: readFileSync(workflow, 'utf8'), worktreeGate: readFileSync(worktreeGate, 'utf8') });
+  } catch {
+    return false;
+  }
+}
+
+export function gateArgsForRun(run, roundCap, humanAnswer = null) {
+  const args = {
+    task: run.goal,
+    targetPath: run.targetPath,
+    policy: 'ask_on_ambiguity',
+    roundCap,
+    identitySalt: run.idSalt,
+  };
+  if (humanAnswer) args.humanAnswer = humanAnswer;
+  return args;
+}
+
+const GATE_CUSTODY_PROMPT = `You are only the Camus Studio gate igniter. The /camus-loop invocation and every JSON argument are a binding custody contract. Start exactly one fresh camus-loop workflow. If it returns an asynchronous handle, resume only that same workflow run with the exact same args. Never start a second fresh workflow, alter or omit an arg, use another tool, inspect or repair the repository yourself, or work around an infra error. Return the workflow's terminal report verbatim; Studio owns every retry.`;
+
+export function gateIgniterCliArgs(invocation) {
+  return [
+    '-p', invocation,
+    '--output-format', 'stream-json',
+    '--verbose',
+    '--permission-mode', 'auto',
+    '--tools', 'Workflow',
+    '--allowedTools', 'Workflow',
+    '--append-system-prompt', GATE_CUSTODY_PROMPT,
+  ];
 }
 
 // Cheap, spend-free refusals before any model runs. The gate itself refuses
@@ -113,11 +150,15 @@ export async function runCodeLoop(run, ctx) {
   const hbPath = join(homedir(), '.camus', 'feats', `${idSalt}.hb`);
   const roundCap = getModels().loop.roundCap;
 
-  // One gate invocation. Re-invoked fresh for resume — camus's own state
-  // (deterministic identity via idSalt) continues where it left off.
+  // One outer gate process per Studio attempt. A later human/resume attempt reuses the same
+  // standalone custody identity; camus-loop's `ensure` lane returns its exact worktree.
   async function igniteGate(humanAnswer) {
-    const args = { task: run.goal, targetPath: run.targetPath, policy: 'ask_on_ambiguity', roundCap, idSalt };
-    if (humanAnswer) args.humanAnswer = humanAnswer;
+    // identitySalt is intentionally NOT idSalt. idSalt means "owned by camus-feat" and enables
+    // parent-tree containment whose precondition is a camus/feat-* parent checkout. Studio is a
+    // standalone custodian: it needs one deterministic/resumable worktree + heartbeat without
+    // impersonating a feat (the live smoke's first run failed containment, then an outer-agent
+    // retry dropped the salt and forked a second worktree).
+    const args = gateArgsForRun({ ...run, idSalt }, roundCap, humanAnswer);
     const invocation = `/camus-loop ${JSON.stringify(args)}`;
     log(humanAnswer ? 'Re-invoking the gate with your answer — it resumes from its own receipts.' : `Igniting the camus gate in ${run.targetPath}`);
     sess(`invocation: ${invocation.slice(0, 160)}`);
@@ -156,10 +197,12 @@ export async function runCodeLoop(run, ctx) {
     }, 5000);
     const feedVerdict = (round, note) => log(`gate review round ${round}: ${note}`);
 
+    const custody = createGateCustodyGuard(args);
+    let custodyError = null;
     const { exitCode, resultText } = await new Promise((resolve) => {
       const child = spawn(
         'claude',
-        ['-p', invocation, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'auto'],
+        gateIgniterCliArgs(invocation),
         { cwd: run.targetPath, stdio: ['ignore', 'pipe', 'pipe'] },
       );
       let lineBuf = '';
@@ -186,6 +229,13 @@ export async function runCodeLoop(run, ctx) {
           if (!line.trim()) continue;
           try {
             const ev = JSON.parse(line);
+            const refused = custody.inspect(ev);
+            if (refused) {
+              custodyError = refused;
+              child.kill('SIGKILL');
+              finish(-5);
+              break;
+            }
             if (ev.type === 'result') result = String(ev.result ?? '');
             const s = sessionLineFromEvent(ev);
             if (s) sess(s);
@@ -195,12 +245,16 @@ export async function runCodeLoop(run, ctx) {
       child.stderr.on('data', (b) => { err += b; lastActivity = Date.now(); });
       signal.addEventListener('abort', () => { child.kill('SIGTERM'); finish(-4); }, { once: true });
       child.on('error', (e) => { err += `spawn error: ${e.code || e.message}`; finish(-1); });
-      child.on('close', (code) => finish(code ?? -1));
+      child.on('close', (code) => {
+        custodyError ||= custody.finish();
+        finish(custodyError ? -5 : (code ?? -1));
+      });
     });
 
     clearInterval(watcher);
 
     if (exitCode === -4) throw new Error('stopped_by_human');
+    if (exitCode === -5) return { status: 'infra_error', note: custodyError || 'gate custody could not be established' };
     if (exitCode === -1) return { status: 'infra_error', note: `failed to spawn claude (${String(resultText).slice(0, 200)})` };
     if (exitCode === -2) return { status: 'infra_error', note: `the gate hit the studio's ${Math.round(HARD_TIMEOUT_MS / 60000)} min ceiling — its state is preserved; Resume continues it` };
     if (exitCode === -3) return { status: 'infra_error', note: `no gate activity for ${Math.round(IDLE_KILL_MS / 60000)} min (no receipts, no heartbeat, no output) — killed fail-closed; state is preserved` };

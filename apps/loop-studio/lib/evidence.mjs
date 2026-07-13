@@ -32,5 +32,8 @@ export function receiptCompleteness({ lane, evidence, writeFailed }) {
   if (lane === 'build' && !evidence.gateReport && evidence.rounds.length === 0) {
     return { degraded: true, note: 'the gate produced no review round and no report — there is nothing here to verify' };
   }
+  if (lane !== 'build' && evidence.rounds.length === 0) {
+    return { degraded: true, note: 'the run produced no independent review round — there is nothing here to verify' };
+  }
   return { degraded: false, note: null };
 }

@@ -136,7 +136,10 @@ halting verify-clean, shippable code on a stale re-flag. Two behaviors:
   posture as the feat (`policy`; resume with `answers:{<id>:"…"}`). Use it to get smaller,
   clearer tasks BEFORE running — better plans converge in fewer review rounds.
 - `/camus-loop <task>` — one task. Args: a string, or `{task, targetPath, model, modelTier,
-  skipPlan, policy, humanAnswer, branchPrefix, idSalt, roundCap, land}`. `roundCap` (1..10, default 3)
+  skipPlan, policy, humanAnswer, branchPrefix, idSalt, identitySalt, roundCap, land}`. `idSalt`
+  means feat ownership (feat heartbeat + parent-tree containment). `identitySalt` is the mutually
+  exclusive standalone-custody seam used by Studio: deterministic branch/worktree + heartbeat,
+  idempotent replay of that exact worktree, and no feat-only containment precondition. `roundCap` (1..10, default 3)
   raises/lowers the review↔fix budget for a known-large task (run feedback 2026-06-10: a big task
   that converges P1→P2 can run out of rounds at the default cap). `land: true` = land mode (run-5
   fix): commit the task's EXISTING, already-proven worktree → verify → done, skipping
