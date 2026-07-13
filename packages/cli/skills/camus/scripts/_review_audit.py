@@ -9,7 +9,9 @@ review round produced a file with a real Codex response — and the ABSENCE of a
 codex_review.sh never ran for it (the thin reviewer fabricated output, or an infra failure occurred).
 """
 import json
+import os
 import sys
+import tempfile
 import time
 
 # The audit `ran` must mean EXACTLY what the gate means by "a review ran" — so reuse the adapter's
@@ -61,8 +63,23 @@ def main(argv=None):
     audit_path, wt, rnd, status = argv[0], argv[1], argv[2], argv[3]
     raw = sys.stdin.read()
     rec = build_record(wt, rnd, status, raw)
-    with open(audit_path, "w", encoding="utf-8") as fh:
-        json.dump(rec, fh, indent=2)
+    # Atomic publish: write a same-directory temp file, fsync, then os.replace()
+    # onto the final path — a reader (e.g. the Studio watcher) ever sees the OLD
+    # complete file or the NEW complete file, never a truncated mid-write JSON.
+    directory = os.path.dirname(os.path.abspath(audit_path))
+    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".audit-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(rec, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, audit_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     return 0
 
 

@@ -3,7 +3,11 @@
     python3 test_review_audit.py      # stdlib runner
     python3 -m pytest -q
 """
+import io
+import json
+import os
 import sys
+import tempfile
 
 import _review_audit as A
 
@@ -66,6 +70,25 @@ def test_nonnumeric_round_exit_preserved_as_string():
 def test_includes_raw_and_timestamp():
     rec = A.build_record("/x/wt", "0", "0", "{}")
     assert rec["codex_raw"] == "{}" and isinstance(rec["ran_at"], int)
+
+
+def test_main_writes_complete_json_and_leaves_no_temp_file():
+    # The write must be atomic: readers see a complete file (never a truncated
+    # mid-write), and no .tmp file is left behind after os.replace().
+    d = tempfile.mkdtemp()
+    audit = os.path.join(d, "camus-wt-foo-r1.json")
+    old_stdin = sys.stdin
+    sys.stdin = io.StringIO('{"overall_correctness":"patch is correct","findings":[]}')
+    try:
+        rc = A.main([audit, "/x/wt", "1", "0"])
+    finally:
+        sys.stdin = old_stdin
+    assert rc == 0
+    with open(audit, encoding="utf-8") as fh:
+        rec = json.load(fh)  # complete + parseable, or this raises
+    assert rec["round"] == 1 and rec["ran"] is True
+    leftovers = [n for n in os.listdir(d) if n != os.path.basename(audit)]
+    assert leftovers == [], "atomic write left temp files behind: %r" % leftovers
 
 
 if __name__ == "__main__":

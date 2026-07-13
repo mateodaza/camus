@@ -245,6 +245,8 @@ export async function runCodeLoop(run, ctx) {
 
     const t0 = Date.now();
     const seenRounds = new Set();
+    const parseTries = new Map(); // review files caught mid-write are retried, not sealed
+    const PARSE_RETRIES = 3;      // ~3 polls before a parse failure is treated as stable
     let wtPrefix = null; // first receipt names the worktree; later rounds must match
     let lastActivity = Date.now();
 
@@ -257,30 +259,36 @@ export async function runCodeLoop(run, ctx) {
         const prefix = r.file.replace(/-r\d+\.json$/, '');
         if (wtPrefix === null) wtPrefix = prefix;
         else if (prefix !== wtPrefix) continue;
-        seenRounds.add(r.file);
-        lastActivity = Date.now();
-        let verdictNote = 'verdict recorded';
-        stage('review', 'done', { round: r.round });
-        emit('round', { round: r.round, cap: roundCap });
+        // Parse BEFORE marking the file seen. A gate that writes the audit
+        // non-atomically can be caught mid-write; a parse failure is retried on
+        // later polls (bounded) so a transient truncated read never permanently
+        // seals a valid audit as infra_failed. Only a STABLE failure emits an
+        // UNKNOWN. (New gates write atomically via os.replace and never truncate.)
+        let review;
         try {
           const raw = JSON.parse(await readFile(join(REVIEWS_DIR, r.file), 'utf8'));
-          const review = reviewEventFromGateReceipt(raw, r.round);
-          const blocking = review.findings.filter((f) => f.priority === null || f.priority <= 2).length;
-          if (review.verdict === 'APPROVED') verdictNote = 'clean';
-          else if (review.verdict === 'REVISE') verdictNote = `revise (${blocking} blocking)`;
-          for (const finding of review.findings) emit('finding', finding);
-          emit('review', review);
+          review = reviewEventFromGateReceipt(raw, r.round);
+          parseTries.delete(r.file);
         } catch (err) {
-          // The review receipt exists but could not be read or parsed — that is a
-          // broken audit, not an absent one. Emit an UNKNOWN camus_gate_review so
-          // the sealed dimensions read infra_failed, never not_run.
-          verdictNote = 'unreadable receipt';
-          emit('review', {
+          const tries = (parseTries.get(r.file) ?? 0) + 1;
+          parseTries.set(r.file, tries);
+          if (tries < PARSE_RETRIES) continue; // still unseen — a later poll retries the (maybe mid-write) file
+          review = {
             round: r.round, verdict: 'UNKNOWN', rawVerdict: null, confidence: null,
-            explanation: `unreadable review receipt: ${String(err.message).slice(0, 120)}`,
+            explanation: `unreadable review receipt after ${tries} attempts: ${String(err.message).slice(0, 120)}`,
             findings: [], source: 'camus_gate_review',
-          });
+          };
         }
+        seenRounds.add(r.file);
+        lastActivity = Date.now();
+        stage('review', 'done', { round: r.round });
+        emit('round', { round: r.round, cap: roundCap });
+        const blocking = review.findings.filter((f) => f.priority === null || f.priority <= 2).length;
+        const verdictNote = review.verdict === 'APPROVED' ? 'clean'
+          : review.verdict === 'REVISE' ? `revise (${blocking} blocking)`
+            : 'unreadable receipt';
+        for (const finding of review.findings) emit('finding', finding);
+        emit('review', review);
         feedVerdict(r.round, verdictNote);
       }
       try {
