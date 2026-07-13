@@ -756,6 +756,7 @@ function handle(ev) {
     case 'gate_report': {
       const r = ev.report ?? {};
       const sim = state.simulated;
+      const commit = r.commit_sha ?? r.commit;
       const md = [
         sim ? '## Gate report — SIMULATED' : '## Gate report',
         '',
@@ -763,8 +764,9 @@ function handle(ev) {
         sim ? '' : null,
         `- status: ${r.status ?? 'unknown'}${sim ? ' (simulated)' : ''}`,
         state.runTargetPath ? `- repository: ${state.runTargetPath}${sim ? ' (not modified)' : ''}` : null,
+        r.worktree ? `- worktree: ${r.worktree}` : null,
         r.branch ? `- branch: ${r.branch}` : null,
-        r.commit ? `- commit: ${r.commit}` : null,
+        commit ? `- commit: ${commit}` : null,
         r.report ? `- receipts: ${r.report}` : null,
         r.question ? `- question: ${r.question}` : null,
         r.note ? `- note: ${r.note}` : null,
