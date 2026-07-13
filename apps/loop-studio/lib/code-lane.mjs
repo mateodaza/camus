@@ -44,6 +44,11 @@ export function gateArgsForRun(run, roundCap, humanAnswer = null) {
     roundCap,
     identitySalt: run.idSalt,
   };
+  // Pin the maker (executor) THROUGH the loop's JSON contract — the workflow uses
+  // args.model as the think-model override. Pinning the outer `claude -p` would
+  // pin only the igniter, not Camus's executor. Taken from the run-start snapshot.
+  const maker = run.models?.maker?.model;
+  if (typeof maker === 'string' && maker) args.model = maker;
   if (humanAnswer) args.humanAnswer = humanAnswer;
   return args;
 }
@@ -228,7 +233,7 @@ export async function runCodeLoop(run, ctx) {
 
   const idSalt = run.idSalt || `studio-${run.id.replace(/[^a-zA-Z0-9-]/g, '')}`;
   const hbPath = join(homedir(), '.camus', 'feats', `${idSalt}.hb`);
-  const roundCap = getModels().loop.roundCap;
+  const roundCap = run.models?.loop?.roundCap ?? getModels().loop.roundCap;
 
   // One outer gate process per Studio attempt. A later human/resume attempt reuses the same
   // standalone custody identity; camus-loop's `ensure` lane returns its exact worktree.
@@ -301,10 +306,17 @@ export async function runCodeLoop(run, ctx) {
     const custody = createGateCustodyGuard(args);
     let custodyError = null;
     const { exitCode, resultText } = await new Promise((resolve) => {
+      // Pin the reviewer (auditor) for the gate's cross-vendor review via the
+      // dedicated CAMUS_CODEX_MODEL channel, from the run-start snapshot.
+      // codex_review.sh treats it as authoritative (appended last; refuses a
+      // conflicting -m) so nothing silently overrides the recorded identity.
+      const gateEnv = { ...process.env };
+      const reviewerModel = run.models?.reviewer?.model;
+      if (typeof reviewerModel === 'string' && reviewerModel) gateEnv.CAMUS_CODEX_MODEL = reviewerModel;
       const child = spawn(
         'claude',
         gateIgniterCliArgs(invocation),
-        { cwd: run.targetPath, stdio: ['ignore', 'pipe', 'pipe'] },
+        { cwd: run.targetPath, stdio: ['ignore', 'pipe', 'pipe'], env: gateEnv },
       );
       let lineBuf = '';
       let result = null;

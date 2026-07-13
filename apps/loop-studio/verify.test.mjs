@@ -518,6 +518,9 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   const boundArgs = gateArgsForRun({ goal: 't', targetPath: '/tmp/repo', idSalt: 'studio-run-1' }, 3);
   assert.equal(boundArgs.identitySalt, 'studio-run-1', 'Studio binds standalone custody with identitySalt');
   assert.equal('idSalt' in boundArgs, false, 'Studio never impersonates camus-feat ownership');
+  assert.equal('model' in boundArgs, false, 'no maker snapshot → no model pin (nothing invented)');
+  const pinnedArgs = gateArgsForRun({ goal: 't', targetPath: '/tmp/repo', idSalt: 'studio-run-1', models: { maker: { model: 'opus' }, reviewer: { model: 'gpt-5.4' } } }, 3);
+  assert.equal(pinnedArgs.model, 'opus', 'the maker is pinned THROUGH the /camus-loop contract from the run-start snapshot, not the outer igniter');
   const igniterArgs = gateIgniterCliArgs('/camus-loop {}');
   assert.equal(igniterArgs.includes('--tools'), false, 'process-wide tools stay inherited so camus-loop child agents retain Bash/Read/Edit');
   assert.deepEqual(igniterArgs.slice(igniterArgs.indexOf('--allowedTools'), igniterArgs.indexOf('--allowedTools') + 2), ['--allowedTools', 'Workflow'], 'only the outer Workflow call is pre-approved');

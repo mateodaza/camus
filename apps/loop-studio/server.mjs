@@ -81,9 +81,13 @@ async function startRun({ goal, lane, depth, ground, targetPath = null, targetTo
     child.on('close', (code) => resolve(code === 0));
   });
 
-  const run = { id, goal, lane, depth, ground, targetPath, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false };
+  // Snapshot the model decisions ONCE at run creation — a settings edit mid-run
+  // must never rewrite this run's manifest. This snapshot is the identity of
+  // record (requested/resolved); the gate reports back the models it actually ran.
+  const models = getModels();
+  const run = { id, goal, lane, depth, ground, targetPath, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models };
   // The run exists on disk from second zero — a crash must not orphan it.
-  writeFile(join(dir, 'run.json'), JSON.stringify({ id, goal, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, startedAt: run.startedAt }, null, 2))
+  writeFile(join(dir, 'run.json'), JSON.stringify({ id, goal, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, models, startedAt: run.startedAt }, null, 2))
     .catch((err) => console.error(`[receipts] failed to write run.json for ${id}: ${err.message}`));
   const state = { run, events: [], subscribers: new Set(), answer: null, abort: new AbortController(), writeChain: Promise.resolve() };
   runs.set(id, state);
