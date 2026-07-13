@@ -391,7 +391,7 @@ const server = http.createServer(async (req, res) => {
 
     if (path === '/api/runs' && req.method === 'GET') {
       const list = [];
-      for (const [id, s] of runs) list.push({ id, goal: s.run.goal, lane: s.run.lane, status: s.run.status, startedAt: s.run.startedAt, live: true });
+      for (const [id, s] of runs) list.push({ id, goal: s.run.goal, lane: s.run.lane, status: s.run.status, headline: headlineOf(s.run.statuses), startedAt: s.run.startedAt, live: true });
       if (existsSync(RUNS_DIR)) {
         for (const d of await readdir(RUNS_DIR)) {
           if (runs.has(d)) continue;

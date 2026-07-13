@@ -172,6 +172,14 @@ try {
     assert.ok(report.statuses && typeof report.statuses.execution === 'string', 'the receipt seals the raw status dimensions');
     assert.ok(!('headline' in report), 'the headline is derived at render — never sealed into the evidence');
   });
+
+  await check('a completed IN-MEMORY run carries a derived headline in Recents (not only after restart)', async () => {
+    const list = await (await fetch(`${base}/api/runs`)).json();
+    const item = list.runs.find((x) => x.id === runId);
+    assert.ok(item, 'the run is listed');
+    assert.equal(item.live, true, 'the run is still served from the in-memory map, not disk');
+    assert.equal(typeof item.headline, 'string', 'the live-list item derives a headline too, not only disk-loaded runs');
+  });
 } finally {
   server.kill('SIGKILL');
   await once(server, 'close').catch(() => {});

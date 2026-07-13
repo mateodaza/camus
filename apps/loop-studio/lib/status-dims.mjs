@@ -19,28 +19,37 @@ export { deriveHeadline, DIMENSIONS };
 export const STATUS_DIMS_VERSION = 1;
 const SHA_RE = /^[0-9a-f]{7,64}$/i;
 
-// The independent audit, from readable review verdicts only. requireGateSource
-// gates the build lane to the gate's own review receipts; the words lane's
-// Codex rounds are independent by vendor without that tag.
+// The independent audit, from the LATEST APPLICABLE round — selected FIRST,
+// then interpreted. requireGateSource gates the build lane to the gate's own
+// review receipts; the words lane's Codex rounds are independent by vendor
+// without that tag. Only APPROVED|REVISE is a usable verdict: a round that ran
+// but produced an unreadable/invalid verdict (UNKNOWN, or any other string)
+// broke — it is infra_failed, and must NEVER fall back to an older clean round.
 function auditFromReviews(rounds, { requireGateSource }) {
-  const readable = (rounds ?? []).filter(
-    (r) => (!requireGateSource || r.source === 'camus_gate_review') && typeof r.verdict === 'string' && r.verdict !== 'UNKNOWN',
-  );
-  if (!readable.length) return 'not_run';
-  return readable.at(-1).verdict === 'APPROVED' ? 'independent_clean' : 'independent_findings';
+  const applicable = (rounds ?? []).filter((r) => !requireGateSource || r.source === 'camus_gate_review');
+  if (!applicable.length) return 'not_run';
+  const verdict = applicable.at(-1).verdict;
+  if (verdict === 'APPROVED') return 'independent_clean';
+  if (verdict === 'REVISE') return 'independent_findings';
+  return 'infra_failed'; // a round ran but its latest verdict is unreadable/invalid
 }
 
 // Verification from a single verify result. boundSha === null means no binding
-// requirement (words: the deliverable itself is the artifact). A string means
-// the green counts only when the check ran against exactly that committed SHA.
+// requirement (words: the deliverable itself is the artifact). A string means a
+// CONCLUSIVE result — green OR red — counts only when it ran against exactly
+// that committed SHA; the binding is validated BEFORE pass/fail is interpreted.
 function verificationFrom(v, boundSha = null) {
   if (!v) return 'not_run';
-  if (v.pass === false) return 'failed';
-  if (v.pass !== true) return 'not_run'; // null / inconclusive
+  // A verification that ran but could not conclude is a broken step, not an
+  // absent one — preserve the infra fact, whatever the SHA (verify_inconclusive).
+  if (v.pass !== true && v.pass !== false) return 'infra_failed';
+  // Bind first: a conclusive green OR red on the wrong or absent commit says
+  // nothing about this artifact.
   if (boundSha !== null) {
     const bound = typeof v.commitSha === 'string' && SHA_RE.test(v.commitSha) && v.commitSha === boundSha;
-    if (!bound) return 'not_run'; // green, but not of the committed artifact
+    if (!bound) return 'not_run';
   }
+  if (v.pass === false) return 'failed';
   return v.warnings || v.skipped ? 'passed_with_caveats' : 'passed';
 }
 

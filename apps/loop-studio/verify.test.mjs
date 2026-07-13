@@ -714,7 +714,7 @@ if (process.env.TEST_NETWORK === '1') {
 
   // an UNKNOWN (unreadable) review verdict is not an audit.
   const unreadable = deriveStatusDimensions({ lane: 'build', status: 'done', evidence: buildEv({ rounds: [{ verdict: 'UNKNOWN', source: 'camus_gate_review' }] }) });
-  assert.equal(unreadable.audit, 'not_run', 'an unreadable review verdict is not an audit');
+  assert.equal(unreadable.audit, 'infra_failed', 'a review round that ran but produced an unreadable verdict is a broken audit, not an absent one');
   assert.equal(head(unreadable), 'unverified');
 
   // deterministic red under a clean review → a human settles it.
@@ -734,6 +734,26 @@ if (process.env.TEST_NETWORK === '1') {
   const stopped = deriveStatusDimensions({ lane: 'build', status: 'stopped', evidence: { gateReport: null, verify: [], rounds: [], revisions: [] } });
   assert.equal(stopped.execution, 'interrupted');
   assert.equal(head(stopped), 'unverified');
+
+  // P1: only the LATEST applicable verdict counts, and only APPROVED|REVISE — a
+  // bogus verdict is not a findings audit, and an unreadable latest round never
+  // falls back to an older clean one.
+  const banana = deriveStatusDimensions({ lane: 'build', status: 'done', evidence: buildEv({ rounds: [{ verdict: 'BANANA', source: 'camus_gate_review' }] }) });
+  assert.equal(banana.audit, 'infra_failed', 'a bogus verdict is a broken audit, not independent_findings');
+  assert.equal(head(banana), 'unverified', 'a malformed latest verdict cannot verify');
+  const approvedThenUnknown = deriveStatusDimensions({ lane: 'build', status: 'done', evidence: buildEv({ rounds: [{ verdict: 'APPROVED', source: 'camus_gate_review' }, { verdict: 'UNKNOWN', source: 'camus_gate_review' }] }) });
+  assert.notEqual(approvedThenUnknown.audit, 'independent_clean', 'an unreadable latest round must not resurrect an older clean verdict');
+  assert.equal(head(approvedThenUnknown), 'unverified', 'APPROVED then UNKNOWN is not verified');
+
+  // P1: SHA binding is validated before a RED result is interpreted.
+  const redWrongCommit = deriveStatusDimensions({ lane: 'build', status: 'verify_failed', evidence: buildEv({ gateReport: { status: 'verify_failed', commit_sha: 'c92d002abc123' }, verify: [{ pass: false, commitSha: 'deadbeef012', source: 'gate_report_status' }] }) });
+  assert.equal(redWrongCommit.verification, 'not_run', 'a red on the wrong commit is not attributed to this artifact');
+  assert.equal(head(redWrongCommit), 'unverified', 'a wrong-SHA red does not force needs_decision on this work');
+
+  // P2: an inconclusive verification broke — infra_failed, not not_run.
+  const inconclusive = deriveStatusDimensions({ lane: 'build', status: 'done', evidence: buildEv({ gateReport: { status: 'verify_inconclusive', commit_sha: 'c92d002abc123' }, verify: [{ pass: null, commitSha: 'c92d002abc123', source: 'gate_report_status' }] }) });
+  assert.equal(inconclusive.verification, 'infra_failed', 'verify_inconclusive is a broken step, distinct from not_run');
+  assert.equal(head(inconclusive), 'unverified');
 }
 
 console.log('verify.test: all assertions passed');
