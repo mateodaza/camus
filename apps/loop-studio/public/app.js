@@ -145,12 +145,12 @@ async function boot() {
     hm.classList.add(s.hivemind.connected ? 'ok' : 'warn');
     if (!s.hivemind.connected) {
       $('ground').disabled = true;
-      $('ground-hint').textContent = 'HIVEMIND_VIA_CLAUDE=1 grounds drafts through Claude’s own Hivemind connector (no key); or set HIVEMIND_MCP_URL + HIVEMIND_API_KEY.';
+      $('ground-hint').textContent = 'Hivemind is Myosin’s private research knowledge (on staging today). To ground drafts in it: set HIVEMIND_VIA_CLAUDE=1 for Claude’s own connector, or HIVEMIND_MCP_URL + HIVEMIND_API_KEY — see Setup.';
     } else {
       $('ground').checked = true;
       $('ground-hint').textContent = s.hivemind.mode === 'claude'
-        ? `Claude queries ${s.hivemind.base} itself, on its own connector auth`
-        : `knowledge_search via ${s.hivemind.mode}: ${s.hivemind.base}`;
+        ? `Grounded in Hivemind — Claude queries ${s.hivemind.base} on its own connector auth.`
+        : `Grounded in Hivemind — knowledge_search via ${s.hivemind.mode}: ${s.hivemind.base}.`;
     }
     const buildLane = $('lane-build');
     if (buildLane && s.gate && !s.gate.installed) {
@@ -235,7 +235,7 @@ function renderInstall() {
   // The waiting line: this page keeps knocking until the server answers.
   const wait = el('div', 'install-wait');
   wait.appendChild(el('span', 'dot'));
-  wait.appendChild(el('span', null, `waiting for the studio at ${API || 'http://localhost:1913'} — this page connects by itself once it's running`));
+  wait.appendChild(el('span', null, `waiting for the studio at ${API || 'http://localhost:1913'} — it connects by itself once the server answers, then you brief a goal and pick a lane below`));
   box.appendChild(wait);
 
   box.classList.remove('hidden');
@@ -280,7 +280,7 @@ function renderSetup(report) {
   const box = $('setup-panel');
   box.innerHTML = '';
   const head = el('div', 'panel-head');
-  head.appendChild(el('span', 'lbl', report.ok ? 'Setup — everything this machine needs is here' : 'Setup — this machine is missing pieces'));
+  head.appendChild(el('span', 'lbl', report.ok ? 'Setup — this machine is ready; brief a goal below' : 'Setup — a few pieces are missing'));
   const again = el('button', 'ghost', 'Check again');
   again.onclick = () => openSetup(true);
   head.appendChild(again);

@@ -286,8 +286,8 @@ $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
                     Loop Studio points the loop at words — research and analysis on any topic, the
                     deliverables you stake your name on. Claude drafts, Codex tears the draft apart,
                     and checks that cannot be argued with decide: links resolve, every number traces
-                    to a live source. It needs no terminal and runs on your machine, watchable in a
-                    browser.
+                    to a live source. The same loop runs on your own code today. It needs no terminal
+                    and runs on your machine, watchable in a browser.
                   </p>
                 </div>
               </div>
@@ -296,12 +296,11 @@ $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
             <Reveal>
               <div className="pol">
                 <span>
-                  <b>first tuned lane</b> marketing, grounded in Hivemind
+                  <b>words, any topic</b> marketing is the tuned vertical, grounded in Hivemind
                 </span>
                 <span>·</span>
                 <span>
-                  <b>and now, in beta</b> the same studio pointed back at code — the Build lane
-                  ignites the camus gate on a repo of yours
+                  <b>and code</b> the Build lane ignites the camus gate on a repo of yours, right now
                 </span>
               </div>
             </Reveal>

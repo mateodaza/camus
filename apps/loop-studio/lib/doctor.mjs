@@ -63,7 +63,7 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   const gate = gateInstalled();
   add(
     'gate', 'Camus gate (Build lane)', gate,
-    gate ? 'installed in ~/.claude — the Build lane can ignite it' : 'not installed — the Build lane stays off (words lanes work without it)',
+    gate ? 'installed in ~/.claude — the Build lane can ignite it' : 'not installed yet — the Build lane needs it (the words lanes run without it)',
     gate ? null : 'npm install -g camus-cli && camus install',
   );
 
@@ -102,7 +102,7 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   } else {
     add(
       'hivemind', 'Hivemind grounding', hm.connected,
-      hm.connected ? `${hm.mode}: ${hm.base}` : 'not connected — runs proceed ungrounded (optional)',
+      hm.connected ? `${hm.mode}: ${hm.base}` : 'not connected — Myosin’s Hivemind (staging) is optional; runs proceed ungrounded',
       hm.connected ? null : 'optional: HIVEMIND_VIA_CLAUDE=1 (Claude connector) or HIVEMIND_MCP_URL + HIVEMIND_API_KEY',
     );
   }
