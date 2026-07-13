@@ -19,6 +19,7 @@ import { runCodexReview } from './lib/adapters/codex.mjs';
 import { createMockAdapters } from './lib/adapters/mock.mjs';
 import * as hivemind from './lib/adapters/hivemind.mjs';
 import { LANES } from './lib/verify.mjs';
+import { deriveEvidence, receiptCompleteness } from './lib/evidence.mjs';
 import { getModels, updateModels, modelsSummary } from './lib/models.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -141,8 +142,13 @@ async function startRun({ goal, lane, depth, ground, targetPath = null, targetTo
   }).then(async (result) => {
     if (targetToplevel) activeBuilds.delete(targetToplevel);
     await state.writeChain; // receipt stream flushed before the report seals the run
+    // The receipt CARRIES the challenge trail, not just the final deliverable,
+    // and tells the truth about its own completeness.
+    const evidence = deriveEvidence(state.events);
+    const { degraded: receiptsDegraded, note: receiptsNote } =
+      receiptCompleteness({ lane, evidence, writeFailed: run.receiptsDegraded });
     const report = JSON.stringify(
-      { id, goal, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, ...result, draft: undefined, deliverable: run.lastMarkdown, receiptsDegraded: run.receiptsDegraded, startedAt: run.startedAt, endedAt: Date.now() },
+      { id, goal, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, ...result, draft: undefined, deliverable: run.lastMarkdown, evidence, receiptsDegraded, receiptsNote, startedAt: run.startedAt, endedAt: Date.now() },
       null,
       2,
     );

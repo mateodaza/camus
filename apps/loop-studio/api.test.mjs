@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import http from 'node:http';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -155,6 +155,20 @@ try {
     const codes = [];
     for (let i = 0; i < 4; i++) codes.push((await start()).status);
     assert.ok(codes.includes(429), `expected a 429 among ${codes.join(',')} (cap 2)`);
+  });
+
+  await check('the stopped run seals a receipt with an evidence trail + honest completeness', async () => {
+    // Give the run's .then() a beat to seal report.json after the stop above.
+    let report = null;
+    for (let i = 0; i < 20 && !report; i++) {
+      await new Promise((r) => setTimeout(r, 150));
+      const p = join(tmp, runId, 'report.json');
+      if (existsSync(p)) report = JSON.parse(readFileSync(p, 'utf8'));
+    }
+    assert.ok(report, 'report.json was sealed for the stopped run');
+    assert.ok(report.evidence && Array.isArray(report.evidence.rounds), 'the receipt carries an evidence object with a rounds array');
+    assert.equal(typeof report.receiptsDegraded, 'boolean', 'receiptsDegraded is a real judgement, never absent');
+    assert.ok('receiptsNote' in report, 'receiptsNote is present (null when complete)');
   });
 } finally {
   server.kill('SIGKILL');

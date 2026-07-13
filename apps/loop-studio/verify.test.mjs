@@ -548,4 +548,47 @@ if (process.env.TEST_NETWORK === '1') {
   else process.env.MOCK_SPEED = previousMockSpeed;
 }
 
+// --- evidence trail + honest receipt completeness ---------------------------
+// The receipt must CARRY what was contested (findings, rounds, revisions,
+// human decisions) and tell the truth about its own gaps.
+{
+  const { deriveEvidence, receiptCompleteness } = await import('./lib/evidence.mjs');
+
+  const wordsEvents = [
+    { type: 'plan', text: 'the plan' },
+    { type: 'round', round: 1, cap: 3 },
+    { type: 'finding', severity: 'high', title: 'no source', detail: 'd', suggestion: 's' },
+    { type: 'review', round: 1, verdict: 'REVISE', findings: [{ severity: 'high', title: 'no source', detail: 'd', suggestion: 's' }] },
+    { type: 'revision', rev: 1, markdown: '# draft one' },
+    { type: 'answer', kind: 'decision', question: 'q?', answer: 'a' },
+    { type: 'review', round: 2, verdict: 'APPROVED', findings: [] },
+    { type: 'revision', rev: 2, markdown: '# draft two, longer' },
+    { type: 'verify_result', pass: true, warnings: 1, skipped: 0 },
+  ];
+  const wev = deriveEvidence(wordsEvents);
+  assert.equal(wev.plan, 'the plan');
+  assert.equal(wev.rounds.length, 2, 'both review rounds captured in the receipt');
+  assert.equal(wev.rounds[0].findings[0].title, 'no source', 'findings ride their round — not dropped from the receipt');
+  assert.equal(wev.findings.length, 1, 'flat findings list captured');
+  assert.deepEqual(wev.revisions.map((r) => r.rev), [1, 2], 'the whole revision trail is on the receipt');
+  assert.equal(wev.verify[0].pass, true, 'deterministic verify result captured');
+  assert.equal(wev.humanDecisions[0].answer, 'a', 'the human decision is on the receipt');
+  assert.equal(receiptCompleteness({ lane: 'research_memo', evidence: wev, writeFailed: false }).degraded, false, 'a full words receipt is not degraded');
+
+  // Developer-role P0: a build ignition that produced no round and no gate
+  // report must NOT claim a trustworthy receipt.
+  const empty = deriveEvidence([{ type: 'log', line: 'Igniting the camus gate' }, { type: 'status', status: 'stopped' }]);
+  assert.equal(empty.gateReport, null);
+  assert.equal(empty.rounds.length, 0);
+  const emptyC = receiptCompleteness({ lane: 'build', evidence: empty, writeFailed: false });
+  assert.equal(emptyC.degraded, true, 'a gate ignition with no round and no report is degraded, not clean');
+  assert.match(emptyC.note, /nothing here to verify/);
+
+  // A build run that produced a gate report is a real receipt; a write failure
+  // always degrades whatever the trail.
+  const good = deriveEvidence([{ type: 'round', round: 1, cap: 3 }, { type: 'gate_report', report: { status: 'done', branch: 'x' } }]);
+  assert.equal(receiptCompleteness({ lane: 'build', evidence: good, writeFailed: false }).degraded, false, 'a build run with a gate report is a real receipt');
+  assert.equal(receiptCompleteness({ lane: 'research_memo', evidence: wev, writeFailed: true }).degraded, true, 'a receipt write failure always degrades');
+}
+
 console.log('verify.test: all assertions passed');
