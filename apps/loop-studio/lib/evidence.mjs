@@ -8,7 +8,19 @@ export function deriveEvidence(events) {
   const reviews = of('review').map((r) => ({
     round: r.round,
     verdict: r.verdict,
-    findings: (r.findings ?? []).map((f) => ({ severity: f.severity, title: f.title, detail: f.detail, suggestion: f.suggestion })),
+    rawVerdict: r.rawVerdict ?? null,
+    confidence: r.confidence ?? null,
+    explanation: r.explanation ?? null,
+    source: r.source ?? null,
+    findings: (r.findings ?? []).map((f) => ({
+      severity: f.severity,
+      priority: f.priority ?? null,
+      title: f.title,
+      detail: f.detail,
+      suggestion: f.suggestion,
+      location: f.location ?? null,
+      confidence: f.confidence ?? null,
+    })),
   }));
   // Words lane streams structured 'review' verdicts; the build lane streams
   // 'round' markers (its structured findings live in the gate's own receipts).
@@ -18,7 +30,15 @@ export function deriveEvidence(events) {
     rounds,
     findings: of('finding').map((f) => ({ severity: f.severity, title: f.title, detail: f.detail, suggestion: f.suggestion })),
     revisions: of('revision').map((r) => ({ rev: r.rev, chars: (r.markdown ?? '').length })),
-    verify: of('verify_result').map((v) => ({ pass: v.pass, warnings: v.warnings ?? 0, skipped: v.skipped ?? 0 })),
+    verify: of('verify_result').map((v) => ({
+      pass: v.pass,
+      warnings: v.warnings ?? null,
+      skipped: v.skipped ?? null,
+      source: v.source ?? null,
+      derived: v.derived ?? false,
+      commitSha: v.commitSha ?? null,
+      detail: v.detail ?? null,
+    })),
     humanDecisions: of('answer').map((a) => ({ kind: a.kind ?? 'decision', question: a.question, answer: a.answer })),
     gateReport: of('gate_report').map((e) => e.report).pop() ?? null,
   };
@@ -29,8 +49,25 @@ export function deriveEvidence(events) {
 // nothing to verify, whatever its status — claiming otherwise was the bug.
 export function receiptCompleteness({ lane, evidence, writeFailed }) {
   if (writeFailed) return { degraded: true, note: 'a receipt file failed to write — this trail is incomplete' };
-  if (lane === 'build' && !evidence.gateReport && evidence.rounds.length === 0) {
-    return { degraded: true, note: 'the gate produced no review round and no report — there is nothing here to verify' };
+  if (lane === 'build') {
+    if (!evidence.gateReport) {
+      return { degraded: true, note: 'the gate produced no terminal report — there is nothing here to verify' };
+    }
+    if (['done', 'done_with_findings'].includes(evidence.gateReport.status)) {
+      const missing = [];
+      const structuredRounds = evidence.rounds.filter((r) => r.verdict && r.verdict !== 'UNKNOWN');
+      if (structuredRounds.length === 0) missing.push('an independent review verdict');
+      else if (evidence.gateReport.status === 'done' && structuredRounds.at(-1)?.verdict !== 'APPROVED') {
+        missing.push('a final clean review verdict');
+      }
+      if (!evidence.verify.some((v) => v.pass === true)) missing.push('a green verification result');
+      const commitSha = evidence.gateReport.commit_sha ?? evidence.gateReport.commit;
+      if (typeof commitSha !== 'string' || !/^[0-9a-f]{7,64}$/i.test(commitSha)) missing.push('a bound commit SHA');
+      if (missing.length) {
+        return { degraded: true, note: `the successful gate report is missing ${missing.join(', ')} — do not treat it as a complete receipt` };
+      }
+    }
+    return { degraded: false, note: null };
   }
   if (lane !== 'build' && evidence.rounds.length === 0) {
     return { degraded: true, note: 'the run produced no independent review round — there is nothing here to verify' };

@@ -463,7 +463,15 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
 
 // --- build lane: spend-free refusals + fail-closed report parsing ------------
 {
-  const { validateBuildTarget, parseGateReport, gateArgsForRun, gateIgniterCliArgs, gateSupportsStudio } = await import('./lib/code-lane.mjs');
+  const {
+    validateBuildTarget,
+    parseGateReport,
+    gateArgsForRun,
+    gateIgniterCliArgs,
+    gateSupportsStudio,
+    reviewEventFromGateReceipt,
+    verifyEventFromGateReport,
+  } = await import('./lib/code-lane.mjs');
   const { mkdtempSync, rmSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { execFileSync } = await import('node:child_process');
@@ -516,6 +524,35 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   assert.ok(igniterArgs.includes('--append-system-prompt'), 'outer igniter receives the custody contract as system policy');
   assert.equal(gateSupportsStudio({ workflow: 'const STANDALONE_ID_SALT = x', worktreeGate: 'create|ensure|attach|resolve' }), true, 'new installed gate advertises both custody capabilities');
   assert.equal(gateSupportsStudio({ workflow: 'const ID_SALT = x', worktreeGate: 'create|attach|resolve' }), false, 'older installed gate is refused instead of silently ignoring identitySalt');
+
+  // Live-fire regression (2026-07-13): gate reviews are envelopes. Reading
+  // only root fields made a clean audit look like an unspecified revision and
+  // let report.json claim completeness without carrying the verdict.
+  const nestedReview = reviewEventFromGateReceipt({
+    codex_parsed: {
+      overall_correctness: 'patch is correct',
+      overall_confidence_score: 0.99,
+      overall_explanation: 'The patch and tests are correct.',
+      findings: [],
+    },
+  }, 1);
+  assert.equal(nestedReview.verdict, 'APPROVED', 'nested clean verdict normalizes for the UI and evidence');
+  assert.equal(nestedReview.confidence, 0.99, 'review confidence survives normalization');
+  assert.equal(nestedReview.source, 'camus_gate_review', 'review provenance is explicit');
+
+  const nestedFinding = reviewEventFromGateReceipt({ codex_parsed: JSON.stringify({
+    overall_correctness: 'patch is incorrect',
+    findings: [{ priority: 1, title: 'Unsafe fallback', body: 'The fallback bypasses custody.', code_location: 'lib/x.mjs:9', confidence_score: 0.91 }],
+  }) }, 2);
+  assert.equal(nestedFinding.verdict, 'REVISE', 'stringified nested verdict also normalizes');
+  assert.equal(nestedFinding.findings[0].severity, 'high', 'gate priority maps to Studio severity');
+  assert.equal(nestedFinding.findings[0].detail, 'The fallback bypasses custody.', 'Codex body becomes receipt detail');
+
+  const derivedVerify = verifyEventFromGateReport({ status: 'done', commit_sha: 'c92d002521e09bab', note: 'verify passed' });
+  assert.equal(derivedVerify.pass, true, 'done carries the gate contract that deterministic verify passed');
+  assert.equal(derivedVerify.source, 'gate_report_status', 'derived verification names its source');
+  assert.equal(derivedVerify.warnings, null, 'unknown check counts stay unknown rather than becoming zero');
+  assert.equal(verifyEventFromGateReport({ status: 'infra_error' }), null, 'infra does not fabricate a verification result');
 }
 
 // --- build lane: the outer igniter cannot fork or mutate custody ------------
@@ -629,10 +666,26 @@ if (process.env.TEST_NETWORK === '1') {
   const emptyWordsC = receiptCompleteness({ lane: 'research_memo', evidence: empty, writeFailed: false });
   assert.equal(emptyWordsC.degraded, true, 'a words run with no independent review round is also degraded');
 
-  // A build run that produced a gate report is a real receipt; a write failure
-  // always degrades whatever the trail.
-  const good = deriveEvidence([{ type: 'round', round: 1, cap: 3 }, { type: 'gate_report', report: { status: 'done', branch: 'x' } }]);
-  assert.equal(receiptCompleteness({ lane: 'build', evidence: good, writeFailed: false }).degraded, false, 'a build run with a gate report is a real receipt');
+  // A successful build receipt needs the structured independent verdict,
+  // verification result, and bound commit — terminal prose alone is not proof.
+  const incompleteDone = deriveEvidence([
+    { type: 'round', round: 1, cap: 3 },
+    { type: 'gate_report', report: { status: 'done', branch: 'x', commit_sha: 'c92d002521e09bab' } },
+  ]);
+  const incompleteDoneC = receiptCompleteness({ lane: 'build', evidence: incompleteDone, writeFailed: false });
+  assert.equal(incompleteDoneC.degraded, true, 'done without the structured audit and verify evidence is degraded');
+  assert.match(incompleteDoneC.note, /independent review verdict/);
+  assert.match(incompleteDoneC.note, /green verification result/);
+
+  const good = deriveEvidence([
+    { type: 'round', round: 1, cap: 3 },
+    { type: 'review', round: 1, verdict: 'APPROVED', rawVerdict: 'patch is correct', confidence: 0.99, source: 'camus_gate_review', findings: [] },
+    { type: 'verify_result', pass: true, warnings: null, skipped: null, source: 'gate_report_status', derived: true, commitSha: 'c92d002521e09bab' },
+    { type: 'gate_report', report: { status: 'done', branch: 'x', commit_sha: 'c92d002521e09bab' } },
+  ]);
+  assert.equal(good.rounds[0].rawVerdict, 'patch is correct', 'raw auditor semantics survive evidence derivation');
+  assert.equal(good.verify[0].warnings, null, 'unknown verification counts survive as null');
+  assert.equal(receiptCompleteness({ lane: 'build', evidence: good, writeFailed: false }).degraded, false, 'a fully bound build receipt is complete');
   assert.equal(receiptCompleteness({ lane: 'research_memo', evidence: wev, writeFailed: true }).degraded, true, 'a receipt write failure always degrades');
 }
 

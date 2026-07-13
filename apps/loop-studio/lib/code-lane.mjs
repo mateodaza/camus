@@ -120,6 +120,81 @@ export function parseGateReport(text) {
   return report;
 }
 
+function objectFrom(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string') return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+const PRIORITY_SEVERITY = Object.freeze({ 0: 'high', 1: 'high', 2: 'medium', 3: 'low' });
+
+// Camus review files are envelopes: current gates persist the Codex verdict
+// under codex_parsed, while older receipts may carry that object at the root
+// or as stringified codex_raw. Normalize all known shapes once so the UI and
+// sealed evidence cannot quietly disagree about what the auditor said.
+export function reviewEventFromGateReceipt(raw, round) {
+  const envelope = objectFrom(raw) ?? {};
+  const parsed = objectFrom(envelope.codex_parsed)
+    ?? objectFrom(envelope.codex_raw)
+    ?? envelope;
+  const rawVerdict = typeof parsed.overall_correctness === 'string' ? parsed.overall_correctness : null;
+  const verdict = rawVerdict === 'patch is correct'
+    ? 'APPROVED'
+    : rawVerdict === 'patch is incorrect'
+      ? 'REVISE'
+      : 'UNKNOWN';
+  const findings = Array.isArray(parsed.findings) ? parsed.findings.map((finding) => {
+    const priority = Number.isInteger(finding?.priority) ? finding.priority : null;
+    return {
+      severity: PRIORITY_SEVERITY[priority] ?? 'medium',
+      priority,
+      title: typeof finding?.title === 'string' ? finding.title : 'Untitled finding',
+      detail: typeof finding?.detail === 'string' ? finding.detail : (typeof finding?.body === 'string' ? finding.body : ''),
+      suggestion: typeof finding?.suggestion === 'string' ? finding.suggestion : '',
+      location: typeof finding?.code_location === 'string' ? finding.code_location : null,
+      confidence: typeof finding?.confidence_score === 'number' ? finding.confidence_score : null,
+    };
+  }) : [];
+  return {
+    round,
+    verdict,
+    rawVerdict,
+    confidence: typeof parsed.overall_confidence_score === 'number' ? parsed.overall_confidence_score : null,
+    explanation: typeof parsed.overall_explanation === 'string' ? parsed.overall_explanation : null,
+    findings,
+    source: 'camus_gate_review',
+  };
+}
+
+// A successful gate status is a contract: camus-loop only returns done after
+// deterministic verify passes. Preserve that provenance instead of inventing
+// check counts the outer Workflow does not expose.
+export function verifyEventFromGateReport(report) {
+  if (!report || typeof report !== 'object') return null;
+  const pass = ['done', 'done_with_findings'].includes(report.status)
+    ? true
+    : report.status === 'verify_failed'
+      ? false
+      : report.status === 'verify_inconclusive'
+        ? null
+        : undefined;
+  if (pass === undefined) return null;
+  return {
+    pass,
+    warnings: null,
+    skipped: null,
+    source: 'gate_report_status',
+    derived: true,
+    commitSha: report.commit_sha ?? report.commit ?? null,
+    detail: report.note ?? null,
+  };
+}
+
 async function reviewRoundsSince(t0) {
   try {
     const files = await readdir(REVIEWS_DIR);
@@ -185,14 +260,17 @@ export async function runCodeLoop(run, ctx) {
         seenRounds.add(r.file);
         lastActivity = Date.now();
         let verdictNote = 'verdict recorded';
-        try {
-          const raw = JSON.parse(await readFile(join(REVIEWS_DIR, r.file), 'utf8'));
-          const blocking = (raw.findings ?? []).filter((f) => Number(f.priority) <= 2).length;
-          if (raw.overall_correctness === 'patch is correct') verdictNote = 'clean';
-          else if (raw.overall_correctness === 'patch is incorrect') verdictNote = `revise (${blocking} blocking)`;
-        } catch { /* receipt shape drift — stay honest */ }
         stage('review', 'done', { round: r.round });
         emit('round', { round: r.round, cap: roundCap });
+        try {
+          const raw = JSON.parse(await readFile(join(REVIEWS_DIR, r.file), 'utf8'));
+          const review = reviewEventFromGateReceipt(raw, r.round);
+          const blocking = review.findings.filter((f) => f.priority === null || f.priority <= 2).length;
+          if (review.verdict === 'APPROVED') verdictNote = 'clean';
+          else if (review.verdict === 'REVISE') verdictNote = `revise (${blocking} blocking)`;
+          for (const finding of review.findings) emit('finding', finding);
+          emit('review', review);
+        } catch { /* receipt shape drift — stay honest */ }
         feedVerdict(r.round, verdictNote);
       }
       try {
@@ -294,26 +372,28 @@ export async function runCodeLoop(run, ctx) {
     }[report.status] ?? 'failed';
 
     stage('gate', 'done', { pass: terminal.startsWith('done') });
+    const verify = verifyEventFromGateReport(report);
+    if (verify) emit('verify_result', verify);
     emit('gate_report', { report });
 
     if (terminal === 'needs_human_offline') {
       // review_unresolved carries stuck findings the studio can't relitigate —
       // surface honestly and stop; the terminal report has the trail.
       log('The gate halted on stuck findings (review_unresolved) — read its report; accept or refine from a camus session.');
-      emit('status', { status: 'verify_failed', rev: 0, costUsd: 0 });
+      emit('status', { status: 'verify_failed', rev: 0, costUsd: null, billingMode: 'unknown' });
       return { status: 'verify_failed', report, answers };
     }
 
-    emit('status', { status: terminal, rev: 0, costUsd: 0, artifactPublished: false, artifactUrl: null });
+    emit('status', { status: terminal, rev: 0, costUsd: null, billingMode: 'unknown', artifactPublished: false, artifactUrl: null });
     return { status: terminal, report, answers };
   } catch (err) {
     if (err.message === 'stopped_by_human' || signal.aborted) {
       log('Stopped. The gate is crash-safe: its receipts and worktree survive — Resume re-invokes it and it continues.');
-      emit('status', { status: 'stopped', costUsd: 0 });
+      emit('status', { status: 'stopped', costUsd: null, billingMode: 'unknown' });
       return { status: 'stopped', answers };
     }
     emit('error', { message: String(err.stack || err) });
-    emit('status', { status: 'failed', costUsd: 0 });
+    emit('status', { status: 'failed', costUsd: null, billingMode: 'unknown' });
     return { status: 'failed', error: String(err), answers };
   }
 }

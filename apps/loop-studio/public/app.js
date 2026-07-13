@@ -661,10 +661,14 @@ function handle(ev) {
     }
 
     case 'review': {
-      const v = el('div', `verdict ${ev.verdict === 'APPROVED' ? 'approved' : 'revise'}`,
-        ev.verdict === 'APPROVED'
+      const clean = ev.verdict === 'APPROVED';
+      const revise = ev.verdict === 'REVISE';
+      const v = el('div', `verdict ${clean ? 'approved' : revise ? 'revise' : ''}`,
+        clean
           ? `✓ reviewer verdict, round ${ev.round}: clean`
-          : `✗ reviewer verdict, round ${ev.round}: revise (${ev.findings.filter((f) => f.severity !== 'low').length} blocking)`);
+          : revise
+            ? `✗ reviewer verdict, round ${ev.round}: revise (${ev.findings.filter((f) => f.severity !== 'low').length} blocking)`
+            : `? reviewer verdict, round ${ev.round}: unreadable — receipt will be marked incomplete`);
       feed(v);
       break;
     }
