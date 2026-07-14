@@ -229,29 +229,62 @@ fi
 # (word-splitting is intentional: the var carries whole extra CLI args.)
 effort="${4:-medium}"
 
-# ── Reviewer identity, resolved BEFORE the model args are assembled ────────────
-# The model codex ACTUALLY runs with and the model sealed into the audit must be
-# the SAME one — on a fresh run and on a resume alike. So resolve the authoritative
-# reviewer HERE, ahead of codex_review_args: a resume without CAMUS_CODEX_MODEL
-# recovers the model the round originally pinned (from its own meta.json) and runs
-# codex WITH it, instead of silently falling to whatever ambient -m the levers add
-# (that gap let codex review under an ambient model while the audit sealed the
-# recorded one — the two disagreed). watch_dir is derived here for the same reason;
-# the fresh-vs-resume file handling below still owns the round dir's lifecycle.
+# ── Resume determination + reviewer identity, BOTH resolved before the model args ──
+# Two questions must be answered before codex_review_args is assembled, because the
+# model codex ACTUALLY runs with is decided here: (1) is this invocation resuming a
+# prior abandoned thread, and (2) under which reviewer? A genuine resume runs — and
+# seals — the model the earlier rounds pinned, so codex's -m and the audit can't
+# disagree. watch_dir is derived here for the same reason (the fresh-vs-preserve file
+# handling below still owns the round dir's lifecycle).
 watch_dir="$review_dir/$(basename "$target_dir")-r${round}.watch"
+
+# The prior attempt's thread_id + recorded reviewer, if any. meta.json is the ONLY
+# resume source (THREAD-ONLY recovery, zero local-process awareness): it carries a
+# thread_id solely for the terminal abandoned shape (idle_killed/aborted), persisted
+# by the await/abort form. There is deliberately NO events.jsonl fallback — a raw
+# thread.started does not distinguish a killed thread from a still-running pending one.
+prior_thread_id=""
 prior_reviewer_model=""
 if [[ -f "$watch_dir/meta.json" ]]; then
+  prior_thread_id="$(python3 -c 'import json,sys
+try: tid = json.load(open(sys.argv[1])).get("thread_id")
+except Exception: tid = None
+print(tid if isinstance(tid, str) and tid else "")' "$watch_dir/meta.json" 2>/dev/null)"
   prior_reviewer_model="$(python3 -c 'import json,sys
 try: v = json.load(open(sys.argv[1])).get("reviewer_model")
 except Exception: v = None
 print(v if isinstance(v, str) and v else "")' "$watch_dir/meta.json" 2>/dev/null)"
 fi
-# Persisted identity is AUTHORITATIVE across resume: a resume arriving with a
-# DIFFERENT CAMUS_CODEX_MODEL is refused (rewriting it would make the sealed pairing
-# claim a model that never reviewed the earlier rounds); a resume WITHOUT the env
-# keeps the recorded model. Validate once, here, before it can reach a command line.
+# FAIL-CLOSED resume gate: a thread_id alone is NOT enough — resume fires ONLY on the
+# aborted/abandoned SHAPE (thread_id present AND NO completion evidence). Completion
+# evidence is the wrapper's exit_code file OR a valid verdict already in last.txt;
+# either one BLOCKS resume → the byte-identical fresh path. These prior-attempt files
+# sit directly in $watch_dir right now (before the a1/ move below), so read them here.
+_last_has_verdict() { # $1 = last.txt path; truthy exit iff a valid verdict is present
+  python3 -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+ok = isinstance(d, dict) and d.get("overall_correctness") in ("patch is correct", "patch is incorrect")
+sys.exit(0 if ok else 1)' "$1" 2>/dev/null
+}
+will_resume=""
+if [[ -n "$prior_thread_id" && ! -e "$watch_dir/exit_code" ]] && ! _last_has_verdict "$watch_dir/last.txt"; then
+  will_resume="$prior_thread_id"
+fi
+
+# Reviewer identity. The prior round's recorded reviewer is AUTHORITATIVE only when we
+# are ACTUALLY resuming it (will_resume set) — "old meta.json exists" is not enough,
+# because a prior attempt that COMPLETED leaves meta too but is not resumable. On a
+# genuine resume a mismatched CAMUS_CODEX_MODEL is refused (rewriting it would make the
+# sealed pairing claim a model that never reviewed the earlier rounds) and an absent one
+# inherits the recorded model. When this is NOT a resume (no abandoned thread, or the
+# prior attempt completed), the prior meta is about to be discarded by the fresh path
+# below, so it must NOT govern: the fresh review honors the caller's current
+# CAMUS_CODEX_MODEL (or none), never a stale inherited pin. Validate once, here.
 effective_reviewer_model="${CAMUS_CODEX_MODEL:-}"
-if [[ -n "$prior_reviewer_model" ]]; then
+if [[ -n "$will_resume" && -n "$prior_reviewer_model" ]]; then
   if [[ -n "$effective_reviewer_model" && "$effective_reviewer_model" != "$prior_reviewer_model" ]]; then
     echo "codex_review: resume reviewer-model mismatch — round already recorded '$prior_reviewer_model' but CAMUS_CODEX_MODEL is '$effective_reviewer_model'; refusing rather than rewrite the sealed reviewer identity" >&2
     exit 2
@@ -354,55 +387,15 @@ if [[ -n "$_mcp_list" ]]; then
   done
 fi
 
-# watch_dir was derived above (the reviewer-identity resolution needs it before the
-# model args). A retry of the same round still starts clean — stale events would poison
-# idle detection and usage extraction — via the rm/preserve handling just below.
+# prior_thread_id, will_resume, and the reviewer identity were all resolved ABOVE, before
+# the model args — the model codex runs with must be decided by then, and resume-ness now
+# gates whether the prior reviewer governs. THREAD-ONLY recovery (that block): meta.json is
+# the only resume source and no pid is ever read, so a reused/live unrelated PID can never
+# influence whether a thread is resumed, and a prior attempt that left a bare thread.started
+# but no persisted meta id (a still-in-flight pending review) is un-resumable → fresh. The
+# fail-closed gate there (thread_id present AND no exit_code/last.txt verdict) uses the same
+# completion oracle adapter.normalize_codex does. What remains here is the physical dir prep.
 
-# RESUME PROBE (codex-resume-recovery 2026-06-12): a prior attempt of THIS round that was
-# idle-killed/aborted owns a live codex thread — `codex exec resume <thread_id>` can finish it
-# for the price of one short turn instead of re-paying a whole fresh review. The thread_id lives
-# ONLY in the round's meta.json (persisted by the await/abort form for the terminal abandoned shape),
-# readable before the fresh path's `rm -rf` below, so capture it now. Empty when there's no prior
-# abandoned thread → fresh review, today's path byte-identical.
-# A captured id only ARMS resume; the fail-closed gate below (will_resume) still requires the
-# aborted/abandoned shape — no completion evidence — before resume actually fires.
-prior_thread_id=""
-if [[ -f "$watch_dir/meta.json" ]]; then
-  prior_thread_id="$(python3 -c 'import json,sys
-try: tid = json.load(open(sys.argv[1])).get("thread_id")
-except Exception: tid = None
-print(tid if isinstance(tid, str) and tid else "")' "$watch_dir/meta.json" 2>/dev/null)"
-fi
-# meta.json is the ONLY resume source (THREAD-ONLY recovery, zero local-process awareness): it
-# carries thread_id solely for the terminal abandoned shape (idle_killed/aborted), persisted there by
-# the await/abort form gated on that exact state. There is deliberately NO events.jsonl fallback — a
-# raw thread.started in the prior stream does NOT distinguish a killed thread from a still-RUNNING
-# pending review, and the only way to tell them apart would be to probe the local process (PID
-# liveness), which is exactly the local-process coupling this recovery path must not have. So a prior
-# attempt that left a thread.started but no persisted meta.json id (e.g. a pending review still in
-# flight) is treated as un-resumable: it goes fresh, never probed. A reused/live unrelated PID can
-# never influence whether a thread is resumed, because no pid is ever read.
-# FAIL-CLOSED resume gate (codex-resume-recovery hardening 2026-06-12): a thread_id alone is NOT
-# enough — resume must fire ONLY on the aborted/abandoned SHAPE (idle-killed/watchdog-abort:
-# thread_id present AND the prior attempt produced NO completion evidence). Completion evidence is
-# either the wrapper's exit_code file OR a valid verdict already sitting in the prior last.txt;
-# either one BLOCKS resume (constraints 2 + 4) → fall to the byte-identical fresh path. _last_has_verdict
-# is the same completion oracle adapter.normalize_codex uses: last.txt must parse to a JSON dict whose
-# `overall_correctness` is in the schema enum; missing/empty/garbage/non-dict = NO verdict. These
-# prior-attempt files sit directly in $watch_dir right now (before the a1/ move below), so read them here.
-_last_has_verdict() { # $1 = last.txt path; truthy exit iff a valid verdict is present
-  python3 -c 'import json,sys
-try:
-    d = json.load(open(sys.argv[1]))
-except Exception:
-    sys.exit(1)
-ok = isinstance(d, dict) and d.get("overall_correctness") in ("patch is correct", "patch is incorrect")
-sys.exit(0 if ok else 1)' "$1" 2>/dev/null
-}
-will_resume=""
-if [[ -n "$prior_thread_id" && ! -e "$watch_dir/exit_code" ]] && ! _last_has_verdict "$watch_dir/last.txt"; then
-  will_resume="$prior_thread_id"
-fi
 # A resume must not clobber the aborted attempt's events.jsonl (the thread_id source + audit):
 # preserve it under a1/ instead of deleting the round dir. No resume (no prior thread, or completion
 # evidence present) → the original rm-and-recreate, so the fresh path is byte-identical.

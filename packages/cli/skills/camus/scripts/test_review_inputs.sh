@@ -559,6 +559,38 @@ check "resume with a MATCHING env runs codex with that model (argv -m present)" 
   "yes" "$(grep -qx 'matching-reviewer' "$SPY/args_resume" && echo yes || echo no)"
 unset CAMUS_CODEX_MODEL
 
+# ── "old meta exists" is NOT "is resuming": a COMPLETED prior attempt (has completion
+# evidence → will_resume empty) must not force its recorded reviewer onto a fresh
+# re-review. The prior reviewer governs ONLY a genuine resume; otherwise the prior meta
+# is discarded (rm -rf) and the caller's current CAMUS_CODEX_MODEL wins.
+stage_completed_round() { # $1 = round, $2 = recorded reviewer_model (with completion evidence)
+  local d="$ROOT/reviews/camus-wt-task-r$1.watch"
+  rm -rf "$d" "$ROOT/reviews/camus-wt-task-r$1.json"; mkdir -p "$d"
+  python3 -c 'import json,sys; json.dump({"target_dir": sys.argv[2], "round": sys.argv[3],
+    "effort": "medium", "scope": "full", "thread_id": sys.argv[4], "reviewer_model": sys.argv[5]},
+    open(sys.argv[1],"w"))' "$d/meta.json" "$WT" "$1" "sess-r$1-done" "$2"
+  printf '0\n' > "$d/exit_code"   # completion evidence → NOT resumable
+  printf '{"type":"thread.started","thread_id":"sess-r%s-done"}\n' "$1" > "$d/events.jsonl"
+}
+# a DIFFERENT model on the fresh re-review is NOT refused (the prior isn't authoritative)
+rm -f "$SPY/args" "$SPY/args_resume"
+stage_completed_round 25 "old-completed-reviewer"
+export CAMUS_CODEX_MODEL=new-fresh-reviewer
+run_review_round 25 >/dev/null || { echo "FAIL completed-not-resume review errored/hung (a fresh re-review must not be refused)"; exit 1; }
+check "completed prior (not a resume) is not resumed: a FRESH codex exec ran" \
+  "yes" "$([ -f "$SPY/args" ] && [ ! -f "$SPY/args_resume" ] && echo yes || echo no)"
+check "completed prior: codex runs the NEW model, not the stale recorded one" \
+  "yes" "$(grep -qx 'new-fresh-reviewer' "$SPY/args" && ! grep -qx 'old-completed-reviewer' "$SPY/args" && echo yes || echo no)"
+check "completed prior: the audit seals the NEW model (no stale-identity carryover)" \
+  "new-fresh-reviewer" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("reviewer_model",""))' "$ROOT/reviews/camus-wt-task-r25.json" 2>/dev/null)"
+unset CAMUS_CODEX_MODEL
+# and with NO env, a completed prior does not INHERIT the stale model either
+rm -f "$SPY/args" "$SPY/args_resume"
+stage_completed_round 26 "old-completed-reviewer"
+run_review_round 26 >/dev/null || { echo "FAIL completed-no-env review errored/hung"; exit 1; }
+check "completed prior + no env: the stale recorded model is NOT inherited into the fresh review" \
+  "no" "$(grep -qx 'old-completed-reviewer' "$SPY/args" && echo yes || echo no)"
+
 echo
 echo "$pass passed, $fail failed"
 exit $((fail > 0 ? 1 : 0))
