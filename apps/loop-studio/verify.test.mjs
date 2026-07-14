@@ -531,6 +531,18 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
     parseGateReport('**The Camus loop closed green: `done` — review clean in 1 round, deterministic verify passed.** The gated change sits on branch `camus/greet-x`.').status,
     'done', 'backtick-wrapped status parses (the real gate output shape)');
   assert.equal(parseGateReport('halted: [needs_human]').status, 'needs_human', 'bracket-wrapped status parses');
+  // Live-fire P0 regression (2026-07-13 authenticated smoke): the gate returned
+  // a REAL structured no_changes whose note contains the standalone word "done"
+  // ("never a false done"). no_changes was missing from the recognized list, the
+  // parseable report was discarded, and the prose fallback matched "done" —
+  // Studio fabricated "DONE — reviewed and verified" with no verifier run.
+  const liveNoop = parseGateReport('The loop halted. {"status":"no_changes","task":"t","worktree":"/w","branch":"camus/x","rounds":1,"note":"Review passed but the implement step produced no committable change (empty diff). no_changes, never a false done — nothing to merge."}');
+  assert.equal(liveNoop.status, 'no_changes', 'the live smoke report parses to no_changes, never a prose-matched done');
+  // Exhaustiveness has a second net: a structured status Studio does NOT know
+  // must fail closed as infra — token parsing never overrides a parseable report.
+  const unknownStructured = parseGateReport('{"status":"some_future_status","note":"work is done and everything verified"}');
+  assert.equal(unknownStructured.status, 'infra_error', 'an unrecognized structured status is infra, never re-guessed from prose');
+  assert.match(unknownStructured.note, /some_future_status/, 'the refusal names the unrecognized status');
 
   const boundArgs = gateArgsForRun({ goal: 't', targetPath: '/tmp/repo', idSalt: 'studio-run-1' }, 3);
   assert.equal(boundArgs.identitySalt, 'studio-run-1', 'Studio binds standalone custody with identitySalt');
@@ -591,6 +603,7 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   assert.equal(derivedVerify.source, 'gate_report_status', 'derived verification names its source');
   assert.equal(derivedVerify.warnings, null, 'unknown check counts stay unknown rather than becoming zero');
   assert.equal(verifyEventFromGateReport({ status: 'infra_error' }), null, 'infra does not fabricate a verification result');
+  assert.equal(verifyEventFromGateReport({ status: 'no_changes' }), null, 'a genuine no-op never fabricates a verification result (nothing ran)');
 }
 
 // --- build lane: the outer igniter cannot fork or mutate custody ------------
@@ -814,6 +827,12 @@ if (process.env.TEST_NETWORK === '1') {
   const words = deriveStatusDimensions({ lane: 'research_memo', status: 'done', evidence: { gateReport: null, verify: [{ pass: true }], rounds: [{ verdict: 'APPROVED' }], revisions: [{ rev: 1 }] } });
   assert.equal(words.verification, 'passed', 'words verification binds to the deliverable, not a SHA');
   assert.equal(head(words), 'verified');
+
+  // a genuine no-op ran to its conclusion: completed lifecycle, nothing
+  // verified, nothing shipped — never a dead process, never a quiet green.
+  const noop = deriveStatusDimensions({ lane: 'build', status: 'no_changes', evidence: buildEv({ verify: [], gateReport: { status: 'no_changes' } }) });
+  assert.equal(noop.execution, 'completed', 'no_changes is a completed run, not a failed one');
+  assert.equal(noop.verification, 'not_run', 'no_changes never claims a verification that did not run');
 
   // an interrupted run is unverified, whatever else is present.
   const stopped = deriveStatusDimensions({ lane: 'build', status: 'stopped', evidence: { gateReport: null, verify: [], rounds: [], revisions: [] } });

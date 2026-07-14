@@ -130,9 +130,17 @@ export async function validateBuildTarget(rawPath) {
 
 // The gate's answer comes back as prose wrapping a report object. Extract
 // fail-closed: a run whose status we cannot read is NEVER done.
+// This list is the EXHAUSTIVE set of camus-loop terminal statuses (plus the
+// pause statuses older gates emit). The live smoke's P0 came from a gap here:
+// no_changes was missing, the parseable report was discarded, and the prose
+// fallback matched the word "done" inside its own note "never a false done" —
+// a fabricated green. Exhaustiveness is a contract, not an optimization.
+const GATE_STATUSES = ['done_with_findings', 'needs_human', 'needs_decision', 'review_unresolved', 'verify_failed', 'verify_inconclusive', 'infra_error', 'paused_by_user', 'no_changes', 'aborted', 'done'];
+
 export function parseGateReport(text) {
-  const statuses = ['done_with_findings', 'needs_human', 'needs_decision', 'review_unresolved', 'verify_failed', 'verify_inconclusive', 'infra_error', 'paused_by_user', 'aborted', 'done'];
+  const statuses = GATE_STATUSES;
   let report = null;
+  let structuredUnknown = null; // a parseable report whose status Studio does not know
   // Prefer a parseable JSON object that carries a known status: try flat
   // objects first, then the greedy whole-text candidate.
   const candidates = [...(text.match(/\{[^{}]*\}/g) ?? []), ...(text.match(/\{[\s\S]*\}/) ?? [])];
@@ -140,7 +148,14 @@ export function parseGateReport(text) {
     try {
       const obj = JSON.parse(c);
       if (obj && statuses.includes(obj.status)) { report = obj; break; }
+      if (!structuredUnknown && obj && typeof obj.status === 'string' && obj.status) structuredUnknown = obj;
     } catch { /* not this one */ }
+  }
+  // A structured report Studio cannot classify is an INFRA fact, not license to
+  // guess: token matching over the same text must never override it (the exact
+  // P0 path — an unrecognized status falling through to a prose match).
+  if (!report && structuredUnknown) {
+    return { status: 'infra_error', note: `gate returned a structured status Studio does not recognize: "${structuredUnknown.status}" — refused fail-closed, never re-guessed from prose`, raw: text.slice(0, 400) };
   }
   if (!report) {
     // Statuses are ordered longest-first, so done_with_findings wins over
@@ -439,6 +454,11 @@ export async function runCodeLoop(run, ctx) {
       infra_error: 'failed',
       aborted: 'failed',
       paused_by_user: 'stopped',
+      // A genuine no-op keeps its own name. Mapping it to done would claim a
+      // ship that never happened; mapping it to failed would claim a failure
+      // that never happened. (Ancestry-rescued prior commits return done from
+      // the gate itself, so a no_changes that reaches here is evidence-backed.)
+      no_changes: 'no_changes',
     }[report.status] ?? 'failed';
 
     stage('gate', 'done', { pass: terminal.startsWith('done') });

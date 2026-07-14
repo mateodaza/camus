@@ -79,7 +79,10 @@ export function deriveStatusDimensions({ lane, status, evidence, published = fal
   // terminal status legitimately reports; verification and audit never are.
   const execution =
     status === 'stopped' ? 'interrupted'
-      : ['done', 'done_with_findings', 'verify_failed'].includes(status) ? 'completed'
+      // no_changes is a run that RAN to its terminal conclusion (the gate proved
+      // an empty diff) — completed lifecycle, with verification/audit/publication
+      // saying honestly that nothing shipped. It is not a dead process.
+      : ['done', 'done_with_findings', 'verify_failed', 'no_changes'].includes(status) ? 'completed'
         : 'failed';
 
   const { verification, audit } = verificationAndAudit(lane, evidence);

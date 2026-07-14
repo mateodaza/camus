@@ -812,18 +812,36 @@ function handle(ev) {
       state.es?.close(); // terminal — otherwise EventSource reconnects and replays forever
       setStage('ship', ev.status.startsWith('done') ? 'done' : 'idle');
       const good = ev.status === 'done' || ev.status === 'done_with_findings';
-      const cls = state.simulated ? 'meh' : good ? 'good' : ev.status === 'stopped' ? 'meh' : 'bad';
-      const label = state.simulated
+      let cls = state.simulated ? 'meh' : good ? 'good' : ['stopped', 'no_changes'].includes(ev.status) ? 'meh' : 'bad';
+      let label = state.simulated
         ? (ev.status === 'stopped'
             ? 'REHEARSAL STOPPED — a simulation; nothing ran.'
             : 'REHEARSAL COMPLETE — a scripted simulation. No models or target-repository commands ran; Studio saved only a local simulation trace. No real evidence or model spend.')
         : ({
             done: 'DONE — reviewed and verified.',
             done_with_findings: 'DONE WITH FINDINGS — green, with findings or caveats on the record.',
+            no_changes: 'NO CHANGES — the gate proved an empty diff; nothing shipped, nothing failed.',
             verify_failed: 'VERIFY FAILED — shipped by human override, recorded as red.',
             failed: 'FAILED — the loop refused to fake a green.',
             stopped: 'STOPPED by human.',
           }[ev.status] || ev.status);
+      // The verified claim answers to the receipt, not the flat status (live
+      // smoke P0: a misparsed status painted "reviewed and verified" while the
+      // sealed dimensions said verification never ran). When the dimensions ride
+      // the event, "done" may only claim what they corroborate.
+      if (!state.simulated && good && ev.dimensions) {
+        const v = ev.dimensions.verification;
+        const a = ev.dimensions.audit;
+        const verified = v === 'passed' || v === 'passed_with_caveats';
+        const audited = ev.status === 'done'
+          ? (a === 'independent_clean' || a === 'advisory_clean')
+          : ['independent_clean', 'independent_findings', 'advisory_clean', 'advisory_findings'].includes(a);
+        if (!verified || !audited) {
+          cls = 'meh';
+          const nice = (s) => String(s).replace(/_/g, ' ');
+          label = `${ev.status === 'done' ? 'DONE (gate claim)' : 'DONE WITH FINDINGS (gate claim)'} — the receipt does not corroborate it: verification ${nice(v)}, audit ${nice(a)}. Trust the dimensions below, not the word.`;
+        }
+      }
       const b = el('div', `banner ${cls}`, label);
       if (state.runLane === 'build' && ['stopped', 'failed', 'verify_failed'].includes(ev.status)) {
         const sub = el('span', 'sub');
