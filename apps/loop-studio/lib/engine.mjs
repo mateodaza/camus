@@ -85,13 +85,15 @@ export async function runLoop(run, ctx) {
 
     // ---- Grounding (Hivemind) ---------------------------------------------
     let grounding = null;
+    let hmMode = null;
+    let hivemindQueries = 0;
     if (run.ground) {
       stage('ground', 'active');
       grounding = await hivemind.searchKnowledge(run.goal, 4, log);
       // Record the configured mode too: a degraded mcp/rest grounding is not
       // the same receipt as "nothing was configured".
-      const hmMode = hivemind.hivemindStatus().mode;
-      stage('ground', 'done', { connected: !!grounding, via: grounding === 'claude' ? 'claude' : undefined, mode: hmMode });
+      hmMode = hivemind.hivemindStatus().mode;
+      if (grounding !== 'claude') stage('ground', 'done', { connected: !!grounding, mode: hmMode });
     }
 
     // ---- Draft -------------------------------------------------------------
@@ -109,6 +111,19 @@ export async function runLoop(run, ctx) {
         onSession: sess('maker'),
       }),
     );
+    if (grounding === 'claude') {
+      hivemindQueries += makeRes.hivemindQueries || 0;
+      stage('ground', 'done', {
+        connected: makeRes.hivemindQueried === true,
+        queried: makeRes.hivemindQueried === true,
+        queries: hivemindQueries,
+        via: 'claude',
+        mode: hmMode,
+      });
+      log(makeRes.hivemindQueried
+        ? `Hivemind queried by the maker (${hivemindQueries} tool call${hivemindQueries === 1 ? '' : 's'}).`
+        : 'Hivemind was configured but the maker made no connector query — this draft is not Hivemind-grounded.');
+    }
     costUsd += makeRes.costUsd || 0;
     draft = makeRes.text;
     rev = 1;
@@ -214,6 +229,10 @@ export async function runLoop(run, ctx) {
           onSession: sess('maker'),
         }),
       );
+      if (grounding === 'claude' && fixRes.hivemindQueries) {
+        hivemindQueries += fixRes.hivemindQueries;
+        stage('ground', 'done', { connected: true, queried: true, queries: hivemindQueries, via: 'claude', mode: hmMode });
+      }
       costUsd += fixRes.costUsd || 0;
       draft = fixRes.text;
       rev += 1;
@@ -258,6 +277,10 @@ export async function runLoop(run, ctx) {
             onSession: sess('maker'),
           }),
         );
+        if (grounding === 'claude' && fixRes.hivemindQueries) {
+          hivemindQueries += fixRes.hivemindQueries;
+          stage('ground', 'done', { connected: true, queried: true, queries: hivemindQueries, via: 'claude', mode: hmMode });
+        }
         costUsd += fixRes.costUsd || 0;
         draft = fixRes.text;
         rev += 1;

@@ -72,6 +72,7 @@ node server.mjs                       # reviewer effort is pinned low in checks/
 Pill names the pinned models, e.g. `engine: live · sonnet + gpt-5.4 (low)`. Give it a real goal and acceptance contract on **Quick**. For Hivemind Staging, launch with `HIVEMIND_VIA_CLAUDE=1 node server.mjs` and leave Grounding checked. Differences from rehearsal you should expect:
 
 - Draft takes minutes (claude researches with WebSearch/WebFetch — the built-in tool surface is restricted to those two via `--tools`, so it cannot touch local files).
+- The Ground stage must finish as `claude ✓`: Studio only awards that badge after observing an actual Hivemind MCP tool call. `claude ✕` means the connector was available but the maker did not query it; do not call that run Hivemind-grounded.
 - Findings are real codex output, schema-enforced (`--output-schema`); malformed reviewer output becomes a visible infra card, never a silent pass.
 - Verify runs against the real cited URLs: confirmed-dead fails; bot-blocked corporate sites (403) **warn** with "open it yourself" — by design, the check refuses to claim what it can't verify.
 - The header shows real claude spend; codex burns plan credits.

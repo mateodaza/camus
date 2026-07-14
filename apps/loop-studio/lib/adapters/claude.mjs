@@ -15,6 +15,15 @@ function fail(error) {
   return { ok: false, error, text: null, costUsd: 0 };
 }
 
+export function claudeToolSurface({ stage, hivemindEnabled = false, serverName = 'hivemind' }) {
+  const builtins = stage === 'plan' ? '' : 'WebSearch,WebFetch';
+  const mcpTools = hivemindEnabled
+    ? `mcp__${serverName}__knowledge_search,mcp__${serverName}__search,mcp__${serverName}__fetch`
+    : '';
+  const tools = [builtins, mcpTools].filter(Boolean).join(',');
+  return { tools, allowed: tools };
+}
+
 // One stream-json line in, at most one human-readable session line out.
 // Exported for tests.
 export function sessionLineFromEvent(ev) {
@@ -32,11 +41,7 @@ export function sessionLineFromEvent(ev) {
 
 export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, onSession, model }) {
   const hm = stage === 'plan' ? { enabled: false } : viaClaude();
-  const builtins = stage === 'plan' ? '' : 'WebSearch,WebFetch';
-  const mcpTools = hm.enabled
-    ? `mcp__${hm.serverName}__knowledge_search,mcp__${hm.serverName}__search,mcp__${hm.serverName}__fetch`
-    : '';
-  const allowed = [builtins, mcpTools].filter(Boolean).join(',');
+  const { tools, allowed } = claudeToolSurface({ stage, hivemindEnabled: hm.enabled, serverName: hm.serverName });
   const maxTurns = stage === 'plan' ? '1' : stage === 'fix' ? '12' : '20';
 
   // The model is always named explicitly — never the CLI's configured default.
@@ -52,22 +57,26 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
     '--max-turns', maxTurns,
     '--strict-mcp-config',
     '--model', model || getModels().maker.model,
-    '--tools', builtins,
+    // --tools defines what EXISTS; --allowedTools only pre-approves that
+    // surface. Omitting MCP from --tools made a connected Hivemind impossible
+    // to call even though it was allowed (golden-run P1, 2026-07-14).
+    '--tools', tools,
   ];
   if (hm.enabled) {
     args.push('--mcp-config', JSON.stringify({ mcpServers: { [hm.serverName]: { type: 'http', url: hm.url } } }));
   }
   if (allowed) args.push('--allowedTools', allowed);
 
-  const { exitCode, stdout, stderr, resultEvent } = await new Promise((resolve) => {
+  const { exitCode, stdout, stderr, resultEvent, hivemindQueries } = await new Promise((resolve) => {
     const child = spawn('claude', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
     let lineBuf = '';
     let result = null;
+    let hmQueries = 0;
     let done = false;
     const finish = (code) => {
-      if (!done) { done = true; clearTimeout(t); clearInterval(tick); resolve({ exitCode: code, stdout: out, stderr: err, resultEvent: result }); }
+      if (!done) { done = true; clearTimeout(t); clearInterval(tick); resolve({ exitCode: code, stdout: out, stderr: err, resultEvent: result, hivemindQueries: hmQueries }); }
     };
     const t = setTimeout(() => { child.kill('SIGKILL'); finish(-2); }, TIMEOUTS[stage] ?? 540_000);
     const tick = setInterval(() => onTick?.(stage === 'plan' ? 'planning…' : 'drafting — researching sources…'), 8000);
@@ -81,6 +90,11 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
         try {
           const ev = JSON.parse(line);
           if (ev.type === 'result') result = ev;
+          if (hm.enabled && ev.type === 'assistant') {
+            for (const item of ev.message?.content ?? []) {
+              if (item.type === 'tool_use' && item.name?.startsWith(`mcp__${hm.serverName}__`)) hmQueries += 1;
+            }
+          }
           const sess = sessionLineFromEvent(ev);
           if (sess) onSession?.(sess);
         } catch { /* partial or non-JSON line */ }
@@ -111,5 +125,15 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
   if (data.is_error) return fail(`claude reported an error: ${String(data.result).slice(0, 300)}`);
   const text = String(data.result ?? '').trim();
   if (!text) return fail('claude returned an empty result');
-  return { ok: true, error: null, text, costUsd: Number(data.total_cost_usd) || 0 };
+  return {
+    ok: true,
+    error: null,
+    text,
+    costUsd: Number(data.total_cost_usd) || 0,
+    // This proves the maker actually invoked the configured connector. It does
+    // not claim that every returned chunk was relevant or correct; the [Hn]
+    // citation gate remains responsible for that evidence-level judgement.
+    hivemindQueried: hivemindQueries > 0,
+    hivemindQueries,
+  };
 }

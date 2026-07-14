@@ -203,12 +203,17 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
 {
   process.env.HIVEMIND_VIA_CLAUDE = '1';
   const { searchKnowledge, hivemindStatus, viaClaude } = await import('./lib/adapters/hivemind.mjs');
+  const { claudeToolSurface } = await import('./lib/adapters/claude.mjs');
   const { makePrompt, fixPrompt } = await import('./lib/prompts.mjs');
 
   const st = hivemindStatus();
   assert.equal(st.mode, 'claude', 'mode is claude');
   assert.ok(st.base.endsWith('/api/mcp'), 'base points at an /api/mcp endpoint');
   assert.deepEqual(viaClaude(), { enabled: true, url: st.base, serverName: 'hivemind' }, 'viaClaude exposes the wiring');
+  const surface = claudeToolSurface({ stage: 'make', hivemindEnabled: true, serverName: 'hivemind' });
+  assert.match(surface.tools, /mcp__hivemind__knowledge_search/, 'Hivemind tools EXIST in the restrictive --tools surface, not merely in --allowedTools');
+  assert.equal(surface.allowed, surface.tools, 'every available maker tool is pre-approved for headless use');
+  assert.deepEqual(claudeToolSurface({ stage: 'plan', hivemindEnabled: false }), { tools: '', allowed: '' }, 'planning remains tool-free');
 
   const marker = await searchKnowledge('anything', 4, () => {});
   assert.equal(marker, 'claude', 'retrieval is delegated, not performed');
@@ -229,6 +234,46 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   ]) assert.ok(prompt.includes(contract), `${name} is constrained by the binding acceptance contract`);
 
   delete process.env.HIVEMIND_VIA_CLAUDE;
+}
+
+// --- via-Claude grounding is a runtime fact, not a configuration claim -----
+{
+  const { runLoop } = await import('./lib/engine.mjs');
+  const previousOffline = process.env.MOCK_OFFLINE;
+  process.env.MOCK_OFFLINE = '1';
+  for (const [queried, expected] of [[false, false], [true, true]]) {
+    const events = [];
+    let claudeCall = 0;
+    const run = {
+      id: `ground-${queried}`, goal: 'g', acceptanceContract: 'State evidence honestly.',
+      lane: 'freeform', depth: 'quick', ground: true,
+      models: { maker: { model: 'maker' }, reviewer: { model: 'reviewer', effort: 'low' }, loop: { roundCap: 1 } },
+    };
+    const result = await runLoop(run, {
+      emit: (type, data) => events.push({ type, ...data }),
+      waitForAnswer: async () => 'Stop the run',
+      adapters: {
+        claude: async () => {
+          claudeCall += 1;
+          return claudeCall === 1
+            ? { ok: true, text: '- plan', costUsd: 0 }
+            : { ok: true, text: '## Notes\n\nA plain note.\n', costUsd: 0, hivemindQueried: queried, hivemindQueries: queried ? 2 : 0 };
+        },
+        codex: async () => ({ ran: true, verdict: 'APPROVED', findings: [], blocking: [], nonblocking: [], questions: [] }),
+      },
+      hivemind: {
+        searchKnowledge: async () => 'claude',
+        hivemindStatus: () => ({ connected: true, mode: 'claude' }),
+        publishArtifact: async () => null,
+      },
+      signal: new AbortController().signal, scratchDir: '/tmp', receiptsDir: '/tmp',
+    });
+    const groundDone = events.findLast((event) => event.type === 'stage' && event.name === 'ground' && event.status === 'done');
+    assert.ok(result.status === 'done' || result.status === 'done_with_findings', 'the grounding probe completes the full loop');
+    assert.equal(groundDone?.queried, expected, `grounding records actual connector use (${queried})`);
+    assert.equal(groundDone?.connected, expected, 'configured-but-unused never wears a connected/grounded badge');
+  }
+  if (previousOffline === undefined) delete process.env.MOCK_OFFLINE; else process.env.MOCK_OFFLINE = previousOffline;
 }
 
 // --- normalizeReview: no path from broken reviewer output to a verdict -------

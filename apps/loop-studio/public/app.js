@@ -153,7 +153,7 @@ async function boot() {
     } else {
       $('ground').checked = true;
       $('ground-hint').textContent = s.hivemind.mode === 'claude'
-        ? `Grounded in Hivemind — Claude queries ${s.hivemind.base} on its own connector auth.`
+        ? `Hivemind available — Claude can query ${s.hivemind.base} on its own connector auth; each run records whether it actually did.`
         : `Grounded in Hivemind — knowledge_search via ${s.hivemind.mode}: ${s.hivemind.base}.`;
     }
     const buildLane = $('lane-build');
@@ -659,7 +659,7 @@ function setStage(name, status, extra = {}) {
   if (name === 'ground') {
     // Distinguish "nothing configured" (stub) from "configured but degraded".
     badge.textContent = extra.via === 'claude'
-      ? 'claude'
+      ? `claude ${extra.queried ? '✓' : '✕'}`
       : extra.connected === false
         ? (extra.mode && extra.mode !== 'stub' ? `${extra.mode} ✕` : 'stub')
         : '';
