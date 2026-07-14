@@ -825,21 +825,20 @@ function handle(ev) {
             failed: 'FAILED — the loop refused to fake a green.',
             stopped: 'STOPPED by human.',
           }[ev.status] || ev.status);
-      // The verified claim answers to the receipt, not the flat status (live
-      // smoke P0: a misparsed status painted "reviewed and verified" while the
-      // sealed dimensions said verification never ran). When the dimensions ride
-      // the event, "done" may only claim what they corroborate.
+      // The verified claim answers to the trust protocol's ONE headline
+      // derivation, riding the event at serve time (never sealed) — the UI does
+      // not re-derive audit policy. A hand-rolled copy of the rules here let a
+      // same-vendor advisory audit claim "verified"; protocol rule 6 says
+      // advisory is its own standing, never verified. Anything the derivation
+      // does not vouch for renders as a gate claim the receipt does not back.
       if (!state.simulated && good && ev.dimensions) {
-        const v = ev.dimensions.verification;
-        const a = ev.dimensions.audit;
-        const verified = v === 'passed' || v === 'passed_with_caveats';
-        const audited = ev.status === 'done'
-          ? (a === 'independent_clean' || a === 'advisory_clean')
-          : ['independent_clean', 'independent_findings', 'advisory_clean', 'advisory_findings'].includes(a);
-        if (!verified || !audited) {
+        if (ev.headline === 'same_vendor_reviewed') {
+          cls = 'meh';
+          label = `${ev.status === 'done' ? 'DONE' : 'DONE WITH FINDINGS'} — same-vendor reviewed. The audit ran on the maker's own vendor; advisory review never earns independent verified standing.`;
+        } else if (!['verified', 'verified_with_findings', 'published'].includes(ev.headline)) {
           cls = 'meh';
           const nice = (s) => String(s).replace(/_/g, ' ');
-          label = `${ev.status === 'done' ? 'DONE (gate claim)' : 'DONE WITH FINDINGS (gate claim)'} — the receipt does not corroborate it: verification ${nice(v)}, audit ${nice(a)}. Trust the dimensions below, not the word.`;
+          label = `${ev.status === 'done' ? 'DONE (gate claim)' : 'DONE WITH FINDINGS (gate claim)'} — the receipt does not corroborate it: verification ${nice(ev.dimensions.verification)}, audit ${nice(ev.dimensions.audit)}. Trust the dimensions below, not the word.`;
         }
       }
       const b = el('div', `banner ${cls}`, label);

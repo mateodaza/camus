@@ -181,6 +181,50 @@ try {
     assert.equal(item.live, true, 'the run is still served from the in-memory map, not disk');
     assert.equal(typeof item.headline, 'string', 'the live-list item derives a headline too, not only disk-loaded runs');
   });
+
+  await check('the stream decorates status events with the SHARED headline; the receipt never stores it', async () => {
+    // Catch-up stream of the finished in-memory run: the terminal status event
+    // must carry BOTH the sealed dimensions and the serve-time derived headline
+    // (the UI consumes the trust protocol's one derivation, not its own copy).
+    const r = await fetch(`${base}/api/runs/${runId}/events`, { headers: { origin: base } });
+    const text = await r.text(); // finished run → the server ends the stream after catch-up
+    const evs = text.split('\n\n').filter((c) => c.startsWith('data: ')).map((c) => { try { return JSON.parse(c.slice(6)); } catch { return null; } }).filter(Boolean);
+    const streamed = evs.filter((e) => e.type === 'status' && e.dimensions).at(-1);
+    assert.ok(streamed, 'a terminal status event with dimensions streams');
+    assert.equal(typeof streamed.headline, 'string', 'the streamed status is decorated with the derived headline');
+    // The permanent receipt seals dimensions only — a headline is presentation
+    // and must never be persisted in its place.
+    const stored = readFileSync(join(tmp, runId, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const sealedStatus = stored.filter((e) => e.type === 'status' && e.dimensions).at(-1);
+    assert.ok(sealedStatus, 'events.jsonl seals the dimensions on the status event');
+    assert.ok(!('headline' in sealedStatus), 'events.jsonl never stores a headline (derived at serve time only)');
+  });
+
+  await check('a disk replay from a FRESH server session decorates the headline at stream time', async () => {
+    // A second server process with no in-memory state replays the receipt from
+    // disk — the decoration must come from the serve path, not from storage.
+    const server2 = spawn(process.execPath, ['server.mjs'], {
+      env: { ...process.env, ENGINE: 'mock', MOCK_SPEED: '0.15', OPEN: '0', PORT: '0', STUDIO_ALLOWED_ORIGIN: 'https://camus.sh', STUDIO_RUNS_DIR: tmp },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let base2 = '';
+    for await (const chunk of server2.stdout) {
+      const m = String(chunk).match(/http:\/\/localhost:(\d+)/);
+      if (m) { base2 = `http://${HOST}:${m[1]}`; break; }
+    }
+    try {
+      const r = await fetch(`${base2}/api/runs/${runId}/events`, { headers: { origin: base2 } });
+      const text = await r.text(); // replay ends with the replay_end sentinel and closes
+      const evs = text.split('\n\n').filter((c) => c.startsWith('data: ')).map((c) => { try { return JSON.parse(c.slice(6)); } catch { return null; } }).filter(Boolean);
+      assert.ok(evs.some((e) => e.type === 'replay_end'), 'replay closes with the sentinel');
+      const replayed = evs.filter((e) => e.type === 'status' && e.dimensions).at(-1);
+      assert.ok(replayed, 'the replay streams the terminal status with dimensions');
+      assert.equal(typeof replayed.headline, 'string', 'the replayed status is decorated with the derived headline at stream time');
+    } finally {
+      server2.kill('SIGKILL');
+      await once(server2, 'close').catch(() => {});
+    }
+  });
 } finally {
   server.kill('SIGKILL');
   await once(server, 'close').catch(() => {});

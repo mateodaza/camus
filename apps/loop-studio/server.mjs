@@ -68,6 +68,24 @@ const headlineOf = (statuses) => {
   try { return statuses ? deriveHeadline(statuses) : null; } catch { return null; }
 };
 
+// The headline rides OUTBOUND status events at serve time — live, catch-up, and
+// disk replay alike — so the UI consumes the trust protocol's ONE derivation
+// instead of re-deriving audit policy client-side (the advisory-audit P1: a UI
+// copy of the rules claimed "verified" standing for a same-vendor audit).
+// events.jsonl and report.json never store it: nothing may persist a headline
+// in place of its dimensions.
+const withHeadline = (ev) => (ev?.type === 'status' && ev.dimensions ? { ...ev, headline: headlineOf(ev.dimensions) } : ev);
+// Replayed receipt lines get the same serve-time decoration. Every line is
+// parsed (no substring fast-path: a receipt re-serialized with different JSON
+// spacing must not silently skip decoration); torn or non-JSON lines stream
+// verbatim — fail-open on presentation, the receipt itself is untouched.
+const decorateReplayLine = (l) => {
+  try {
+    const ev = JSON.parse(l);
+    return ev?.type === 'status' ? JSON.stringify(withHeadline(ev)) : l;
+  } catch { return l; }
+};
+
 async function startRun({ goal, lane, depth, ground, targetPath = null, targetToplevel = null, idSalt = null }) {
   const id = newId();
   const dir = join(RUNS_DIR, id);
@@ -127,7 +145,10 @@ async function startRun({ goal, lane, depth, ground, targetPath = null, targetTo
     state.writeChain = state.writeChain
       .then(() => appendFile(join(dir, 'events.jsonl'), line + '\n'))
       .catch((err) => persistFail('events.jsonl', err));
-    for (const res of state.subscribers) res.write(`data: ${line}\n\n`);
+    // Subscribers get the serve-time headline decoration; the persisted line
+    // above stays headline-free (derived presentation, never sealed).
+    const live = ev.type === 'status' ? JSON.stringify(withHeadline(ev)) : line;
+    for (const res of state.subscribers) res.write(`data: ${live}\n\n`);
     if (type === 'revision') {
       run.lastMarkdown = data.markdown;
       run.rev = data.rev;
@@ -427,7 +448,7 @@ const server = http.createServer(async (req, res) => {
       if (action === 'events' && req.method === 'GET') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
         if (state) {
-          for (const ev of state.events) res.write(`data: ${JSON.stringify(ev)}\n\n`);
+          for (const ev of state.events) res.write(`data: ${JSON.stringify(withHeadline(ev))}\n\n`);
           if (['running', 'needs_human'].includes(state.run.status) || state.answer) {
             state.subscribers.add(res);
             const ka = setInterval(() => res.write(': keepalive\n\n'), 20_000);
@@ -447,7 +468,7 @@ const server = http.createServer(async (req, res) => {
           buf += c;
           const lines = buf.split('\n');
           buf = lines.pop();
-          for (const l of lines) if (l.trim()) res.write(`data: ${l}\n\n`);
+          for (const l of lines) if (l.trim()) res.write(`data: ${decorateReplayLine(l)}\n\n`);
         });
         const finish = () => { res.write(`data: ${JSON.stringify({ type: 'replay_end' })}\n\n`); res.end(); };
         stream.on('end', finish);
