@@ -1157,14 +1157,14 @@ if (process.env.TEST_NETWORK === '1') {
 // and done + verified_with_findings hid its caveats behind the flat copy (P2).
 {
   const { doneBanner } = await import('./public/banner.mjs');
-  const verifiedLabel = 'DONE — reviewed and verified.';
+  const verifiedLabel = 'DONE. Reviewed and verified.';
 
   // Missing evidence fails CLOSED — the legacy-receipt shape, both flat statuses.
   const legacy = doneBanner('done', undefined, undefined);
   assert.equal(legacy.cls, 'meh', 'legacy done (no dimensions) is never a green banner');
   assert.match(legacy.label, /gate claim/, 'legacy done renders as a claim, not a verdict');
   assert.match(legacy.label, /no status dimensions/, 'the reason names the missing evidence');
-  assert.ok(!legacy.label.includes('reviewed and verified'), 'legacy done never reads reviewed-and-verified');
+  assert.ok(!/reviewed and verified/i.test(legacy.label), 'legacy done never reads reviewed-and-verified');
   assert.match(doneBanner('done_with_findings', undefined, undefined).label, /^DONE WITH FINDINGS \(gate claim\)/, 'the downgrade names the exact claimed status');
 
   // A headline is presentation, never evidence: a recognized headline WITHOUT
@@ -1184,8 +1184,8 @@ if (process.env.TEST_NETWORK === '1') {
   assert.notEqual(vwf.label, verifiedLabel, 'done + verified_with_findings never hides its caveats behind the plain verified copy');
   const advisory = doneBanner('done', 'same_vendor_reviewed', { verification: 'passed', audit: 'advisory_clean' });
   assert.equal(advisory.cls, 'meh');
-  assert.match(advisory.label, /same-vendor reviewed/, 'advisory standing is named');
-  assert.ok(!advisory.label.includes('reviewed and verified'), 'advisory never claims verified standing');
+  assert.match(advisory.label, /Same-vendor reviewed/, 'advisory standing is named');
+  assert.ok(!/reviewed and verified/i.test(advisory.label), 'advisory never claims verified standing');
   assert.match(doneBanner('done', 'published', { verification: 'passed', audit: 'independent_clean' }).label, /published/, 'published standing is named');
 
   // Anything else — unverified, needs_decision, a headline this UI does not

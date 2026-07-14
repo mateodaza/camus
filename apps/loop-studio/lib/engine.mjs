@@ -82,7 +82,7 @@ export async function runLoop(run, ctx) {
       }
       const choice = await ask({
         kind: 'infra',
-        text: `The ${label} step failed twice at the infrastructure level. The loop never treats a broken step as a pass — retry it, or stop the run?`,
+        text: `The ${label} step failed twice at the infrastructure level. The loop never treats a broken step as a pass. Retry it, or stop the run?`,
         options: ['Retry', 'Stop the run'],
       });
       if (choice !== 'Retry') throw new Error('stopped_by_human');
@@ -180,7 +180,7 @@ export async function runLoop(run, ctx) {
       });
       log(makeRes.hivemindQueried
         ? `Hivemind queried by the maker (${hivemindQueries} tool call${hivemindQueries === 1 ? '' : 's'}).`
-        : 'Hivemind was configured but the maker made no connector query — this draft is not Hivemind-grounded.');
+        : 'Hivemind was configured but the maker made no connector query, so this draft is not Hivemind-grounded.');
     }
     costUsd += makeRes.costUsd || 0;
     draft = normalizeDeliverable(makeRes.text);
@@ -244,14 +244,14 @@ export async function runLoop(run, ctx) {
         // and then overruling it in a second prompt would discard the choice.
         const choice = await ask({
           kind: 'stuck',
-          text: `The reviewer keeps raising the same finding${stuckTitles.length > 1 ? 's' : ''} — “${stuckTitles.join('”, “')}”. Camus's rule: never re-litigate. ${lastRound ? `This is the final round (${ROUND_CAP}). Accept` : 'Accept'} the deliverable with this finding on the record${lastRound ? '' : ', push one more round,'} or stop?`,
+          text: `The reviewer keeps raising the same finding${stuckTitles.length > 1 ? 's' : ''}: “${stuckTitles.join('”, “')}”. Camus's rule: never re-litigate. ${lastRound ? `This is the final round (${ROUND_CAP}). Accept` : 'Accept'} the deliverable with this finding on the record${lastRound ? '' : ', push one more round,'} or stop?`,
           options: lastRound
             ? ['Accept and ship (with findings on record)', 'Stop the run']
             : ['Accept and ship (with findings on record)', 'One more round', 'Stop the run'],
         });
         if (choice.startsWith('Accept')) {
           doneWithFindings = true;
-          log('Human accepted the stuck finding — recorded, moving to verify.');
+          log('Human accepted the stuck finding; recorded, moving to verify.');
           break;
         }
         if (choice.startsWith('Stop')) throw new Error('stopped_by_human');
@@ -312,7 +312,7 @@ export async function runLoop(run, ctx) {
       if (result.pass) {
         if (result.warnings || result.skipped) {
           doneWithFindings = true;
-          log(`Verify green with caveats: ${result.warnings} warning(s), ${result.skipped} skipped check(s) — recorded, not hidden.`);
+          log(`Verify green with caveats: ${result.warnings} warning(s), ${result.skipped} skipped check(s); recorded, not hidden.`);
         }
         break;
       }
@@ -345,7 +345,7 @@ export async function runLoop(run, ctx) {
 
       const choice = await ask({
         kind: 'verify',
-        text: `The deterministic gate still fails after a fix pass (${failures.map((f) => f.label).join('; ')}). This gate cannot be argued with — grant one more fix pass, ship anyway recorded as FAILED, or stop?`,
+        text: `The deterministic gate still fails after a fix pass (${failures.map((f) => f.label).join('; ')}). This gate cannot be argued with. Grant one more fix pass, ship anyway recorded as FAILED, or stop?`,
         options: ['One more fix pass', 'Ship anyway (recorded as verify_failed)', 'Stop the run'],
       });
       if (choice.startsWith('One more')) { verifyFixBudget = 1; continue; }

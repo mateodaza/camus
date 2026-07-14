@@ -46,7 +46,7 @@ if (process.argv.includes('--doctor')) {
     console.log(`  ${c.ok ? 'ok  ' : 'MISS'}  ${c.label.padEnd(28)} ${c.detail}`);
     if (!c.ok && c.fix) console.log(`        fix: ${c.fix}`);
   }
-  console.log(`  engine ${ENGINE}${ENGINE === 'mock' ? ' (rehearsal — no model calls)' : ''}`);
+  console.log(`  engine ${ENGINE}${ENGINE === 'mock' ? ' (rehearsal, no model calls)' : ''}`);
   if (!report.ok) console.log('\n  Live engine is missing pieces. Rehearse meanwhile with: npm run rehearse');
   process.exit(report.ok ? 0 : 1);
 }
@@ -124,7 +124,7 @@ async function startRun({ goal, acceptanceContract, lane, depth, ground, targetP
     console.error(`[receipts] failed to write ${what} for run ${id}: ${err.message}`);
     if (!run.receiptsDegraded) {
       run.receiptsDegraded = true;
-      emit('log', { line: `⚠ receipts degraded — could not write ${what} (${err.code || err.message}); this run's paper trail is incomplete` });
+      emit('log', { line: `⚠ receipts degraded: could not write ${what} (${err.code || err.message}); this run's paper trail is incomplete` });
     }
   };
 
@@ -186,7 +186,7 @@ async function startRun({ goal, acceptanceContract, lane, depth, ground, targetP
       : { claude: runClaude, codex: runCodexReview };
 
   emit('run', { run: { id, goal, acceptanceContract, lane, depth, ground, targetPath, engine: ENGINE, roundCap: getModels().loop.roundCap } });
-  if (!gitOk) emit('log', { line: '⚠ git unavailable — codex reviews will run outside a git repo (different conditions than camus)' });
+  if (!gitOk) emit('log', { line: '⚠ git unavailable; codex reviews will run outside a git repo (different conditions than camus)' });
 
   const runner = lane === 'build' ? (ENGINE === 'mock' ? runMockCodeLoop : runCodeLoop) : runLoop;
   runner(run, {
@@ -346,7 +346,7 @@ function authorize(req) {
     // Browser requests (they always carry Origin on POST) must present the
     // session token; non-browser local tools have machine access anyway.
     if (origin && req.headers['x-studio-token'] !== SESSION_TOKEN) {
-      return { code: 401, error: 'missing or wrong session token — reload the page' };
+      return { code: 401, error: 'missing or wrong session token; reload the page' };
     }
   }
   return null;
@@ -430,9 +430,9 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const goal = String(body.goal || '').trim();
       const acceptanceContract = String(body.acceptanceContract || '').trim();
-      if (goal.length < 12) return json(res, 400, { error: 'Write the goal like you would brief a strategist — a sentence or two.' });
+      if (goal.length < 12) return json(res, 400, { error: 'Write the goal like you would brief a strategist: a sentence or two.' });
       if (goal.length > MAX_GOAL_CHARS) return json(res, 400, { error: `That goal is ${goal.length} characters — keep it under ${MAX_GOAL_CHARS}; a brief is not a corpus.` });
-      if (acceptanceContract.length < 12) return json(res, 400, { error: 'Say what must be true for you to trust the result — this is the audit contract, not a copy of the goal.' });
+      if (acceptanceContract.length < 12) return json(res, 400, { error: 'Say what must be true for you to trust the result. This is the audit contract, not a copy of the goal.' });
       if (acceptanceContract.length > MAX_ACCEPTANCE_CHARS) return json(res, 400, { error: `That trust contract is ${acceptanceContract.length} characters — keep it under ${MAX_ACCEPTANCE_CHARS}.` });
       const active = [...runs.values()].filter((s2) => ['running', 'needs_human'].includes(s2.run.status)).length;
       if (active >= MAX_ACTIVE_RUNS) return json(res, 429, { error: `${active} runs are already active — the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}.` });
@@ -451,7 +451,7 @@ const server = http.createServer(async (req, res) => {
           if (!v.ok) return json(res, 400, { error: v.error });
           targetPath = v.path;
           if (activeBuilds.size > 0) {
-            return json(res, 409, { error: 'A build run is already going — the studio runs one gate at a time (its receipt watch is per-machine).' });
+            return json(res, 409, { error: 'A build run is already going; the studio runs one gate at a time.' });
           }
           activeBuilds.add(v.toplevel);
           targetToplevel = v.toplevel;
@@ -554,18 +554,18 @@ const server = http.createServer(async (req, res) => {
           try { meta = JSON.parse(await readFile(join(RUNS_DIR, id, 'report.json'), 'utf8')); }
           catch {
             try { meta = JSON.parse(await readFile(join(RUNS_DIR, id, 'run.json'), 'utf8')); }
-            catch { return json(res, 404, { error: 'unknown run — nothing to resume' }); }
+            catch { return json(res, 404, { error: 'unknown run; nothing to resume' }); }
           }
         }
         if (meta.lane !== 'build') return json(res, 400, { error: 'only build runs resume through the gate' });
-        if (!meta.idSalt) return json(res, 400, { error: 'this run predates resumable receipts — start a fresh build run instead (the gate itself still skips finished work)' });
+        if (!meta.idSalt) return json(res, 400, { error: 'this run predates resumable receipts. Start a fresh build run instead; the gate itself still skips finished work.' });
         if (state && ['running', 'needs_human'].includes(state.run.status)) {
           return json(res, 409, { error: 'that run is still going' });
         }
         if (ENGINE !== 'mock') {
           const v = await validateBuildTarget(meta.targetPath);
           if (!v.ok) return json(res, 400, { error: `the original target no longer validates: ${v.error}` });
-          if (activeBuilds.size > 0) return json(res, 409, { error: 'a build run is already going — one gate at a time' });
+          if (activeBuilds.size > 0) return json(res, 409, { error: 'a build run is already going; one gate at a time' });
           activeBuilds.add(v.toplevel);
           const newId = await startRun({ goal: meta.goal, acceptanceContract: meta.acceptanceContract, lane: 'build', depth: 'quick', ground: false, targetPath: v.path, targetToplevel: v.toplevel, idSalt: meta.idSalt });
           return json(res, 201, { id: newId });

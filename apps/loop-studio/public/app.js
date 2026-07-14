@@ -151,17 +151,17 @@ async function boot() {
     hm.classList.add(s.hivemind.connected ? 'ok' : 'warn');
     if (!s.hivemind.connected) {
       $('ground').disabled = true;
-      $('ground-hint').textContent = 'Hivemind is Myosin’s private research knowledge (on staging today). To ground drafts in it: set HIVEMIND_VIA_CLAUDE=1 for Claude’s own connector, or HIVEMIND_MCP_URL + HIVEMIND_API_KEY — see Setup.';
+      $('ground-hint').textContent = 'Hivemind is Myosin’s private research knowledge (on staging today). To ground drafts in it: set HIVEMIND_VIA_CLAUDE=1 for Claude’s own connector, or HIVEMIND_MCP_URL + HIVEMIND_API_KEY. Setup has the details.';
     } else {
       $('ground').checked = true;
       $('ground-hint').textContent = s.hivemind.mode === 'claude'
-        ? `Hivemind available — Claude can query ${s.hivemind.base} on its own connector auth; each run records whether it actually did.`
-        : `Grounded in Hivemind — knowledge_search via ${s.hivemind.mode}: ${s.hivemind.base}.`;
+        ? `Hivemind available: Claude can query ${s.hivemind.base} on its own connector auth; each run records whether it actually did.`
+        : `Grounded in Hivemind: knowledge_search via ${s.hivemind.mode} at ${s.hivemind.base}.`;
     }
     const buildLane = $('lane-build');
     if (buildLane && s.gate && !s.gate.installed) {
       buildLane.classList.add('disabled');
-      buildLane.title = 'The camus gate is not installed — see Setup';
+      buildLane.title = 'The camus gate is not installed. Setup has the fix.';
     }
     if (s.engine !== 'mock') {
       // Live engine: quietly check the machine and surface the setup panel
@@ -207,17 +207,17 @@ function renderAuthPreflight(report) {
     pill.classList.remove('ok', 'warn', 'bad');
     pill.classList.add(auth === true ? 'ok' : auth === false ? 'bad' : 'warn');
     pill.title = auth === true
-      ? `Spend-free probe (${probeName[id]}): a session is stored. A stale session can still fail at inference — the run stream is the authoritative signal.`
+      ? `Spend-free probe (${probeName[id]}): a session is stored. A stale session can still fail at inference; the run stream is the authoritative signal.`
       : auth === false
         ? `${check?.detail || 'Not signed in.'}${check?.fix ? ` Fix: ${check.fix}` : ''}`
-        : (check?.detail || `Could not verify (${probeName[id]} did not answer) — see Setup.`);
+        : (check?.detail || `Could not verify (${probeName[id]} did not answer). Setup has the details.`);
     if (auth === false) signedOut.push(id);
   }
   const note = $('preflight-note');
   if (!note) return;
   if (signedOut.length) {
     note.classList.remove('hidden');
-    note.textContent = `Preflight: ${signedOut.join(' and ')} ${signedOut.length > 1 ? 'are' : 'is'} not signed in — a live gate run will fail at ${signedOut.includes('claude') ? 'the maker' : 'the review'}. Sign in first (fixes in Setup).`;
+    note.textContent = `Preflight: ${signedOut.join(' and ')} ${signedOut.length > 1 ? 'are' : 'is'} not signed in. A live gate run will fail at ${signedOut.includes('claude') ? 'the maker' : 'the review'}. Sign in first (fixes in Setup).`;
   } else {
     note.classList.add('hidden');
     note.textContent = '';
@@ -232,10 +232,10 @@ function renderAuthPreflight(report) {
 
 const CLAUDE_SETUP_PROMPT = `Set up Camus Loop Studio on my machine and start it:
 
-1. If ~/camus does not exist: git clone --depth 1 https://github.com/mateodaza/camus.git ~/camus — otherwise run git -C ~/camus pull.
+1. If ~/camus does not exist: git clone --depth 1 https://github.com/mateodaza/camus.git ~/camus. Otherwise run git -C ~/camus pull.
 2. Start the studio server and keep it running: node ~/camus/apps/loop-studio/server.mjs (it listens on http://localhost:1913).
-3. Run node ~/camus/apps/loop-studio/server.mjs --doctor and fix anything it flags — it prints the exact commands (the Claude Code CLI and the Codex CLI must be installed and signed in once each).
-4. When http://localhost:1913/api/status answers, tell me — the page at camus.sh/studio connects to it automatically.`;
+3. Run node ~/camus/apps/loop-studio/server.mjs --doctor and fix anything it flags; it prints the exact commands (the Claude Code CLI and the Codex CLI must be installed and signed in once each).
+4. When http://localhost:1913/api/status answers, tell me; the page at camus.sh/studio connects to it automatically.`;
 
 const MANUAL_SETUP = `git clone --depth 1 https://github.com/mateodaza/camus.git ~/camus
 node ~/camus/apps/loop-studio/server.mjs`;
@@ -249,7 +249,7 @@ function copyButton(label, text) {
       await navigator.clipboard.writeText(text);
       b.textContent = 'Copied';
     } catch {
-      b.textContent = 'Copy failed — select it yourself';
+      b.textContent = 'Copy failed. Select it yourself.';
     }
     setTimeout(() => (b.textContent = label), 1600);
   };
@@ -262,7 +262,7 @@ function renderInstall() {
 
   box.appendChild(el('div', 'lbl', 'Get it running'));
   box.appendChild(el('p', 'install-note',
-    'The studio runs on your machine — this page is only the glass. One server, one command, and your keys never leave your laptop.'));
+    'The studio runs on your machine; this page is only the glass. One server, one command, and your keys never leave your laptop.'));
 
   // Path 1: let Claude do it
   box.appendChild(el('div', 's-label install-head', 'Have Claude set it up'));
@@ -277,7 +277,7 @@ function renderInstall() {
   box.appendChild(cmdPre);
   const row = el('div', 'panel-actions');
   row.appendChild(copyButton('Copy the commands', MANUAL_SETUP));
-  row.appendChild(el('span', 'hint', 'needs Node ≥ 18 — the in-page setup checks guide the rest once the server is up'));
+  row.appendChild(el('span', 'hint', 'needs Node ≥ 18. The in-page setup checks guide the rest once the server is up.'));
   box.appendChild(row);
 
   // The waiting line: this page keeps knocking until the server answers.
@@ -329,7 +329,7 @@ function renderSetup(report) {
   const box = $('setup-panel');
   box.innerHTML = '';
   const head = el('div', 'panel-head');
-  head.appendChild(el('span', 'lbl', report.ok ? 'Setup — this machine is ready; brief a goal below' : 'Setup — a few pieces are missing'));
+  head.appendChild(el('span', 'lbl', report.ok ? 'Setup: this machine is ready. Brief a goal below.' : 'Setup: a few pieces are missing'));
   const again = el('button', 'ghost', 'Check again');
   again.onclick = () => openSetup(true);
   head.appendChild(again);
@@ -458,7 +458,7 @@ $('save-settings').addEventListener('click', async () => {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
-    $('settings-note').textContent = 'saved — applies from the next run';
+    $('settings-note').textContent = 'saved. Applies from the next run.';
     boot(); // pills reflect the new decisions
   } catch (err) {
     $('settings-note').textContent = `not saved: ${err.message}`;
@@ -556,7 +556,7 @@ function attach(id, goal) {
       es.close();
       stopTimer();
       setStatus('disconnected');
-      feed(el('div', 'banner meh', 'LOST THE STUDIO SERVER — the page can no longer see the run. Restart the server and reopen this run from Recent runs.'));
+      feed(el('div', 'banner meh', 'LOST THE STUDIO SERVER. The page can no longer see the run; restart the server and reopen it from Recent runs.'));
     }
   };
 }
@@ -663,7 +663,7 @@ async function renderEvidenceReceipt(standing) {
     row.appendChild(el('span', 'trust-value', v));
     card.appendChild(row);
   }
-  card.appendChild(el('div', 'trust-contract', `contract — ${pack.acceptance_contract}`));
+  card.appendChild(el('div', 'trust-contract', `contract: ${pack.acceptance_contract}`));
   feed(card);
 }
 
@@ -751,13 +751,13 @@ function handle(ev) {
       if (state.simulated) {
         const sb = $('sim-banner');
         // Static literal — no user input — so innerHTML is safe here.
-        sb.innerHTML = '<b>REHEARSAL — SIMULATED.</b> A scripted demo of the loop. No models run, your brief is not processed, your target files and repository are not changed, and no model spend occurs. Studio saves a local simulation trace under runs/; every draft, verdict, branch, commit, and gate receipt shown is scripted and is not evidence of real work.';
+        sb.innerHTML = '<b>REHEARSAL: SIMULATED.</b> A scripted demo of the loop. No models run, your brief is not processed, your target files and repository are not changed, and no model spend occurs. Studio saves a local simulation trace under runs/; every draft, verdict, branch, commit, and gate receipt shown is scripted and is not evidence of real work.';
         sb.classList.remove('hidden');
         $('run-cost').textContent = 'rehearsal · no real spend';
       }
       buildStages(ev.run?.lane);
       if (ev.run?.lane !== 'build' && ev.run && !ev.run.ground) state.stageEls.get('ground')?.remove();
-      if (ev.run?.lane === 'build') $('doc').innerHTML = '<div class="doc-empty">The gate works inside the target repo — the session below is the live view; its report lands here.</div>';
+      if (ev.run?.lane === 'build') $('doc').innerHTML = '<div class="doc-empty">The gate works inside the target repo. The session below is the live view; its report lands here.</div>';
       break;
 
     case 'stage':
@@ -813,7 +813,7 @@ function handle(ev) {
           ? `✓ reviewer verdict, round ${ev.round}: clean`
           : revise
             ? `✗ reviewer verdict, round ${ev.round}: revise (${ev.findings.filter((f) => f.severity !== 'low').length} blocking)`
-            : `? reviewer verdict, round ${ev.round}: unreadable — receipt will be marked incomplete`);
+            : `? reviewer verdict, round ${ev.round}: unreadable; the receipt will be marked incomplete`);
       feed(v);
       break;
     }
@@ -835,7 +835,7 @@ function handle(ev) {
       } else {
         const ta = el('textarea');
         ta.rows = 2;
-        ta.placeholder = 'Your call — one or two lines is enough.';
+        ta.placeholder = 'Your call. One or two lines is enough.';
         ta.setAttribute('aria-label', 'Your answer to the loop');
         const send = el('button', 'send', 'Answer');
         send.onclick = () => ta.value.trim() && answer(ev.id, ta.value.trim(), c);
@@ -890,10 +890,10 @@ function handle(ev) {
     case 'verify_result': {
       const caveats = (ev.warnings || 0) + (ev.skipped || 0);
       const label = !ev.pass
-        ? 'DETERMINISTIC GATE: RED — sending back for a fix'
+        ? 'DETERMINISTIC GATE: RED. Sending back for a fix.'
         : caveats
-          ? `DETERMINISTIC GATE: GREEN, with caveats — ${ev.warnings || 0} warning(s), ${ev.skipped || 0} check(s) could not run`
-          : 'DETERMINISTIC GATE: GREEN — every check passed';
+          ? `DETERMINISTIC GATE: GREEN, with caveats: ${ev.warnings || 0} warning(s), ${ev.skipped || 0} check(s) could not run`
+          : 'DETERMINISTIC GATE: GREEN. Every check passed.';
       feed(el('div', `vsummary ${ev.pass ? 'pass' : 'fail'}`, label));
       break;
     }
@@ -903,7 +903,7 @@ function handle(ev) {
       const sim = state.simulated;
       const commit = r.commit_sha ?? r.commit;
       const md = [
-        sim ? '## Gate report — SIMULATED' : '## Gate report',
+        sim ? '## Gate report (SIMULATED)' : '## Gate report',
         '',
         sim ? '> Rehearsal only. No target repository was touched. Studio saved a local simulation trace; no gate branch, commit, or gate receipt exists.' : null,
         sim ? '' : null,
@@ -939,8 +939,8 @@ function handle(ev) {
       if (!document.querySelector('.banner')) {
         setStatus('incomplete');
         feed(el('div', 'banner meh', ev.empty
-          ? 'NO RECEIPTS — this run left no event stream.'
-          : 'REPLAY ENDED WITHOUT A VERDICT — the run was interrupted before it finished; the receipts stop here.'));
+          ? 'NO RECEIPTS. This run left no event stream.'
+          : 'REPLAY ENDED WITHOUT A VERDICT. The run was interrupted before it finished; the receipts stop here.'));
       }
       break;
 
@@ -962,12 +962,12 @@ function handle(ev) {
       // default here would be exactly the false-green a legacy event rides in on.
       let label = state.simulated
         ? (ev.status === 'stopped'
-            ? 'REHEARSAL STOPPED — a simulation; nothing ran.'
-            : 'REHEARSAL COMPLETE — a scripted simulation. No models or target-repository commands ran; Studio saved only a local simulation trace. No real evidence or model spend.')
+            ? 'REHEARSAL STOPPED. A simulation; nothing ran.'
+            : 'REHEARSAL COMPLETE. A scripted simulation: no models or target-repository commands ran, and Studio saved only a local simulation trace. Not evidence, and no model spend.')
         : ({
-            no_changes: 'NO CHANGES — the gate proved an empty diff; nothing shipped, nothing failed.',
-            verify_failed: 'VERIFY FAILED — shipped by human override, recorded as red.',
-            failed: 'FAILED — the loop refused to fake a green.',
+            no_changes: 'NO CHANGES. The gate proved an empty diff: nothing shipped, nothing failed.',
+            verify_failed: 'VERIFY FAILED. Shipped by human override, recorded as red.',
+            failed: 'FAILED. The loop refused to fake a green.',
             stopped: 'STOPPED by human.',
           }[ev.status] || ev.status);
       // EVERY real done* event enters the headline policy (banner.mjs) — the
@@ -996,7 +996,7 @@ function handle(ev) {
           }
         };
         sub.appendChild(resume);
-        sub.appendChild(document.createTextNode(' camus is crash-safe — finished work skips, proven work lands, only unproven work re-runs.'));
+        sub.appendChild(document.createTextNode(' camus is crash-safe: finished work skips and proven work lands; only unproven work re-runs.'));
         b.appendChild(sub);
       }
       if (ev.artifactUrl) {
@@ -1020,7 +1020,7 @@ function handle(ev) {
       if (ev.dimensions) {
         const nice = (s) => String(s).replace(/_/g, ' ');
         const d = ev.dimensions;
-        feed(el('div', 'dims', `status dimensions — execution: ${nice(d.execution)} · verification: ${nice(d.verification)} · audit: ${nice(d.audit)} · publication: ${nice(d.publication)}`));
+        feed(el('div', 'dims', `sealed dimensions · execution ${nice(d.execution)} · verification ${nice(d.verification)} · audit ${nice(d.audit)} · publication ${nice(d.publication)}`));
       }
       void renderEvidenceReceipt(state.simulated ? 'rehearsal' : ev.headline);
       break;
@@ -1055,7 +1055,7 @@ async function answer(qid, text, card) {
     const data = await res.json().catch(() => ({}));
     showError(`Your answer didn't land: ${data.error || res.statusText}. Try again.`);
   } catch (err) {
-    showError(`Couldn't reach the studio server (${err.message}) — the answer was not delivered. Try again.`);
+    showError(`Couldn't reach the studio server (${err.message}) . The answer was not delivered; try again.`);
   }
 }
 

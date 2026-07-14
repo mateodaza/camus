@@ -114,7 +114,7 @@ export function gateIgniterCliArgs(invocation) {
 export async function validateBuildTarget(rawPath) {
   const path = rawPath?.trim().replace(/^~(?=\/|$)/, homedir());
   if (!path) return { ok: false, error: 'A build run needs the path to a git repository on this machine.' };
-  if (/["'`$\\\n]/.test(path)) return { ok: false, error: 'The path contains shell-unsafe characters (quotes, $, backticks) — the gate refuses those.' };
+  if (/["'`$\\\n]/.test(path)) return { ok: false, error: 'The path contains shell-unsafe characters (quotes, $, backticks); the gate refuses those.' };
   if (!existsSync(path)) return { ok: false, error: `No such directory: ${path}` };
   const s = await stat(path).catch(() => null);
   if (!s?.isDirectory()) return { ok: false, error: `${path} is not a directory.` };
@@ -122,10 +122,10 @@ export async function validateBuildTarget(rawPath) {
   const git = (args) =>
     new Promise((resolve) => execFile('git', ['-C', path, ...args], { timeout: 10_000 }, (err, stdout) => resolve(err ? null : stdout.trim())));
   if ((await git(['rev-parse', '--git-dir'])) === null) {
-    return { ok: false, error: `${path} is not a git repository — the gate only works inside one.` };
+    return { ok: false, error: `${path} is not a git repository; the gate only works inside one.` };
   }
   if ((await git(['symbolic-ref', '-q', 'HEAD'])) === null) {
-    return { ok: false, error: `${path} is on a detached HEAD — check out a branch first (the gate refuses detached HEADs).` };
+    return { ok: false, error: `${path} is on a detached HEAD. Check out a branch first; the gate refuses detached HEADs.` };
   }
   const toplevel = await git(['rev-parse', '--show-toplevel']);
   return { ok: true, path, toplevel };
@@ -158,7 +158,7 @@ export function parseGateReport(text) {
   // guess: token matching over the same text must never override it (the exact
   // P0 path — an unrecognized status falling through to a prose match).
   if (!report && structuredUnknown) {
-    return { status: 'infra_error', note: `gate returned a structured status Studio does not recognize: "${structuredUnknown.status}" — refused fail-closed, never re-guessed from prose`, raw: text.slice(0, 400) };
+    return { status: 'infra_error', note: `gate returned a structured status Studio does not recognize: "${structuredUnknown.status}"; refused fail-closed, never re-guessed from prose`, raw: text.slice(0, 400) };
   }
   if (!report) {
     // Statuses are ordered longest-first, so done_with_findings wins over
@@ -302,7 +302,7 @@ export async function runCodeLoop(run, ctx) {
     // retry dropped the salt and forked a second worktree).
     const args = gateArgsForRun({ ...run, idSalt }, roundCap, humanAnswer);
     const invocation = `/camus-loop ${JSON.stringify(args)}`;
-    log(humanAnswer ? 'Re-invoking the gate with your answer — it resumes from its own receipts.' : `Igniting the camus gate in ${run.targetPath}`);
+    log(humanAnswer ? 'Re-invoking the gate with your answer; it resumes from its own receipts.' : `Igniting the camus gate in ${run.targetPath}`);
     sess(`invocation: ${invocation.slice(0, 160)}`);
 
     const t0 = Date.now();
@@ -430,8 +430,8 @@ export async function runCodeLoop(run, ctx) {
     if (exitCode === -6) return { status: 'infra_error', note: authFailureNote };
     if (exitCode === -5) return { status: 'infra_error', note: custodyError || 'gate custody could not be established' };
     if (exitCode === -1) return { status: 'infra_error', note: `failed to spawn claude (${String(resultText).slice(0, 200)})` };
-    if (exitCode === -2) return { status: 'infra_error', note: `the gate hit the studio's ${Math.round(HARD_TIMEOUT_MS / 60000)} min ceiling — its state is preserved; Resume continues it` };
-    if (exitCode === -3) return { status: 'infra_error', note: `no gate activity for ${Math.round(IDLE_KILL_MS / 60000)} min (no receipts, no heartbeat, no output) — killed fail-closed; state is preserved` };
+    if (exitCode === -2) return { status: 'infra_error', note: `the gate hit the studio's ${Math.round(HARD_TIMEOUT_MS / 60000)} min ceiling. Its state is preserved; Resume continues it` };
+    if (exitCode === -3) return { status: 'infra_error', note: `no gate activity for ${Math.round(IDLE_KILL_MS / 60000)} min (no receipts, no heartbeat, no output); killed fail-closed, state preserved` };
     if (exitCode !== 0) return { status: 'infra_error', note: `claude exited ${exitCode}: ${String(resultText).slice(0, 300)}` };
     return parseGateReport(String(resultText));
   }
@@ -445,7 +445,7 @@ export async function runCodeLoop(run, ctx) {
       stage('gate', 'done');
       const answer = await ask({
         kind: 'decision',
-        text: report.question || 'The gate paused for a decision — its report has the detail. What should it do?',
+        text: report.question || 'The gate paused for a decision; its report has the detail. What should it do?',
       });
       stage('gate', 'active');
       report = await igniteGate(answer);
@@ -475,7 +475,7 @@ export async function runCodeLoop(run, ctx) {
     if (terminal === 'needs_human_offline') {
       // review_unresolved carries stuck findings the studio can't relitigate —
       // surface honestly and stop; the terminal report has the trail.
-      log('The gate halted on stuck findings (review_unresolved) — read its report; accept or refine from a camus session.');
+      log('The gate halted on stuck findings (review_unresolved). Read its report; accept or refine from a camus session.');
       emit('status', { status: 'verify_failed', rev: 0, costUsd: null, billingMode: 'unknown' });
       return { status: 'verify_failed', report, answers };
     }
@@ -484,7 +484,7 @@ export async function runCodeLoop(run, ctx) {
     return { status: terminal, report, answers };
   } catch (err) {
     if (err.message === 'stopped_by_human' || signal.aborted) {
-      log('Stopped. The gate is crash-safe: its receipts and worktree survive — Resume re-invokes it and it continues.');
+      log('Stopped. The gate is crash-safe: its receipts and worktree survive, and Resume re-invokes it to continue.');
       emit('status', { status: 'stopped', costUsd: null, billingMode: 'unknown' });
       return { status: 'stopped', answers };
     }

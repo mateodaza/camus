@@ -4,9 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Camus Loop Studio</title>
-  <meta name="description" content="Watch the Camus loop work: Claude drafts, Codex reviews adversarially, deterministic checks decide. Research and analysis on any topic — plus a Build lane that points the camus gate at code. Runs on your machine." />
+  <meta name="description" content="Watch the Camus loop work: Claude drafts, Codex reviews adversarially, deterministic checks decide. Research and analysis on any topic, plus a Build lane that points the camus gate at code. Orchestration and receipts stay on your machine." />
   <meta property="og:title" content="Camus Loop Studio" />
-  <meta property="og:description" content="Makes it work. Knows when to stop. The Camus loop on words and code, watchable in a browser — everything runs on your machine." />
+  <meta property="og:description" content="Makes it work. Knows when to stop. The Camus loop on words and code, watchable in a browser. Orchestration and receipts stay on your machine." />
   <meta property="og:url" content="https://www.camus.sh/studio" />
   <meta property="og:type" content="website" />
   <meta property="og:image" content="https://www.camus.sh/og.png" />
@@ -40,7 +40,7 @@
 
     <section id="settings-panel" class="card panel hidden" aria-label="Run settings">
       <div class="panel-head">
-        <span class="lbl">Run settings — decisions, recorded</span>
+        <span class="lbl">Run settings: decisions, recorded</span>
         <span id="settings-note" class="hint"></span>
       </div>
       <div class="settings-grid">
@@ -75,7 +75,7 @@
     </section>
 
     <section class="card form">
-      <label class="lbl" for="goal">The goal — brief it like you'd brief a strategist</label>
+      <label class="lbl" for="goal">The goal: brief it like you'd brief a strategist</label>
       <textarea id="goal" rows="3" placeholder="e.g. Should our client lead with community programs or paid acquisition for their consumer app this quarter? I need a memo I can defend on Thursday."></textarea>
 
       <label class="lbl" for="acceptance-contract">What must be true for you to trust the result?</label>
@@ -97,15 +97,15 @@
           <span>Loop whatever you're into. Generic checks only.</span>
         </button>
         <button class="lane" data-lane="build" id="lane-build">
-          <strong>Build — code</strong>
-          <span>Runs the camus gate on a git repo here: isolated worktree, cross-model review, your tests decide. In beta — newer than the words lanes.</span>
+          <strong>Build: code</strong>
+          <span>Runs the camus gate on a git repo here: isolated worktree, cross-model review, your tests decide. In beta, newer than the words lanes.</span>
         </button>
       </div>
 
       <div id="target-wrap" class="hidden">
         <label class="lbl" for="target-path">Target repository</label>
         <input id="target-path" class="path-input" placeholder="~/path/to/a/git/repo" autocomplete="off" />
-        <div class="hint">The gate runs in that repo: isolated worktree, cross-model review, your tests as the verdict. Stop is safe — its receipts survive and Resume continues.</div>
+        <div class="hint">The gate runs in that repo: isolated worktree, cross-model review, your tests as the verdict. Stop is safe: receipts survive and Resume continues.</div>
         <!-- Filled from the doctor's auth preflight when a CLI is proven signed out;
              a warning, not a gate — the probes can be stale in either direction. -->
         <div id="preflight-note" class="hint preflight hidden"></div>

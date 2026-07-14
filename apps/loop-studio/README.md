@@ -11,7 +11,7 @@ The loop's contract is ported from [camus](https://github.com/mateodaza/camus) v
 The studio is the loop's visual front door. What it does today:
 
 - **Words, any topic** — research memos, teardowns, freeform analysis.
-- **Marketing, the tuned vertical** — the compliance wordlist ships web3-marketing defaults and grounding rides Myosin's Hivemind (staging today), because that is where the studio has real internal knowledge to stand on (and the two products co-market).
+- **Marketing, the tuned vertical** — the compliance wordlist ships regulated-claims defaults and grounding rides Myosin's Hivemind (staging today), because that is where the studio has real internal knowledge to stand on (and the two products co-market).
 - **Code** — the Build lane points the camus gate at a git repo on this machine: isolated worktree, cross-model review, the repo's own tests as the verdict, needs_human pauses answered from the same question card. In beta, newer than the words lanes.
 
 The first trust-protocol integration now ships in Studio: every new run starts with an explicit acceptance contract; seals raw execution × verification × audit × publication dimensions; records requested/resolved/actual executor and auditor identities plus actual reviewer effort; and mints separate artifact and receipt hashes in a downloadable evidence pack. The one-word standing remains derived presentation and never enters the permanent pack. Next: the citation claims ledger, then automatic lane selection. Direction: [docs/DIRECTION-0.3-TRUST-LAYER.md](../../docs/DIRECTION-0.3-TRUST-LAYER.md).
@@ -60,7 +60,7 @@ The verify stage is mechanical — no model, no mercy ([lib/verify.mjs](lib/veri
 1. **Structure** — the deliverable type's required sections exist.
 2. **Links resolve** — every URL in the doc returns < 400. Any other ≥ 400 status fails as dead; no answer at all (DNS failure, timeout) fails as unreachable — honestly labeled "could not verify", never "confirmed dead"; bot-blocked (401/403/429) warns, because the check can't verify those either way — open them yourself.
 3. **Quantitative claims cite sources** — any sentence carrying %, $, multiples, or big counts must carry a `[n]` citation or inline link (bare years alone don't count as claims, but they don't exempt a sentence either).
-4. **Web3 compliance phrases** — configurable wordlist ([checks/compliance.json](checks/compliance.json)): promissory claims fail, hype phrasing warns.
+4. **Compliance phrases** — configurable wordlist ([checks/compliance.json](checks/compliance.json)): promissory claims fail, hype phrasing warns.
 5. **Citation integrity** — every `[n]` and `[Hn]` marker used in the body maps to an entry under `## Sources`.
 
 ## How the loop stops (ported from camus)

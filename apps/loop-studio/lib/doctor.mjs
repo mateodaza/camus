@@ -85,7 +85,7 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   // re-parsing detail strings.
   add(
     'claude', 'Claude Code CLI', !!claudeV && claudeAuthed !== false,
-    !claudeV ? 'not found on PATH — the maker cannot run'
+    !claudeV ? 'not found on PATH; the maker cannot run'
       : claudeAuthed === false ? `${claudeV} installed, but not signed in`
       : `${claudeV}${claudeAuthed ? ' · signed in' : ''}`,
     !claudeV ? 'npm install -g @anthropic-ai/claude-code   # then run `claude` once and sign in'
@@ -94,7 +94,7 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   );
   add(
     'codex', 'Codex CLI (the reviewer)', !!codexV && codexAuthed !== false,
-    !codexV ? 'not found on PATH — nothing can review the drafts'
+    !codexV ? 'not found on PATH; nothing can review the drafts'
       : codexAuthed === false ? `${codexV} installed, but not signed in`
       : `${codexV}${codexAuthed ? ' · signed in' : ''}`,
     !codexV ? 'npm install -g @openai/codex   # then run `codex` once and sign in'
@@ -103,14 +103,14 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   );
   add(
     'git', 'git', !!gitV,
-    gitV ?? 'not found — reviews will run outside a git repo (different conditions than camus)',
+    gitV ?? 'not found; reviews would run outside a git repo (different conditions than camus)',
     gitV ? null : 'xcode-select --install   # macOS; or install git from git-scm.com',
   );
 
   const gate = gateInstalled();
   add(
     'gate', 'Camus gate (Build lane)', gate,
-    gate ? 'installed in ~/.claude with standalone custody support' : 'missing or too old — Build requires the identity-bound custody gate (the words lanes run without it)',
+    gate ? 'installed in ~/.claude with standalone custody support' : 'missing or too old. Build requires the identity-bound custody gate; the words lanes run without it.',
     gate ? null : 'npm install -g camus-cli && camus install   # or, from this repo: bash packages/cli/install.sh',
   );
 
@@ -124,7 +124,7 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
       const cache = JSON.parse(readFileSync(`${homedir()}/.codex/models_cache.json`, 'utf8'));
       const slugs = (cache.models ?? []).map((m) => m.slug).filter(Boolean);
       if (slugs.length && !slugs.includes(models.reviewer.model)) {
-        note += ` — reviewer "${models.reviewer.model}" is not in codex's model cache (${slugs.slice(0, 3).join(', ')}…); a run may fail at review`;
+        note += `. Reviewer "${models.reviewer.model}" is not in codex's model cache (${slugs.slice(0, 3).join(', ')}…); a run may fail at review.`;
       }
     } catch { /* cache absent — cannot judge, stay quiet */ }
     add('models', 'Model decisions', true, note, null);
@@ -147,7 +147,7 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   } else {
     add(
       'hivemind', 'Hivemind grounding', hm.connected,
-      hm.connected ? `${hm.mode}: ${hm.base}` : 'not connected — Myosin’s Hivemind (staging) is optional; runs proceed ungrounded',
+      hm.connected ? `${hm.mode}: ${hm.base}` : 'not connected. Myosin’s Hivemind (staging) is optional; runs proceed ungrounded.',
       hm.connected ? null : 'optional: HIVEMIND_VIA_CLAUDE=1 (Claude connector) or HIVEMIND_MCP_URL + HIVEMIND_API_KEY',
     );
   }

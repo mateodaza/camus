@@ -178,7 +178,7 @@ export async function runVerify(markdown, lane = 'freeform', { onCheck, skipNetw
       evidence: missing,
     });
   } else {
-    emit({ id: 'structure', label: 'Structure', status: 'skip', detail: 'Freeform lane — no required sections.', evidence: [] });
+    emit({ id: 'structure', label: 'Structure', status: 'skip', detail: 'Freeform lane: no required sections.', evidence: [] });
   }
 
   // Resolve citation state before checking links. A receipt-captured Hivemind
@@ -204,7 +204,7 @@ export async function runVerify(markdown, lane = 'freeform', { onCheck, skipNetw
       evidence: hasOnlyBoundInternalEvidence ? hReceiptBound.map((n) => `[H${n}]`) : [],
     });
   } else if (skipNetwork) {
-    emit({ id: 'links', label: 'Links resolve', status: 'skip', detail: `${urls.length} URL(s) found — network check skipped.`, evidence: urls });
+    emit({ id: 'links', label: 'Links resolve', status: 'skip', detail: `${urls.length} URL(s) found; network check skipped.`, evidence: urls });
   } else {
     const results = await checkUrls(urls);
     const dead = results.filter((r) => r.class === 'dead');
@@ -216,14 +216,14 @@ export async function runVerify(markdown, lane = 'freeform', { onCheck, skipNetw
       label: 'Links resolve',
       status: dead.length || unreachable.length ? 'fail' : blocked.length ? 'warn' : 'pass',
       detail: networkDown
-        ? `All ${results.length} link(s) unreachable — the network looks down; could not verify anything (this is not evidence the links are dead).`
+        ? `All ${results.length} link(s) unreachable. The network looks down; nothing could be verified (this is not evidence the links are dead).`
         : dead.length || unreachable.length
           ? [
               dead.length ? `${dead.length} of ${results.length} link(s) dead: ${dead.map((d) => `${d.url} (${d.status})`).join('; ')}` : '',
               unreachable.length ? `${unreachable.length} unreachable (could not verify): ${unreachable.map((d) => `${d.url} (${d.error})`).join('; ')}` : '',
             ].filter(Boolean).join(' · ')
           : blocked.length
-            ? `${blocked.length} link(s) bot-blocked (${blocked.map((b) => `${b.url} → ${b.status}`).join('; ')}) — the check can't verify them, open them yourself`
+            ? `${blocked.length} link(s) bot-blocked (${blocked.map((b) => `${b.url} → ${b.status}`).join('; ')}); the check can't verify them, open them yourself`
             : `All ${results.length} link(s) returned < 400`,
       evidence: [...dead, ...unreachable, ...blocked],
     });
@@ -247,7 +247,7 @@ export async function runVerify(markdown, lane = 'freeform', { onCheck, skipNetw
   const warning = hits.filter((h) => h.severity === 'warn');
   emit({
     id: 'compliance',
-    label: 'Web3 compliance phrases',
+    label: 'Compliance phrases',
     status: failing.length ? 'fail' : warning.length ? 'warn' : 'pass',
     detail: failing.length
       ? `${failing.length} blocking phrase(s): ${failing.map((h) => `“${h.match}” (${h.label})`).join('; ')}`
@@ -286,7 +286,7 @@ export async function runVerify(markdown, lane = 'freeform', { onCheck, skipNetw
       detail: dangling.length || urlless.length || unboundInternal.length
         ? [
             dangling.length ? `Marker(s) ${dangling.join(', ')} have no matching entry under Sources.` : '',
-            urlless.length ? `Source entr${urlless.length > 1 ? 'ies' : 'y'} [${urlless.join('], [')}] carr${urlless.length > 1 ? 'y' : 'ies'} no URL — a citation must point at something checkable.` : '',
+            urlless.length ? `Source entr${urlless.length > 1 ? 'ies' : 'y'} [${urlless.join('], [')}] carr${urlless.length > 1 ? 'y' : 'ies'} no URL; a citation must point at something checkable.` : '',
             unboundInternal.length ? `Hivemind marker(s) ${unboundInternal.map((n) => `[H${n}]`).join(', ')} have no matching connector result in the receipt.` : '',
           ].filter(Boolean).join(' · ')
         : `${nMarkers.length + hMarkers.length} citation marker(s) all resolve to public or receipt-bound evidence.`,

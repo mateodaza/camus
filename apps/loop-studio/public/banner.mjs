@@ -16,24 +16,24 @@ export function doneBanner(status, headline, dimensions) {
   // that shape; a tampered or torn replay can), so it must not unlock any
   // standing: evidence first, then the word.
   if (!dimensions || typeof dimensions !== 'object') {
-    return { cls: 'meh', label: `${claim} (gate claim) — the receipt does not corroborate it — this receipt carries no status dimensions (a run from before the trust dimensions, or a torn receipt). Trust the receipts, not the word.` };
+    return { cls: 'meh', label: `${claim} (gate claim). The receipt does not corroborate it: this receipt carries no status dimensions (a run from before the trust dimensions, or a torn receipt). Trust the receipts, not the word.` };
   }
   switch (headline) {
     case 'verified':
-      return { cls: 'good', label: 'DONE — reviewed and verified.' };
+      return { cls: 'good', label: 'DONE. Reviewed and verified.' };
     case 'verified_with_findings':
       // The green stands, but the caveats ride the banner itself — a plain
       // "reviewed and verified" here would hide what the receipt records.
-      return { cls: 'good', label: 'DONE — verified, with findings or caveats on the record.' };
+      return { cls: 'good', label: 'DONE. Verified, with findings or caveats on the record.' };
     case 'same_vendor_reviewed':
-      return { cls: 'meh', label: 'DONE — same-vendor reviewed. The audit ran on the maker’s own vendor; advisory review never earns independent verified standing.' };
+      return { cls: 'meh', label: 'DONE. Same-vendor reviewed: the audit ran on the maker’s own vendor, and advisory review never earns independent verified standing.' };
     case 'published':
-      return { cls: 'good', label: 'DONE — verified and published.' };
+      return { cls: 'good', label: 'DONE. Verified and published.' };
     default: {
       // Unverified, needs_decision, a headline this UI does not know, or no
       // headline at all — the claim is named as a claim, with the reason.
       const nice = (s) => String(s).replace(/_/g, ' ');
-      return { cls: 'meh', label: `${claim} (gate claim) — the receipt does not corroborate it: verification ${nice(dimensions.verification)}, audit ${nice(dimensions.audit)}. Trust the receipts, not the word.` };
+      return { cls: 'meh', label: `${claim} (gate claim). The receipt does not corroborate it: verification ${nice(dimensions.verification)}, audit ${nice(dimensions.audit)}. Trust the receipts, not the word.` };
     }
   }
 }

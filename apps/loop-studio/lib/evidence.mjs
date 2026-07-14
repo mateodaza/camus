@@ -70,10 +70,10 @@ export function deriveEvidence(events) {
 // A build ignition that produced no review round and no gate report has
 // nothing to verify, whatever its status — claiming otherwise was the bug.
 export function receiptCompleteness({ lane, evidence, writeFailed }) {
-  if (writeFailed) return { degraded: true, note: 'a receipt file failed to write — this trail is incomplete' };
+  if (writeFailed) return { degraded: true, note: 'a receipt file failed to write; this trail is incomplete' };
   if (lane === 'build') {
     if (!evidence.gateReport) {
-      return { degraded: true, note: 'the gate produced no terminal report — there is nothing here to verify' };
+      return { degraded: true, note: 'the gate produced no terminal report; there is nothing here to verify' };
     }
     if (['done', 'done_with_findings'].includes(evidence.gateReport.status)) {
       // Judge completeness by the SAME dimensions the receipt seals, so a
@@ -91,13 +91,13 @@ export function receiptCompleteness({ lane, evidence, writeFailed }) {
         missing.push('a green verification bound to the committed SHA');
       }
       if (missing.length) {
-        return { degraded: true, note: `the successful gate report is missing ${missing.join(', ')} — do not treat it as a complete receipt` };
+        return { degraded: true, note: `the successful gate report is missing ${missing.join(', ')}; do not treat it as a complete receipt` };
       }
     }
     return { degraded: false, note: null };
   }
   if (lane !== 'build' && evidence.rounds.length === 0) {
-    return { degraded: true, note: 'the run produced no independent review round — there is nothing here to verify' };
+    return { degraded: true, note: 'the run produced no independent review round; there is nothing here to verify' };
   }
   return { degraded: false, note: null };
 }
