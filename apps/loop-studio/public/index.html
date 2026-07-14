@@ -24,6 +24,10 @@
       <div class="pills">
         <span id="pill-engine" class="pill">engine…</span>
         <span id="pill-hivemind" class="pill">hivemind…</span>
+        <!-- Auth preflight (live engine only): what the spend-free probes proved,
+             before a run spends anything. Rehearsal spends nothing, so mock hides them. -->
+        <span id="pill-claude-auth" class="pill hidden">claude: checking…</span>
+        <span id="pill-codex-auth" class="pill hidden">codex: checking…</span>
       </div>
       <p class="scope">The camus loop, watchable: research and analysis on any topic, and a Build lane that runs the gate on your own code. Marketing is the tuned vertical, grounded in Myosin's Hivemind.</p>
       <div class="tools">
@@ -91,6 +95,9 @@
         <label class="lbl" for="target-path">Target repository</label>
         <input id="target-path" class="path-input" placeholder="~/path/to/a/git/repo" autocomplete="off" />
         <div class="hint">The gate runs in that repo: isolated worktree, cross-model review, your tests as the verdict. Stop is safe — its receipts survive and Resume continues.</div>
+        <!-- Filled from the doctor's auth preflight when a CLI is proven signed out;
+             a warning, not a gate — the probes can be stale in either direction. -->
+        <div id="preflight-note" class="hint preflight hidden"></div>
       </div>
 
       <div class="row">

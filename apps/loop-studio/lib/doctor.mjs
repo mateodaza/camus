@@ -15,10 +15,28 @@ const probe = (cmd, args, timeout = 20_000) =>
     ),
   );
 
+// Tri-state auth from a spend-free probe's output. null = the probe could not
+// run (CLI missing, nonzero exit, timeout) — UNKNOWN, never guessed toward
+// green. An explicit negation is checked FIRST: "Not logged in" printed with
+// exit 0 must read false, not match the "logged in" substring (a false green
+// here would put a reassuring chip in front of a run that will 401). And a
+// probe that says logged-in still only proves a STORED session — a stale one
+// can 401 at inference; the run stream stays the authoritative signal.
+export const parseAuthProbe = (raw) => {
+  if (raw == null) return null;
+  // Structured claims first (claude can answer JSON), then explicit prose
+  // negations, then prose sign-in — with REAL whitespace, so the bare
+  // `loggedIn` JSON key can never satisfy the prose match on its own.
+  if (/loggedIn"?\s*:\s*true/i.test(raw)) return true;
+  if (/loggedIn"?\s*:\s*false/i.test(raw)) return false;
+  if (/not\s+logged\s+in|logged\s+out|no\s+credentials/i.test(raw)) return false;
+  return /logged\s+in/i.test(raw);
+};
+
 // deep=true adds the slow checks (claude mcp list health round-trip).
 export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   const checks = [];
-  const add = (id, label, ok, detail, fix = null) => checks.push({ id, label, ok, detail, fix });
+  const add = (id, label, ok, detail, fix = null, extra = {}) => checks.push({ id, label, ok, detail, fix, ...extra });
 
   add('node', 'Node.js', true, process.version, null);
 
@@ -35,9 +53,12 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
     claudeV ? fullProbe('claude', ['auth', 'status']) : Promise.resolve(null),
     codexV ? fullProbe('codex', ['login', 'status']) : Promise.resolve(null),
   ]);
-  const claudeAuthed = claudeAuthRaw === null ? null : /loggedIn"?\s*:\s*true|logged in/i.test(claudeAuthRaw);
-  const codexAuthed = codexAuthRaw === null ? null : /logged in/i.test(codexAuthRaw);
+  const claudeAuthed = parseAuthProbe(claudeAuthRaw);
+  const codexAuthed = parseAuthProbe(codexAuthRaw);
 
+  // `auth` rides each CLI check structurally (true/false/null) so the launch
+  // view's preflight chips consume the doctor's judgement instead of
+  // re-parsing detail strings.
   add(
     'claude', 'Claude Code CLI', !!claudeV && claudeAuthed !== false,
     !claudeV ? 'not found on PATH — the maker cannot run'
@@ -45,6 +66,7 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
       : `${claudeV}${claudeAuthed ? ' · signed in' : ''}`,
     !claudeV ? 'npm install -g @anthropic-ai/claude-code   # then run `claude` once and sign in'
       : claudeAuthed === false ? 'claude   # opens the sign-in flow' : null,
+    { auth: claudeAuthed },
   );
   add(
     'codex', 'Codex CLI (the reviewer)', !!codexV && codexAuthed !== false,
@@ -53,6 +75,7 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
       : `${codexV}${codexAuthed ? ' · signed in' : ''}`,
     !codexV ? 'npm install -g @openai/codex   # then run `codex` once and sign in'
       : codexAuthed === false ? 'codex login' : null,
+    { auth: codexAuthed },
   );
   add(
     'git', 'git', !!gitV,

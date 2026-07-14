@@ -54,6 +54,8 @@ a { color: inherit; }
 }
 .pill.ok { color: var(--ink); }
 .pill.warn { color: var(--muted); }
+.pill.bad { color: var(--red); background: transparent; box-shadow: inset 0 0 0 1px var(--red); }
+.hint.preflight { color: var(--red); margin-top: 8px; }
 .scope { margin: 14px auto 0; max-width: 460px; font-size: 13.5px; color: var(--muted); line-height: 1.5; }
 .tools { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
 

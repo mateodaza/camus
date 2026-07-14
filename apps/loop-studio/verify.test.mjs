@@ -893,4 +893,23 @@ if (process.env.TEST_NETWORK === '1') {
   assert.equal(reviewer?.effort, 'high', 'the reviewer effort comes from the snapshot, not a live read');
 }
 
+// --- auth preflight: the tri-state probe parser never invents a green --------
+// The launch chips consume the doctor's judgement; this parser IS that
+// judgement, so its honesty is load-bearing: unknown stays unknown, and an
+// explicit "Not logged in" (even printed with exit 0) must never match the
+// "logged in" substring into a false green — the chip would reassure a user
+// straight into a 401.
+{
+  const { parseAuthProbe } = await import('./lib/doctor.mjs');
+  assert.equal(parseAuthProbe(null), null, 'probe could not run → unknown, never guessed');
+  assert.equal(parseAuthProbe('Logged in as mateo@example.com'), true, 'claude prose sign-in parses');
+  assert.equal(parseAuthProbe('{"loggedIn": true, "method": "oauth"}'), true, 'claude JSON sign-in parses');
+  assert.equal(parseAuthProbe('Logged in using ChatGPT'), true, 'codex prose sign-in parses');
+  assert.equal(parseAuthProbe('Not logged in'), false, 'an explicit negation is FALSE, never a substring false-green');
+  assert.equal(parseAuthProbe('not logged in (run codex login)'), false, 'negation wins whatever the casing/suffix');
+  assert.equal(parseAuthProbe('Logged out'), false, 'logged-out phrasing is false');
+  assert.equal(parseAuthProbe('{"loggedIn": false}'), false, 'JSON signed-out parses false');
+  assert.equal(parseAuthProbe('some unrelated banner text'), false, 'a successful probe with no sign-in claim is false, not unknown');
+}
+
 console.log('verify.test: all assertions passed');

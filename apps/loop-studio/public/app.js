@@ -159,10 +159,14 @@ async function boot() {
     }
     if (s.engine !== 'mock') {
       // Live engine: quietly check the machine and surface the setup panel
-      // only when something is actually missing.
+      // only when something is actually missing. The same doctor pass feeds
+      // the auth preflight chips — visible before a run spends anything.
+      $('pill-claude-auth').classList.remove('hidden');
+      $('pill-codex-auth').classList.remove('hidden');
       fetch(`${API}/api/doctor`).then((r) => r.json()).then((report) => {
         if (!report.ok) renderSetup(report);
-      }).catch(() => {});
+        renderAuthPreflight(report);
+      }).catch(() => renderAuthPreflight(null));
     }
   } catch {
     // Not cosmetic in hosted-UI mode: an unreachable local server is the
@@ -174,6 +178,44 @@ async function boot() {
     renderInstall();
   }
   loadRecents();
+}
+
+// Auth preflight chips (live engine): the doctor's tri-state judgement,
+// verbatim — signed in / not signed in / unknown. The chip never invents a
+// green: a probe that could not run reads "unknown", and even a signed-in
+// probe only proves a STORED session (a stale one can 401 at inference — the
+// run stream stays the authoritative signal; the tooltip says so). The Build
+// lane's target block gets a warning line when a CLI is PROVEN signed out,
+// because that run will fail at the maker or the review — a warning, not a
+// gate: the probes can be stale in either direction, so Run stays enabled.
+function renderAuthPreflight(report) {
+  const checkOf = (id) => report?.checks?.find((c) => c.id === id) ?? null;
+  const probeName = { claude: 'claude auth status', codex: 'codex login status' };
+  const signedOut = [];
+  for (const id of ['claude', 'codex']) {
+    const pill = $(`pill-${id}-auth`);
+    if (!pill) continue;
+    const check = checkOf(id);
+    const auth = check ? check.auth : null;
+    pill.textContent = `${id}: ${auth === true ? 'signed in' : auth === false ? 'not signed in' : 'unknown'}`;
+    pill.classList.remove('ok', 'warn', 'bad');
+    pill.classList.add(auth === true ? 'ok' : auth === false ? 'bad' : 'warn');
+    pill.title = auth === true
+      ? `Spend-free probe (${probeName[id]}): a session is stored. A stale session can still fail at inference — the run stream is the authoritative signal.`
+      : auth === false
+        ? `${check?.detail || 'Not signed in.'}${check?.fix ? ` Fix: ${check.fix}` : ''}`
+        : (check?.detail || `Could not verify (${probeName[id]} did not answer) — see Setup.`);
+    if (auth === false) signedOut.push(id);
+  }
+  const note = $('preflight-note');
+  if (!note) return;
+  if (signedOut.length) {
+    note.classList.remove('hidden');
+    note.textContent = `Preflight: ${signedOut.join(' and ')} ${signedOut.length > 1 ? 'are' : 'is'} not signed in — a live gate run will fail at ${signedOut.includes('claude') ? 'the maker' : 'the review'}. Sign in first (fixes in Setup).`;
+  } else {
+    note.classList.add('hidden');
+    note.textContent = '';
+  }
 }
 
 // ---------------------------------------------------------------------------
