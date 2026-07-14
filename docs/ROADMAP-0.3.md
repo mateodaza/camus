@@ -5,6 +5,11 @@
 > Camus surrenders choreography, keeps custody. Every trust item below survives;
 > bookend/forward become audit-timing policies rather than the lead, and automatic
 > routing waits for calibration data. The revised implementation order lives there.
+>
+> **Next direction adopted 2026-07-14 — see
+> [COMPARE-AND-LEARN-DIRECTION.md](COMPARE-AND-LEARN-DIRECTION.md).** Native
+> orchestrators become executor arms inside a local, evidence-bound comparison
+> harness. Human authority and independent closure remain non-negotiable.
 
 Consolidated from VELOCITY-DIRECTION.md, HARNESS-DIRECTION.md, and the 0.2.5 smoke/audit
 arc (2026-06-12). Items are ordered by decided-ness, not by build order.

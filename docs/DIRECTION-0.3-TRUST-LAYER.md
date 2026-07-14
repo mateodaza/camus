@@ -27,6 +27,12 @@ resume semantics, honest statuses, bounded loops, deterministic verification,
 human decisions on P0). `bookend`/`forward` become audit-timing policies, not
 the headline. Automatic routing waits for calibration data.
 
+The adopted next direction is
+[COMPARE-AND-LEARN-DIRECTION.md](COMPARE-AND-LEARN-DIRECTION.md). It turns steps
+6–9 below into an experiment harness for stronger native orchestrators while
+keeping Camus's human decision boundary, evidence custody, statistical
+honesty, and independent closure.
+
 ## Why (evidence, not vibes)
 
 - The studio's first live gate ignition was misread because the reader parsed
