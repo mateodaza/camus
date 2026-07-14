@@ -1,0 +1,108 @@
+{
+  "$id": "https://camus.sh/schemas/experiment/v1",
+  "title": "Camus experiment record v1",
+  "description": "A local, evidence-bound experiment manifest and outcome. v1 covers audit-only replay: one unchanged artifact, a frozen reviewer catalog decision, no silent fallback, usage observations when available, judge overlap, and failed arms kept as data.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "experiment_id", "mode", "created_at", "source", "manifest", "outcome"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "experiment_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "mode": { "const": "audit_only_replay" },
+    "created_at": { "type": "integer" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "artifact_id", "receipt_id"],
+      "properties": {
+        "run_id": { "type": "string" },
+        "artifact_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "receipt_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["arm_id", "knowledge_snapshot_id", "knowledge_privacy", "catalog", "reviewer", "effort", "fallback_policy"],
+      "properties": {
+        "arm_id": { "type": "string" },
+        "knowledge_snapshot_id": { "type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$" },
+        "knowledge_privacy": { "enum": ["none", "internal", "secret_redacted"] },
+        "catalog": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["resolved_at", "reviewer_source", "reviewer_models"],
+          "properties": {
+            "resolved_at": { "type": "integer" },
+            "reviewer_source": { "enum": ["codex_cache", "fallback"] },
+            "reviewer_models": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "reviewer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requested", "resolved"],
+          "properties": {
+            "requested": { "type": "string" },
+            "resolved": { "type": "string" }
+          }
+        },
+        "effort": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requested", "semantics"],
+          "properties": {
+            "requested": { "enum": ["low", "medium", "high", "xhigh"] },
+            "semantics": { "const": "requested_only" }
+          }
+        },
+        "fallback_policy": { "const": "none" }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "artifact_id", "receipt_id", "auditor_actual", "effort_actual", "judge_overlap", "usage", "failure", "confounded"],
+      "properties": {
+        "status": { "enum": ["running", "completed", "infra_failed", "stopped"] },
+        "artifact_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "receipt_id": { "type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$" },
+        "auditor_actual": { "type": ["string", "null"] },
+        "effort_actual": { "type": ["string", "null"] },
+        "judge_overlap": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["arm_provider", "judge_provider", "same_vendor", "same_family"],
+          "properties": {
+            "arm_provider": { "type": "string" },
+            "judge_provider": { "type": ["string", "null"] },
+            "same_vendor": { "type": ["boolean", "null"] },
+            "same_family": { "type": ["boolean", "null"] }
+          }
+        },
+        "usage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["input_tokens", "cached_input_tokens", "output_tokens", "duration_ms"],
+          "properties": {
+            "input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+            "cached_input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+            "output_tokens": { "type": ["integer", "null"], "minimum": 0 },
+            "duration_ms": { "type": ["integer", "null"], "minimum": 0 }
+          }
+        },
+        "failure": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["stage", "code", "detail"],
+          "properties": {
+            "stage": { "type": "string" },
+            "code": { "type": "string" },
+            "detail": { "type": "string" }
+          }
+        },
+        "confounded": { "type": "boolean" }
+      }
+    }
+  }
+}

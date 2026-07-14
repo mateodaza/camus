@@ -9,8 +9,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DIMENSIONS, HEADLINES, deriveHeadline, allCombinations, validStatus } from './lib/status.mjs';
 import { canonicalize, canonicalString, computeArtifactId, computeReceiptId, artifactMatches, receiptMatches, seal, artifactProjection } from './lib/canonical.mjs';
+import { computeExperimentId, experimentMatches, sealExperiment } from './lib/experiment.mjs';
 import { scrubSecrets, scrubPaths, redactFinding } from './lib/redact.mjs';
-import { validateStatus, validatePairingManifest, validateEvidencePack, validateBenchmarkRecord, validateHumanDecision, validateEconomics } from './lib/validate.mjs';
+import { validateStatus, validatePairingManifest, validateEvidencePack, validateBenchmarkRecord, validateHumanDecision, validateEconomics, validateExperimentRecord } from './lib/validate.mjs';
 
 // --- status: exhaustive totality + protocol invariants ----------------------
 {
@@ -73,6 +74,12 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
   for (const dim of Object.keys(DIMENSIONS)) {
     assert.deepEqual(schema.properties[dim].enum, DIMENSIONS[dim], `schema and code agree on ${dim}`);
   }
+  const packV2Schema = JSON.parse(readFileSync(new URL('./schemas/evidence-pack.v2.schema.json', import.meta.url)));
+  assert.equal(packV2Schema.properties.schemaVersion.const, 2, 'coverage extends the protocol through evidence-pack v2');
+  assert.ok(packV2Schema.properties.artifact.required.includes('contract_coverage'), 'v2 schema requires an explicit coverage state');
+  const experimentSchema = JSON.parse(readFileSync(new URL('./schemas/experiment.v1.schema.json', import.meta.url)));
+  assert.equal(experimentSchema.properties.mode.const, 'audit_only_replay', 'experiment v1 starts with audit-only replay');
+  assert.ok(experimentSchema.properties.outcome.required.includes('failure'), 'failed arms are first-class records');
 }
 
 // --- canonicalization + artifact identity ------------------------------------
@@ -86,6 +93,71 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
   assert.throws(() => canonicalString({ n: Infinity }), TypeError, 'non-finite numbers refused');
   assert.equal(canonicalize(-0), 0, '-0 canonicalizes to 0');
 
+}
+
+// --- experiment identity + failed-arm honesty --------------------------------
+{
+  const sourceArtifact = 'sha256:' + 'a'.repeat(64);
+  const sourceReceipt = 'sha256:' + 'b'.repeat(64);
+  const draft = {
+    schemaVersion: 1,
+    mode: 'audit_only_replay',
+    created_at: 10,
+    source: { run_id: 'run-1', artifact_id: sourceArtifact, receipt_id: sourceReceipt },
+    manifest: {
+      arm_id: 'audit-1',
+      knowledge_snapshot_id: null,
+      knowledge_privacy: 'none',
+      catalog: { resolved_at: 10, reviewer_source: 'codex_cache', reviewer_models: ['gpt-5.4', 'gpt-5.6-sol'] },
+      reviewer: { requested: 'openai:gpt-5.4', resolved: 'openai:gpt-5.4' },
+      effort: { requested: 'high', semantics: 'requested_only' },
+      fallback_policy: 'none',
+    },
+    outcome: {
+      status: 'running',
+      artifact_id: sourceArtifact,
+      receipt_id: null,
+      auditor_actual: null,
+      effort_actual: null,
+      judge_overlap: { arm_provider: 'anthropic', judge_provider: null, same_vendor: null, same_family: null },
+      usage: { input_tokens: null, cached_input_tokens: null, output_tokens: null, duration_ms: null },
+      failure: null,
+      confounded: false,
+    },
+  };
+  const planned = sealExperiment(draft);
+  assert.equal(validateExperimentRecord(planned).ok, true, 'running experiment record validates');
+  assert.ok(experimentMatches(planned), 'experiment id matches the frozen manifest');
+
+  const completed = {
+    ...planned,
+    outcome: {
+      ...planned.outcome,
+      status: 'completed',
+      receipt_id: 'sha256:' + 'c'.repeat(64),
+      auditor_actual: 'openai:gpt-5.4',
+      effort_actual: 'high',
+      judge_overlap: { arm_provider: 'anthropic', judge_provider: 'openai', same_vendor: false, same_family: false },
+      usage: { input_tokens: 1200, cached_input_tokens: 300, output_tokens: 240, duration_ms: 9000 },
+    },
+  };
+  assert.equal(validateExperimentRecord(completed).ok, true, 'completed arm preserves the planned experiment identity');
+  assert.equal(computeExperimentId(completed), planned.experiment_id, 'outcome never rewrites which experiment was planned');
+
+  const differentEffort = { ...planned, manifest: { ...planned.manifest, effort: { requested: 'low', semantics: 'requested_only' } } };
+  assert.notEqual(computeExperimentId(differentEffort), planned.experiment_id, 'a different requested effort is a different experiment');
+  assert.equal(validateExperimentRecord({ ...completed, outcome: { ...completed.outcome, artifact_id: 'sha256:' + 'd'.repeat(64) } }).ok, false, 'audit-only replay cannot change artifact identity');
+
+  const failed = {
+    ...planned,
+    outcome: {
+      ...planned.outcome,
+      status: 'infra_failed',
+      failure: { stage: 'audit', code: 'model_unavailable', detail: 'resolved reviewer disappeared' },
+    },
+  };
+  assert.equal(validateExperimentRecord(failed).ok, true, 'failed arms remain valid experiment data');
+  assert.equal(validateExperimentRecord({ ...planned, surprise: true }).ok, false, 'unknown experiment fields fail loudly');
 }
 
 // --- the two identities: artifact vs receipt -----------------------------------
@@ -116,6 +188,14 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
   assert.match(sealed.artifact_id, /^sha256:[0-9a-f]{64}$/);
   assert.match(sealed.receipt_id, /^sha256:[0-9a-f]{64}$/);
   assert.notEqual(sealed.artifact_id, sealed.receipt_id);
+  assert.ok(validateEvidencePack(sealed).ok, 'a sealed research pack with a claim ledger validates');
+  assert.ok(!validateEvidencePack({ ...sealed, artifact: { ...sealed.artifact, claims: [{ ...sealed.artifact.claims[0], decision: 'unsupported' }] } }).ok,
+    'editing a judgment without resealing is a receipt-id mismatch');
+  assert.ok(!validateEvidencePack({ ...sealed, artifact: { ...sealed.artifact, claims: [{ ...sealed.artifact.claims[0], url: 'https://example.com/tampered' }] } }).ok,
+    'editing claim meaning without resealing is an artifact-id mismatch');
+  const duplicateClaims = [{ ...sealed.artifact.claims[0] }, { ...sealed.artifact.claims[0], claim: 'a second claim' }];
+  assert.ok(!validateEvidencePack({ ...sealed, artifact: { ...sealed.artifact, claims: duplicateClaims } }).ok,
+    'duplicate claim markers are structurally ambiguous and refused');
 
   // Judgment changes mint a NEW RECEIPT over the SAME ARTIFACT.
   for (const mutate of [
@@ -150,6 +230,49 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
   assert.ok(artifactMatches(sealed, sealed.artifact_id));
   assert.ok(receiptMatches(sealed, sealed.receipt_id));
   assert.ok(!artifactMatches({ ...sealed, goal: 'g2' }, sealed.artifact_id), 'expiry check works');
+
+  // v2 adds deterministic contract criteria to artifact meaning while their
+  // auditor decisions remain receipt-side judgment. v1 stays byte-semantically
+  // on projection version 1; the protocol is extended, never edited in place.
+  const v2Base = {
+    ...basePack,
+    schemaVersion: 2,
+    artifact: {
+      ...basePack.artifact,
+      contract_coverage: [{ id: 'C1', text: 'every stat cited to a live URL', decision: 'met' }],
+    },
+  };
+  const sealedV2 = seal(v2Base);
+  assert.equal(artifactProjection(v2Base).projectionVersion, 2, 'v2 uses the coverage-aware artifact projection');
+  assert.ok(validateEvidencePack(sealedV2).ok, JSON.stringify(validateEvidencePack(sealedV2)));
+  const changedCoverageDecision = {
+    ...v2Base,
+    statuses: { ...v2Base.statuses, audit: 'independent_findings' },
+    artifact: { ...v2Base.artifact, contract_coverage: [{ ...v2Base.artifact.contract_coverage[0], decision: 'unmet' }] },
+  };
+  const findingsBaseline = { ...v2Base, statuses: { ...v2Base.statuses, audit: 'independent_findings' } };
+  assert.equal(computeArtifactId(changedCoverageDecision), computeArtifactId(findingsBaseline), 'coverage judgment stays out of artifact identity');
+  const findingsBaselineId = computeArtifactId(findingsBaseline);
+  assert.notEqual(
+    computeReceiptId({ ...changedCoverageDecision, artifact_id: findingsBaselineId }),
+    computeReceiptId({ ...findingsBaseline, artifact_id: findingsBaselineId }),
+    'coverage judgment enters receipt identity',
+  );
+  assert.notEqual(
+    computeArtifactId({ ...v2Base, artifact: { ...v2Base.artifact, contract_coverage: [{ ...v2Base.artifact.contract_coverage[0], text: 'a different criterion' }] } }),
+    sealedV2.artifact_id,
+    'changing the extracted criterion expires the artifact',
+  );
+  const unclearClean = seal({
+    ...v2Base,
+    artifact: { ...v2Base.artifact, contract_coverage: [{ ...v2Base.artifact.contract_coverage[0], decision: 'unclear' }] },
+  });
+  assert.ok(!validateEvidencePack(unclearClean).ok, 'clean standing conflicts with unclear coverage');
+  assert.throws(
+    () => seal({ ...basePack, artifact: { ...basePack.artifact, contract_coverage: [] } }),
+    /unknown field/,
+    'v1 refuses the v2 field rather than silently changing its hash contract',
+  );
 }
 
 // --- redaction ----------------------------------------------------------------

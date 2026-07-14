@@ -80,20 +80,24 @@ function pick(obj, { take, ignore = [] }, path) {
 
 // --- artifact identity: what the work IS ---------------------------------------
 // Covers: acceptance contract, goal, and the produced artifact (code refs or
-// research deliverable + claims WITHOUT their audit decisions — a claim's
-// text/marker/url/evidence are inputs; the decision about it is judgment and
-// belongs to the receipt).
+// research deliverable + claims WITHOUT their audit decisions, plus v2's
+// deterministically extracted contract criteria WITHOUT their decisions.
+// Claim/criterion meaning is artifact input; the auditor's decision belongs
+// to the receipt.
 
-export const ARTIFACT_PROJECTION_VERSION = 1;
+export const ARTIFACT_PROJECTION_VERSION = 2;
 
 export function artifactProjection(pack) {
+  if (![1, 2].includes(pack?.schemaVersion)) throw new TypeError(`artifactProjection: unsupported evidence-pack schemaVersion ${pack?.schemaVersion}`);
   const p = pick(pack, {
     take: ['schemaVersion', 'goal', 'acceptance_contract', 'artifact'],
     ignore: ['artifact_id', 'receipt_id', 'verification', 'session_log', 'pairing', 'statuses', 'human_decisions', 'economics', 'created_at'],
   }, 'artifactProjection(pack)');
 
   const a = pick(p.artifact, {
-    take: ['kind', 'repo', 'head', 'diff_hash', 'changed_files', 'deliverable_hash', 'claims'],
+    take: pack.schemaVersion === 2
+      ? ['kind', 'repo', 'head', 'diff_hash', 'changed_files', 'deliverable_hash', 'claims', 'contract_coverage']
+      : ['kind', 'repo', 'head', 'diff_hash', 'changed_files', 'deliverable_hash', 'claims'],
     ignore: [],
   }, 'artifactProjection(pack.artifact)');
 
@@ -102,7 +106,13 @@ export function artifactProjection(pack) {
       pick(c, { take: ['claim', 'marker', 'url', 'evidence_hash', 'retrieved_at'], ignore: ['decision'] }, `artifactProjection(claims[${i}])`),
     );
   }
-  return { projectionVersion: ARTIFACT_PROJECTION_VERSION, ...p, artifact: a };
+  if (pack.schemaVersion === 2 && Array.isArray(a.contract_coverage)) {
+    a.contract_coverage = a.contract_coverage.map((c, i) =>
+      pick(c, { take: ['id', 'text'], ignore: ['decision'] }, `artifactProjection(contract_coverage[${i}])`),
+    );
+  }
+  const projectionVersion = pack.schemaVersion === 2 ? ARTIFACT_PROJECTION_VERSION : 1;
+  return { projectionVersion, ...p, artifact: a };
 }
 
 export function computeArtifactId(pack) {
@@ -113,9 +123,10 @@ export function computeArtifactId(pack) {
 // Covers: the artifact_id it binds to, pairing, verification, claim decisions,
 // human decisions, economics, and the raw status dimensions.
 
-export const RECEIPT_PROJECTION_VERSION = 1;
+export const RECEIPT_PROJECTION_VERSION = 2;
 
 export function receiptProjection(pack) {
+  if (![1, 2].includes(pack?.schemaVersion)) throw new TypeError(`receiptProjection: unsupported evidence-pack schemaVersion ${pack?.schemaVersion}`);
   if (!/^sha256:[0-9a-f]{64}$/.test(pack?.artifact_id ?? '')) {
     throw new TypeError('receiptProjection: pack.artifact_id must be set first — a receipt binds to an artifact');
   }
@@ -124,13 +135,25 @@ export function receiptProjection(pack) {
     ignore: ['receipt_id', 'goal', 'acceptance_contract', 'artifact', 'created_at'],
   }, 'receiptProjection(pack)');
 
-  // Claim decisions are audit judgment: they live under artifact.claims for
-  // locality but hash on the receipt side, keyed by marker.
+  // Claim and contract-coverage decisions are audit judgment: they live under
+  // the artifact for locality but hash on the receipt side.
   const claims = pack.artifact?.claims;
   const claimDecisions = Array.isArray(claims)
     ? claims.map((c) => ({ marker: c.marker, decision: c.decision ?? null }))
     : null;
-  return { projectionVersion: RECEIPT_PROJECTION_VERSION, ...p, claim_decisions: claimDecisions };
+  if (pack.schemaVersion === 1) {
+    return { projectionVersion: 1, ...p, claim_decisions: claimDecisions };
+  }
+  const coverage = pack.artifact?.contract_coverage;
+  const coverageDecisions = Array.isArray(coverage)
+    ? coverage.map((c) => ({ id: c.id, decision: c.decision ?? null }))
+    : null;
+  return {
+    projectionVersion: RECEIPT_PROJECTION_VERSION,
+    ...p,
+    claim_decisions: claimDecisions,
+    coverage_decisions: coverageDecisions,
+  };
 }
 
 export function computeReceiptId(pack) {
