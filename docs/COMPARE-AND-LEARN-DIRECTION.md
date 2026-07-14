@@ -186,7 +186,17 @@ optimize for work that survives reality, not work that merely wins model votes.
    2026-07-14:** Studio re-audits a validated research pack with no maker,
    retrieval, or fallback; preserves `artifact_id`; mints a new `receipt_id`;
    records usage/overlap; and keeps rehearsals non-evidence.
-4. Add parallel arms with frozen knowledge and no silent fallback.
+4. Add parallel arms with frozen knowledge and no silent fallback. **Complete
+   locally 2026-07-14:** Studio freezes the task controls, model catalog,
+   acceptance contract, reviewer, round cap, and one content-addressed local
+   knowledge snapshot before launching two or three concurrent executor arms.
+   Arms cannot retrieve live knowledge or publish, keep separate evidence
+   packs, record requested/resolved/actual identities and observed usage, and
+   retain quality-floor failures, infra failures, and stops. Recovery reads
+   sealed child receipts and marks interrupted arms failed; it never hides a
+   crash by silently rerunning models or retrieval. Advisory review is visible
+   but cannot clear the independent quality floor. The experiment makes no
+   winner claim yet.
 5. Add blinded, structured, dual-vendor comparison with human disagreement
    handling.
 6. Build the local calibration view, retaining failed arms and uncertainty.
