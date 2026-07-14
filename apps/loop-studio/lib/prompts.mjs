@@ -26,11 +26,11 @@ export function depthBrief(depth) {
     : 'Target 700–1,100 words with 4–6 distinct sources. Depth "quick": favor precision over coverage.';
 }
 
-const contractBlock = (acceptanceContract) => `ACCEPTANCE CONTRACT — the result is only acceptable if this is true:\n${acceptanceContract || 'No explicit contract was supplied (legacy run); do not infer one.'}`;
+const contractBlock = (acceptanceContract) => `ACCEPTANCE CONTRACT — the result is only acceptable if this is true:\n${acceptanceContract || 'No explicit contract was supplied (legacy run); do not infer one.'}\nThis contract outranks generic length, source-count, and query-count suggestions below. Never add material merely to hit those defaults.`;
 
 export function makePrompt({ goal, acceptanceContract, lane, depth, grounding, answers }) {
   const groundingBlock = grounding === 'claude'
-    ? `\n\nGROUNDING — Myosin's specialist marketing knowledge is available through its managed Hivemind connector. First use ToolSearch with "select:${CLAUDE_HIVEMIND_TOOL}" to load the exact tool. Before drafting, run 2-4 focused knowledge_search queries on the goal's key angles. Where a returned chunk shapes a claim, cite it [H1], [H2], … and list each under a "### Hivemind" subsection inside ## Sources as "[Hn] Title — Author". If the tool errors or returns nothing relevant, draft without it — never fabricate an [Hn] citation.`
+    ? `\n\nGROUNDING — Myosin's specialist marketing knowledge is available through its managed Hivemind connector. First use ToolSearch with "select:${CLAUDE_HIVEMIND_TOOL}" to load the exact tool. Before drafting, normally run 2-4 focused knowledge_search queries on the goal's key angles; use fewer when the acceptance contract explicitly narrows the query or source scope. Where a returned chunk shapes a claim, cite it [H1], [H2], … and list each under a "### Hivemind" subsection inside ## Sources as "[Hn] Title — Author". If the tool errors or returns nothing relevant, draft without it — never fabricate an [Hn] citation.`
     : grounding?.length
       ? `\n\nGROUNDING — internal knowledge retrieved from Hivemind (Myosin's specialist network). Prefer these over general knowledge where they apply, and cite them as [H1], [H2], … in a "### Hivemind" subsection under Sources ("[Hn] Title — Author"):\n${grounding
           .map((g, i) => `[H${i + 1}] ${g.title}\n${g.text}`)

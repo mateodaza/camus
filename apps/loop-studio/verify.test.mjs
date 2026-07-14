@@ -227,6 +227,8 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   const mk = makePrompt({ goal: 'g', lane: 'research_memo', depth: 'quick', grounding: 'claude', answers: [] });
   assert.ok(mk.includes('select:mcp__claude_ai_Hivemind_Staging__knowledge_search'), 'make prompt loads the exact managed MCP tool');
   assert.ok(mk.includes('never fabricate'), 'make prompt forbids fabricated [Hn]');
+  assert.ok(mk.includes('contract outranks generic length, source-count, and query-count'), 'the explicit trust contract wins over generic depth defaults');
+  assert.ok(mk.includes('use fewer when the acceptance contract explicitly narrows'), 'managed grounding does not override a narrow query contract');
   const fx = fixPrompt({ goal: 'g', lane: 'research_memo', draft: 'd', findings: [], answers: [], viaClaude: true });
   assert.ok(fx.includes('select:mcp__claude_ai_Hivemind_Staging__knowledge_search'), 'fix prompt can reload the managed tool');
 
