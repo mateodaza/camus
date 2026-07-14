@@ -154,7 +154,7 @@ async function checkUrls(urls, batch = 8) {
 // status: 'pass' | 'fail' | 'warn' | 'skip'
 // ---------------------------------------------------------------------------
 
-export async function runVerify(markdown, lane = 'freeform', { onCheck, skipNetwork = false } = {}) {
+export async function runVerify(markdown, lane = 'freeform', { onCheck, skipNetwork = false, groundingResults = [] } = {}) {
   const checks = [];
   const emit = (c) => {
     checks.push(c);
@@ -181,15 +181,27 @@ export async function runVerify(markdown, lane = 'freeform', { onCheck, skipNetw
     emit({ id: 'structure', label: 'Structure', status: 'skip', detail: 'Freeform lane — no required sections.', evidence: [] });
   }
 
+  // Resolve citation state before checking links. A receipt-captured Hivemind
+  // result is checkable internal evidence even when the connector returns no
+  // public URL; a prose-only [Hn] claim is not.
+  const bodyOnly = markdown.split(/^#{1,3}\s+Sources\s*$/im)[0];
+  const srcSection = markdown.split(/^#{1,3}\s+Sources\s*$/im)[1] ?? '';
+  const hMarkers = [...new Set([...bodyOnly.matchAll(/\[H(\d+)\]/gi)].map((m) => m[1]))];
+  const hDefined = new Set([...srcSection.matchAll(/\[H(\d+)\]/gi)].map((m) => m[1]));
+  const hReceiptBound = hMarkers.filter((n) => hDefined.has(n) && groundingResults[Number(n) - 1]);
+  const hasOnlyBoundInternalEvidence = hMarkers.length > 0 && hReceiptBound.length === hMarkers.length;
+
   // 2. Links resolve
   const urls = extractUrls(markdown);
   if (!urls.length) {
     emit({
       id: 'links',
       label: 'Links resolve',
-      status: lane === 'freeform' ? 'warn' : 'fail',
-      detail: 'No URLs found. A researched deliverable must cite live sources.',
-      evidence: [],
+      status: hasOnlyBoundInternalEvidence ? 'pass' : lane === 'freeform' ? 'warn' : 'fail',
+      detail: hasOnlyBoundInternalEvidence
+        ? `No public URL was returned; ${hReceiptBound.length} Hivemind citation(s) are bound to connector results captured in this receipt.`
+        : 'No URLs found. A researched deliverable must cite live sources or receipt-bound internal evidence.',
+      evidence: hasOnlyBoundInternalEvidence ? hReceiptBound.map((n) => `[H${n}]`) : [],
     });
   } else if (skipNetwork) {
     emit({ id: 'links', label: 'Links resolve', status: 'skip', detail: `${urls.length} URL(s) found — network check skipped.`, evidence: urls });
@@ -248,10 +260,7 @@ export async function runVerify(markdown, lane = 'freeform', { onCheck, skipNetw
   // 5. Sources section sanity: every [n] and [Hn] marker used in the body must
   // map to an entry under ## Sources. Markers are collected from the body only,
   // so a Sources entry can't vouch for itself.
-  const bodyOnly = markdown.split(/^#{1,3}\s+Sources\s*$/im)[0];
-  const srcSection = markdown.split(/^#{1,3}\s+Sources\s*$/im)[1] ?? '';
   const nMarkers = [...new Set([...bodyOnly.matchAll(/\[(\d+)\]/g)].map((m) => m[1]))];
-  const hMarkers = [...new Set([...bodyOnly.matchAll(/\[H(\d+)\]/gi)].map((m) => m[1]))];
   if (nMarkers.length || hMarkers.length) {
     // Parse entries structurally: entry number -> its line's URL (if any).
     // A used [n] must map to an entry that itself carries an http(s) URL —
@@ -264,26 +273,27 @@ export async function runVerify(markdown, lane = 'freeform', { onCheck, skipNetw
       const url = line.match(/https?:\/\/[^\s<>)\]"']+/);
       entryUrls.set(num[1] || num[2], url ? url[0] : null);
     }
-    const hDefined = new Set([...srcSection.matchAll(/\[H(\d+)\]/gi)].map((m) => m[1]));
     const dangling = [
       ...nMarkers.filter((n) => !entryUrls.has(n)).map((n) => `[${n}]`),
       ...hMarkers.filter((n) => !hDefined.has(n)).map((n) => `[H${n}]`),
     ];
     const urlless = nMarkers.filter((n) => entryUrls.has(n) && !entryUrls.get(n));
+    const unboundInternal = hMarkers.filter((n) => hDefined.has(n) && !groundingResults[Number(n) - 1]);
     emit({
       id: 'citations',
-      label: 'Citation markers map to sourced URLs',
-      status: dangling.length || urlless.length ? 'fail' : 'pass',
-      detail: dangling.length || urlless.length
+      label: 'Citation markers map to evidence',
+      status: dangling.length || urlless.length || unboundInternal.length ? 'fail' : 'pass',
+      detail: dangling.length || urlless.length || unboundInternal.length
         ? [
             dangling.length ? `Marker(s) ${dangling.join(', ')} have no matching entry under Sources.` : '',
             urlless.length ? `Source entr${urlless.length > 1 ? 'ies' : 'y'} [${urlless.join('], [')}] carr${urlless.length > 1 ? 'y' : 'ies'} no URL — a citation must point at something checkable.` : '',
+            unboundInternal.length ? `Hivemind marker(s) ${unboundInternal.map((n) => `[H${n}]`).join(', ')} have no matching connector result in the receipt.` : '',
           ].filter(Boolean).join(' · ')
-        : `${nMarkers.length + hMarkers.length} citation marker(s) all resolve to sourced entries.`,
-      evidence: [...dangling, ...urlless.map((n) => `[${n}] (no URL)`)],
+        : `${nMarkers.length + hMarkers.length} citation marker(s) all resolve to public or receipt-bound evidence.`,
+      evidence: [...dangling, ...urlless.map((n) => `[${n}] (no URL)`), ...unboundInternal.map((n) => `[H${n}] (not in receipt)`)],
     });
   } else {
-    emit({ id: 'citations', label: 'Citation markers map to sourced URLs', status: 'skip', detail: 'No [n] markers used.', evidence: [] });
+    emit({ id: 'citations', label: 'Citation markers map to evidence', status: 'skip', detail: 'No [n] or [Hn] markers used.', evidence: [] });
   }
 
   const pass = checks.every((c) => c.status !== 'fail');

@@ -80,13 +80,34 @@ Community-led growth compounds where paid cannot. Retention differs by cohort or
   assert.ok(cit.detail.includes('[H1]'), 'dangling detail names the H marker');
 
   const withDefinedH = withDanglingH + '\n### Hivemind\n[H1] Community GTM playbook — Myosin network\n';
-  const ok = await runVerify(withDefinedH, 'research_memo', { skipNetwork: true });
-  assert.equal(ok.checks.find((c) => c.id === 'citations').status, 'pass', 'defined [H1] resolves');
+  const unbound = await runVerify(withDefinedH, 'research_memo', { skipNetwork: true });
+  assert.equal(unbound.checks.find((c) => c.id === 'citations').status, 'fail', 'a prose-only [H1] is not receipt-bound evidence');
+  const ok = await runVerify(withDefinedH, 'research_memo', { skipNetwork: true, groundingResults: [{ title: 'Community GTM playbook' }] });
+  assert.equal(ok.checks.find((c) => c.id === 'citations').status, 'pass', 'defined [H1] resolves to the captured connector result');
 
   // A Sources entry must not vouch for itself: marker only in Sources, none in body.
   const srcOnly = GOOD + '\n[H2] Stray entry — nobody cites this\n';
   const cit2 = (await runVerify(srcOnly, 'research_memo', { skipNetwork: true })).checks.find((c) => c.id === 'citations');
   assert.equal(cit2.status, 'pass', 'unused Sources entries are not dangling markers');
+}
+
+// --- gate: internal evidence need not invent a public URL ------------------
+{
+  const internal = `## Summary
+The captured playbook requires verification [H1].
+
+## Key Findings
+1. The captured playbook requires verification [H1].
+
+## Sources
+### Hivemind
+[H1] Compliance playbook — Spencer Frank\n`;
+  const withoutReceipt = await runVerify(internal, 'research_memo', { skipNetwork: true });
+  assert.equal(withoutReceipt.checks.find((c) => c.id === 'links').status, 'fail', 'an internal-looking citation cannot self-certify');
+  const withReceipt = await runVerify(internal, 'research_memo', { skipNetwork: true, groundingResults: [{ title: 'Compliance playbook', author: 'Spencer Frank', ref: null }] });
+  assert.equal(withReceipt.checks.find((c) => c.id === 'links').status, 'pass', 'captured Hivemind evidence may honestly have no public URL');
+  assert.match(withReceipt.checks.find((c) => c.id === 'links').detail, /captured in this receipt/, 'the green explains its evidence boundary');
+  assert.equal(withReceipt.pass, true, 'receipt-bound internal evidence can pass the deterministic gate');
 }
 
 // --- audit regression: a citation must bind to a checked URL -----------------

@@ -140,7 +140,18 @@ export async function runLoop(run, ctx) {
       // Keep the newest evidence so replacement sources fetched during a fix
       // are visible to the next auditor. Keeping the first N made every fix-
       // round citation look invented once the initial window filled.
-      results: grounding === 'claude' ? boundedGroundingResults(hivemindResults) : [],
+      results: grounding === 'claude'
+        ? boundedGroundingResults(hivemindResults)
+        : Array.isArray(grounding)
+          ? grounding.map((item) => ({
+              query: run.goal,
+              title: item.title,
+              author: null,
+              ref: item.ref ?? null,
+              score: item.score ?? null,
+              excerpt: item.text,
+            }))
+          : [],
     };
 
     // ---- Draft -------------------------------------------------------------
@@ -293,6 +304,7 @@ export async function runLoop(run, ctx) {
       const result = await runVerify(draft, run.lane, {
         onCheck: (c) => emit('verify_check', c),
         skipNetwork: process.env.MOCK_OFFLINE === '1',
+        groundingResults: groundingEvidence()?.results ?? [],
       });
       emit('verify_result', { pass: result.pass, warnings: result.warnings, skipped: result.skipped, checks: result.checks });
       stage('verify', 'done', { pass: result.pass });
