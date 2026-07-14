@@ -178,21 +178,23 @@ try {
     });
     assert.equal(bad.status, 400, 'an unavailable executor is refused rather than substituted');
 
-    const start = await fetch(`${base}/api/comparisons`, {
+    const comparisonBody = JSON.stringify({
+      goal: 'Compare two launch strategies under one frozen research brief.',
+      acceptanceContract: ACCEPTANCE,
+      lane: 'freeform',
+      depth: 'quick',
+      ground: true,
+      makerModels,
+      reviewer: config.catalog.reviewer[0],
+      reviewerEffort: 'low',
+    });
+    const race = await Promise.all([1, 2].map(() => fetch(`${base}/api/comparisons`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
-      body: JSON.stringify({
-        goal: 'Compare two launch strategies under one frozen research brief.',
-        acceptanceContract: ACCEPTANCE,
-        lane: 'freeform',
-        depth: 'quick',
-        ground: true,
-        makerModels,
-        reviewer: config.catalog.reviewer[0],
-        reviewerEffort: 'low',
-      }),
-    });
-    assert.equal(start.status, 201);
+      body: comparisonBody,
+    })));
+    assert.deepEqual(race.map((response) => response.status).sort(), [201, 429], 'two simultaneous comparison POSTs admit exactly one before either parent finishes pre-registration I/O');
+    const start = race.find((response) => response.status === 201);
     const comparisonId = (await start.json()).id;
     const overReservedCapacity = await fetch(`${base}/api/runs`, {
       method: 'POST',

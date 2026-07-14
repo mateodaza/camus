@@ -913,11 +913,31 @@ const SESSION_TOKEN = randomBytes(16).toString('hex');
 const MAX_ACTIVE_RUNS = Number(process.env.STUDIO_MAX_ACTIVE || 3);
 const MAX_GOAL_CHARS = 2000;
 const MAX_ACCEPTANCE_CHARS = 2000;
+let pendingAdmissionSlots = 0;
 
 function activeSlotUsage() {
   return [...runs.values()]
     .filter((item) => ['running', 'needs_human'].includes(item.run.status))
     .reduce((total, item) => total + 1 + (item.run.reservedChildSlots ?? 0), 0);
+}
+
+// HTTP handlers interleave at each await. Hold a synchronous admission token
+// across pre-registration I/O (mkdir/git init) so two requests cannot both
+// observe spare capacity and then oversubscribe it before either enters runs.
+function acquireAdmission(count) {
+  const used = activeSlotUsage() + pendingAdmissionSlots;
+  if (!Number.isInteger(count) || count < 1 || used + count > MAX_ACTIVE_RUNS) return { ok: false, used };
+  pendingAdmissionSlots += count;
+  let released = false;
+  return {
+    ok: true,
+    used,
+    release() {
+      if (released) return;
+      released = true;
+      pendingAdmissionSlots = Math.max(0, pendingAdmissionSlots - count);
+    },
+  };
 }
 
 // Hosted-UI default origins: camus.sh with and without www (the deployed
@@ -1068,9 +1088,9 @@ const server = http.createServer(async (req, res) => {
       const reviewerEffort = String(body.reviewerEffort || getModels().reviewer.effort).trim();
       if (!catalog.reviewer.includes(reviewerModel)) return json(res, 400, { error: `reviewer "${reviewerModel}" is not in the current Codex catalog; no substitution was made` });
       if (!['low', 'medium', 'high', 'xhigh'].includes(reviewerEffort)) return json(res, 400, { error: 'reviewer effort must be low, medium, high, or xhigh' });
-      const active = activeSlotUsage();
       const requiredSlots = 1 + makerModels.length;
-      if (active + requiredSlots > MAX_ACTIVE_RUNS) return json(res, 429, { error: `this comparison needs ${requiredSlots} local run slots (${makerModels.length} arms plus its parent); ${active} are already active and the cap is ${MAX_ACTIVE_RUNS}` });
+      const admission = acquireAdmission(requiredSlots);
+      if (!admission.ok) return json(res, 429, { error: `this comparison needs ${requiredSlots} local run slots (${makerModels.length} arms plus its parent); ${admission.used} are already active or starting and the cap is ${MAX_ACTIVE_RUNS}` });
       try {
         const comparison = await startParallelComparison({
           goal,
@@ -1086,6 +1106,8 @@ const server = http.createServer(async (req, res) => {
         return json(res, 201, comparison);
       } catch (err) {
         return json(res, 400, { error: String(err.message || err) });
+      } finally {
+        admission.release();
       }
     }
 
@@ -1097,8 +1119,6 @@ const server = http.createServer(async (req, res) => {
       if (goal.length > MAX_GOAL_CHARS) return json(res, 400, { error: `That goal is ${goal.length} characters — keep it under ${MAX_GOAL_CHARS}; a brief is not a corpus.` });
       if (acceptanceContract.length < 12) return json(res, 400, { error: 'Say what must be true for you to trust the result. This is the audit contract, not a copy of the goal.' });
       if (acceptanceContract.length > MAX_ACCEPTANCE_CHARS) return json(res, 400, { error: `That trust contract is ${acceptanceContract.length} characters — keep it under ${MAX_ACCEPTANCE_CHARS}.` });
-      const active = activeSlotUsage();
-      if (active >= MAX_ACTIVE_RUNS) return json(res, 429, { error: `${active} runs are already active — the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}.` });
       const lane = body.lane === 'build' ? 'build' : LANES[body.lane] ? body.lane : 'freeform';
 
       let targetPath = null;
@@ -1116,12 +1136,21 @@ const server = http.createServer(async (req, res) => {
           if (activeBuilds.size > 0) {
             return json(res, 409, { error: 'A build run is already going; the studio runs one gate at a time.' });
           }
-          activeBuilds.add(v.toplevel);
           targetToplevel = v.toplevel;
         }
       }
-      const id = await startRun({ goal, acceptanceContract, lane, depth: body.depth === 'standard' ? 'standard' : 'quick', ground: !!body.ground, targetPath, targetToplevel });
-      return json(res, 201, { id });
+      const admission = acquireAdmission(1);
+      if (!admission.ok) return json(res, 429, { error: `${admission.used} runs are already active or starting — the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}.` });
+      try {
+        if (targetToplevel) activeBuilds.add(targetToplevel);
+        const id = await startRun({ goal, acceptanceContract, lane, depth: body.depth === 'standard' ? 'standard' : 'quick', ground: !!body.ground, targetPath, targetToplevel });
+        return json(res, 201, { id });
+      } catch (err) {
+        if (targetToplevel) activeBuilds.delete(targetToplevel);
+        throw err;
+      } finally {
+        admission.release();
+      }
     }
 
     if (path === '/api/runs' && req.method === 'GET') {
@@ -1178,13 +1207,15 @@ const server = http.createServer(async (req, res) => {
         const effort = String(body.effort || getModels().reviewer.effort).trim();
         if (!catalog.reviewer.includes(reviewerModel)) return json(res, 400, { error: `reviewer "${reviewerModel}" is not in the current Codex catalog; no substitution was made` });
         if (!['low', 'medium', 'high', 'xhigh'].includes(effort)) return json(res, 400, { error: 'effort must be low, medium, high, or xhigh' });
-        const active = activeSlotUsage();
-        if (active >= MAX_ACTIVE_RUNS) return json(res, 429, { error: `${active} runs are already active; the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}.` });
+        const admission = acquireAdmission(1);
+        if (!admission.ok) return json(res, 429, { error: `${admission.used} runs are already active or starting; the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}.` });
         try {
           const replay = await startAuditReplay({ sourceId: id, sourceReport, reviewerModel, effort, catalog });
           return json(res, 201, replay);
         } catch (err) {
           return json(res, 400, { error: String(err.message || err) });
+        } finally {
+          admission.release();
         }
       }
 
@@ -1307,8 +1338,6 @@ const server = http.createServer(async (req, res) => {
           if (!knowledgeSnapshotMatches(snapshot) || snapshot.snapshot_id !== experiment.knowledge.snapshot_id) {
             return json(res, 400, { error: 'the original frozen knowledge snapshot no longer matches its sealed identity' });
           }
-          const active = activeSlotUsage();
-          if (active >= MAX_ACTIVE_RUNS) return json(res, 429, { error: `${active} runs are already active; recovery needs one parent slot and never reruns an arm` });
           const makers = experiment.manifest.arms.map((arm) => modelOfIdentity(arm.executor.resolved));
           const reviewer = modelOfIdentity(experiment.manifest.reviewer.resolved);
           const catalog = {
@@ -1316,20 +1345,26 @@ const server = http.createServer(async (req, res) => {
             reviewer: [...experiment.manifest.catalog.reviewer_models],
             reviewerSource: experiment.manifest.catalog.reviewer_source,
           };
-          const recovered = await startParallelComparison({
-            goal: experiment.goal,
-            acceptanceContract: experiment.acceptance_contract,
-            lane: experiment.manifest.task.lane,
-            depth: experiment.manifest.task.depth,
-            ground: meta.ground === true,
-            makerModels: makers,
-            reviewerModel: reviewer,
-            reviewerEffort: experiment.manifest.reviewer_effort.requested,
-            catalog,
-            resumeExperiment: experiment,
-            resumeSnapshot: snapshot,
-          });
-          return json(res, 201, recovered);
+          const admission = acquireAdmission(1);
+          if (!admission.ok) return json(res, 429, { error: `${admission.used} runs are already active or starting; recovery needs one parent slot and never reruns an arm` });
+          try {
+            const recovered = await startParallelComparison({
+              goal: experiment.goal,
+              acceptanceContract: experiment.acceptance_contract,
+              lane: experiment.manifest.task.lane,
+              depth: experiment.manifest.task.depth,
+              ground: meta.ground === true,
+              makerModels: makers,
+              reviewerModel: reviewer,
+              reviewerEffort: experiment.manifest.reviewer_effort.requested,
+              catalog,
+              resumeExperiment: experiment,
+              resumeSnapshot: snapshot,
+            });
+            return json(res, 201, recovered);
+          } finally {
+            admission.release();
+          }
         }
         // Build runs resume by re-invoking the gate with the SAME identity
         // (idSalt). The gate skips finished work and reruns only unproven work.
@@ -1339,12 +1374,27 @@ const server = http.createServer(async (req, res) => {
           const v = await validateBuildTarget(meta.targetPath);
           if (!v.ok) return json(res, 400, { error: `the original target no longer validates: ${v.error}` });
           if (activeBuilds.size > 0) return json(res, 409, { error: 'a build run is already going; one gate at a time' });
-          activeBuilds.add(v.toplevel);
-          const newId = await startRun({ goal: meta.goal, acceptanceContract: meta.acceptanceContract, lane: 'build', depth: 'quick', ground: false, targetPath: v.path, targetToplevel: v.toplevel, idSalt: meta.idSalt });
-          return json(res, 201, { id: newId });
+          const admission = acquireAdmission(1);
+          if (!admission.ok) return json(res, 429, { error: `${admission.used} runs are already active or starting; the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}` });
+          try {
+            activeBuilds.add(v.toplevel);
+            const newId = await startRun({ goal: meta.goal, acceptanceContract: meta.acceptanceContract, lane: 'build', depth: 'quick', ground: false, targetPath: v.path, targetToplevel: v.toplevel, idSalt: meta.idSalt });
+            return json(res, 201, { id: newId });
+          } catch (err) {
+            activeBuilds.delete(v.toplevel);
+            throw err;
+          } finally {
+            admission.release();
+          }
         }
-        const newId = await startRun({ goal: meta.goal, acceptanceContract: meta.acceptanceContract, lane: 'build', depth: 'quick', ground: false, targetPath: meta.targetPath, idSalt: meta.idSalt });
-        return json(res, 201, { id: newId });
+        const admission = acquireAdmission(1);
+        if (!admission.ok) return json(res, 429, { error: `${admission.used} runs are already active or starting; the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}` });
+        try {
+          const newId = await startRun({ goal: meta.goal, acceptanceContract: meta.acceptanceContract, lane: 'build', depth: 'quick', ground: false, targetPath: meta.targetPath, idSalt: meta.idSalt });
+          return json(res, 201, { id: newId });
+        } finally {
+          admission.release();
+        }
       }
 
       if (action === 'report' && req.method === 'GET') {
