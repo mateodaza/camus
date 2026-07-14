@@ -11,7 +11,12 @@ export function deriveEvidence(events) {
   const groundingQueries = of('session')
     .filter((e) => e.actor === 'maker' && String(e.line || '').startsWith('knowledge_search: '))
     .map((e) => String(e.line).slice('knowledge_search: '.length));
-  const groundingResults = of('grounding_evidence').flatMap((e) => (e.results ?? []).map((r) => ({ ...r, retrievedAt: Number.isInteger(e.at) ? e.at : null })));
+  const groundingEvents = of('grounding_evidence');
+  const groundingResults = groundingEvents.flatMap((e) => (e.results ?? []).map((r) => ({
+    ...r,
+    retrievedAt: Number.isInteger(r.retrievedAt) ? r.retrievedAt : Number.isInteger(e.at) ? e.at : null,
+  })));
+  const resultQueries = [...new Set(groundingResults.map((result) => result.query).filter(Boolean))];
   const reviews = of('review').map((r) => ({
     round: r.round,
     scope: r.scope ?? 'round',
@@ -54,8 +59,10 @@ export function deriveEvidence(events) {
       connected: ground.connected === true,
       queried: ground.queried === true,
       queryCount: Number.isInteger(ground.queries) ? ground.queries : groundingQueries.length,
-      queries: groundingQueries,
+      queries: groundingQueries.length ? groundingQueries : resultQueries,
       results: groundingResults,
+      snapshotId: ground.snapshotId ?? groundingEvents.map((event) => event.snapshotId).find(Boolean) ?? null,
+      frozen: ground.frozen === true,
     } : null,
     rounds,
     findings: of('finding').map((f) => ({ severity: f.severity, title: f.title, detail: f.detail, suggestion: f.suggestion })),

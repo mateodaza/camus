@@ -224,7 +224,7 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
 {
   process.env.HIVEMIND_VIA_CLAUDE = '1';
   const { searchKnowledge, hivemindStatus, viaClaude } = await import('./lib/adapters/hivemind.mjs');
-  const { claudeToolSurface } = await import('./lib/adapters/claude.mjs');
+  const { claudeToolSurface, usageFromClaudeResult } = await import('./lib/adapters/claude.mjs');
   const { makePrompt, fixPrompt } = await import('./lib/prompts.mjs');
 
   const st = hivemindStatus();
@@ -241,6 +241,14 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   assert.match(surface.tools, /mcp__claude_ai_Hivemind_Staging__knowledge_search/, 'only the selected managed Hivemind tool EXISTS in the restrictive surface');
   assert.equal(surface.allowed, surface.tools, 'every available maker tool is pre-approved for headless use');
   assert.deepEqual(claudeToolSurface({ stage: 'plan', hivemindEnabled: false }), { tools: '', allowed: '' }, 'planning remains tool-free');
+  assert.deepEqual(claudeToolSurface({ stage: 'make', hivemindEnabled: false, toolPolicy: 'none' }), { tools: '', allowed: '' }, 'a frozen comparison arm has no live web or MCP retrieval surface');
+  const hmOnly = claudeToolSurface({ stage: 'ground', hivemindEnabled: true, serverName: 'claude_ai_Hivemind_Staging', toolPolicy: 'hivemind_only' });
+  assert.ok(!hmOnly.tools.includes('WebSearch') && hmOnly.tools.includes('knowledge_search'), 'the snapshot retriever can see Hivemind without opening general web tools');
+  assert.deepEqual(usageFromClaudeResult({ modelUsage: { 'claude-sonnet-4-6': { inputTokens: 120, cacheReadInputTokens: 40, outputTokens: 30 } } }, 'sonnet'), {
+    usage: { input_tokens: 120, cached_input_tokens: 40, output_tokens: 30 },
+    modelActual: 'anthropic:claude-sonnet-4-6',
+  }, 'Claude result usage and actual model identity survive without inferring effort');
+  assert.equal(usageFromClaudeResult({ usage: { input_tokens: 999, output_tokens: 999 }, modelUsage: { 'claude-sonnet-4-6': { inputTokens: 120, outputTokens: 30 } } }, 'sonnet').usage.input_tokens, 120, 'aggregate and per-model usage are not double-counted');
 
   const marker = await searchKnowledge('anything', 4, () => {});
   assert.equal(marker, 'claude', 'retrieval is delegated, not performed');
@@ -1413,6 +1421,67 @@ Members asked for practical milestones [H1].
   assert.equal(validateExperimentRecord(failedExperiment).ok, true, 'a vanished reviewer remains a valid failed arm instead of disappearing');
   assert.equal(failedExperiment.outcome.status, 'infra_failed');
   assert.equal(failedPack.statuses.audit, 'infra_failed', 'a failed audit is sealed as infra, never not_run or clean');
+
+  const {
+    createParallelExperiment,
+    finalizeParallelExperiment,
+    knowledgeSnapshotMatches,
+    markParallelArmRunning,
+    outcomeFromArmReport,
+    sealKnowledgeSnapshot,
+  } = await import('./lib/comparison.mjs');
+  const snapshot = sealKnowledgeSnapshot({
+    query: base.goal,
+    mode: 'hivemind_claude',
+    items: [{ query: base.goal, title: 'Frozen evidence', author: 'Researcher', ref: 'k-1', score: 0.8, excerpt: 'Concrete milestones outperform broad promises.' }],
+    retriever: { requested: 'anthropic:sonnet', resolved: 'anthropic:sonnet', actual: 'anthropic:sonnet' },
+    capturedAt: 300,
+  });
+  assert.equal(knowledgeSnapshotMatches(snapshot), true, 'the local knowledge payload is content-addressed');
+  assert.equal(knowledgeSnapshotMatches({ ...snapshot, items: [{ ...snapshot.items[0], excerpt: 'tampered' }] }), false, 'a changed knowledge payload expires the snapshot');
+  const parallel = createParallelExperiment({
+    goal: base.goal,
+    acceptanceContract: base.acceptanceContract,
+    lane: 'research_memo',
+    depth: 'quick',
+    roundCap: 3,
+    snapshot,
+    makerModels: ['sonnet', 'opus'],
+    reviewerModel: 'gpt-5.4',
+    reviewerEffort: 'high',
+    catalog: { maker: ['haiku', 'sonnet', 'opus'], reviewer: ['gpt-5.4'], reviewerSource: 'codex_cache' },
+    createdAt: 300,
+  });
+  assert.equal(validateExperimentRecord(parallel).ok, true, 'parallel manifest validates before either executor runs');
+  const runningParallel = markParallelArmRunning(parallel, 'arm-1', 'run-arm-1');
+  assert.equal(runningParallel.outcome.arms[0].status, 'running', 'arm lifecycle is visible before completion');
+  const goodOutcome = outcomeFromArmReport({
+    experiment: runningParallel,
+    armId: 'arm-1',
+    runId: 'run-arm-1',
+    report: {
+      status: 'done',
+      simulated: false,
+      evidencePack: pack,
+      makerActualModels: ['anthropic:sonnet'],
+      makerUsage: [{ stage: 'make', usage: { input_tokens: 500, cached_input_tokens: 100, output_tokens: 80 }, duration_ms: 2000 }],
+    },
+  });
+  assert.equal(goodOutcome.status, 'completed', 'an independently clean, deterministic-green arm passes the quality floor');
+  assert.deepEqual(goodOutcome.usage, { input_tokens: 500, cached_input_tokens: 100, output_tokens: 80, duration_ms: 2000 }, 'executor usage is the common observed cost signal');
+  const advisoryPack = buildEvidencePack({ ...base, statuses: { ...base.statuses, audit: 'advisory_clean' } });
+  const advisoryOutcome = outcomeFromArmReport({
+    experiment: runningParallel,
+    armId: 'arm-1',
+    runId: 'run-advisory',
+    report: { status: 'done', simulated: false, evidencePack: advisoryPack, makerActualModels: ['anthropic:sonnet'], makerUsage: [] },
+  });
+  assert.equal(advisoryOutcome.status, 'quality_floor_failed', 'same-vendor advisory review is retained but never clears the comparison quality floor');
+  const failedOutcome = outcomeFromArmReport({ experiment: runningParallel, armId: 'arm-2', runId: 'run-arm-2', report: { status: 'failed', error: 'model unavailable', evidencePack: null } });
+  assert.equal(failedOutcome.status, 'infra_failed', 'a failed executor remains a first-class arm');
+  const finalParallel = finalizeParallelExperiment(runningParallel, [goodOutcome, failedOutcome]);
+  assert.equal(validateExperimentRecord(finalParallel).ok, true, JSON.stringify(validateExperimentRecord(finalParallel)));
+  assert.deepEqual(finalParallel.outcome.arms.map((arm) => arm.status), ['completed', 'infra_failed'], 'finalization never drops the failed arm');
 }
 
 // --- banner policy: every real done* answers to the headline, fail-closed ----
@@ -1421,7 +1490,7 @@ Members asked for practical milestones [H1].
 // "reviewed and verified" (P1 — several real runs/ receipts have that shape),
 // and done + verified_with_findings hid its caveats behind the flat copy (P2).
 {
-  const { doneBanner } = await import('./public/banner.mjs');
+  const { comparisonBanner, doneBanner } = await import('./public/banner.mjs');
   const verifiedLabel = 'DONE. Reviewed and verified.';
 
   // Missing evidence fails CLOSED — the legacy-receipt shape, both flat statuses.
@@ -1460,6 +1529,11 @@ Members asked for practical milestones [H1].
   assert.match(unv.label, /verification not run/, 'the downgrade names the verification dimension');
   assert.match(unv.label, /audit independent clean/, 'the downgrade names the audit dimension');
   assert.match(doneBanner('done', 'BANANA', { verification: 'passed', audit: 'independent_clean' }).label, /gate claim/, 'an unknown headline is a claim, never trusted');
+
+  assert.match(comparisonBanner('done', true).label, /REHEARSAL COMPLETE/, 'a completed comparison rehearsal says complete');
+  assert.match(comparisonBanner('failed', true).label, /REHEARSAL FAILED/, 'a recovered infra failure never wears rehearsal-complete copy');
+  assert.match(comparisonBanner('failed', true).label, /no models or retrieval were rerun/, 'recovery copy names the no-rerun guarantee');
+  assert.equal(comparisonBanner('failed', false).cls, 'bad', 'a live failed comparison is visibly red');
 }
 
 // --- model catalog: the picker only offers what codex itself lists -----------

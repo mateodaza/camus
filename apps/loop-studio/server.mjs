@@ -22,6 +22,8 @@ import { LANES } from './lib/verify.mjs';
 import { deriveEvidence, receiptCompleteness } from './lib/evidence.mjs';
 import { buildEvidencePack } from './lib/evidence-pack.mjs';
 import { buildAuditReplayPack, createAuditReplayExperiment, finalizeAuditReplayExperiment } from './lib/audit-replay.mjs';
+import { createParallelExperiment, finalizeParallelExperiment, knowledgeSnapshotMatches, markParallelArmRunning, outcomeFromArmReport, sealKnowledgeSnapshot } from './lib/comparison.mjs';
+import { validateExperimentRecord } from '../../packages/trust/lib/validate.mjs';
 import { deriveStatusDimensions, deriveHeadline } from './lib/status-dims.mjs';
 import { getModels, updateModels, modelsSummary, modelCatalog } from './lib/models.mjs';
 import { reviewPrompt } from './lib/prompts.mjs';
@@ -63,6 +65,8 @@ function newId() {
   return `${t.getFullYear()}${pad(t.getMonth() + 1)}${pad(t.getDate())}-${pad(t.getHours())}${pad(t.getMinutes())}${pad(t.getSeconds())}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
+const modelOfIdentity = (identity) => String(identity ?? '').split(':').slice(1).join(':');
+
 const activeBuilds = new Set();
 
 // Headlines are DERIVED at render from the sealed raw dimensions, never stored.
@@ -94,7 +98,25 @@ const decorateReplayLine = (l) => {
   } catch { return l; }
 };
 
-async function startRun({ goal, acceptanceContract, lane, depth, ground, targetPath = null, targetToplevel = null, idSalt = null }) {
+async function startRun({
+  goal,
+  acceptanceContract,
+  lane,
+  depth,
+  ground,
+  targetPath = null,
+  targetToplevel = null,
+  idSalt = null,
+  modelsSnapshot = null,
+  frozenKnowledge = null,
+  toolPolicy = null,
+  publish = true,
+  displayGoal = null,
+  experimentContext = null,
+  questionBroker = null,
+  onComplete = null,
+  reservationParentId = null,
+}) {
   const id = newId();
   const dir = join(RUNS_DIR, id);
   const scratchDir = join(dir, 'scratch');
@@ -110,13 +132,21 @@ async function startRun({ goal, acceptanceContract, lane, depth, ground, targetP
   // Snapshot the model decisions ONCE at run creation — a settings edit mid-run
   // must never rewrite this run's manifest. This snapshot is the identity of
   // record (requested/resolved); the gate reports back the models it actually ran.
-  const models = getModels();
-  const run = { id, goal, acceptanceContract, lane, depth, ground, targetPath, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models };
+  const models = modelsSnapshot ? JSON.parse(JSON.stringify(modelsSnapshot)) : getModels();
+  const run = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, frozenKnowledge, toolPolicy, publish, experimentContext };
   // The run exists on disk from second zero — a crash must not orphan it.
-  writeFile(join(dir, 'run.json'), JSON.stringify({ id, goal, acceptanceContract, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, models, startedAt: run.startedAt }, null, 2))
+  writeFile(join(dir, 'run.json'), JSON.stringify({ id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, models, knowledgeSnapshotId: frozenKnowledge?.snapshot_id ?? null, experimentContext, startedAt: run.startedAt }, null, 2))
     .catch((err) => console.error(`[receipts] failed to write run.json for ${id}: ${err.message}`));
   const state = { run, events: [], subscribers: new Set(), answer: null, abort: new AbortController(), writeChain: Promise.resolve() };
   runs.set(id, state);
+  // A comparison parent reserves its child slots before any async retrieval or
+  // directory setup. Replace one reservation with this live child atomically
+  // when the child enters the run map, so another request cannot slip through
+  // the ceiling between parent creation and arm creation.
+  if (reservationParentId) {
+    const parent = runs.get(reservationParentId);
+    if (parent) parent.run.reservedChildSlots = Math.max(0, (parent.run.reservedChildSlots ?? 0) - 1);
+  }
 
   // A failed receipt write must never be silent: receipts are the trust
   // story. Loud on the console, visible in the live feed, flagged in the
@@ -178,6 +208,13 @@ async function startRun({ goal, acceptanceContract, lane, depth, ground, targetP
   const waitForAnswer = (question) => {
     const qid = `q-${state.events.filter((e) => e.type === 'question').length + 1}`;
     emit('question', { id: qid, ...question });
+    if (questionBroker) {
+      return questionBroker({ runId: id, armId: experimentContext?.armId ?? null, question })
+        .then((answer) => {
+          emit('question_answered', { id: qid });
+          return answer;
+        });
+    }
     return new Promise((resolve) => {
       state.answer = { qid, resolve };
     });
@@ -187,7 +224,7 @@ async function startRun({ goal, acceptanceContract, lane, depth, ground, targetP
     ENGINE === 'mock' ? (() => { const m = createMockAdapters(); return { claude: m.claude, codex: m.codex }; })()
       : { claude: runClaude, codex: runCodexReview };
 
-  emit('run', { run: { id, goal, acceptanceContract, lane, depth, ground, targetPath, engine: ENGINE, roundCap: getModels().loop.roundCap } });
+  emit('run', { run: { id, goal: displayGoal ?? goal, acceptanceContract, lane, depth, ground, targetPath, engine: ENGINE, roundCap: models.loop.roundCap, experimentContext } });
   if (!gitOk) emit('log', { line: '⚠ git unavailable; codex reviews will run outside a git repo (different conditions than camus)' });
 
   const runner = lane === 'build' ? (ENGINE === 'mock' ? runMockCodeLoop : runCodeLoop) : runLoop;
@@ -228,6 +265,7 @@ async function startRun({ goal, acceptanceContract, lane, depth, ground, targetP
         evidence,
         statuses,
         models: run.models,
+        makerActualModels: result?.makerActualModels ?? [],
         simulated: ENGINE === 'mock',
         createdAt: endedAt,
       });
@@ -240,11 +278,8 @@ async function startRun({ goal, acceptanceContract, lane, depth, ground, targetP
     // so a future result field named `models` can never overwrite the sealed pairing
     // (the same reason draft/deliverable are pinned after the spread). simulated is
     // pinned there too: a rehearsal receipt must SAY it is one, permanently.
-    const report = JSON.stringify(
-      { id, goal, acceptanceContract, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', draft: undefined, deliverable: run.lastMarkdown, evidence, evidencePack, evidencePackError, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt },
-      null,
-      2,
-    );
+    const reportObject = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', experimentContext, knowledgeSnapshotId: frozenKnowledge?.snapshot_id ?? null, draft: undefined, deliverable: run.lastMarkdown, evidence, evidencePack, evidencePackError, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt };
+    const report = JSON.stringify(reportObject, null, 2);
     try {
       await writeFile(join(dir, 'report.json'), report);
     } catch (err) {
@@ -253,6 +288,8 @@ async function startRun({ goal, acceptanceContract, lane, depth, ground, targetP
       await new Promise((r) => setTimeout(r, 500));
       await writeFile(join(dir, 'report.json'), report).catch((err2) => persistFail('report.json', err2));
     }
+    try { await onComplete?.(reportObject); }
+    catch (err) { console.error(`[comparison] completion hook failed for ${id}: ${err.message}`); }
     for (const res of state.subscribers) res.end();
     state.subscribers.clear();
   });
@@ -493,6 +530,340 @@ async function startAuditReplay({ sourceId, sourceReport, reviewerModel, effort,
   return { id, goal: displayGoal };
 }
 
+async function captureComparisonKnowledge({ goal, ground, retrieverModel, scratchDir, signal, emit }) {
+  const none = () => sealKnowledgeSnapshot({
+    query: goal,
+    mode: 'none',
+    items: [],
+    retriever: { requested: null, resolved: null, actual: null },
+  });
+  if (!ground) return none();
+  if (ENGINE === 'mock') {
+    return sealKnowledgeSnapshot({
+      query: goal,
+      mode: 'simulation',
+      items: [{
+        query: goal,
+        title: 'Scripted customer research snapshot',
+        author: 'Camus rehearsal',
+        ref: 'simulation-knowledge-1',
+        score: null,
+        excerpt: 'Customers respond better to concrete milestones and explicit tradeoffs than to broad promises.',
+      }],
+      retriever: { requested: `anthropic:${retrieverModel}`, resolved: `anthropic:${retrieverModel}`, actual: 'simulation:scripted-retriever' },
+    });
+  }
+
+  const hm = hivemind.hivemindStatus();
+  if (!hm.connected) throw new Error('Hivemind is not connected; choose an ungrounded comparison or fix Setup');
+  if (hm.mode === 'claude') {
+    const retrieval = await runClaude({
+      model: retrieverModel,
+      stage: 'ground',
+      toolPolicy: 'hivemind_only',
+      cwd: scratchDir,
+      signal,
+      onTick: (line) => emit('log', { line }),
+      onSession: (line) => emit('session', { actor: 'retriever', line }),
+      prompt: `Freeze a shared knowledge snapshot for parallel research arms. Use only the configured Hivemind knowledge_search tool. Run 2-4 focused queries for this goal, favoring evidence that can distinguish strategies and expose tradeoffs. Do not draft the answer.\n\nGOAL:\n${goal}\n\nAfter the tool calls, reply with one sentence saying the snapshot is ready.`,
+    });
+    if (!retrieval.ok) throw new Error(`knowledge retrieval failed: ${retrieval.error}`);
+    if (!(retrieval.hivemindResults ?? []).length) throw new Error('the Hivemind retriever returned no captured result excerpts; no arms were started');
+    return sealKnowledgeSnapshot({
+      query: goal,
+      mode: 'hivemind_claude',
+      items: retrieval.hivemindResults,
+      retriever: {
+        requested: `anthropic:${retrieverModel}`,
+        resolved: `anthropic:${retrieverModel}`,
+        actual: retrieval.modelActual ?? `anthropic:${retrieverModel}`,
+      },
+    });
+  }
+
+  const items = await hivemind.searchKnowledge(goal, 8, (line) => emit('log', { line }));
+  if (!Array.isArray(items) || !items.length) throw new Error(`Hivemind ${hm.mode} returned no frozen knowledge; no arms were started`);
+  return sealKnowledgeSnapshot({
+    query: goal,
+    mode: hm.mode === 'mcp' ? 'hivemind_mcp' : 'hivemind_rest',
+    items,
+    retriever: {
+      requested: `studio:hivemind_${hm.mode}`,
+      resolved: `studio:hivemind_${hm.mode}`,
+      actual: `studio:hivemind_${hm.mode}`,
+    },
+  });
+}
+
+async function startParallelComparison({ goal, acceptanceContract, lane, depth, ground, makerModels, reviewerModel, reviewerEffort, catalog, resumeExperiment = null, resumeSnapshot = null }) {
+  const id = newId();
+  const dir = join(RUNS_DIR, id);
+  const scratchDir = join(dir, 'scratch');
+  await mkdir(scratchDir, { recursive: true });
+  const startedAt = Date.now();
+  const modelsAtStart = getModels();
+  if (resumeExperiment) modelsAtStart.loop = { ...modelsAtStart.loop, roundCap: resumeExperiment.manifest.round_cap, source: 'resumed experiment manifest' };
+  const run = {
+    id,
+    goal,
+    displayGoal: `${resumeExperiment ? 'Recover' : 'Compare'} ${makerModels.join(' vs ')}: ${goal}`,
+    acceptanceContract,
+    lane: 'comparison',
+    sourceLane: lane,
+    depth,
+    ground,
+    status: 'running',
+    startedAt,
+    models: modelsAtStart,
+    childRunIds: (resumeExperiment?.outcome?.arms ?? []).map((arm) => arm.run_id).filter(Boolean),
+    experiment: resumeExperiment,
+    reservedChildSlots: resumeExperiment ? 0 : makerModels.length,
+  };
+  const state = { run, events: [], subscribers: new Set(), answer: null, abort: new AbortController(), writeChain: Promise.resolve(), questionQueue: [] };
+  runs.set(id, state);
+
+  const persistFail = (what, err) => {
+    console.error(`[receipts] failed to write ${what} for comparison ${id}: ${err.message}`);
+    run.receiptsDegraded = true;
+  };
+  const emit = (type, data) => {
+    const ev = { type, at: Date.now(), ...data };
+    if (type === 'status') run.status = data.status;
+    if (type === 'question') run.status = 'needs_human';
+    if (type === 'question_answered') run.status = 'running';
+    state.events.push(ev);
+    const line = JSON.stringify(ev);
+    state.writeChain = state.writeChain.then(() => appendFile(join(dir, 'events.jsonl'), `${line}\n`)).catch((err) => persistFail('events.jsonl', err));
+    for (const res of state.subscribers) res.write(`data: ${line}\n\n`);
+  };
+  state.emit = emit;
+  const persistStart = async () => writeFile(join(dir, 'run.json'), JSON.stringify({
+    id,
+    goal,
+    displayGoal: run.displayGoal,
+    acceptanceContract,
+    lane: 'comparison',
+    sourceLane: lane,
+    depth,
+    ground,
+    engine: ENGINE,
+    makerModels,
+    reviewerModel,
+    reviewerEffort,
+    childRunIds: run.childRunIds,
+    experiment: run.experiment,
+    startedAt,
+  }, null, 2));
+  await persistStart();
+
+  const pumpQuestions = () => {
+    if (state.answer || !state.questionQueue.length) return;
+    const next = state.questionQueue.shift();
+    const qid = `q-${state.events.filter((event) => event.type === 'question').length + 1}`;
+    emit('question', {
+      id: qid,
+      kind: next.question.kind,
+      text: `${next.armId}: ${next.question.text}`,
+      options: next.question.options,
+      armId: next.armId,
+      childRunId: next.runId,
+    });
+    state.answer = {
+      qid,
+      runId: next.runId,
+      armId: next.armId,
+      question: next.question,
+      resolve: (answer) => {
+        next.resolve(answer);
+        queueMicrotask(pumpQuestions);
+      },
+    };
+  };
+  const questionBroker = ({ runId, armId, question }) => new Promise((resolve) => {
+    state.questionQueue.push({ runId, armId, question, resolve });
+    pumpQuestions();
+  });
+
+  emit('run', { run: { id, goal: run.displayGoal, acceptanceContract, lane: 'comparison', sourceLane: lane, depth, ground, engine: ENGINE, arms: makerModels } });
+  emit('stage', { name: 'ground', status: 'active', scope: 'comparison' });
+
+  void (async () => {
+    let snapshot = null;
+    let experiment = null;
+    const outcomes = [];
+    let terminalError = null;
+    try {
+      if (resumeExperiment) {
+        if (!resumeSnapshot || !knowledgeSnapshotMatches(resumeSnapshot) || resumeSnapshot.snapshot_id !== resumeExperiment.knowledge.snapshot_id) {
+          throw new Error('the original comparison knowledge snapshot is missing or no longer matches its sealed identity');
+        }
+        const validResume = validateExperimentRecord(resumeExperiment);
+        if (!validResume.ok) throw new Error(`the original experiment cannot be resumed: ${validResume.error}`);
+        snapshot = resumeSnapshot;
+        experiment = resumeExperiment;
+        emit('log', { line: 'Recovering the experiment from sealed child reports. Interrupted arms stay failed; no model or retrieval is rerun.' });
+      } else {
+        snapshot = await captureComparisonKnowledge({
+          goal,
+          ground,
+          retrieverModel: makerModels[0],
+          scratchDir,
+          signal: state.abort.signal,
+          emit,
+        });
+        experiment = createParallelExperiment({ goal, acceptanceContract, lane, depth, roundCap: modelsAtStart.loop.roundCap, snapshot, makerModels, reviewerModel, reviewerEffort, catalog, createdAt: startedAt });
+      }
+      await writeFile(join(dir, 'knowledge.json'), JSON.stringify(snapshot, null, 2));
+      emit('knowledge_snapshot', { snapshotId: snapshot.snapshot_id, mode: snapshot.mode, itemCount: snapshot.items.length, privacy: snapshot.items.length ? 'internal' : 'none' });
+      emit('stage', { name: 'ground', status: 'done', scope: 'comparison', snapshotId: snapshot.snapshot_id, itemCount: snapshot.items.length });
+      run.experiment = experiment;
+      await persistStart();
+      emit('comparison_manifest', {
+        experimentId: experiment.experiment_id,
+        snapshotId: snapshot.snapshot_id,
+        fallbackPolicy: 'none',
+        arms: experiment.manifest.arms,
+      });
+      emit('stage', { name: 'arms', status: 'active', scope: 'comparison', count: experiment.manifest.arms.length });
+
+      const tasks = experiment.manifest.arms.map(async (arm) => {
+        const prior = experiment.outcome.arms.find((item) => item.arm_id === arm.arm_id);
+        if (resumeExperiment) {
+          if (prior?.run_id) {
+            try {
+              const priorReport = JSON.parse(await readFile(join(RUNS_DIR, prior.run_id, 'report.json'), 'utf8'));
+              const recovered = outcomeFromArmReport({ experiment, armId: arm.arm_id, runId: prior.run_id, report: priorReport });
+              emit('comparison_arm', { armId: arm.arm_id, runId: prior.run_id, model: modelOfIdentity(arm.executor.resolved), status: recovered.status, artifactId: recovered.artifact_id, receiptId: recovered.receipt_id, qualityFloor: recovered.quality_floor, usage: recovered.usage, recovered: true });
+              return recovered;
+            } catch { /* interrupted or torn child becomes explicit infra below */ }
+          }
+          const interrupted = {
+            arm_id: arm.arm_id, run_id: prior?.run_id ?? null, status: 'infra_failed', artifact_id: null, receipt_id: null,
+            executor_actual: null, auditor_actual: null, quality_floor: 'unknown',
+            usage: { input_tokens: null, cached_input_tokens: null, output_tokens: null, duration_ms: null },
+            judge_overlap: { arm_provider: 'anthropic', judge_provider: null, same_vendor: null, same_family: null },
+            failure: { stage: 'execution', code: 'server_interrupted', detail: 'the child left no sealed report before the Studio server stopped; it was retained as failed and not silently rerun' }, confounded: false,
+          };
+          emit('comparison_arm', { armId: arm.arm_id, runId: interrupted.run_id, model: modelOfIdentity(arm.executor.resolved), status: interrupted.status, qualityFloor: interrupted.quality_floor, failure: interrupted.failure, recovered: true });
+          return interrupted;
+        }
+        if (state.abort.signal.aborted) {
+          return {
+            arm_id: arm.arm_id, run_id: null, status: 'stopped', artifact_id: null, receipt_id: null,
+            executor_actual: null, auditor_actual: null, quality_floor: 'unknown',
+            usage: { input_tokens: null, cached_input_tokens: null, output_tokens: null, duration_ms: null },
+            judge_overlap: { arm_provider: 'anthropic', judge_provider: null, same_vendor: null, same_family: null },
+            failure: { stage: 'execution', code: 'stopped_by_human', detail: 'comparison stopped before the arm started' }, confounded: false,
+          };
+        }
+        const maker = arm.executor.resolved.split(':').slice(1).join(':');
+        let complete;
+        const completion = new Promise((resolve) => { complete = resolve; });
+        try {
+          const childId = await startRun({
+            goal,
+            acceptanceContract,
+            lane,
+            depth,
+            ground,
+            modelsSnapshot: {
+              maker: { model: maker, source: 'parallel experiment manifest' },
+              reviewer: { model: reviewerModel, effort: reviewerEffort, modelSource: 'parallel experiment manifest', effortSource: 'parallel experiment manifest' },
+              loop: { ...modelsAtStart.loop },
+            },
+            frozenKnowledge: snapshot,
+            toolPolicy: 'none',
+            publish: false,
+            displayGoal: `${arm.arm_id} · ${maker}: ${goal}`,
+            experimentContext: { experimentId: experiment.experiment_id, parentRunId: id, armId: arm.arm_id, knowledgeSnapshotId: snapshot.snapshot_id },
+            questionBroker,
+            onComplete: complete,
+            reservationParentId: id,
+          });
+          run.childRunIds.push(childId);
+          // The parent may have been stopped while startRun was preparing the
+          // child directory. Do not let that narrow await window orphan a live
+          // arm outside the parent's kill boundary.
+          if (state.abort.signal.aborted) runs.get(childId)?.abort.abort();
+          experiment = markParallelArmRunning(experiment, arm.arm_id, childId);
+          run.experiment = experiment;
+          await persistStart();
+          emit('comparison_arm', { armId: arm.arm_id, runId: childId, model: maker, status: 'running' });
+          const report = await completion;
+          const outcome = outcomeFromArmReport({ experiment, armId: arm.arm_id, runId: childId, report });
+          emit('comparison_arm', { armId: arm.arm_id, runId: childId, model: maker, status: outcome.status, artifactId: outcome.artifact_id, receiptId: outcome.receipt_id, qualityFloor: outcome.quality_floor, usage: outcome.usage });
+          return outcome;
+        } catch (err) {
+          return {
+            arm_id: arm.arm_id, run_id: null, status: state.abort.signal.aborted ? 'stopped' : 'infra_failed', artifact_id: null, receipt_id: null,
+            executor_actual: null, auditor_actual: null, quality_floor: 'unknown',
+            usage: { input_tokens: null, cached_input_tokens: null, output_tokens: null, duration_ms: null },
+            judge_overlap: { arm_provider: 'anthropic', judge_provider: null, same_vendor: null, same_family: null },
+            failure: { stage: 'execution', code: state.abort.signal.aborted ? 'stopped_by_human' : 'arm_start_failed', detail: String(err.message || err) }, confounded: false,
+          };
+        }
+      });
+      outcomes.push(...await Promise.all(tasks));
+      run.childRunIds = [...new Set(outcomes.map((outcome) => outcome.run_id).filter(Boolean))];
+      experiment = finalizeParallelExperiment(experiment, outcomes, { stopped: state.abort.signal.aborted });
+    } catch (err) {
+      terminalError = String(err.message || err);
+      emit('error', { message: terminalError });
+      if (!snapshot) {
+        const hmMode = hivemind.hivemindStatus().mode;
+        const mode = !ground ? 'none' : ENGINE === 'mock' ? 'simulation' : hmMode === 'claude' ? 'hivemind_claude' : hmMode === 'mcp' ? 'hivemind_mcp' : hmMode === 'rest' ? 'hivemind_rest' : 'none';
+        const retriever = mode === 'none'
+          ? { requested: null, resolved: null, actual: null }
+          : mode === 'hivemind_claude'
+            ? { requested: `anthropic:${makerModels[0]}`, resolved: `anthropic:${makerModels[0]}`, actual: null }
+            : { requested: `studio:${mode}`, resolved: `studio:${mode}`, actual: null };
+        snapshot = sealKnowledgeSnapshot({ query: goal, mode, items: [], retriever });
+        await writeFile(join(dir, 'knowledge.json'), JSON.stringify(snapshot, null, 2)).catch((writeErr) => persistFail('knowledge.json', writeErr));
+      }
+      experiment ??= createParallelExperiment({ goal, acceptanceContract, lane, depth, roundCap: modelsAtStart.loop.roundCap, snapshot, makerModels, reviewerModel, reviewerEffort, catalog, createdAt: startedAt });
+      const failed = experiment.manifest.arms.map((arm) => ({
+        arm_id: arm.arm_id, run_id: null, status: state.abort.signal.aborted ? 'stopped' : 'infra_failed', artifact_id: null, receipt_id: null,
+        executor_actual: null, auditor_actual: null, quality_floor: 'unknown',
+        usage: { input_tokens: null, cached_input_tokens: null, output_tokens: null, duration_ms: null },
+        judge_overlap: { arm_provider: 'anthropic', judge_provider: null, same_vendor: null, same_family: null },
+        failure: { stage: 'knowledge', code: state.abort.signal.aborted ? 'stopped_by_human' : 'snapshot_failed', detail: terminalError }, confounded: false,
+      }));
+      experiment = finalizeParallelExperiment(experiment, failed, { stopped: state.abort.signal.aborted, infrastructureFailed: !state.abort.signal.aborted });
+    }
+
+    const status = state.abort.signal.aborted ? 'stopped' : experiment?.outcome.status === 'completed' ? 'done' : 'failed';
+    emit('stage', { name: 'arms', status: 'done', scope: 'comparison' });
+    emit('stage', { name: 'ship', status: 'done', scope: 'comparison' });
+    emit('status', { status, experimentStatus: experiment?.outcome.status ?? 'infra_failed' });
+    await state.writeChain;
+    const report = {
+      id,
+      goal,
+      displayGoal: run.displayGoal,
+      acceptanceContract,
+      lane: 'comparison',
+      sourceLane: lane,
+      depth,
+      ground,
+      engine: ENGINE,
+      simulated: ENGINE === 'mock',
+      status,
+      experiment,
+      knowledgeSnapshot: snapshot ? { snapshot_id: snapshot.snapshot_id, mode: snapshot.mode, item_count: snapshot.items.length } : null,
+      childRunIds: run.childRunIds,
+      error: terminalError,
+      receiptsDegraded: run.receiptsDegraded === true || !experiment,
+      startedAt,
+      endedAt: Date.now(),
+    };
+    await writeFile(join(dir, 'report.json'), JSON.stringify(report, null, 2)).catch((err) => persistFail('report.json', err));
+    for (const res of state.subscribers) res.end();
+    state.subscribers.clear();
+  })();
+
+  return { id, goal: run.displayGoal };
+}
+
 // ---------------------------------------------------------------------------
 // HTTP plumbing
 // ---------------------------------------------------------------------------
@@ -542,6 +913,12 @@ const SESSION_TOKEN = randomBytes(16).toString('hex');
 const MAX_ACTIVE_RUNS = Number(process.env.STUDIO_MAX_ACTIVE || 3);
 const MAX_GOAL_CHARS = 2000;
 const MAX_ACCEPTANCE_CHARS = 2000;
+
+function activeSlotUsage() {
+  return [...runs.values()]
+    .filter((item) => ['running', 'needs_human'].includes(item.run.status))
+    .reduce((total, item) => total + 1 + (item.run.reservedChildSlots ?? 0), 0);
+}
 
 // Hosted-UI default origins: camus.sh with and without www (the deployed
 // studio UI — a decision, recorded here and in the README);
@@ -672,6 +1049,46 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (path === '/api/comparisons' && req.method === 'POST') {
+      const body = await readBody(req);
+      const goal = String(body.goal || '').trim();
+      const acceptanceContract = String(body.acceptanceContract || '').trim();
+      if (goal.length < 12) return json(res, 400, { error: 'Write the goal like you would brief a strategist: a sentence or two.' });
+      if (goal.length > MAX_GOAL_CHARS) return json(res, 400, { error: `That goal is ${goal.length} characters; keep it under ${MAX_GOAL_CHARS}.` });
+      if (acceptanceContract.length < 12) return json(res, 400, { error: 'Say what must be true for you to trust the result. This contract is shared by every arm.' });
+      if (acceptanceContract.length > MAX_ACCEPTANCE_CHARS) return json(res, 400, { error: `That trust contract is ${acceptanceContract.length} characters; keep it under ${MAX_ACCEPTANCE_CHARS}.` });
+      const lane = LANES[body.lane] ? body.lane : 'freeform';
+      if (lane === 'build') return json(res, 400, { error: 'parallel execution currently supports research lanes, not repository mutation' });
+      const catalog = modelCatalog();
+      const makerModels = Array.isArray(body.makerModels) ? body.makerModels.map((model) => String(model).trim()).filter(Boolean) : [];
+      if (makerModels.length < 2 || makerModels.length > 3 || new Set(makerModels).size !== makerModels.length) return json(res, 400, { error: 'choose two or three distinct executor models' });
+      const unavailableMaker = makerModels.find((model) => !catalog.maker.includes(model));
+      if (unavailableMaker) return json(res, 400, { error: `maker "${unavailableMaker}" is not in the current Claude catalog; no substitution was made` });
+      const reviewerModel = String(body.reviewer || getModels().reviewer.model).trim();
+      const reviewerEffort = String(body.reviewerEffort || getModels().reviewer.effort).trim();
+      if (!catalog.reviewer.includes(reviewerModel)) return json(res, 400, { error: `reviewer "${reviewerModel}" is not in the current Codex catalog; no substitution was made` });
+      if (!['low', 'medium', 'high', 'xhigh'].includes(reviewerEffort)) return json(res, 400, { error: 'reviewer effort must be low, medium, high, or xhigh' });
+      const active = activeSlotUsage();
+      const requiredSlots = 1 + makerModels.length;
+      if (active + requiredSlots > MAX_ACTIVE_RUNS) return json(res, 429, { error: `this comparison needs ${requiredSlots} local run slots (${makerModels.length} arms plus its parent); ${active} are already active and the cap is ${MAX_ACTIVE_RUNS}` });
+      try {
+        const comparison = await startParallelComparison({
+          goal,
+          acceptanceContract,
+          lane,
+          depth: body.depth === 'standard' ? 'standard' : 'quick',
+          ground: body.ground === true,
+          makerModels,
+          reviewerModel,
+          reviewerEffort,
+          catalog,
+        });
+        return json(res, 201, comparison);
+      } catch (err) {
+        return json(res, 400, { error: String(err.message || err) });
+      }
+    }
+
     if (path === '/api/runs' && req.method === 'POST') {
       const body = await readBody(req);
       const goal = String(body.goal || '').trim();
@@ -680,7 +1097,7 @@ const server = http.createServer(async (req, res) => {
       if (goal.length > MAX_GOAL_CHARS) return json(res, 400, { error: `That goal is ${goal.length} characters — keep it under ${MAX_GOAL_CHARS}; a brief is not a corpus.` });
       if (acceptanceContract.length < 12) return json(res, 400, { error: 'Say what must be true for you to trust the result. This is the audit contract, not a copy of the goal.' });
       if (acceptanceContract.length > MAX_ACCEPTANCE_CHARS) return json(res, 400, { error: `That trust contract is ${acceptanceContract.length} characters — keep it under ${MAX_ACCEPTANCE_CHARS}.` });
-      const active = [...runs.values()].filter((s2) => ['running', 'needs_human'].includes(s2.run.status)).length;
+      const active = activeSlotUsage();
       if (active >= MAX_ACTIVE_RUNS) return json(res, 429, { error: `${active} runs are already active — the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}.` });
       const lane = body.lane === 'build' ? 'build' : LANES[body.lane] ? body.lane : 'freeform';
 
@@ -761,7 +1178,7 @@ const server = http.createServer(async (req, res) => {
         const effort = String(body.effort || getModels().reviewer.effort).trim();
         if (!catalog.reviewer.includes(reviewerModel)) return json(res, 400, { error: `reviewer "${reviewerModel}" is not in the current Codex catalog; no substitution was made` });
         if (!['low', 'medium', 'high', 'xhigh'].includes(effort)) return json(res, 400, { error: 'effort must be low, medium, high, or xhigh' });
-        const active = [...runs.values()].filter((item) => ['running', 'needs_human'].includes(item.run.status)).length;
+        const active = activeSlotUsage();
         if (active >= MAX_ACTIVE_RUNS) return json(res, 429, { error: `${active} runs are already active; the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}.` });
         try {
           const replay = await startAuditReplay({ sourceId: id, sourceReport, reviewerModel, effort, catalog });
@@ -803,12 +1220,30 @@ const server = http.createServer(async (req, res) => {
       }
 
       if (action === 'answer' && req.method === 'POST') {
-        if (!state?.answer) return json(res, 409, { error: 'no question is pending on this run' });
+        let answerState = state;
+        let queued = null;
+        if (state && !state.answer && state.run.experimentContext?.parentRunId) {
+          const parent = runs.get(state.run.experimentContext.parentRunId);
+          if (parent?.answer?.runId === id) answerState = parent;
+          else {
+            const index = parent?.questionQueue?.findIndex((item) => item.runId === id) ?? -1;
+            if (index >= 0) queued = { parent, index, item: parent.questionQueue[index] };
+          }
+        }
+        if (!answerState?.answer && !queued) return json(res, 409, { error: 'no question is pending on this run' });
         const { answer } = await readBody(req);
         if (typeof answer !== 'string' || !answer.trim()) return json(res, 400, { error: 'answer is required' });
-        const { qid, resolve } = state.answer;
-        state.answer = null;
-        state.emit('question_answered', { id: qid }); // through emit → receipts + replay
+        if (queued) {
+          queued.parent.questionQueue.splice(queued.index, 1);
+          queued.item.resolve(answer.trim());
+          return json(res, 200, { ok: true });
+        }
+        const { qid, resolve, question, armId } = answerState.answer;
+        answerState.answer = null;
+        answerState.emit('question_answered', { id: qid }); // through emit → receipts + replay
+        if (answerState.run.lane === 'comparison') {
+          answerState.emit('answer', { kind: question?.kind ?? 'decision', question: question?.text ?? '', answer: answer.trim(), armId });
+        }
         resolve(answer.trim());
         return json(res, 200, { ok: true });
       }
@@ -816,6 +1251,24 @@ const server = http.createServer(async (req, res) => {
       if (action === 'stop' && req.method === 'POST') {
         if (!state) return json(res, 404, { error: 'unknown run' });
         state.abort.abort();
+        if (state.run.experimentContext?.parentRunId) {
+          const parent = runs.get(state.run.experimentContext.parentRunId);
+          if (parent?.answer?.runId === id) {
+            const { qid, resolve } = parent.answer;
+            parent.answer = null;
+            parent.emit('question_answered', { id: qid });
+            resolve('Stop the run');
+          } else {
+            const index = parent?.questionQueue?.findIndex((item) => item.runId === id) ?? -1;
+            if (index >= 0) {
+              const [queued] = parent.questionQueue.splice(index, 1);
+              queued.resolve('Stop the run');
+            }
+          }
+        }
+        for (const childId of state.run.childRunIds ?? []) runs.get(childId)?.abort.abort();
+        for (const queued of state.questionQueue ?? []) queued.resolve('Stop the run');
+        if (state.questionQueue) state.questionQueue.length = 0;
         if (state.answer) {
           const { qid, resolve } = state.answer;
           state.answer = null;
@@ -826,9 +1279,6 @@ const server = http.createServer(async (req, res) => {
       }
 
       if (action === 'resume' && req.method === 'POST') {
-        // Build-lane only: camus is crash-safe, so a stopped/failed run
-        // resumes by re-invoking the gate with the SAME identity (idSalt) —
-        // finished work skips, proven work lands, only unproven work re-runs.
         let meta = state?.run;
         if (!meta) {
           try { meta = JSON.parse(await readFile(join(RUNS_DIR, id, 'report.json'), 'utf8')); }
@@ -837,11 +1287,54 @@ const server = http.createServer(async (req, res) => {
             catch { return json(res, 404, { error: 'unknown run; nothing to resume' }); }
           }
         }
-        if (meta.lane !== 'build') return json(res, 400, { error: 'only build runs resume through the gate' });
-        if (!meta.idSalt) return json(res, 400, { error: 'this run predates resumable receipts. Start a fresh build run instead; the gate itself still skips finished work.' });
         if (state && ['running', 'needs_human'].includes(state.run.status)) {
           return json(res, 409, { error: 'that run is still going' });
         }
+        if (meta.lane === 'comparison') {
+          const experiment = meta.experiment;
+          const valid = validateExperimentRecord(experiment);
+          if (!valid.ok || experiment?.schemaVersion !== 2 || experiment?.mode !== 'parallel_execution') {
+            return json(res, 400, { error: `this run has no recoverable parallel manifest${valid.ok ? '' : `: ${valid.error}`}` });
+          }
+          if (experiment.outcome.status !== 'running') {
+            return json(res, 409, { error: 'this experiment already has a sealed terminal outcome; recovery never rewrites it' });
+          }
+          let snapshot;
+          try { snapshot = JSON.parse(await readFile(join(RUNS_DIR, id, 'knowledge.json'), 'utf8')); }
+          catch (err) {
+            return json(res, 400, { error: `the original frozen knowledge snapshot is unavailable: ${err.message}` });
+          }
+          if (!knowledgeSnapshotMatches(snapshot) || snapshot.snapshot_id !== experiment.knowledge.snapshot_id) {
+            return json(res, 400, { error: 'the original frozen knowledge snapshot no longer matches its sealed identity' });
+          }
+          const active = activeSlotUsage();
+          if (active >= MAX_ACTIVE_RUNS) return json(res, 429, { error: `${active} runs are already active; recovery needs one parent slot and never reruns an arm` });
+          const makers = experiment.manifest.arms.map((arm) => modelOfIdentity(arm.executor.resolved));
+          const reviewer = modelOfIdentity(experiment.manifest.reviewer.resolved);
+          const catalog = {
+            maker: [...experiment.manifest.catalog.maker_models],
+            reviewer: [...experiment.manifest.catalog.reviewer_models],
+            reviewerSource: experiment.manifest.catalog.reviewer_source,
+          };
+          const recovered = await startParallelComparison({
+            goal: experiment.goal,
+            acceptanceContract: experiment.acceptance_contract,
+            lane: experiment.manifest.task.lane,
+            depth: experiment.manifest.task.depth,
+            ground: meta.ground === true,
+            makerModels: makers,
+            reviewerModel: reviewer,
+            reviewerEffort: experiment.manifest.reviewer_effort.requested,
+            catalog,
+            resumeExperiment: experiment,
+            resumeSnapshot: snapshot,
+          });
+          return json(res, 201, recovered);
+        }
+        // Build runs resume by re-invoking the gate with the SAME identity
+        // (idSalt). The gate skips finished work and reruns only unproven work.
+        if (meta.lane !== 'build') return json(res, 400, { error: 'only build runs and incomplete comparisons can resume' });
+        if (!meta.idSalt) return json(res, 400, { error: 'this run predates resumable receipts. Start a fresh build run instead; the gate itself still skips finished work.' });
         if (ENGINE !== 'mock') {
           const v = await validateBuildTarget(meta.targetPath);
           if (!v.ok) return json(res, 400, { error: `the original target no longer validates: ${v.error}` });

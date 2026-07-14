@@ -37,3 +37,17 @@ export function doneBanner(status, headline, dimensions) {
     }
   }
 }
+
+// Parallel parents have experiment outcomes rather than trust standings. Keep
+// their terminal wording pure too: a failed recovery must never inherit the
+// success copy just because it ran under the rehearsal engine.
+export function comparisonBanner(status, simulated) {
+  if (simulated) {
+    if (status === 'done') return { cls: 'meh', label: 'COMPARISON REHEARSAL COMPLETE. Both scripted arms used one frozen snapshot; their receipts remain simulation, not evidence.' };
+    if (status === 'stopped') return { cls: 'meh', label: 'COMPARISON REHEARSAL STOPPED. Completed and interrupted scripted arms remain in the experiment receipt.' };
+    return { cls: 'meh', label: 'COMPARISON REHEARSAL FAILED. Interrupted scripted arms remain visible; no models or retrieval were rerun.' };
+  }
+  if (status === 'done') return { cls: 'good', label: 'PARALLEL EXECUTION COMPLETE. Every arm is sealed, including failures. No winner has been declared.' };
+  if (status === 'stopped') return { cls: 'meh', label: 'COMPARISON STOPPED by human. Completed and interrupted arms remain in the experiment receipt.' };
+  return { cls: 'bad', label: 'COMPARISON FAILED. The experiment kept the failed arms instead of hiding them.' };
+}

@@ -14,15 +14,17 @@ const hashText = (text) => `sha256:${createHash('sha256').update(String(text), '
 const named = (provider, value) => `${provider}:${value || 'not-recorded'}`;
 const providerOf = (value) => String(value).split(':')[0];
 
-function actuals({ lane, evidence, models, simulated }) {
+function actuals({ lane, evidence, models, makerActualModels = [], simulated }) {
   const requestedExecutor = named('anthropic', models?.maker?.model);
   const requestedAuditor = named('openai', models?.reviewer?.model);
   if (simulated) {
+    const session = ['rehearsal: scripted maker and auditor; no model calls ran'];
+    if (evidence?.grounding?.snapshotId) session.push(`frozen knowledge snapshot: ${evidence.grounding.snapshotId}`);
     return {
       executor: { requested: requestedExecutor, resolved: requestedExecutor, actual: 'simulation:scripted-maker' },
       auditor: { requested: requestedAuditor, resolved: requestedAuditor, actual: 'simulation:scripted-auditor' },
       auditorEffort: 'scripted',
-      session: ['rehearsal: scripted maker and auditor; no model calls ran'],
+      session,
     };
   }
 
@@ -35,7 +37,7 @@ function actuals({ lane, evidence, models, simulated }) {
   // the run-start request, and that difference is exactly what must survive.
   const executorActual = lane === 'build'
     ? named('anthropic', final)
-    : named('anthropic', models?.maker?.model);
+    : makerActualModels.at(-1) ?? named('anthropic', models?.maker?.model);
   const auditorActual = latestReview?.reviewerModel
     ? named('openai', latestReview.reviewerModel)
     : 'unknown:not-recorded';
@@ -44,6 +46,7 @@ function actuals({ lane, evidence, models, simulated }) {
   if (final) session.push(`executor final model: ${named('anthropic', final)}`);
   if (latestReview?.reviewerEffort) session.push(`auditor actual effort: ${latestReview.reviewerEffort}`);
   if (evidence?.grounding) {
+    if (evidence.grounding.snapshotId) session.push(`frozen knowledge snapshot: ${evidence.grounding.snapshotId}`);
     session.push(`grounding ${evidence.grounding.mode || 'unknown'}: ${evidence.grounding.queried ? 'queried' : 'not queried'} (${evidence.grounding.queryCount || 0} observed tool calls)`);
     for (const query of evidence.grounding.queries ?? []) session.push(`hivemind query: ${query}`);
     for (const result of evidence.grounding.results ?? []) {
@@ -82,10 +85,11 @@ export function buildEvidencePack({
   evidence,
   statuses,
   models,
+  makerActualModels = [],
   simulated = false,
   createdAt = Date.now(),
 }) {
-  const ids = actuals({ lane, evidence, models, simulated });
+  const ids = actuals({ lane, evidence, models, makerActualModels, simulated });
   const audit = statuses?.audit;
   const independence = audit === 'independent_clean' || audit === 'independent_findings'
     ? 'cross_vendor'

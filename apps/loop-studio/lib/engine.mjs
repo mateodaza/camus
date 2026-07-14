@@ -54,10 +54,24 @@ export async function runLoop(run, ctx) {
   const answers = [];
   let costUsd = 0;
   let doneWithFindings = false;
+  const makerUsage = [];
+  const makerActualModels = [];
 
   const stage = (name, status, extra = {}) => emit('stage', { name, status, ...extra });
   const log = (line) => emit('log', { line });
   const sess = (actor) => (line) => emit('session', { actor, line });
+  const recordMakerCall = (stageName, result) => {
+    if (!result || result.ok === false) return;
+    const actual = result.modelActual ?? (makerModel ? `anthropic:${makerModel}` : null);
+    if (actual && !makerActualModels.includes(actual)) makerActualModels.push(actual);
+    makerUsage.push({
+      stage: stageName,
+      usage: result.usage ?? { input_tokens: null, cached_input_tokens: null, output_tokens: null },
+      duration_ms: Number.isInteger(result.durationMs) ? result.durationMs : null,
+      model_actual: actual,
+    });
+    emit('maker_observation', makerUsage.at(-1));
+  };
 
   // Every human interaction goes through here so it lands in the receipts and
   // the report — content decisions and process overrides alike. Stop pressed
@@ -100,8 +114,9 @@ export async function runLoop(run, ctx) {
     // ---- Plan ------------------------------------------------------------
     stage('plan', 'active');
     const plan = await withRetries('plan', () =>
-      adapters.claude({ model: makerModel, stage: 'plan', prompt: planPrompt(run), cwd: ctx.scratchDir, signal, onTick: log, onSession: sess('maker') }),
+      adapters.claude({ model: makerModel, stage: 'plan', prompt: planPrompt(run), cwd: ctx.scratchDir, signal, onTick: log, onSession: sess('maker'), toolPolicy: run.toolPolicy ?? 'research' }),
     );
+    recordMakerCall('plan', plan);
     costUsd += plan.costUsd || 0;
     emit('plan', { text: plan.text });
     stage('plan', 'done');
@@ -112,7 +127,28 @@ export async function runLoop(run, ctx) {
     let hivemindQueries = 0;
     const hivemindQueryTexts = [];
     const hivemindResults = [];
-    if (run.ground) {
+    if (run.frozenKnowledge) {
+      if (!run.frozenKnowledge.snapshot_id) throw new Error('frozen knowledge is missing its snapshot identity');
+      stage('ground', 'active', { frozen: true });
+      hmMode = run.frozenKnowledge.mode;
+      grounding = (run.frozenKnowledge.items ?? []).map((item) => ({
+        title: [item.title, item.author].filter(Boolean).join(' — ') || item.title,
+        text: item.excerpt,
+        ref: item.ref ?? null,
+        score: item.score ?? null,
+      }));
+      for (const item of run.frozenKnowledge.items ?? []) hivemindResults.push({ ...item, retrievedAt: run.frozenKnowledge.captured_at });
+      if (hivemindResults.length) emit('grounding_evidence', { source: 'frozen_snapshot', snapshotId: run.frozenKnowledge.snapshot_id, results: hivemindResults });
+      stage('ground', 'done', {
+        connected: hivemindResults.length > 0,
+        queried: hivemindResults.length > 0,
+        queries: run.frozenKnowledge.retriever?.actual ? 1 : 0,
+        frozen: true,
+        snapshotId: run.frozenKnowledge.snapshot_id,
+        mode: hmMode,
+      });
+      log(`Knowledge frozen before execution: ${run.frozenKnowledge.snapshot_id.slice(0, 19)}… (${hivemindResults.length} item${hivemindResults.length === 1 ? '' : 's'}). Live retrieval is disabled for this arm.`);
+    } else if (run.ground) {
       stage('ground', 'active');
       grounding = await hivemind.searchKnowledge(run.goal, 4, log);
       // Record the configured mode too: a degraded mcp/rest grounding is not
@@ -138,7 +174,15 @@ export async function runLoop(run, ctx) {
         stage('ground', 'done', { connected: true, queried: true, queries: hivemindQueries, via: 'claude', mode: hmMode });
       }
     };
-    const groundingEvidence = () => !run.ground ? null : {
+    const groundingEvidence = () => run.frozenKnowledge ? {
+      mode: hmMode,
+      queried: hivemindResults.length > 0,
+      queryCount: run.frozenKnowledge.retriever?.actual ? 1 : 0,
+      queries: run.frozenKnowledge.query ? [run.frozenKnowledge.query] : [],
+      results: boundedGroundingResults(hivemindResults),
+      snapshotId: run.frozenKnowledge.snapshot_id,
+      frozen: true,
+    } : !run.ground ? null : {
       mode: hmMode,
       queried: grounding === 'claude' ? hivemindQueries > 0 : !!grounding,
       queryCount: grounding === 'claude' ? hivemindQueries : (grounding ? 1 : 0),
@@ -173,8 +217,10 @@ export async function runLoop(run, ctx) {
         signal,
         onTick: log,
         onSession: sess('maker'),
+        toolPolicy: run.toolPolicy ?? 'research',
       }),
     );
+    recordMakerCall('make', makeRes);
     if (grounding === 'claude') {
       absorbHivemindEvidence(makeRes, { emitStage: false });
       stage('ground', 'done', {
@@ -304,8 +350,10 @@ export async function runLoop(run, ctx) {
           signal,
           onTick: log,
           onSession: sess('maker'),
+          toolPolicy: run.toolPolicy ?? 'research',
         }),
       );
+      recordMakerCall('fix', fixRes);
       absorbHivemindEvidence(fixRes);
       costUsd += fixRes.costUsd || 0;
       draft = normalizeDeliverable(fixRes.text);
@@ -389,8 +437,10 @@ export async function runLoop(run, ctx) {
                 signal,
                 onTick: log,
                 onSession: sess('maker'),
+                toolPolicy: run.toolPolicy ?? 'research',
               }),
             );
+            recordMakerCall('closure_fix', fixRes);
             absorbHivemindEvidence(fixRes);
             costUsd += fixRes.costUsd || 0;
             draft = normalizeDeliverable(fixRes.text);
@@ -429,8 +479,10 @@ export async function runLoop(run, ctx) {
             signal,
             onTick: log,
             onSession: sess('maker'),
+            toolPolicy: run.toolPolicy ?? 'research',
           }),
         );
+        recordMakerCall('verify_fix', fixRes);
         absorbHivemindEvidence(fixRes);
         costUsd += fixRes.costUsd || 0;
         draft = normalizeDeliverable(fixRes.text);
@@ -449,7 +501,7 @@ export async function runLoop(run, ctx) {
       if (choice.startsWith('One more')) { verifyFixBudget = 1; continue; }
       if (choice.startsWith('Ship anyway')) {
         emit('status', { status: 'verify_failed', rev, costUsd });
-        return { status: 'verify_failed', draft, rev, costUsd, answers };
+        return { status: 'verify_failed', draft, rev, costUsd, answers, makerUsage, makerActualModels };
       }
       throw new Error('stopped_by_human');
     }
@@ -457,21 +509,23 @@ export async function runLoop(run, ctx) {
     // ---- Publish -----------------------------------------------------------
     // Stop pressed during verify must never end in an external side effect.
     if (signal.aborted) throw new Error('aborted');
-    const artifact = await hivemind.publishArtifact(
-      { title: run.goal.slice(0, 80), markdown: draft, runId: run.id },
-      log,
-    );
+    const artifact = run.publish === false
+      ? (log('Publication disabled for this experiment arm. The human chooses what may leave the machine.'), null)
+      : await hivemind.publishArtifact(
+          { title: run.goal.slice(0, 80), markdown: draft, runId: run.id },
+          log,
+        );
 
     const status = doneWithFindings ? 'done_with_findings' : 'done';
     emit('status', { status, rev, costUsd, artifactPublished: !!artifact, artifactUrl: artifact?.url ?? null });
-    return { status, draft, rev, costUsd, answers };
+    return { status, draft, rev, costUsd, answers, makerUsage, makerActualModels };
   } catch (err) {
     if (err.message === 'aborted' || err.message === 'stopped_by_human' || signal.aborted) {
       emit('status', { status: 'stopped', costUsd });
-      return { status: 'stopped', costUsd, answers };
+      return { status: 'stopped', costUsd, answers, makerUsage, makerActualModels };
     }
     emit('error', { message: String(err.stack || err) });
     emit('status', { status: 'failed', costUsd });
-    return { status: 'failed', error: String(err), costUsd, answers };
+    return { status: 'failed', error: String(err), costUsd, answers, makerUsage, makerActualModels };
   }
 }

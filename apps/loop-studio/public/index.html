@@ -128,7 +128,24 @@
         </div>
       </div>
 
-      <button id="start" class="primary">Run the loop</button>
+      <div class="launch-actions">
+        <button id="start" class="primary">Run the loop</button>
+        <button id="open-compare" class="ghost">Compare executors</button>
+      </div>
+      <div id="compare-panel" class="compare-panel hidden">
+        <div class="trust-title">COMPARE &amp; LEARN</div>
+        <div class="hint">Two executor models receive the same goal, acceptance contract, frozen knowledge snapshot, reviewer and round cap. Arms cannot re-query Hivemind or publish. This runs both arms, so approve the extra spend deliberately.</div>
+        <div class="compare-controls">
+          <label>executor A<select id="compare-maker-a"></select></label>
+          <label>executor B<select id="compare-maker-b"></select></label>
+          <label>shared reviewer<select id="compare-reviewer"></select></label>
+          <label>reviewer effort<select id="compare-effort"><option>low</option><option>medium</option><option>high</option><option>xhigh</option></select></label>
+        </div>
+        <div class="panel-actions">
+          <button id="start-compare" class="primary">Run both arms</button>
+          <span id="compare-note" class="hint"></span>
+        </div>
+      </div>
       <div id="form-error" class="form-error"></div>
     </section>
 

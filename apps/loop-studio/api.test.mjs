@@ -25,7 +25,7 @@ writeFileSync(modelsFile, readFileSync(join(dirname(fileURLToPath(import.meta.ur
 const server = spawn(process.execPath, ['server.mjs'], {
   // STUDIO_RUNS_DIR points the server at the throwaway tmp dir, so test runs
   // never pollute the product's real runs/ (the temp dir is removed in finally).
-  env: { ...process.env, ENGINE: 'mock', MOCK_SPEED: '0.15', OPEN: '0', PORT: '0', STUDIO_ALLOWED_ORIGIN: 'https://camus.sh', STUDIO_MAX_ACTIVE: '2', STUDIO_RUNS_DIR: tmp, STUDIO_MODELS_FILE: modelsFile },
+  env: { ...process.env, ENGINE: 'mock', MOCK_SPEED: '0.15', OPEN: '0', PORT: '0', STUDIO_ALLOWED_ORIGIN: 'https://camus.sh', STUDIO_MAX_ACTIVE: '3', STUDIO_RUNS_DIR: tmp, STUDIO_MODELS_FILE: modelsFile },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let base = '';
@@ -167,6 +167,132 @@ try {
     assert.equal(report.experiment.outcome.confounded, true, 'requested real reviewer vs scripted actual is visible');
   });
 
+  await check('parallel execution freezes knowledge once, runs every arm, and retains non-winning outcomes', async () => {
+    const config = await (await fetch(`${base}/api/config`, { headers: { origin: base } })).json();
+    const makerModels = config.catalog.maker.slice(0, 2);
+    assert.equal(makerModels.length, 2, 'test machine offers two maker decisions');
+    const bad = await fetch(`${base}/api/comparisons`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify({ goal: 'Compare two launch strategies under one contract.', acceptanceContract: ACCEPTANCE, lane: 'freeform', makerModels: [makerModels[0], 'missing-maker'], reviewer: config.catalog.reviewer[0] }),
+    });
+    assert.equal(bad.status, 400, 'an unavailable executor is refused rather than substituted');
+
+    const start = await fetch(`${base}/api/comparisons`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify({
+        goal: 'Compare two launch strategies under one frozen research brief.',
+        acceptanceContract: ACCEPTANCE,
+        lane: 'freeform',
+        depth: 'quick',
+        ground: true,
+        makerModels,
+        reviewer: config.catalog.reviewer[0],
+        reviewerEffort: 'low',
+      }),
+    });
+    assert.equal(start.status, 201);
+    const comparisonId = (await start.json()).id;
+    const overReservedCapacity = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify({ goal: 'This run must not slip between a comparison parent and its child starts.', acceptanceContract: ACCEPTANCE, lane: 'freeform' }),
+    });
+    assert.equal(overReservedCapacity.status, 429, 'parallel arm slots are reserved before async child startup, closing the capacity race');
+    let report = null;
+    for (let i = 0; i < 180 && !report; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const answer = await fetch(`${base}/api/runs/${comparisonId}/answer`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+        body: JSON.stringify({ answer: 'Use the self-serve launch context.' }),
+      });
+      assert.ok([200, 409].includes(answer.status), `comparison answer probe returned ${answer.status}`);
+      const sealed = await fetch(`${base}/api/runs/${comparisonId}/report`, { headers: { origin: base } });
+      if (sealed.ok) report = await sealed.json();
+    }
+    assert.ok(report, 'parallel rehearsal seals its parent report');
+    assert.equal(report.lane, 'comparison');
+    assert.equal(report.simulated, true);
+    assert.equal(validateExperimentRecord(report.experiment).ok, true, JSON.stringify(validateExperimentRecord(report.experiment)));
+    assert.equal(report.experiment.schemaVersion, 2);
+    assert.equal(report.experiment.mode, 'parallel_execution');
+    assert.equal(report.experiment.manifest.fallback_policy, 'none');
+    assert.equal(report.experiment.outcome.arms.length, 2, 'both arms remain in the terminal experiment');
+    assert.equal(report.experiment.outcome.arms.every((arm) => arm.status === 'quality_floor_failed'), true, 'scripted arms finish but cannot pass the evidence floor');
+    assert.equal(report.experiment.outcome.arms.every((arm) => arm.executor_actual === 'simulation:scripted-maker'), true, 'rehearsal never records a real executor actual');
+    assert.equal(report.childRunIds.length, 2, 'both child receipts are addressable');
+    const snapshots = report.childRunIds.map((runId) => JSON.parse(readFileSync(join(tmp, runId, 'report.json'), 'utf8')));
+    assert.equal(new Set(snapshots.map((child) => child.knowledgeSnapshotId)).size, 1, 'every arm uses the exact same snapshot id');
+    assert.equal(snapshots[0].knowledgeSnapshotId, report.experiment.knowledge.snapshot_id, 'child receipts bind the parent snapshot');
+    assert.equal(snapshots.every((child) => child.evidence?.grounding?.frozen === true), true, 'arms record frozen retrieval instead of live querying');
+    assert.equal(snapshots.every((child) => child.evidencePack.session_log.includes(`frozen knowledge snapshot: ${report.experiment.knowledge.snapshot_id}`)), true, 'each arm receipt custody-binds the snapshot');
+    assert.ok(existsSync(join(tmp, comparisonId, 'knowledge.json')), 'private snapshot contents stay in the local parent receipt directory');
+    const parentEvents = readFileSync(join(tmp, comparisonId, 'events.jsonl'), 'utf8');
+    assert.match(parentEvents, /"type":"answer"/, 'the parent replay preserves the human checkpoint answer, not only the question');
+
+    // Simulate a server crash after arm 1 sealed but before arm 2 produced a
+    // report. Recovery must preserve the manifest/snapshot identity, reuse the
+    // sealed child, and retain the interrupted child as a failed arm. It must
+    // not create replacement child runs that conceal the interruption.
+    const interruptedId = 'comparison-interrupted-fixture';
+    const interruptedDir = join(tmp, interruptedId);
+    mkdirSync(interruptedDir, { recursive: true });
+    const interruptedExperiment = JSON.parse(JSON.stringify(report.experiment));
+    interruptedExperiment.outcome.status = 'running';
+    interruptedExperiment.outcome.arms[1] = {
+      ...interruptedExperiment.outcome.arms[1],
+      run_id: 'missing-interrupted-child',
+      status: 'running',
+      artifact_id: null,
+      receipt_id: null,
+      executor_actual: null,
+      auditor_actual: null,
+      quality_floor: 'unknown',
+      usage: { input_tokens: null, cached_input_tokens: null, output_tokens: null, duration_ms: null },
+      judge_overlap: { arm_provider: 'anthropic', judge_provider: null, same_vendor: null, same_family: null },
+      failure: null,
+      confounded: false,
+    };
+    assert.equal(validateExperimentRecord(interruptedExperiment).ok, true, 'the fixture is a valid, genuinely incomplete experiment');
+    writeFileSync(join(interruptedDir, 'run.json'), JSON.stringify({
+      id: interruptedId,
+      goal: report.goal,
+      acceptanceContract: report.acceptanceContract,
+      lane: 'comparison',
+      sourceLane: report.sourceLane,
+      depth: report.depth,
+      ground: report.ground,
+      experiment: interruptedExperiment,
+      startedAt: report.startedAt,
+    }, null, 2));
+    writeFileSync(join(interruptedDir, 'knowledge.json'), readFileSync(join(tmp, comparisonId, 'knowledge.json')));
+    writeFileSync(join(interruptedDir, 'events.jsonl'), `${JSON.stringify({ type: 'run', at: report.startedAt, run: { id: interruptedId, lane: 'comparison', goal: report.goal } })}\n`);
+
+    const recovery = await fetch(`${base}/api/runs/${interruptedId}/resume`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+    });
+    const recoveryPayload = await recovery.json();
+    assert.equal(recovery.status, 201, JSON.stringify(recoveryPayload));
+    const recoveryId = recoveryPayload.id;
+    let recovered = null;
+    for (let i = 0; i < 40 && !recovered; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const sealed = await fetch(`${base}/api/runs/${recoveryId}/report`, { headers: { origin: base } });
+      if (sealed.ok) recovered = await sealed.json();
+    }
+    assert.ok(recovered, 'recovery seals a new parent receipt');
+    assert.equal(recovered.experiment.experiment_id, report.experiment.experiment_id, 'recovery preserves the frozen experiment identity');
+    assert.equal(recovered.experiment.knowledge.snapshot_id, report.experiment.knowledge.snapshot_id, 'recovery reuses the exact frozen snapshot');
+    assert.equal(recovered.experiment.outcome.arms[0].receipt_id, report.experiment.outcome.arms[0].receipt_id, 'the already sealed child is reconstructed, not rerun');
+    assert.equal(recovered.experiment.outcome.arms[1].status, 'infra_failed', 'the interrupted child remains a failed arm');
+    assert.equal(recovered.experiment.outcome.arms[1].failure.code, 'server_interrupted');
+    assert.deepEqual(recovered.childRunIds.sort(), [report.childRunIds[0], 'missing-interrupted-child'].sort(), 'recovery creates no replacement child runs');
+    assert.match(readFileSync(join(tmp, recoveryId, 'events.jsonl'), 'utf8'), /no model or retrieval is rerun/, 'the recovery receipt states the conservative policy');
+  });
+
   await check('POST from a disallowed Origin is rejected (403), not executed', async () => {
     const r = await fetch(`${base}/api/runs`, {
       method: 'POST',
@@ -288,7 +414,7 @@ try {
     });
     const codes = [];
     for (let i = 0; i < 4; i++) codes.push((await start()).status);
-    assert.ok(codes.includes(429), `expected a 429 among ${codes.join(',')} (cap 2)`);
+    assert.ok(codes.includes(429), `expected a 429 among ${codes.join(',')} (cap 3)`);
   });
 
   await check('the stopped run seals a receipt with an evidence trail + honest completeness', async () => {

@@ -305,6 +305,17 @@ textarea:focus { outline: none; border-color: var(--ink); }
 .audit-controls select { min-width: 0; color: var(--ink); background: var(--paper); border: 1px solid var(--code-line); border-radius: 2px; padding: 8px 9px; font: 12px/1.3 var(--mono); }
 .audit-controls .audit-run { padding: 9px 12px; font-size: 11.5px; }
 
+.launch-actions { display: flex; gap: 10px; align-items: center; }
+.launch-actions .primary { flex: 1; }
+.compare-panel { margin-top: 12px; padding: 16px; border: 1px solid var(--rule); background: var(--code); }
+.compare-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0; }
+.compare-controls label { display: grid; gap: 5px; color: var(--muted); font-size: 13px; }
+.compare-controls select { width: 100%; }
+.comparison-card { border: 1px solid var(--rule); padding: 12px; margin: 8px 0; background: var(--paper); }
+.comparison-card .arm-head { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+.comparison-card .arm-meta { margin-top: 6px; color: var(--muted); font-size: 13px; }
+.comparison-card button { margin-top: 9px; }
+
 /* deliverable */
 .doc-wrap { border-left: 1px solid var(--rule); display: flex; flex-direction: column; min-height: 0; background: var(--paper); }
 .doc-head { display: flex; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--rule); gap: 10px; }
@@ -330,6 +341,7 @@ textarea:focus { outline: none; border-color: var(--ink); }
 .doc hr { border: none; border-top: 1px solid var(--rule); margin: 16px 0; }
 
 @media (max-width: 640px) {
+  .compare-controls { grid-template-columns: 1fr; }
   .runbar { flex-wrap: wrap; row-gap: 6px; }
   .rungoal { flex-basis: 100%; order: 2; white-space: normal; font-size: 15px; line-height: 1.35; }
   .runmeta { margin-left: auto; }

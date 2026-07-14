@@ -9,14 +9,14 @@ import { spawn } from 'node:child_process';
 import { getModels } from '../models.mjs';
 import { viaClaude } from './hivemind.mjs';
 
-const TIMEOUTS = { plan: 120_000, make: 540_000, fix: 420_000 };
+const TIMEOUTS = { plan: 120_000, ground: 300_000, make: 540_000, fix: 420_000 };
 
 function fail(error) {
   return { ok: false, error, text: null, costUsd: 0 };
 }
 
-export function claudeToolSurface({ stage, hivemindEnabled = false, serverName = 'claude_ai_Hivemind_Staging', toolName }) {
-  const builtins = stage === 'plan' ? '' : 'WebSearch,WebFetch';
+export function claudeToolSurface({ stage, hivemindEnabled = false, serverName = 'claude_ai_Hivemind_Staging', toolName, toolPolicy = 'research' }) {
+  const builtins = stage === 'plan' || toolPolicy !== 'research' ? '' : 'WebSearch,WebFetch';
   // Claude.ai connectors are deferred: ToolSearch must load the selected
   // managed tool before the model can call it. The exact selection keeps every
   // other connected service outside the model's tool surface.
@@ -66,10 +66,11 @@ export function parseHivemindToolResult(content, query = '') {
   }
 }
 
-export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, onSession, model }) {
-  const hm = stage === 'plan' ? { enabled: false } : viaClaude();
-  const { tools, allowed } = claudeToolSurface({ stage, hivemindEnabled: hm.enabled, serverName: hm.serverName, toolName: hm.toolName });
-  const maxTurns = stage === 'plan' ? '1' : stage === 'fix' ? '12' : '20';
+export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, onSession, model, toolPolicy = 'research' }) {
+  const configuredHm = stage === 'plan' || toolPolicy === 'none' ? { enabled: false } : viaClaude();
+  const hm = toolPolicy === 'hivemind_only' && !configuredHm.enabled ? { enabled: false } : configuredHm;
+  const { tools, allowed } = claudeToolSurface({ stage, hivemindEnabled: hm.enabled, serverName: hm.serverName, toolName: hm.toolName, toolPolicy });
+  const maxTurns = stage === 'plan' ? '1' : stage === 'ground' ? '8' : stage === 'fix' ? '12' : '20';
 
   // The model is always named explicitly — never the CLI's configured default.
   // --tools RESTRICTS the built-in surface (plan: none; research: web plus
@@ -96,6 +97,7 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
   } else args.push('--strict-mcp-config');
   if (allowed) args.push('--allowedTools', allowed);
 
+  const startedAt = Date.now();
   const { exitCode, stdout, stderr, resultEvent, hivemindQueries, hivemindQueryTexts, hivemindResults } = await new Promise((resolve) => {
     const child = spawn('claude', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
@@ -111,7 +113,7 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
       if (!done) { done = true; clearTimeout(t); clearInterval(tick); resolve({ exitCode: code, stdout: out, stderr: err, resultEvent: result, hivemindQueries: hmQueries, hivemindQueryTexts: hmQueryTexts, hivemindResults: hmResults }); }
     };
     const t = setTimeout(() => { child.kill('SIGKILL'); finish(-2); }, TIMEOUTS[stage] ?? 540_000);
-    const tick = setInterval(() => onTick?.(stage === 'plan' ? 'planning…' : 'drafting — researching sources…'), 8000);
+    const tick = setInterval(() => onTick?.(stage === 'plan' ? 'planning…' : stage === 'ground' ? 'freezing the knowledge snapshot…' : 'drafting — researching sources…'), 8000);
     child.stdout.on('data', (b) => {
       out += b;
       lineBuf += b;
@@ -168,11 +170,15 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
   if (data.is_error) return fail(`claude reported an error: ${String(data.result).slice(0, 300)}`);
   const text = String(data.result ?? '').trim();
   if (!text) return fail('claude returned an empty result');
+  const observed = usageFromClaudeResult(data, model);
   return {
     ok: true,
     error: null,
     text,
     costUsd: Number(data.total_cost_usd) || 0,
+    usage: observed.usage,
+    durationMs: Date.now() - startedAt,
+    modelActual: observed.modelActual,
     // This proves the maker actually invoked the configured connector. It does
     // not claim that every returned chunk was relevant or correct; the [Hn]
     // citation gate remains responsible for that evidence-level judgement.
@@ -180,5 +186,39 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
     hivemindQueries,
     hivemindQueryTexts,
     hivemindResults,
+  };
+}
+
+// Claude's result event has changed shape across CLI versions. Keep only
+// non-negative observed counters and the actual model identity when the event
+// names it. A successful explicitly pinned call falls back to that pin; no
+// usage or effort is inferred from price or latency.
+export function usageFromClaudeResult(data, requestedModel = null) {
+  const rows = [];
+  if (data?.modelUsage && typeof data.modelUsage === 'object') {
+    for (const [model, usage] of Object.entries(data.modelUsage)) if (usage && typeof usage === 'object') rows.push({ model, usage });
+  }
+  // modelUsage is the per-model breakdown of the same call. Prefer it over
+  // the aggregate usage object; summing both would double-count one request.
+  if (!rows.length && data?.usage && typeof data.usage === 'object') rows.push({ model: data.model ?? null, usage: data.usage });
+  const number = (value) => Number.isInteger(value) && value >= 0 ? value : null;
+  const read = (usage, snake, camel) => number(usage?.[snake] ?? usage?.[camel]);
+  const sum = (snake, camel) => {
+    const values = rows.map((row) => read(row.usage, snake, camel)).filter((value) => value !== null);
+    return values.length ? values.reduce((total, value) => total + value, 0) : null;
+  };
+  const models = [...new Set(rows.map((row) => row.model).filter((value) => typeof value === 'string' && value))];
+  const actualModel = models.length === 1
+    ? models[0]
+    : models.length > 1
+      ? `multiple[${models.sort().join('+')}]`
+      : (typeof data?.model === 'string' && data.model ? data.model : requestedModel);
+  return {
+    usage: {
+      input_tokens: sum('input_tokens', 'inputTokens'),
+      cached_input_tokens: sum('cache_read_input_tokens', 'cacheReadInputTokens'),
+      output_tokens: sum('output_tokens', 'outputTokens'),
+    },
+    modelActual: actualModel ? `anthropic:${actualModel}` : null,
   };
 }

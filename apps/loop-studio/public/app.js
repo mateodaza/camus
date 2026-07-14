@@ -2,7 +2,7 @@
    Loaded as an ES module (see index.html) so the pure banner policy is one
    shared file, importable here and by verify.test.mjs alike. */
 
-import { doneBanner } from './banner.mjs';
+import { comparisonBanner, doneBanner } from './banner.mjs';
 
 // Hosted-UI mode: when this page is served from a public origin, ?api=
 // points it at the local studio server (persisted after the first visit).
@@ -146,6 +146,11 @@ const STAGE_DEFS = {
   audit: [
     ['review', 'Re-audit'],
     ['ship', 'Receipt'],
+  ],
+  comparison: [
+    ['ground', 'Freeze knowledge'],
+    ['arms', 'Run arms'],
+    ['ship', 'Seal experiment'],
   ],
 };
 
@@ -508,6 +513,77 @@ $('lanes').addEventListener('click', (e) => {
   state.lane = btn.dataset.lane;
   document.querySelectorAll('.lane').forEach((l) => l.classList.toggle('selected', l === btn));
   $('target-wrap').classList.toggle('hidden', state.lane !== 'build');
+  if (state.lane === 'build') $('compare-panel').classList.add('hidden');
+});
+
+$('open-compare').addEventListener('click', async () => {
+  const panel = $('compare-panel');
+  if (!panel.classList.contains('hidden')) { panel.classList.add('hidden'); return; }
+  if (state.lane === 'build') {
+    $('form-error').textContent = 'Compare & Learn currently runs research arms, not two repository mutations.';
+    return;
+  }
+  $('compare-note').textContent = 'loading the frozen catalog…';
+  $('start-compare').disabled = false;
+  panel.classList.remove('hidden');
+  try {
+    const res = await fetch(`${API}/api/config`);
+    if (!res.ok) throw new Error('model catalog unavailable');
+    const config = await res.json();
+    const makers = config.catalog?.maker ?? [];
+    if (makers.length < 2) throw new Error('this machine exposes fewer than two executor models');
+    const makerA = makers.includes(config.maker.model) ? config.maker.model : makers[0];
+    const makerB = makers.find((model) => model !== makerA);
+    fillPicker($('compare-maker-a'), makers, makerA);
+    fillPicker($('compare-maker-b'), makers, makerB);
+    const reviewer = config.catalog.reviewer.includes(config.reviewer.model) ? config.reviewer.model : config.catalog.reviewer[0];
+    fillPicker($('compare-reviewer'), config.catalog.reviewer, reviewer);
+    $('compare-effort').value = config.reviewer.effort;
+    $('compare-note').textContent = config.catalog.reviewerSource === 'fallback'
+      ? 'The reviewer catalog is a conservative fallback because Codex has no readable cache.'
+      : 'The catalog is read from this machine and freezes when you start.';
+    $('start-compare').textContent = state.serverEngine === 'mock' ? 'Rehearse both arms' : 'Approve spend & run both arms';
+  } catch (err) {
+    $('compare-note').textContent = String(err.message || err);
+    $('start-compare').disabled = true;
+  }
+});
+
+$('start-compare').addEventListener('click', async () => {
+  const goal = $('goal').value.trim();
+  const acceptanceContract = $('acceptance-contract').value.trim();
+  const makerModels = [$('compare-maker-a').value, $('compare-maker-b').value];
+  $('form-error').textContent = '';
+  if (makerModels[0] === makerModels[1]) {
+    $('compare-note').textContent = 'Choose two distinct executor models.';
+    return;
+  }
+  if (state.serverEngine !== 'mock' && !confirm('Run two complete executor/auditor arms? This can spend roughly twice a standard run. Knowledge and model decisions will freeze now.')) return;
+  $('start-compare').disabled = true;
+  $('compare-note').textContent = 'freezing the manifest…';
+  try {
+    const res = await fetch(`${API}/api/comparisons`, {
+      method: 'POST',
+      headers: postHeaders(),
+      body: JSON.stringify({
+        goal,
+        acceptanceContract,
+        lane: state.lane,
+        depth: state.depth,
+        ground: $('ground').checked,
+        makerModels,
+        reviewer: $('compare-reviewer').value,
+        reviewerEffort: $('compare-effort').value,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    attach(data.id, data.goal);
+  } catch (err) {
+    $('compare-note').textContent = String(err.message || err);
+  } finally {
+    $('start-compare').disabled = false;
+  }
 });
 
 $('start').addEventListener('click', async () => {
@@ -552,6 +628,7 @@ function attach(id, goal) {
   $('run-timer').textContent = '0:00';
   $('stop').classList.remove('hidden');
   $('audit-replay').classList.add('hidden');
+  $('download-report').textContent = 'Evidence pack';
   state.runStartAt = null;
   $('feed').innerHTML = '';
   $('revtabs').innerHTML = '';
@@ -600,6 +677,27 @@ function attach(id, goal) {
   };
 }
 
+function comparisonRecoveryControl() {
+  const sub = el('span', 'sub');
+  const resume = el('button', 'resume-btn', 'Recover sealed arms');
+  resume.onclick = async () => {
+    resume.disabled = true;
+    resume.textContent = 'recovering…';
+    try {
+      const res = await fetch(`${API}/api/runs/${state.runId}/resume`, { method: 'POST', headers: postHeaders() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      attach(data.id, data.goal);
+    } catch (err) {
+      resume.disabled = false;
+      resume.textContent = `couldn't recover: ${String(err.message).slice(0, 72)}`;
+    }
+  };
+  sub.appendChild(resume);
+  sub.appendChild(document.createTextNode(' Recovery reads sealed child reports and marks interrupted arms failed. It never reruns models or retrieval.'));
+  return sub;
+}
+
 $('session-toggle').addEventListener('click', () => {
   const box = $('session');
   const open = box.classList.toggle('hidden');
@@ -646,19 +744,75 @@ $('download-report').addEventListener('click', async () => {
     const res = await fetch(`${API}/api/runs/${state.runId}/report`);
     if (!res.ok) throw new Error((await res.json()).error || res.statusText);
     const report = await res.json();
-    if (!report.evidencePack) throw new Error(report.evidencePackError || 'this run has no sealed evidence pack');
-    const blob = new Blob([JSON.stringify(report.evidencePack, null, 2)], { type: 'application/json' });
+    const payload = report.lane === 'comparison' ? report.experiment : report.evidencePack;
+    if (!payload) throw new Error(report.evidencePackError || 'this run has no sealed evidence artifact');
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = `run-${state.runId}-evidence-pack.json`;
+    link.download = report.lane === 'comparison' ? `comparison-${state.runId}.json` : `run-${state.runId}-evidence-pack.json`;
     link.click();
   } catch (err) {
     $('download-report').textContent = 'no report yet';
-    setTimeout(() => ($('download-report').textContent = 'Evidence pack'), 1500);
+    setTimeout(() => ($('download-report').textContent = state.runLane === 'comparison' ? 'Experiment' : 'Evidence pack'), 1500);
   }
 });
 
 const shortId = (id) => String(id || '').replace(/^sha256:/, '').slice(0, 12);
+async function renderComparisonReceipt() {
+  const runId = state.runId;
+  document.getElementById('evidence-pack-card')?.remove();
+  let report = null;
+  for (let attempt = 0; attempt < 20 && !report; attempt++) {
+    const res = await fetch(`${API}/api/runs/${runId}/report`).catch(() => null);
+    if (res?.ok) report = await res.json();
+    else await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  if (!report?.experiment || state.runId !== runId) return;
+  state.currentReport = report;
+  const experiment = report.experiment;
+  const card = el('div', 'trust-card');
+  card.id = 'evidence-pack-card';
+  card.appendChild(el('div', 'trust-title', 'SEALED COMPARISON EXPERIMENT'));
+  const rows = [
+    ['experiment', shortId(experiment.experiment_id)],
+    ['status', experiment.outcome.status.replace(/_/g, ' ')],
+    ['knowledge', `${shortId(experiment.knowledge.snapshot_id)} · ${experiment.knowledge.mode} · ${experiment.knowledge.item_count} item${experiment.knowledge.item_count === 1 ? '' : 's'}`],
+    ['fallback', experiment.manifest.fallback_policy],
+    ['shared reviewer', experiment.manifest.reviewer.resolved],
+    ['reviewer effort', `${experiment.manifest.reviewer_effort.requested} (requested)`],
+  ];
+  for (const [key, value] of rows) {
+    const row = el('div', 'trust-row');
+    row.append(el('span', 'trust-key', key), el('span', 'trust-value', value));
+    card.appendChild(row);
+  }
+  for (const arm of experiment.outcome.arms) {
+    const planned = experiment.manifest.arms.find((item) => item.arm_id === arm.arm_id);
+    const row = el('div', 'comparison-card');
+    row.appendChild(el('div', 'arm-head', `${arm.arm_id} · ${planned?.executor.resolved ?? 'unknown executor'}`));
+    const terminalLabel = arm.status === 'quality_floor_failed' ? 'finished' : arm.status.replace(/_/g, ' ');
+    row.appendChild(el('div', 'arm-meta', `${terminalLabel} · quality floor ${arm.quality_floor} · artifact ${shortId(arm.artifact_id) || 'none'} · receipt ${shortId(arm.receipt_id) || 'none'}`));
+    if (arm.run_id) {
+      const open = el('button', 'ghost', arm.receipt_id ? 'Open arm receipt' : 'Open arm trace');
+      open.onclick = () => attach(arm.run_id, `${arm.arm_id} · ${planned?.executor.resolved ?? ''}`);
+      row.appendChild(open);
+    }
+    card.appendChild(row);
+  }
+  card.appendChild(el('div', 'trust-contract', `contract: ${experiment.acceptance_contract}`));
+  feed(card);
+  const heading = experiment.outcome.status === 'completed'
+    ? 'Parallel execution complete'
+    : experiment.outcome.status === 'stopped'
+      ? 'Parallel execution stopped'
+      : 'Parallel experiment sealed with infrastructure failure';
+  $('doc').innerHTML = renderMd(`# ${heading}
+
+Every arm received the same sealed goal, acceptance contract, model-catalog decision and knowledge snapshot. Live retrieval and publication were disabled inside the arms.
+
+This slice records execution evidence only. It does **not** declare a winner. Blinded cross-arm judging and human disagreement handling are the next protocol step.`);
+}
+
 async function renderEvidenceReceipt(standing) {
   const runId = state.runId;
   document.getElementById('evidence-pack-card')?.remove();
@@ -818,7 +972,7 @@ function buildStages(lane) {
   const nav = $('stages');
   nav.innerHTML = '';
   state.stageEls.clear();
-  const defs = lane === 'build' ? STAGE_DEFS.build : lane === 'audit_replay' ? STAGE_DEFS.audit : STAGE_DEFS.words;
+  const defs = lane === 'build' ? STAGE_DEFS.build : lane === 'audit_replay' ? STAGE_DEFS.audit : lane === 'comparison' ? STAGE_DEFS.comparison : STAGE_DEFS.words;
   for (const [key, label] of defs) {
     const s = el('div', 'stage');
     s.appendChild(el('span', 'dot'));
@@ -840,7 +994,9 @@ function setStage(name, status, extra = {}) {
   if (name === 'verify' && extra.pass != null) badge.textContent = extra.pass ? 'green' : 'red';
   if (name === 'ground') {
     // Distinguish "nothing configured" (stub) from "configured but degraded".
-    badge.textContent = extra.via === 'claude'
+    badge.textContent = extra.frozen
+      ? `${extra.itemCount ?? 0} frozen`
+      : extra.via === 'claude'
       ? `claude ${extra.queried ? '✓' : '✕'}`
       : extra.connected === false
         ? (extra.mode && extra.mode !== 'stub' ? `${extra.mode} ✕` : 'stub')
@@ -891,13 +1047,66 @@ function handle(ev) {
         $('run-cost').textContent = 'rehearsal · no real spend';
       }
       buildStages(ev.run?.lane);
-      if (ev.run?.lane !== 'build' && ev.run && !ev.run.ground) state.stageEls.get('ground')?.remove();
+      if (!['build', 'comparison'].includes(ev.run?.lane) && ev.run && !ev.run.ground) state.stageEls.get('ground')?.remove();
       if (ev.run?.lane === 'build') $('doc').innerHTML = '<div class="doc-empty">The gate works inside the target repo. The session below is the live view; its report lands here.</div>';
+      if (ev.run?.lane === 'comparison') {
+        $('doc').innerHTML = '<div class="doc-empty">Each arm keeps its own artifact and receipt. Open an arm card as it finishes. Camus will not name a winner until the separate blinded-comparison step exists.</div>';
+        $('download-report').textContent = 'Experiment';
+      }
       break;
 
     case 'stage':
       setStage(ev.name, ev.status, ev);
       break;
+
+    case 'knowledge_snapshot': {
+      const c = el('div', 'comparison-card');
+      c.appendChild(el('div', 'trust-title', 'FROZEN KNOWLEDGE'));
+      c.appendChild(el('div', 'arm-meta', `${shortId(ev.snapshotId)} · ${ev.mode} · ${ev.itemCount} item${ev.itemCount === 1 ? '' : 's'} · ${ev.privacy}`));
+      feed(c);
+      break;
+    }
+
+    case 'comparison_manifest': {
+      const c = el('div', 'comparison-card');
+      c.appendChild(el('div', 'trust-title', 'SEALED PARALLEL MANIFEST'));
+      c.appendChild(el('div', 'arm-meta', `experiment ${shortId(ev.experimentId)} · snapshot ${shortId(ev.snapshotId)} · fallback ${ev.fallbackPolicy}`));
+      c.appendChild(el('div', 'arm-meta', ev.arms.map((arm) => `${arm.arm_id}: ${arm.executor.resolved}`).join(' · ')));
+      feed(c);
+      break;
+    }
+
+    case 'comparison_arm': {
+      let c = document.querySelector(`[data-arm-id="${ev.armId}"]`);
+      if (!c) {
+        c = el('div', 'comparison-card');
+        c.dataset.armId = ev.armId;
+        const head = el('div', 'arm-head');
+        head.appendChild(el('strong', null, `${ev.armId} · ${ev.model}`));
+        head.appendChild(el('span', `pill status ${ev.status}`, ev.status.replace(/_/g, ' ')));
+        c.appendChild(head);
+        c.appendChild(el('div', 'arm-meta'));
+        feed(c);
+      }
+      const status = c.querySelector('.pill');
+      status.className = `pill status ${ev.status}`;
+      status.textContent = ev.status.replace(/_/g, ' ');
+      const usage = ev.usage;
+      const tokens = usage && Number.isInteger(usage.input_tokens) && Number.isInteger(usage.output_tokens)
+        ? `${usage.input_tokens} in · ${usage.output_tokens} out`
+        : 'tokens not reported';
+      c.querySelector('.arm-meta').textContent = ev.status === 'running'
+        ? `run ${ev.runId} · exact model decision frozen · no fallback`
+        : `quality floor ${ev.qualityFloor} · artifact ${shortId(ev.artifactId) || 'none'} · receipt ${shortId(ev.receiptId) || 'none'} · ${tokens}`;
+      if (ev.runId && !c.querySelector('button')) {
+        const terminalLabel = ev.artifactId && ev.receiptId ? 'Open artifact & receipt' : 'Open arm trace';
+        const open = el('button', 'ghost', ev.status === 'running' ? 'Watch this arm' : terminalLabel);
+        open.onclick = () => attach(ev.runId, `${ev.armId} · ${ev.model}`);
+        c.appendChild(open);
+      }
+      if (c.querySelector('button') && ev.status !== 'running') c.querySelector('button').textContent = ev.artifactId && ev.receiptId ? 'Open artifact & receipt' : 'Open arm trace';
+      break;
+    }
 
     case 'log':
       feed(el('div', 'logline', ev.line));
@@ -1078,9 +1287,11 @@ function handle(ev) {
       stopTimer();
       if (!document.querySelector('.banner')) {
         setStatus('incomplete');
-        feed(el('div', 'banner meh', ev.empty
+        const interrupted = el('div', 'banner meh', ev.empty
           ? 'NO RECEIPTS. This run left no event stream.'
-          : 'REPLAY ENDED WITHOUT A VERDICT. The run was interrupted before it finished; the receipts stop here.'));
+          : 'REPLAY ENDED WITHOUT A VERDICT. The run was interrupted before it finished; the receipts stop here.');
+        if (!ev.empty && state.runLane === 'comparison') interrupted.appendChild(comparisonRecoveryControl());
+        feed(interrupted);
       }
       break;
 
@@ -1110,12 +1321,17 @@ function handle(ev) {
             failed: 'FAILED. The loop refused to fake a green.',
             stopped: 'STOPPED by human.',
           }[ev.status] || ev.status);
+      if (state.runLane === 'comparison') {
+        const comparison = comparisonBanner(ev.status, state.simulated);
+        cls = comparison.cls;
+        label = comparison.label;
+      }
       // EVERY real done* event enters the headline policy (banner.mjs) — the
       // trust protocol's one derivation, riding the event at serve time. That
       // includes events with NO dimensions/headline (legacy receipts): missing
       // evidence fails closed to an uncorroborated gate claim, never to
       // "reviewed and verified". The UI never re-derives audit policy.
-      if (!state.simulated && good) {
+      if (state.runLane !== 'comparison' && !state.simulated && good) {
         const b = doneBanner(ev.status, ev.headline, ev.dimensions);
         cls = b.cls;
         label = b.label;
@@ -1148,7 +1364,7 @@ function handle(ev) {
         b.appendChild(sub);
       } else if (ev.artifactPublished) {
         b.appendChild(el('span', 'sub', `published to Hivemind artifacts · receipts in runs/${state.runId}/`));
-      } else if (good) {
+      } else if (good && state.runLane !== 'comparison') {
         b.appendChild(el('span', 'sub', state.simulated
           ? `local simulation trace (not evidence) in runs/${state.runId}/`
           : state.runLane === 'audit_replay'
@@ -1164,7 +1380,8 @@ function handle(ev) {
         const d = ev.dimensions;
         feed(el('div', 'dims', `sealed dimensions · execution ${nice(d.execution)} · verification ${nice(d.verification)} · audit ${nice(d.audit)} · publication ${nice(d.publication)}`));
       }
-      void renderEvidenceReceipt(state.simulated ? 'rehearsal' : ev.headline);
+      if (state.runLane === 'comparison') void renderComparisonReceipt();
+      else void renderEvidenceReceipt(state.simulated ? 'rehearsal' : ev.headline);
       break;
     }
 

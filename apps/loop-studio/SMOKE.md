@@ -55,6 +55,30 @@ Then click **Rehearse re-audit** in the finished run. Choose another listed revi
 - requested model/effort recorded, but scripted actual effort shown as `scripted`; and
 - rehearsal standing, `audit:not_run`, five `unchecked` claims, and three `unclear` criteria.
 
+Back on the launch view, open **Compare executors** and choose two different
+Claude models plus one shared Codex reviewer. Start the comparison. In live
+mode Studio asks for an explicit roughly-two-run spend confirmation; rehearsal
+does not spend. Confirm:
+
+- **Freeze knowledge** finishes before either arm starts, and the manifest card
+  shows one snapshot id plus `fallback none`;
+- both arm cards start together and each human question is serialized through
+  the parent instead of rendering two competing prompts;
+- each terminal arm opens its own artifact and evidence pack;
+- the parent says no winner has been declared, while preserving failed arms;
+- the sealed experiment has `schemaVersion: 2`, one shared `knowledge.snapshot_id`,
+  frozen task/depth/round controls, and every manifest arm represented exactly
+  once in `outcome.arms`; and
+- the rehearsal arms end `quality_floor_failed`, because scripted output cannot
+  earn independent standing.
+
+For the crash path, copy an incomplete comparison receipt into a safe test
+directory or stop the server mid-comparison, restart Studio, open the incomplete
+run from Recents, and click **Recover sealed arms**. Recovery must reuse the
+same experiment and snapshot ids, reconstruct sealed child reports, retain
+missing children as `infra_failed / server_interrupted`, and make no model or
+retrieval calls.
+
 No wifi at the venue: `MOCK_OFFLINE=1 npm run rehearse` (link checks skip instead of failing).
 
 ## 4. Receipts — nothing lives only in the browser (1 min)
@@ -69,6 +93,12 @@ python3 -m json.tool runs/<run-id>/report.json | head -30
 `report.json` carries the final deliverable, human decisions, raw status dimensions, and `evidencePack`. Confirm `schemaVersion: 2`, the explicit `acceptance_contract`, full `artifact_id` and `receipt_id`, requested/resolved/actual pairing, actual reviewer effort, deterministic checks, final-revision claim and contract-coverage ledgers, and economics recorded as `billing_mode: "unknown"` / `estimated_cost_usd: null`. A rehearsal must say `simulation:scripted-*`, `independence: none`, and `audit: not_run`; every claim decision must be `unchecked` and every coverage decision `unclear`.
 
 For an audit replay, also inspect `report.json.experiment`: `mode` is `audit_only_replay`, the source and outcome `artifact_id` values match, the parent and new receipt ids differ, the frozen catalog contains the resolved reviewer, fallback is `none`, and usage fields are integers or `null` rather than estimates. A failed reviewer must remain as `infra_failed` with a failure record.
+
+For a parallel parent, inspect `report.json.experiment` and `knowledge.json`.
+The latter stays local and its recomputed hash must match
+`experiment.knowledge.snapshot_id`. Each child report binds that same id in its
+grounding evidence and session log. The parent outcome must retain every arm,
+including interruptions, and must not contain a winner field.
 
 ## 5. Replay — yesterday's green (30s)
 
