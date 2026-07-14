@@ -44,6 +44,21 @@ try {
     TOKEN = d.token;
   });
 
+  await check('config carries a model catalog and never a hidden slug', async () => {
+    // Exercises the real codex cache on this machine (which includes the hidden
+    // codex-auto-review) — the catalog must filter it out, and the current
+    // decisions must always be selectable.
+    const r = await fetch(`${base}/api/config`, { headers: { origin: base } });
+    assert.equal(r.status, 200);
+    const c = await r.json();
+    assert.ok(Array.isArray(c.catalog?.maker) && c.catalog.maker.length, 'maker catalog present');
+    assert.ok(Array.isArray(c.catalog?.reviewer) && c.catalog.reviewer.length, 'reviewer catalog present');
+    assert.ok(c.catalog.maker.includes(c.maker.model), 'the current maker decision is selectable');
+    assert.ok(c.catalog.reviewer.includes(c.reviewer.model), 'the current reviewer decision is selectable');
+    assert.ok(!c.catalog.reviewer.includes('codex-auto-review'), 'a hidden internal reviewer model is never offered');
+    assert.ok(['codex_cache', 'fallback'].includes(c.catalog.reviewerSource), 'the catalog names whether the list is CLI-verified');
+  });
+
   await check('POST from a disallowed Origin is rejected (403), not executed', async () => {
     const r = await fetch(`${base}/api/runs`, {
       method: 'POST',

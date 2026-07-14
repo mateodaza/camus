@@ -10,77 +10,91 @@ const sleep = (ms, signal) =>
     signal?.addEventListener('abort', () => { clearTimeout(t); reject(new Error('aborted')); }, { once: true });
   });
 
+// The rehearsal is scripted, but its FINAL deliverable must be honestly
+// defensible: a demo that ends on a laundered green (specific claims cited to
+// general pages that do not establish them) would show Camus blessing the exact
+// thing it exists to catch. So every [n] here points at a source that genuinely
+// supports the GENERAL claim it carries, the specifics are flagged as needing
+// the client's own data, and the only laundering in the arc is in REV1, which
+// the reviewer catches.
 const SOURCES_OK = `## Sources
 1. Digital marketing — Wikipedia — https://en.wikipedia.org/wiki/Digital_marketing
 2. Customer retention — Wikipedia — https://en.wikipedia.org/wiki/Customer_retention
 3. Network effect — Wikipedia — https://en.wikipedia.org/wiki/Network_effect
 4. Word-of-mouth marketing — Wikipedia — https://en.wikipedia.org/wiki/Word-of-mouth_marketing`;
 
+// REV1: the plausible-but-unaccountable first draft the reviewer is meant to
+// catch (an uncited statistic, a promissory phrase, and a one-sided argument).
 const REV1 = `## Summary
-Community-led growth beats paid acquisition for consumer subscription apps at the current stage of the market. Paid channels keep getting more expensive under tighter ad policy, so the compounding asset is an owned community that produces guaranteed returns on every launch.
+Community-led growth beats paid acquisition for consumer subscription apps, full stop. An owned community produces guaranteed returns on every launch, so the smart move is to stop spending on ads.
 
 ## Key Findings
-1. Ad policy on major platforms keeps tightening around performance claims, which pushes CAC up sharply for paid-first teams.
-2. Apps with active community programs retain 61% more of their monthly actives than paid-first comparables.
-3. Promotion-driven spikes decay fast; community-originated cohorts decay slower [2].
+1. Apps with active community programs retain 61% more of their monthly actives than paid-first comparables.
+2. Paid spend resets to zero the moment a campaign ends, while a community keeps compounding.
 
 ## Implications
-Lead with community programs and treat paid as amplification, so budget follows proof instead of hope.
+Put the budget into community programs and treat paid as a distraction.
 
 ${SOURCES_OK}`;
 
+// REV2: the three findings fixed. Each claim is now a general marketing
+// principle its cited reference genuinely establishes, the memo hedges that
+// specifics need the client's data, and paid gets its steelman — but the
+// recommendation still does not say which launch strategy it assumes.
 const REV2 = `## Summary
-Community-led growth beats paid acquisition for consumer subscription apps at the current stage of the market. Paid channels keep getting more expensive under tighter ad policy, so the compounding asset is an owned community that lowers acquisition cost over time.
+Community-led growth and paid acquisition solve different problems for a consumer subscription app; this memo weighs which should lead. The comparison rests on general marketing principles and should be checked against the client's own retention data before it drives budget.
 
 ## Key Findings
-1. Ad policy on major platforms keeps tightening around performance claims, which pushes acquisition costs up for paid-first teams [1].
-2. Retention concentrates where members invest attention, which is where community programs pay off [2].
-3. Promotion-driven spikes decay fast; community-originated cohorts decay slower because joining cost is social, not financial [3].
-4. Paid still wins for one job: reaching audiences the community cannot touch on its own [4].
+1. Retaining existing customers is generally less costly than acquiring new ones, which is why retention is a core growth lever [2].
+2. Word-of-mouth travels through peer recommendation rather than paid placement, so a community's reach compounds as it grows [4].
+3. Products with network effects grow more useful to each user as more people join, which rewards investment in an owned community [3].
+4. Paid channels stay the dependable way to reach audiences a community cannot touch on its own; targeted advertising is built for that job [1].
 
 ## Implications
-Lead with community programs and treat paid as amplification, so budget follows proof instead of hope.
+Lead with community programs and use paid as an amplifier, so budget follows evidence rather than hope.
 
 ${SOURCES_OK}`;
 
+// REV3: recommendation anchored to the human's answer (self-serve launch) and a
+// fifth finding added — but its source link is dead, which the reviewer cannot
+// see and the deterministic gate will.
 const REV3 = `## Summary
-For a consumer subscription app launching self-serve first, community-led growth is the primary engine and paid acquisition is the amplifier. Ad policy keeps tightening around performance claims, so the compounding asset is an owned community.
+For a consumer subscription app launching self-serve first, this memo recommends community-led growth as the primary engine and paid acquisition as an amplifier. The reasoning rests on general marketing principles; confirm it against the client's own retention data before committing budget.
 
 ## Key Findings
-1. Ad policy on major platforms keeps tightening around performance claims, which pushes acquisition costs up for paid-first teams [1].
-2. Retention concentrates where members invest attention, which is where community programs pay off [2].
-3. Promotion-driven spikes decay fast; community-originated cohorts decay slower because joining cost is social, not financial [3].
-4. Paid still wins for one job: reaching audiences the community cannot touch on its own [4].
-5. Case detail on launch-week distribution mechanics is documented in the campaign archive [5].
+1. Retaining existing customers is generally less costly than acquiring new ones, which is why retention is a core growth lever [2].
+2. Word-of-mouth travels through peer recommendation rather than paid placement, so a community's reach compounds as it grows [4].
+3. Products with network effects grow more useful to each user as more people join, which rewards investment in an owned community [3].
+4. Paid channels stay the dependable way to reach audiences a community cannot touch on its own; targeted advertising is built for that job [1].
+5. Standard product-launch practice runs in phases rather than all at once, which supports a community-first, paid-second rollout [5].
 
 ## Implications
-Sequence the quarter as community first, paid second: prove a retention baseline with owned channels, then buy reach against the segments the community cannot touch.
+Sequence the quarter as community first, paid second: establish a retention baseline through owned channels, then buy reach against the segments the community cannot touch. Treat the direction as a hypothesis to validate, not a settled fact.
 
 ${SOURCES_OK}
-5. Launch campaign archive — https://github.com/Myosin-xyz/does-not-exist-archive`;
+5. Launch playbook archive — https://github.com/Myosin-xyz/does-not-exist-archive`;
 
+// REV4: the dead fifth source swapped for a live reference the phased-launch
+// claim genuinely rests on. Nothing else changes — the claims were already
+// honest — so the final green certifies a deliverable that does not launder.
 const REV4 = REV3.replace(
-  '5. Launch campaign archive — https://github.com/Myosin-xyz/does-not-exist-archive',
-  '5. Product launch overview — Wikipedia — https://en.wikipedia.org/wiki/Product_launch',
-).replace(
-  'documented in the campaign archive [5]',
-  'documented in the launch overview [5]',
+  '5. Launch playbook archive — https://github.com/Myosin-xyz/does-not-exist-archive',
+  '5. Product launch — Wikipedia — https://en.wikipedia.org/wiki/Product_launch',
 );
 
-const PLAN = `- Frame the decision: community-led vs paid-first for a consumer subscription app, this cycle
-- Pull platform ad-policy state and what it does to acquisition cost
-- Compare cohort decay: promotion/paid spikes vs community-originated users
+const PLAN = `- Frame the decision: community-led vs paid-first for a consumer subscription app
+- State the general principle behind each: retention economics, word-of-mouth, network effects, paid reach
 - Name where paid genuinely wins, so this reads like judgment, not cheerleading
-- Source types: market overviews, policy pages, one case archive
-- Biggest risk: retention numbers that do not trace to a real report`;
+- Anchor the recommendation to the client's actual launch strategy
+- Flag every specific number as needing the client's own data before it drives budget`;
 
 const REVIEWS = [
   {
     ran: true, error: null, verdict: 'REVISE',
     findings: [
-      { severity: 'high', title: 'Retention figure has no source', detail: 'Finding 2 claims “retain 61% more of their monthly actives” with no citation. I cannot locate this number in any current report; it reads like a remembered statistic.', suggestion: 'Replace with a claim you can trace to a live source, or delete the number and keep the direction.' },
+      { severity: 'high', title: 'Retention figure has no source', detail: 'Finding 1 claims “retain 61% more of their monthly actives” with no citation. I cannot locate this number in any current report; it reads like a remembered statistic.', suggestion: 'Replace with a claim you can trace to a live source, or delete the number and keep the direction.' },
       { severity: 'high', title: 'Promissory phrasing: guaranteed returns', detail: 'The summary says an owned community “produces guaranteed returns on every launch”. That is a promissory claim no marketing team can stand behind.', suggestion: 'Describe the mechanic (lower acquisition cost, higher retention) without promising outcomes.' },
-      { severity: 'medium', title: 'No steelman for paid', detail: 'The memo never states where paid acquisition wins, so it reads like advocacy rather than analysis.', suggestion: 'Add one finding on the job paid does better than community.' },
+      { severity: 'medium', title: 'No steelman for paid', detail: 'The memo calls paid “a distraction” and never says where it wins, so it reads like advocacy rather than analysis.', suggestion: 'Add one finding on the job paid does better than community.' },
     ],
     blocking: 3, questions: [],
   },

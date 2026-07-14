@@ -1197,4 +1197,59 @@ if (process.env.TEST_NETWORK === '1') {
   assert.match(doneBanner('done', 'BANANA', { verification: 'passed', audit: 'independent_clean' }).label, /gate claim/, 'an unknown headline is a claim, never trusted');
 }
 
+// --- model catalog: the picker only offers what codex itself lists -----------
+// codex marks internal models `visibility: 'hide'` (e.g. codex-auto-review).
+// Surfacing one would let a run decision be made that the normal codex UI
+// withholds, so the catalog filters to listable slugs only.
+{
+  const { reviewerSlugsFromCache } = await import('./lib/models.mjs');
+  const cache = { models: [
+    { slug: 'gpt-5.4', visibility: 'list' },
+    { slug: 'gpt-5.4-mini', visibility: 'list' },
+    { slug: 'codex-auto-review', visibility: 'hide' },
+    { slug: 'no-visibility-field' },
+    { visibility: 'list' },
+  ] };
+  const slugs = reviewerSlugsFromCache(cache);
+  assert.deepEqual(slugs, ['gpt-5.4', 'gpt-5.4-mini'], 'only listable slugs are offered');
+  assert.ok(!slugs.includes('codex-auto-review'), 'a hidden internal model is never offered in the picker');
+  assert.deepEqual(reviewerSlugsFromCache(null), [], 'no cache → no slugs');
+  assert.deepEqual(reviewerSlugsFromCache({ models: 'nope' }), [], 'a malformed cache → no slugs');
+}
+
+// --- the rehearsal's final deliverable must not launder sources --------------
+// A demo that ends on a laundered green (specific claims cited to pages that do
+// not establish them, blessed clean) would show Camus doing the exact thing it
+// exists to catch. Drive the mock maker to its last revision and assert the
+// deterministic honesty gates genuinely pass on it.
+{
+  process.env.MOCK_SPEED = '0'; // no real sleeps in the test
+  const { createMockAdapters } = await import('./lib/adapters/mock.mjs');
+  const a = createMockAdapters();
+  const ac = new AbortController();
+  const call = (stage) => a.claude({ stage, signal: ac.signal, onTick() {}, onSession() {} });
+  await call('make'); // REV1
+  await call('fix');  // REV2
+  await call('fix');  // REV3
+  const finalRev = (await call('fix')).text; // REV4 — the approved, verified deliverable
+  assert.equal(findUnsourcedStats(finalRev).length, 0, 'the rehearsal final deliverable carries no uncited statistic');
+  assert.equal(findComplianceHits(finalRev).filter((h) => h.severity === 'fail').length, 0, 'the rehearsal final deliverable trips no compliance failure');
+  const gate = await runVerify(finalRev, 'research_memo', { skipNetwork: true });
+  assert.equal(gate.checks.find((c) => c.id === 'citations').status, 'pass', 'the rehearsal final deliverable has no dangling citation');
+  assert.equal(gate.checks.find((c) => c.id === 'stats').status, 'pass', 'the rehearsal final deliverable passes the stats-must-cite gate');
+  assert.equal(gate.checks.find((c) => c.id === 'structure').status, 'pass', 'the rehearsal final deliverable has the required sections');
+  // The FIRST draft is where the plantable problems live — the loop must catch
+  // them, not the final state.
+  const rev1 = (await createMockAdapters().claude({ stage: 'make', signal: ac.signal, onTick() {}, onSession() {} })).text;
+  assert.ok(findUnsourcedStats(rev1).length > 0 || findComplianceHits(rev1).some((h) => h.severity === 'fail'), 'the rehearsal FIRST draft plants a real problem for the reviewer to catch');
+}
+
+// --- compliance wordlist describes itself honestly (no crypto vertical) ------
+{
+  const { readFileSync } = await import('node:fs');
+  const cfg = JSON.parse(readFileSync(new URL('./checks/compliance.json', import.meta.url), 'utf8'));
+  assert.ok(!/web3|crypto|token|airdrop|presale|onchain/i.test(cfg.description), 'the compliance wordlist describes itself generally, not as a crypto vertical');
+  assert.ok(cfg.patterns.some((p) => p.label === 'Guaranteed returns claim' && p.severity === 'fail'), 'the general promissory-returns rule survives the generalization');
+}
+
 console.log('verify.test: all assertions passed');

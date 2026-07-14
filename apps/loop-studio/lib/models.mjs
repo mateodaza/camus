@@ -71,21 +71,36 @@ export function modelsSummary() {
   return `maker ${m.maker.model} · reviewer ${m.reviewer.model} (${m.reviewer.effort}) · rounds ${m.loop.roundCap}`;
 }
 
+// Codex marks internal models `visibility: 'hide'` in its cache (e.g.
+// codex-auto-review, the reviewer codex runs for itself). Offer ONLY what codex
+// itself lists — a picker must never surface a model the normal codex UI
+// withholds, or a run decision could be made that codex never intended to be
+// selectable. Pure so the filter is directly testable.
+export function reviewerSlugsFromCache(cache) {
+  const models = Array.isArray(cache?.models) ? cache.models : [];
+  return models
+    .filter((m) => m && m.visibility === 'list' && typeof m.slug === 'string' && m.slug)
+    .map((m) => m.slug);
+}
+
 // The pickable model lists for the settings panel. Makers are the Claude CLI's
-// stable aliases; reviewers come from codex's own model cache when it exists
-// (the machine's real options) with a curated fallback. The CURRENT decision is
-// always present in its list, so the picker can never show a value it refuses
-// to represent.
+// stable aliases; reviewers come from codex's own cache when it exists (the
+// machine's real, listable options) and a small curated fallback otherwise —
+// deliberately conservative, since with no cache we cannot confirm what the
+// installed CLI will accept. The CURRENT decision is always present, so the
+// picker can never show a value it refuses to represent, and `reviewerSource`
+// tells a caller whether the list is CLI-verified or a best-effort default.
 export function modelCatalog() {
   const maker = ['haiku', 'sonnet', 'opus'];
-  let reviewer = ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-sol'];
+  let reviewer = ['gpt-5.4', 'gpt-5.4-mini'];
+  let reviewerSource = 'fallback';
   try {
     const cache = JSON.parse(readFileSync(join(homedir(), '.codex', 'models_cache.json'), 'utf8'));
-    const slugs = (cache.models ?? []).map((m) => m.slug).filter((s) => typeof s === 'string' && s);
-    if (slugs.length) reviewer = slugs;
-  } catch { /* cache absent: the curated list stands */ }
+    const slugs = reviewerSlugsFromCache(cache);
+    if (slugs.length) { reviewer = slugs; reviewerSource = 'codex_cache'; }
+  } catch { /* cache absent or unreadable: the curated fallback stands */ }
   const m = getModels();
   if (!maker.includes(m.maker.model)) maker.unshift(m.maker.model);
   if (!reviewer.includes(m.reviewer.model)) reviewer.unshift(m.reviewer.model);
-  return { maker, reviewer };
+  return { maker, reviewer, reviewerSource };
 }
