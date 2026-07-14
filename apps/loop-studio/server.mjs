@@ -179,8 +179,11 @@ async function startRun({ goal, lane, depth, ground, targetPath = null, targetTo
       lane, status: run.status, evidence,
       published: !!(result?.artifactPublished || result?.artifactUrl),
     });
+    // models is the run-start snapshot and is authoritative — it sits AFTER ...result
+    // so a future result field named `models` can never overwrite the sealed pairing
+    // (the same reason draft/deliverable are pinned after the spread).
     const report = JSON.stringify(
-      { id, goal, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, models: run.models, ...result, draft: undefined, deliverable: run.lastMarkdown, evidence, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt: Date.now() },
+      { id, goal, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, draft: undefined, deliverable: run.lastMarkdown, evidence, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt: Date.now() },
       null,
       2,
     );

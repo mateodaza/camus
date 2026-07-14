@@ -228,6 +228,41 @@ fi
 #   export CAMUS_CODEX_ARGS="-c model_reasoning_effort=xhigh"    # force a constant effort
 # (word-splitting is intentional: the var carries whole extra CLI args.)
 effort="${4:-medium}"
+
+# ── Reviewer identity, resolved BEFORE the model args are assembled ────────────
+# The model codex ACTUALLY runs with and the model sealed into the audit must be
+# the SAME one — on a fresh run and on a resume alike. So resolve the authoritative
+# reviewer HERE, ahead of codex_review_args: a resume without CAMUS_CODEX_MODEL
+# recovers the model the round originally pinned (from its own meta.json) and runs
+# codex WITH it, instead of silently falling to whatever ambient -m the levers add
+# (that gap let codex review under an ambient model while the audit sealed the
+# recorded one — the two disagreed). watch_dir is derived here for the same reason;
+# the fresh-vs-resume file handling below still owns the round dir's lifecycle.
+watch_dir="$review_dir/$(basename "$target_dir")-r${round}.watch"
+prior_reviewer_model=""
+if [[ -f "$watch_dir/meta.json" ]]; then
+  prior_reviewer_model="$(python3 -c 'import json,sys
+try: v = json.load(open(sys.argv[1])).get("reviewer_model")
+except Exception: v = None
+print(v if isinstance(v, str) and v else "")' "$watch_dir/meta.json" 2>/dev/null)"
+fi
+# Persisted identity is AUTHORITATIVE across resume: a resume arriving with a
+# DIFFERENT CAMUS_CODEX_MODEL is refused (rewriting it would make the sealed pairing
+# claim a model that never reviewed the earlier rounds); a resume WITHOUT the env
+# keeps the recorded model. Validate once, here, before it can reach a command line.
+effective_reviewer_model="${CAMUS_CODEX_MODEL:-}"
+if [[ -n "$prior_reviewer_model" ]]; then
+  if [[ -n "$effective_reviewer_model" && "$effective_reviewer_model" != "$prior_reviewer_model" ]]; then
+    echo "codex_review: resume reviewer-model mismatch — round already recorded '$prior_reviewer_model' but CAMUS_CODEX_MODEL is '$effective_reviewer_model'; refusing rather than rewrite the sealed reviewer identity" >&2
+    exit 2
+  fi
+  effective_reviewer_model="$prior_reviewer_model"
+fi
+if [[ -n "$effective_reviewer_model" && ! "$effective_reviewer_model" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+  echo "codex_review: reviewer model is not a valid identifier: '$effective_reviewer_model'" >&2
+  exit 2
+fi
+
 codex_review_args="${CAMUS_CODEX_ARGS:--c model_reasoning_effort=$effort}"
 
 # ── Additive speed levers (2026-06-11, VELOCITY-DIRECTION §2) — both default-OFF: with the env
@@ -247,12 +282,15 @@ codex_review_args="${CAMUS_CODEX_ARGS:--c model_reasoning_effort=$effort}"
 if [[ -n "${CAMUS_CODEX_LIGHT_MODEL:-}" && "$effort" == "medium" ]]; then
   codex_review_args="$codex_review_args -m $CAMUS_CODEX_LIGHT_MODEL"
 fi
-# STUDIO IDENTITY PIN (identity slice): CAMUS_CODEX_MODEL is the reviewer model the
-# caller (e.g. Studio) recorded for this run. It is AUTHORITATIVE — validated,
-# appended LAST so it wins over any prior lever, and we REFUSE to run when a -m is
-# already present rather than let a silent override make a sealed pairing lie about
-# what actually reviewed. Use this dedicated channel, not a -m folded into
-# CAMUS_CODEX_ARGS/CAMUS_CODEX_LIGHT_MODEL.
+# STUDIO IDENTITY PIN (identity slice): effective_reviewer_model is the reviewer
+# model this run pinned — CAMUS_CODEX_MODEL on a fresh run, or the model the round
+# already recorded on resume (resolved above, ahead of these args). It is
+# AUTHORITATIVE — appended LAST so it wins over any prior lever, and we REFUSE to run
+# when a -m is already present (from CAMUS_CODEX_ARGS or the light-model ladder above)
+# rather than let a silent override make a sealed pairing lie about what reviewed.
+# Appending to the ACTUAL command here — fresh AND resume — is what keeps codex's -m
+# identical to the model the audit seals. Use this dedicated channel (or the pin the
+# caller recorded), not a -m folded into CAMUS_CODEX_ARGS/CAMUS_CODEX_LIGHT_MODEL.
 # Boundary-aware model-flag detection: a whole -m / --model / --model=… token at
 # ANY position (a substring check for " -m " missed a leading -m and the --model
 # spelling, both valid ways to fold a conflicting model into CAMUS_CODEX_ARGS).
@@ -263,16 +301,12 @@ _has_model_flag() {
   done
   return 1
 }
-if [[ -n "${CAMUS_CODEX_MODEL:-}" ]]; then
-  if [[ ! "$CAMUS_CODEX_MODEL" =~ ^[A-Za-z0-9._/-]+$ ]]; then
-    echo "codex_review: CAMUS_CODEX_MODEL is not a valid model identifier: '$CAMUS_CODEX_MODEL'" >&2
-    exit 2
-  fi
+if [[ -n "$effective_reviewer_model" ]]; then
   if _has_model_flag "$codex_review_args"; then
-    echo "codex_review: CAMUS_CODEX_MODEL ($CAMUS_CODEX_MODEL) conflicts with a -m/--model already in the review args — refusing rather than silently override the recorded reviewer identity" >&2
+    echo "codex_review: reviewer model ($effective_reviewer_model) conflicts with a -m/--model already in the review args — refusing rather than silently override the recorded reviewer identity" >&2
     exit 2
   fi
-  codex_review_args="$codex_review_args -m $CAMUS_CODEX_MODEL"
+  codex_review_args="$codex_review_args -m $effective_reviewer_model"
 fi
 # SERVICE-TIER PIN (experiment 3 mechanism — the billing DECISION stays the user's): since
 # codex 0.124, eligible ChatGPT plans default to the FAST service tier (2.5x credit burn on
@@ -320,9 +354,9 @@ if [[ -n "$_mcp_list" ]]; then
   done
 fi
 
-# Fresh watch dir per round (a retry of the same round starts clean — stale events would
-# poison idle detection and usage extraction).
-watch_dir="$review_dir/$(basename "$target_dir")-r${round}.watch"
+# watch_dir was derived above (the reviewer-identity resolution needs it before the
+# model args). A retry of the same round still starts clean — stale events would poison
+# idle detection and usage extraction — via the rm/preserve handling just below.
 
 # RESUME PROBE (codex-resume-recovery 2026-06-12): a prior attempt of THIS round that was
 # idle-killed/aborted owns a live codex thread — `codex exec resume <thread_id>` can finish it
@@ -333,19 +367,11 @@ watch_dir="$review_dir/$(basename "$target_dir")-r${round}.watch"
 # A captured id only ARMS resume; the fail-closed gate below (will_resume) still requires the
 # aborted/abandoned shape — no completion evidence — before resume actually fires.
 prior_thread_id=""
-prior_reviewer_model=""
 if [[ -f "$watch_dir/meta.json" ]]; then
   prior_thread_id="$(python3 -c 'import json,sys
 try: tid = json.load(open(sys.argv[1])).get("thread_id")
 except Exception: tid = None
 print(tid if isinstance(tid, str) and tid else "")' "$watch_dir/meta.json" 2>/dev/null)"
-  # The reviewer identity a prior attempt of THIS round recorded — authoritative
-  # across resume: a resume that arrives with a different CAMUS_CODEX_MODEL is
-  # refused below rather than allowed to rewrite the sealed reviewer identity.
-  prior_reviewer_model="$(python3 -c 'import json,sys
-try: v = json.load(open(sys.argv[1])).get("reviewer_model")
-except Exception: v = None
-print(v if isinstance(v, str) and v else "")' "$watch_dir/meta.json" 2>/dev/null)"
 fi
 # meta.json is the ONLY resume source (THREAD-ONLY recovery, zero local-process awareness): it
 # carries thread_id solely for the terminal abandoned shape (idle_killed/aborted), persisted there by
@@ -402,18 +428,11 @@ last_file="$watch_dir/last.txt"
 # thread that was never idle-killed or watchdog-aborted (the "only aborted/abandoned evidence" trigger
 # violation). So this seed writes audit identity only; the abandoned-shape gate stays the sole source
 # of a resumable id.
-# Persisted reviewer identity is authoritative across resume. A resume that
-# arrives with a DIFFERENT CAMUS_CODEX_MODEL than the round already recorded is
-# refused (rewriting it would make the sealed pairing claim a model that never
-# reviewed the earlier rounds). An await/resume without the env preserves it.
-effective_reviewer_model="${CAMUS_CODEX_MODEL:-}"
-if [[ -n "$prior_reviewer_model" ]]; then
-  if [[ -n "$effective_reviewer_model" && "$effective_reviewer_model" != "$prior_reviewer_model" ]]; then
-    echo "codex_review: resume reviewer-model mismatch — round already recorded '$prior_reviewer_model' but CAMUS_CODEX_MODEL is '$effective_reviewer_model'; refusing rather than rewrite the sealed reviewer identity" >&2
-    exit 2
-  fi
-  effective_reviewer_model="$prior_reviewer_model"
-fi
+# Persist the reviewer identity resolved above (env pin, or the model this round
+# recorded on a prior attempt). It is the SAME model already appended to
+# codex_review_args, so the pending/resumed/await paths all seal exactly the model
+# codex ran with. An await/resume without the env preserves it; a mismatched resume
+# was already refused above.
 python3 -c 'import json,sys
 m = {"target_dir": sys.argv[2], "round": sys.argv[3], "effort": sys.argv[4], "scope": sys.argv[5]}
 if len(sys.argv) > 6 and sys.argv[6]:

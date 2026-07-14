@@ -456,18 +456,23 @@ check "commit survives hostile prepare-commit-msg + forced signing" \
   "yes" "$(printf '%s' "$out" | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin)["committed"] else "no")')"
 git -C "$WT" config --unset core.hooksPath; git -C "$WT" config --unset commit.gpgsign
 
-# ── Reviewer-identity pin (CAMUS_CODEX_MODEL, identity slice) ─────────────────
-# Dedicated channel: validated, appended last (authoritative), refuses a
-# conflicting -m/--model, persisted to meta + the audit so await/resume without
-# the env still seals — and cannot rewrite — the recorded reviewer identity.
-review_exit() { # echoes the codex_review.sh exit code for round 1 (refusal paths)
-  python3 - "$R" "$here/codex_review.sh" "$WT" <<'PY'
+# ── Reviewer-identity pin (identity slice) ────────────────────────────────────
+# The reviewer model this run pins (CAMUS_CODEX_MODEL on a fresh run, or the model a
+# round recorded on resume) is AUTHORITATIVE: validated, appended last so it wins any
+# lever, refuses a conflicting -m/--model, and — critically — the SAME model reaches
+# both the actual codex command AND the sealed meta/audit, on fresh runs and resumes.
+# Each refusal gets its own clean round so the ONLY reason it fires is the one named
+# (a recorded reviewer_model left on a reused round would otherwise mask the cause).
+review_exit_fresh() { # $1 = round — clean fresh review, echoes the exit code
+  rm -rf "$ROOT/reviews/camus-wt-task-r$1.watch" "$ROOT/reviews/camus-wt-task-r$1.json"
+  python3 - "$R" "$here/codex_review.sh" "$WT" "$1" <<'PY'
 import subprocess, sys
-r = subprocess.run(["bash", sys.argv[2], sys.argv[3], "the task", "1"],
+r = subprocess.run(["bash", sys.argv[2], sys.argv[3], "the task", sys.argv[4]],
                    cwd=sys.argv[1], capture_output=True, text=True, timeout=30)
 print(r.returncode)
 PY
 }
+# happy path: a fresh pin reaches codex's argv, the round meta, and the audit alike
 rm -rf "$ROOT/reviews/camus-wt-task-r1.watch" "$ROOT/reviews/camus-wt-task-r1.json"
 export CAMUS_CODEX_MODEL=fake-pinned-reviewer
 run_review >/dev/null || { echo "FAIL reviewer-pin review errored/hung"; exit 1; }
@@ -479,44 +484,79 @@ check "pinned reviewer recorded in the audit (read from meta, not the env)" \
   "fake-pinned-reviewer" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("reviewer_model",""))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
 unset CAMUS_CODEX_MODEL
 export CAMUS_CODEX_MODEL='bad model; rm -rf /'
-check "invalid CAMUS_CODEX_MODEL is refused (exit 2)" "2" "$(review_exit)"
+check "invalid CAMUS_CODEX_MODEL is refused (exit 2)" "2" "$(review_exit_fresh 30)"
 unset CAMUS_CODEX_MODEL
 export CAMUS_CODEX_MODEL=fake-pin
 export CAMUS_CODEX_ARGS="-m other-model"
-check "conflict: a -m in CAMUS_CODEX_ARGS is refused" "2" "$(review_exit)"
+check "conflict: a -m in CAMUS_CODEX_ARGS is refused" "2" "$(review_exit_fresh 31)"
 export CAMUS_CODEX_ARGS="--model other-model"
-check "conflict: a --model in CAMUS_CODEX_ARGS is refused" "2" "$(review_exit)"
+check "conflict: a --model in CAMUS_CODEX_ARGS is refused" "2" "$(review_exit_fresh 32)"
 unset CAMUS_CODEX_ARGS
 export CAMUS_CODEX_LIGHT_MODEL=fake-mini
-check "conflict: the light-model ladder (its own -m) is refused" "2" "$(review_exit)"
+check "conflict: the light-model ladder (its own -m) is refused" "2" "$(review_exit_fresh 33)"
 unset CAMUS_CODEX_LIGHT_MODEL
 unset CAMUS_CODEX_MODEL
-# await/resume WITHOUT the env preserves the reviewer identity recorded in meta
-rm -f "$SPY/args_resume"
-d9="$ROOT/reviews/camus-wt-task-r9.watch"; mkdir -p "$d9"
-python3 -c 'import json,sys; json.dump({"target_dir": sys.argv[2], "round": "9", "effort": "medium",
-  "scope": "full", "thread_id": "sess-r9", "reviewer_model": "meta-recorded-reviewer"}, open(sys.argv[1],"w"))' \
-  "$d9/meta.json" "$WT"
-printf '{"type":"thread.started","thread_id":"sess-r9"}\n' > "$d9/events.jsonl"
-run_review_round 9 >/dev/null || { echo "FAIL await-without-env review errored/hung"; exit 1; }
-check "await/resume without the env seals the reviewer from meta (never null)" \
-  "meta-recorded-reviewer" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("reviewer_model",""))' "$ROOT/reviews/camus-wt-task-r9.json" 2>/dev/null)"
-# a resume with a DIFFERENT model is refused rather than rewrite the sealed identity
-d10="$ROOT/reviews/camus-wt-task-r10.watch"; mkdir -p "$d10"
-python3 -c 'import json,sys; json.dump({"target_dir": sys.argv[2], "round": "10", "effort": "medium",
-  "scope": "full", "thread_id": "sess-r10", "reviewer_model": "original-reviewer"}, open(sys.argv[1],"w"))' \
-  "$d10/meta.json" "$WT"
-printf '{"type":"thread.started","thread_id":"sess-r10"}\n' > "$d10/events.jsonl"
-mismatch_exit() {
-  python3 - "$R" "$here/codex_review.sh" "$WT" <<'PY'
+
+# ── Reviewer identity across RESUME (codex's -m must equal the sealed model) ──────
+# Stage a resumable round: thread_id + a recorded reviewer_model, and (crucially) NO
+# completion evidence (no exit_code, no last.txt verdict) so the resume path fires.
+stage_resume_with_model() { # $1 = round, $2 = thread_id, $3 = reviewer_model
+  local d="$ROOT/reviews/camus-wt-task-r$1.watch"
+  rm -rf "$d" "$ROOT/reviews/camus-wt-task-r$1.json"; mkdir -p "$d"
+  python3 -c 'import json,sys; json.dump({"target_dir": sys.argv[2], "round": sys.argv[3],
+    "effort": "medium", "scope": "full", "thread_id": sys.argv[4], "reviewer_model": sys.argv[5]},
+    open(sys.argv[1],"w"))' "$d/meta.json" "$WT" "$1" "$2" "$3"
+  printf '{"type":"thread.started","thread_id":"%s"}\n' "$2" > "$d/events.jsonl"
+}
+resume_exit() { # $1 = round — echoes the exit code (resume refusal paths)
+  python3 - "$R" "$here/codex_review.sh" "$WT" "$1" <<'PY'
 import subprocess, sys
-r = subprocess.run(["bash", sys.argv[2], sys.argv[3], "the task", "10"],
+r = subprocess.run(["bash", sys.argv[2], sys.argv[3], "the task", sys.argv[4]],
                    cwd=sys.argv[1], capture_output=True, text=True, timeout=30)
 print(r.returncode)
 PY
 }
+# resume WITHOUT the env: codex runs with the RECORDED model (argv), and the audit
+# seals that SAME model — the two can no longer disagree (the P1 this closes: the
+# authoritative reviewer is now resolved BEFORE the args, so it reaches the command).
+rm -f "$SPY/args" "$SPY/args_resume"
+stage_resume_with_model 20 "sess-r20" "meta-recorded-reviewer"
+run_review_round 20 >/dev/null || { echo "FAIL resume-identity review errored/hung"; exit 1; }
+check "resume without the env RESUMES the recorded thread (argv shows exec resume)" \
+  "yes" "$([ -f "$SPY/args_resume" ] && grep -qx 'resume' "$SPY/args_resume" && echo yes || echo no)"
+check "resume runs codex with the RECORDED reviewer model (argv -m, not an ambient one)" \
+  "yes" "$(grep -qx 'meta-recorded-reviewer' "$SPY/args_resume" && echo yes || echo no)"
+check "resume seals that SAME reviewer in the audit (argv and audit agree)" \
+  "meta-recorded-reviewer" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("reviewer_model",""))' "$ROOT/reviews/camus-wt-task-r20.json" 2>/dev/null)"
+# resume + an AMBIENT model (CAMUS_CODEX_ARGS) must not be allowed to diverge → refuse
+rm -f "$SPY/args" "$SPY/args_resume"
+stage_resume_with_model 21 "sess-r21" "meta-recorded-reviewer"
+export CAMUS_CODEX_ARGS="-m other-model"
+check "resume + ambient -m (CAMUS_CODEX_ARGS) is refused (argv would diverge from the sealed model)" \
+  "2" "$(resume_exit 21)"
+check "resume conflict refused BEFORE any codex spawn (no resume argv written)" \
+  "no" "$([ -f "$SPY/args_resume" ] && echo yes || echo no)"
+unset CAMUS_CODEX_ARGS
+# resume + the medium light-model ladder (its own -m) is the same divergence → refuse
+rm -f "$SPY/args" "$SPY/args_resume"
+stage_resume_with_model 22 "sess-r22" "meta-recorded-reviewer"
+export CAMUS_CODEX_LIGHT_MODEL=fake-mini
+check "resume + light-model ladder is refused (the recorded model must win, not the ladder)" \
+  "2" "$(resume_exit 22)"
+unset CAMUS_CODEX_LIGHT_MODEL
+# resume with a MISMATCHED env model is refused rather than rewrite the sealed identity
+rm -f "$SPY/args" "$SPY/args_resume"
+stage_resume_with_model 23 "sess-r23" "original-reviewer"
 export CAMUS_CODEX_MODEL=different-reviewer
-check "resume with a mismatched reviewer model is refused (exit 2)" "2" "$(mismatch_exit)"
+check "resume with a mismatched reviewer model is refused (exit 2)" "2" "$(resume_exit 23)"
+unset CAMUS_CODEX_MODEL
+# resume with a MATCHING env model proceeds, and codex still runs with exactly that model
+rm -f "$SPY/args" "$SPY/args_resume"
+stage_resume_with_model 24 "sess-r24" "matching-reviewer"
+export CAMUS_CODEX_MODEL=matching-reviewer
+run_review_round 24 >/dev/null || { echo "FAIL resume-match review errored/hung"; exit 1; }
+check "resume with a MATCHING env runs codex with that model (argv -m present)" \
+  "yes" "$(grep -qx 'matching-reviewer' "$SPY/args_resume" && echo yes || echo no)"
 unset CAMUS_CODEX_MODEL
 
 echo
