@@ -47,13 +47,21 @@ emit_outcome() {
 try: print(json.load(sys.stdin).get("state",""))
 except Exception: print("")' 2>/dev/null)"
   local audit_file="$review_dir/$(basename "$target_dir")-r${round}.json"
+  # The reviewer identity is AUTHORITATIVE from the persisted meta.json, NOT the
+  # current env — so an await/resume without CAMUS_CODEX_MODEL still seals the
+  # exact model the round pinned, and a changed env can never rewrite it here.
+  local reviewer_model
+  reviewer_model="$(python3 -c 'import json,sys
+try: v = json.load(open(sys.argv[1])).get("reviewer_model")
+except Exception: v = None
+print(v if isinstance(v, str) and v else "")' "$watch_dir/meta.json" 2>/dev/null)"
   case "$state" in
     done)
       local exit_code raw
       exit_code="$(printf '%s' "$envelope" | python3 -c 'import json,sys; print(int(json.load(sys.stdin).get("exit",1)))' 2>/dev/null || echo 1)"
       raw="$(cat "$watch_dir/last.txt" 2>/dev/null)"
       mkdir -p "$review_dir" 2>/dev/null && \
-        printf '%s' "$raw" | python3 "$here/_review_audit.py" "$audit_file" "$target_dir" "$round" "$exit_code" "${CAMUS_CODEX_MODEL:-}" 2>/dev/null || true
+        printf '%s' "$raw" | python3 "$here/_review_audit.py" "$audit_file" "$target_dir" "$round" "$exit_code" "$reviewer_model" 2>/dev/null || true
       # Gate JSON + the honest codex-side usage from turn.completed (estimate source, never a bill).
       printf '%s' "$raw" | python3 "$here/adapter.py" from-codex --exit "$exit_code" \
         | python3 -c 'import json,sys
@@ -72,7 +80,7 @@ print(json.dumps({"pending": True, "handle": sys.argv[1],
     idle_killed|aborted|error|*)
       # Killed / never started / unreadable envelope → INFRA, never a verdict (adapter discipline).
       mkdir -p "$review_dir" 2>/dev/null && \
-        printf '' | python3 "$here/_review_audit.py" "$audit_file" "$target_dir" "$round" 124 "${CAMUS_CODEX_MODEL:-}" 2>/dev/null || true
+        printf '' | python3 "$here/_review_audit.py" "$audit_file" "$target_dir" "$round" 124 "$reviewer_model" 2>/dev/null || true
       printf '%s' "$envelope" | python3 -c 'import json,sys
 try: e = json.load(sys.stdin)
 except Exception: e = {}
@@ -245,13 +253,23 @@ fi
 # already present rather than let a silent override make a sealed pairing lie about
 # what actually reviewed. Use this dedicated channel, not a -m folded into
 # CAMUS_CODEX_ARGS/CAMUS_CODEX_LIGHT_MODEL.
+# Boundary-aware model-flag detection: a whole -m / --model / --model=… token at
+# ANY position (a substring check for " -m " missed a leading -m and the --model
+# spelling, both valid ways to fold a conflicting model into CAMUS_CODEX_ARGS).
+_has_model_flag() {
+  local a
+  for a in $1; do
+    case "$a" in -m|--model|--model=*) return 0 ;; esac
+  done
+  return 1
+}
 if [[ -n "${CAMUS_CODEX_MODEL:-}" ]]; then
   if [[ ! "$CAMUS_CODEX_MODEL" =~ ^[A-Za-z0-9._/-]+$ ]]; then
     echo "codex_review: CAMUS_CODEX_MODEL is not a valid model identifier: '$CAMUS_CODEX_MODEL'" >&2
     exit 2
   fi
-  if [[ "$codex_review_args" == *" -m "* ]]; then
-    echo "codex_review: CAMUS_CODEX_MODEL ($CAMUS_CODEX_MODEL) conflicts with a -m already in the review args — refusing rather than silently override the recorded reviewer identity" >&2
+  if _has_model_flag "$codex_review_args"; then
+    echo "codex_review: CAMUS_CODEX_MODEL ($CAMUS_CODEX_MODEL) conflicts with a -m/--model already in the review args — refusing rather than silently override the recorded reviewer identity" >&2
     exit 2
   fi
   codex_review_args="$codex_review_args -m $CAMUS_CODEX_MODEL"
@@ -315,11 +333,19 @@ watch_dir="$review_dir/$(basename "$target_dir")-r${round}.watch"
 # A captured id only ARMS resume; the fail-closed gate below (will_resume) still requires the
 # aborted/abandoned shape — no completion evidence — before resume actually fires.
 prior_thread_id=""
+prior_reviewer_model=""
 if [[ -f "$watch_dir/meta.json" ]]; then
   prior_thread_id="$(python3 -c 'import json,sys
 try: tid = json.load(open(sys.argv[1])).get("thread_id")
 except Exception: tid = None
 print(tid if isinstance(tid, str) and tid else "")' "$watch_dir/meta.json" 2>/dev/null)"
+  # The reviewer identity a prior attempt of THIS round recorded — authoritative
+  # across resume: a resume that arrives with a different CAMUS_CODEX_MODEL is
+  # refused below rather than allowed to rewrite the sealed reviewer identity.
+  prior_reviewer_model="$(python3 -c 'import json,sys
+try: v = json.load(open(sys.argv[1])).get("reviewer_model")
+except Exception: v = None
+print(v if isinstance(v, str) and v else "")' "$watch_dir/meta.json" 2>/dev/null)"
 fi
 # meta.json is the ONLY resume source (THREAD-ONLY recovery, zero local-process awareness): it
 # carries thread_id solely for the terminal abandoned shape (idle_killed/aborted), persisted there by
@@ -376,12 +402,24 @@ last_file="$watch_dir/last.txt"
 # thread that was never idle-killed or watchdog-aborted (the "only aborted/abandoned evidence" trigger
 # violation). So this seed writes audit identity only; the abandoned-shape gate stays the sole source
 # of a resumable id.
+# Persisted reviewer identity is authoritative across resume. A resume that
+# arrives with a DIFFERENT CAMUS_CODEX_MODEL than the round already recorded is
+# refused (rewriting it would make the sealed pairing claim a model that never
+# reviewed the earlier rounds). An await/resume without the env preserves it.
+effective_reviewer_model="${CAMUS_CODEX_MODEL:-}"
+if [[ -n "$prior_reviewer_model" ]]; then
+  if [[ -n "$effective_reviewer_model" && "$effective_reviewer_model" != "$prior_reviewer_model" ]]; then
+    echo "codex_review: resume reviewer-model mismatch — round already recorded '$prior_reviewer_model' but CAMUS_CODEX_MODEL is '$effective_reviewer_model'; refusing rather than rewrite the sealed reviewer identity" >&2
+    exit 2
+  fi
+  effective_reviewer_model="$prior_reviewer_model"
+fi
 python3 -c 'import json,sys
 m = {"target_dir": sys.argv[2], "round": sys.argv[3], "effort": sys.argv[4], "scope": sys.argv[5]}
 if len(sys.argv) > 6 and sys.argv[6]:
     m["reviewer_model"] = sys.argv[6]  # persist the pinned reviewer so pending/resumed paths carry it
 json.dump(m, open(sys.argv[1], "w"), indent=2)' \
-  "$watch_dir/meta.json" "$target_dir" "$round" "$effort" "$scope" "${CAMUS_CODEX_MODEL:-}"
+  "$watch_dir/meta.json" "$target_dir" "$round" "$effort" "$scope" "$effective_reviewer_model"
 
 # Chunk by effort: medium reviews are short (and the orchestrator instructs a 360s tool timeout
 # for them — the chunk must FIT under it); high/xhigh get the full window under 600s.
