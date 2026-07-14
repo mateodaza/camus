@@ -63,8 +63,11 @@ function newId() {
 const activeBuilds = new Set();
 
 // Headlines are DERIVED at render from the sealed raw dimensions, never stored.
-// null for a live or legacy run that has no dimensions yet.
-const headlineOf = (statuses) => {
+// null for a live or legacy run that has no dimensions yet. A rehearsal is its
+// own visible tag — scripted rounds can never present as a trust standing, so
+// the simulated flag outranks whatever the dimensions would read.
+const headlineOf = (statuses, simulated = false) => {
+  if (simulated) return 'rehearsal';
   try { return statuses ? deriveHeadline(statuses) : null; } catch { return null; }
 };
 
@@ -135,6 +138,7 @@ async function startRun({ goal, lane, depth, ground, targetPath = null, targetTo
           status: data.status,
           evidence: deriveEvidence(state.events),
           published: !!(data.artifactPublished || data.artifactUrl),
+          simulated: ENGINE === 'mock',
         });
         ev.dimensions = run.statuses;
       } catch { /* best-effort on the live event; the sealed report is authoritative */ }
@@ -199,12 +203,14 @@ async function startRun({ goal, lane, depth, ground, targetPath = null, targetTo
     const statuses = run.statuses ?? deriveStatusDimensions({
       lane, status: run.status, evidence,
       published: !!(result?.artifactPublished || result?.artifactUrl),
+      simulated: ENGINE === 'mock',
     });
     // models is the run-start snapshot and is authoritative — it sits AFTER ...result
     // so a future result field named `models` can never overwrite the sealed pairing
-    // (the same reason draft/deliverable are pinned after the spread).
+    // (the same reason draft/deliverable are pinned after the spread). simulated is
+    // pinned there too: a rehearsal receipt must SAY it is one, permanently.
     const report = JSON.stringify(
-      { id, goal, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, draft: undefined, deliverable: run.lastMarkdown, evidence, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt: Date.now() },
+      { id, goal, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', draft: undefined, deliverable: run.lastMarkdown, evidence, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt: Date.now() },
       null,
       2,
     );
@@ -421,13 +427,15 @@ const server = http.createServer(async (req, res) => {
 
     if (path === '/api/runs' && req.method === 'GET') {
       const list = [];
-      for (const [id, s] of runs) list.push({ id, goal: s.run.goal, lane: s.run.lane, status: s.run.status, headline: headlineOf(s.run.statuses), startedAt: s.run.startedAt, live: true });
+      for (const [id, s] of runs) list.push({ id, goal: s.run.goal, lane: s.run.lane, status: s.run.status, headline: headlineOf(s.run.statuses, ENGINE === 'mock'), startedAt: s.run.startedAt, live: true });
       if (existsSync(RUNS_DIR)) {
         for (const d of await readdir(RUNS_DIR)) {
           if (runs.has(d)) continue;
           try {
             const r = JSON.parse(await readFile(join(RUNS_DIR, d, 'report.json'), 'utf8'));
-            list.push({ id: d, goal: r.goal, lane: r.lane, status: r.status, headline: headlineOf(r.statuses), startedAt: r.startedAt, live: false });
+            // engine === 'mock' is the fallback for rehearsal receipts sealed
+            // before `simulated` existed — they must read "rehearsal" too.
+            list.push({ id: d, goal: r.goal, lane: r.lane, status: r.status, headline: headlineOf(r.statuses, r.simulated === true || r.engine === 'mock'), startedAt: r.startedAt, live: false });
           } catch {
             // No sealed report: if start metadata exists, this run was
             // interrupted — list it honestly instead of hiding it.

@@ -834,6 +834,16 @@ if (process.env.TEST_NETWORK === '1') {
   assert.equal(words.verification, 'passed', 'words verification binds to the deliverable, not a SHA');
   assert.equal(head(words), 'verified');
 
+  // A REHEARSAL of the same shape can never impersonate that standing
+  // (2026-07-14 P1: a mock receipt sealed audit:independent_clean → verified).
+  // Scripted rounds stay in the receipt as events, execution and the words
+  // lane's REAL deterministic verify stay recorded — but audit seals not_run.
+  const rehearsal = deriveStatusDimensions({ lane: 'research_memo', status: 'done', simulated: true, evidence: { gateReport: null, verify: [{ pass: true }], rounds: [{ verdict: 'APPROVED' }], revisions: [{ rev: 1 }] } });
+  assert.equal(rehearsal.audit, 'not_run', 'scripted APPROVED rounds seal audit not_run under simulation');
+  assert.equal(rehearsal.verification, 'passed', 'the rehearsal deterministic verify is real and stays recorded');
+  assert.equal(rehearsal.execution, 'completed', 'the rehearsal lifecycle stays honest');
+  assert.notEqual(head(rehearsal), 'verified', 'a rehearsal never derives verified standing');
+
   // a genuine no-op ran to its conclusion: completed lifecycle, nothing
   // verified, nothing shipped — never a dead process, never a quiet green.
   const noop = deriveStatusDimensions({ lane: 'build', status: 'no_changes', evidence: buildEv({ verify: [], gateReport: { status: 'no_changes' } }) });

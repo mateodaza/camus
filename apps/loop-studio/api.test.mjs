@@ -172,6 +172,10 @@ try {
     assert.ok(report.statuses && typeof report.statuses.execution === 'string', 'the receipt seals the raw status dimensions');
     assert.ok(!('headline' in report), 'the headline is derived at render — never sealed into the evidence');
     assert.ok(report.models && report.models.maker, 'the receipt carries the run-start model snapshot, like run.json');
+    // A rehearsal receipt must SAY it is one, permanently — and its scripted
+    // rounds can never seal audit standing (mock impersonation P1).
+    assert.equal(report.simulated, true, 'a mock-engine receipt seals simulated:true');
+    assert.equal(report.statuses.audit, 'not_run', 'a rehearsal receipt never seals an audit standing');
   });
 
   await check('a completed IN-MEMORY run carries a derived headline in Recents (not only after restart)', async () => {
@@ -179,7 +183,9 @@ try {
     const item = list.runs.find((x) => x.id === runId);
     assert.ok(item, 'the run is listed');
     assert.equal(item.live, true, 'the run is still served from the in-memory map, not disk');
-    assert.equal(typeof item.headline, 'string', 'the live-list item derives a headline too, not only disk-loaded runs');
+    // On a mock server the visible tag is REHEARSAL — a scripted run must
+    // never present as a trust standing in Recents.
+    assert.equal(item.headline, 'rehearsal', 'a mock run reads rehearsal, never a derived standing');
   });
 
   await check('the stream decorates status events with the SHARED headline; the receipt never stores it', async () => {

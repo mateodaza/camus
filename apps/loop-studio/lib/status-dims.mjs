@@ -73,7 +73,7 @@ export function verificationAndAudit(lane, evidence) {
   };
 }
 
-export function deriveStatusDimensions({ lane, status, evidence, published = false }) {
+export function deriveStatusDimensions({ lane, status, evidence, published = false, simulated = false }) {
   // execution is the run lifecycle — `stopped`/`failed` are the concrete signals
   // that a human aborted or the process died. This is the one dimension the
   // terminal status legitimately reports; verification and audit never are.
@@ -85,7 +85,13 @@ export function deriveStatusDimensions({ lane, status, evidence, published = fal
       : ['done', 'done_with_findings', 'verify_failed', 'no_changes'].includes(status) ? 'completed'
         : 'failed';
 
-  const { verification, audit } = verificationAndAudit(lane, evidence);
+  let { verification, audit } = verificationAndAudit(lane, evidence);
+  // A rehearsal's scripted reviewer output can never earn audit standing
+  // (2026-07-14 P1: a mock run sealed audit:independent_clean → "verified" —
+  // the exact impersonation the trust thesis exists to prevent). The rounds
+  // stay in the receipt as what they are, execution and the words lane's REAL
+  // deterministic verification stay recorded, but audit seals not_run.
+  if (simulated) audit = 'not_run';
 
   // Publication is only ever set by real publication evidence. Committing to a
   // gate branch is NOT publishing — the branch must be merged (build) or the
