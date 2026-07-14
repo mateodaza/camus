@@ -15,6 +15,7 @@ export function deriveEvidence(events) {
     explanation: r.explanation ?? null,
     source: r.source ?? null,
     reviewerModel: r.reviewerModel ?? null,
+    reviewerEffort: r.reviewerEffort ?? null,
     findings: (r.findings ?? []).map((f) => ({
       severity: f.severity,
       priority: f.priority ?? null,

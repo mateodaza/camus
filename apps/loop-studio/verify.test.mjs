@@ -585,10 +585,16 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   assert.equal(nestedReview.confidence, 0.99, 'review confidence survives normalization');
   assert.equal(nestedReview.source, 'camus_gate_review', 'review provenance is explicit');
   assert.equal(nestedReview.reviewerModel, null, 'no ran:true pin → reviewer model stays null (nothing invented)');
-  const pinnedReview = reviewEventFromGateReceipt({ ran: true, reviewer_model: 'gpt-5.4', codex_parsed: { overall_correctness: 'patch is correct', findings: [] } }, 1);
+  const pinnedReview = reviewEventFromGateReceipt({ ran: true, reviewer_model: 'gpt-5.4', reviewer_effort: 'medium', codex_parsed: { overall_correctness: 'patch is correct', findings: [] } }, 1);
   assert.equal(pinnedReview.reviewerModel, 'gpt-5.4', 'a review that ran carries the reviewer model it was pinned to');
-  const unranPin = reviewEventFromGateReceipt({ ran: false, reviewer_model: 'gpt-5.4', codex_parsed: { overall_correctness: 'patch is correct', findings: [] } }, 1);
+  // Live smoke P1 (2026-07-13): the snapshot requested one effort, the gate ran
+  // another. The evidence seals the ACTUAL effort the audit recorded — never the
+  // snapshot's requested value, never a default.
+  assert.equal(pinnedReview.reviewerEffort, 'medium', 'a review that ran carries the effort it actually ran at');
+  const unranPin = reviewEventFromGateReceipt({ ran: false, reviewer_model: 'gpt-5.4', reviewer_effort: 'medium', codex_parsed: { overall_correctness: 'patch is correct', findings: [] } }, 1);
   assert.equal(unranPin.reviewerModel, null, 'a review that did not run never claims a reviewer identity');
+  assert.equal(unranPin.reviewerEffort, null, 'a review that did not run never claims an effort either');
+  assert.equal(nestedReview.reviewerEffort, null, 'no ran:true envelope → effort stays null (nothing invented)');
 
   const nestedFinding = reviewEventFromGateReceipt({ codex_parsed: JSON.stringify({
     overall_correctness: 'patch is incorrect',

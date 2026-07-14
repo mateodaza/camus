@@ -2,7 +2,8 @@
 """Write a per-round Codex review AUDIT record — proof the cross-vendor review actually ran.
 
 Called best-effort by codex_review.sh (never raises into the review path):
-  _review_audit.py <audit_path> <worktree> <round> <codex_exit>   # raw Codex stdout on STDIN
+  _review_audit.py <audit_path> <worktree> <round> <codex_exit> [reviewer_model] [reviewer_effort]
+  # raw Codex stdout on STDIN; model/effort come from the round's meta.json (the sealed identity)
 
 The record captures Codex's raw response + metadata. A human (or a post-run check) can confirm every
 review round produced a file with a real Codex response — and the ABSENCE of a file for a round means
@@ -32,7 +33,7 @@ def _int(x):
         return x
 
 
-def build_record(wt, rnd, status, raw, reviewer_model=None):
+def build_record(wt, rnd, status, raw, reviewer_model=None, reviewer_effort=None):
     try:
         parsed = json.loads(raw) if raw.strip() else None
     except (ValueError, TypeError):
@@ -54,6 +55,10 @@ def build_record(wt, rnd, status, raw, reviewer_model=None):
         # The reviewer model the caller pinned for this round (identity slice). The
         # consumer trusts it only when ran is True — unknown never becomes claimed.
         "reviewer_model": reviewer_model or None,
+        # The reasoning effort this round ACTUALLY ran at (from the round's meta,
+        # the same authority as the model) — the requested/actual pairing needs
+        # the actual side sealed, not inferred from a snapshot.
+        "reviewer_effort": reviewer_effort or None,
         "codex_raw": raw,
         "codex_parsed": parsed,
     }
@@ -65,8 +70,9 @@ def main(argv=None):
         return 2
     audit_path, wt, rnd, status = argv[0], argv[1], argv[2], argv[3]
     reviewer_model = argv[4] if len(argv) > 4 else None
+    reviewer_effort = argv[5] if len(argv) > 5 else None
     raw = sys.stdin.read()
-    rec = build_record(wt, rnd, status, raw, reviewer_model)
+    rec = build_record(wt, rnd, status, raw, reviewer_model, reviewer_effort)
     # Atomic publish: write a same-directory temp file, fsync, then os.replace()
     # onto the final path — a reader (e.g. the Studio watcher) ever sees the OLD
     # complete file or the NEW complete file, never a truncated mid-write JSON.

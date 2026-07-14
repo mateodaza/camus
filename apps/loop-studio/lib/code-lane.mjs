@@ -221,9 +221,12 @@ export function reviewEventFromGateReceipt(raw, round) {
     explanation: typeof parsed.overall_explanation === 'string' ? parsed.overall_explanation : null,
     findings,
     source: 'camus_gate_review',
-    // The reviewer's ACTUAL model — only from a review that actually ran (ran===true)
-    // carrying the recorded pin. Unknown evidence never becomes a claimed model.
+    // The reviewer's ACTUAL model and effort — only from a review that actually
+    // ran (ran===true) carrying the recorded values. Unknown evidence never
+    // becomes a claimed identity, and the snapshot's requested effort is never
+    // substituted for the effort the gate really ran at (live smoke P1).
     reviewerModel: envelope.ran === true && typeof envelope.reviewer_model === 'string' && envelope.reviewer_model ? envelope.reviewer_model : null,
+    reviewerEffort: envelope.ran === true && typeof envelope.reviewer_effort === 'string' && envelope.reviewer_effort ? envelope.reviewer_effort : null,
   };
 }
 

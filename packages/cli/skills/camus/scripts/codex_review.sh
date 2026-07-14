@@ -50,9 +50,16 @@ except Exception: print("")' 2>/dev/null)"
   # The reviewer identity is AUTHORITATIVE from the persisted meta.json, NOT the
   # current env — so an await/resume without CAMUS_CODEX_MODEL still seals the
   # exact model the round pinned, and a changed env can never rewrite it here.
-  local reviewer_model
+  # The EFFORT the round actually ran at rides the same authority (Studio smoke
+  # 2026-07-13: the snapshot's requested effort diverged from the gate's actual;
+  # the audit must seal the actual so a pairing can name both honestly).
+  local reviewer_model reviewer_effort
   reviewer_model="$(python3 -c 'import json,sys
 try: v = json.load(open(sys.argv[1])).get("reviewer_model")
+except Exception: v = None
+print(v if isinstance(v, str) and v else "")' "$watch_dir/meta.json" 2>/dev/null)"
+  reviewer_effort="$(python3 -c 'import json,sys
+try: v = json.load(open(sys.argv[1])).get("effort")
 except Exception: v = None
 print(v if isinstance(v, str) and v else "")' "$watch_dir/meta.json" 2>/dev/null)"
   case "$state" in
@@ -61,7 +68,7 @@ print(v if isinstance(v, str) and v else "")' "$watch_dir/meta.json" 2>/dev/null
       exit_code="$(printf '%s' "$envelope" | python3 -c 'import json,sys; print(int(json.load(sys.stdin).get("exit",1)))' 2>/dev/null || echo 1)"
       raw="$(cat "$watch_dir/last.txt" 2>/dev/null)"
       mkdir -p "$review_dir" 2>/dev/null && \
-        printf '%s' "$raw" | python3 "$here/_review_audit.py" "$audit_file" "$target_dir" "$round" "$exit_code" "$reviewer_model" 2>/dev/null || true
+        printf '%s' "$raw" | python3 "$here/_review_audit.py" "$audit_file" "$target_dir" "$round" "$exit_code" "$reviewer_model" "$reviewer_effort" 2>/dev/null || true
       # Gate JSON + the honest codex-side usage from turn.completed (estimate source, never a bill).
       printf '%s' "$raw" | python3 "$here/adapter.py" from-codex --exit "$exit_code" \
         | python3 -c 'import json,sys
@@ -80,7 +87,7 @@ print(json.dumps({"pending": True, "handle": sys.argv[1],
     idle_killed|aborted|error|*)
       # Killed / never started / unreadable envelope → INFRA, never a verdict (adapter discipline).
       mkdir -p "$review_dir" 2>/dev/null && \
-        printf '' | python3 "$here/_review_audit.py" "$audit_file" "$target_dir" "$round" 124 "$reviewer_model" 2>/dev/null || true
+        printf '' | python3 "$here/_review_audit.py" "$audit_file" "$target_dir" "$round" 124 "$reviewer_model" "$reviewer_effort" 2>/dev/null || true
       printf '%s' "$envelope" | python3 -c 'import json,sys
 try: e = json.load(sys.stdin)
 except Exception: e = {}

@@ -81,6 +81,28 @@ def test_reviewer_model_recorded_only_when_pinned():
     assert A.build_record("/x/wt", "1", "0", "{}")["reviewer_model"] is None
 
 
+def test_reviewer_effort_seals_the_actual_not_a_snapshot():
+    # Studio smoke 2026-07-13: the run snapshot said one effort while the gate ran
+    # another. The audit seals the ACTUAL effort (from the round's meta, argv[5]);
+    # absent stays null — never inferred, never defaulted.
+    rec = A.build_record("/x/wt", "1", "0",
+                         '{"findings":[],"overall_correctness":"patch is correct"}', "gpt-5.4", "medium")
+    assert rec["reviewer_effort"] == "medium" and rec["reviewer_model"] == "gpt-5.4"
+    assert A.build_record("/x/wt", "1", "0", "{}")["reviewer_effort"] is None
+    old_stdin = sys.stdin
+    d = tempfile.mkdtemp()
+    audit = os.path.join(d, "camus-wt-foo-r2.json")
+    sys.stdin = io.StringIO('{"overall_correctness":"patch is correct","findings":[]}')
+    try:
+        rc = A.main([audit, "/x/wt", "2", "0", "gpt-5.4", "xhigh"])
+    finally:
+        sys.stdin = old_stdin
+    assert rc == 0
+    with open(audit, encoding="utf-8") as fh:
+        rec = json.load(fh)
+    assert rec["reviewer_effort"] == "xhigh" and rec["reviewer_model"] == "gpt-5.4"
+
+
 def test_main_writes_complete_json_and_leaves_no_temp_file():
     # The write must be atomic: readers see a complete file (never a truncated
     # mid-write), and no .tmp file is left behind after os.replace().

@@ -113,6 +113,8 @@ check "arg-4 effort reaches codex (xhigh)" \
 run_review_effort "high" >/dev/null || true
 check "arg-4 effort reaches codex (high)" \
   "yes" "$(grep -qx 'model_reasoning_effort=high' "$SPY/args" && echo yes || echo no)"
+check "the escalated effort is sealed in the round audit (actual, not requested)" \
+  "high" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("reviewer_effort",""))' "$ROOT/reviews/camus-wt-task-r2.json" 2>/dev/null)"
 
 # precedence: an explicit CAMUS_CODEX_ARGS OVERRIDES the per-call arg-4 effort
 export CAMUS_CODEX_ARGS="-c model_reasoning_effort=xhigh"
@@ -482,6 +484,8 @@ check "pinned reviewer persisted to the round meta.json" \
   "fake-pinned-reviewer" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("reviewer_model",""))' "$ROOT/reviews/camus-wt-task-r1.watch/meta.json" 2>/dev/null)"
 check "pinned reviewer recorded in the audit (read from meta, not the env)" \
   "fake-pinned-reviewer" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("reviewer_model",""))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
+check "the ACTUAL effort the round ran at is sealed in the audit (from meta, not a snapshot)" \
+  "medium" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("reviewer_effort",""))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
 unset CAMUS_CODEX_MODEL
 export CAMUS_CODEX_MODEL='bad model; rm -rf /'
 check "invalid CAMUS_CODEX_MODEL is refused (exit 2)" "2" "$(review_exit_fresh 30)"
