@@ -84,8 +84,11 @@ export function reviewPrompt({ goal, acceptanceContract, lane, draft, round, pri
         .map((a) => `Q: ${a.question}\nA: ${a.answer}`)
         .join('\n')}`
     : '';
+  const resultEvidence = (groundingEvidence?.results ?? []).length
+    ? `\n- observed result excerpts (adapter-captured, bounded):\n${groundingEvidence.results.map((r, i) => `  [R${i + 1}] query=${JSON.stringify(r.query)}; source=${JSON.stringify([r.title, r.author].filter(Boolean).join(' — '))}; ref=${JSON.stringify(r.ref ?? null)}; score=${r.score ?? 'unknown'}\n  excerpt: ${JSON.stringify(r.excerpt)}`).join('\n')}`
+    : '\n- observed result excerpts: none';
   const runtimeGrounding = groundingEvidence
-    ? `\n\nRUNTIME GROUNDING EVIDENCE (emitted from actual adapter tool_use events, not from the maker's prose):\n- mode: ${groundingEvidence.mode ?? 'unknown'}\n- Hivemind queried: ${groundingEvidence.queried ? 'yes' : 'no'}\n- observed Hivemind tool calls: ${groundingEvidence.queryCount ?? 0}\n- observed queries: ${(groundingEvidence.queries ?? []).length ? groundingEvidence.queries.map((q) => JSON.stringify(q)).join('; ') : 'none'}\nThis proves whether connector calls occurred. It does NOT prove that returned material was relevant, accurately represented, or correctly cited; audit those separately.`
+    ? `\n\nRUNTIME GROUNDING EVIDENCE (emitted from actual adapter tool_use/tool_result events, not from the maker's prose):\n- mode: ${groundingEvidence.mode ?? 'unknown'}\n- Hivemind queried: ${groundingEvidence.queried ? 'yes' : 'no'}\n- observed Hivemind tool calls: ${groundingEvidence.queryCount ?? 0}\n- observed queries: ${(groundingEvidence.queries ?? []).length ? groundingEvidence.queries.map((q) => JSON.stringify(q)).join('; ') : 'none'}${resultEvidence}\nTool calls prove retrieval occurred. Result excerpts let you audit whether cited claims match retrieved material; they do not make the material true or relevant by default.`
     : '';
 
   return `You are an adversarial reviewer from a different firm, paid to find what is wrong with this deliverable before the client does. You gain nothing from being nice. Round ${round}.

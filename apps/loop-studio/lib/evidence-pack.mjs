@@ -44,6 +44,9 @@ function actuals({ lane, evidence, models, simulated }) {
   if (evidence?.grounding) {
     session.push(`grounding ${evidence.grounding.mode || 'unknown'}: ${evidence.grounding.queried ? 'queried' : 'not queried'} (${evidence.grounding.queryCount || 0} observed tool calls)`);
     for (const query of evidence.grounding.queries ?? []) session.push(`hivemind query: ${query}`);
+    for (const result of evidence.grounding.results ?? []) {
+      session.push(`hivemind result: ${[result.title, result.author].filter(Boolean).join(' — ') || 'untitled'}; ref=${result.ref ?? 'none'}; excerpt_hash=${hashText(result.excerpt ?? '')}`);
+    }
   }
   return {
     executor: { requested: requestedExecutor, resolved: requestedExecutor, actual: executorActual },

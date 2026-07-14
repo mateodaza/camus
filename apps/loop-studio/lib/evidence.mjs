@@ -11,6 +11,7 @@ export function deriveEvidence(events) {
   const groundingQueries = of('session')
     .filter((e) => e.actor === 'maker' && String(e.line || '').startsWith('knowledge_search: '))
     .map((e) => String(e.line).slice('knowledge_search: '.length));
+  const groundingResults = of('grounding_evidence').flatMap((e) => e.results ?? []);
   const reviews = of('review').map((r) => ({
     round: r.round,
     verdict: r.verdict,
@@ -41,6 +42,7 @@ export function deriveEvidence(events) {
       queried: ground.queried === true,
       queryCount: Number.isInteger(ground.queries) ? ground.queries : groundingQueries.length,
       queries: groundingQueries,
+      results: groundingResults,
     } : null,
     rounds,
     findings: of('finding').map((f) => ({ severity: f.severity, title: f.title, detail: f.detail, suggestion: f.suggestion })),

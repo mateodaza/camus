@@ -264,7 +264,12 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
           claudeCall += 1;
           return claudeCall === 1
             ? { ok: true, text: '- plan', costUsd: 0 }
-            : { ok: true, text: '## Notes\n\nA plain note.\n', costUsd: 0, hivemindQueried: queried, hivemindQueries: queried ? 2 : 0, hivemindQueryTexts: queried ? ['cohort evidence', 'launch gaps'] : [] };
+            : {
+                ok: true, text: '## Notes\n\nA plain note.\n', costUsd: 0,
+                hivemindQueried: queried, hivemindQueries: queried ? 2 : 0,
+                hivemindQueryTexts: queried ? ['cohort evidence', 'launch gaps'] : [],
+                hivemindResults: queried ? [{ query: 'cohort evidence', title: 'Cohort playbook', author: 'A. Expert', ref: 'chunk-1', score: 0.8, excerpt: 'Programs should sell progress, not content.' }] : [],
+              };
         },
         codex: async ({ prompt }) => { reviewerPrompts.push(prompt); return { ran: true, verdict: 'APPROVED', findings: [], blocking: [], nonblocking: [], questions: [] }; },
       },
@@ -280,7 +285,10 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
     assert.equal(groundDone?.queried, expected, `grounding records actual connector use (${queried})`);
     assert.equal(groundDone?.connected, expected, 'configured-but-unused never wears a connected/grounded badge');
     assert.ok(reviewerPrompts[0].includes(`Hivemind queried: ${queried ? 'yes' : 'no'}`), 'auditor receives adapter evidence, not maker self-attestation');
-    if (queried) assert.ok(reviewerPrompts[0].includes('"cohort evidence"'), 'auditor receives the observed query trail');
+    if (queried) {
+      assert.ok(reviewerPrompts[0].includes('"cohort evidence"'), 'auditor receives the observed query trail');
+      assert.ok(reviewerPrompts[0].includes('Programs should sell progress, not content.'), 'auditor receives the bounded tool-result excerpt');
+    }
   }
   if (previousOffline === undefined) delete process.env.MOCK_OFFLINE; else process.env.MOCK_OFFLINE = previousOffline;
 }
@@ -497,7 +505,7 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
 
 // --- session-line parsers + runtime config resolution -------------------------
 {
-  const { sessionLineFromEvent } = await import('./lib/adapters/claude.mjs');
+  const { sessionLineFromEvent, parseHivemindToolResult } = await import('./lib/adapters/claude.mjs');
   assert.equal(
     sessionLineFromEvent({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'WebSearch', input: { query: 'crypto ad policy' } }] } }),
     'WebSearch: crypto ad policy', 'claude tool_use becomes a session line');
@@ -505,6 +513,12 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
     sessionLineFromEvent({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'mcp__claude_ai_Hivemind_Staging__knowledge_search', input: { query: 'gtm' } }] } }),
     'knowledge_search: gtm', 'managed MCP prefix (including underscores) stripped');
   assert.equal(sessionLineFromEvent({ type: 'result', result: 'x' }), null, 'result events are not session lines');
+  const hmResult = parseHivemindToolResult([{
+    type: 'text',
+    text: JSON.stringify({ success: true, data: { query: 'cohort evidence', chunks: [{ title: 'Cohort playbook', author: 'A. Expert', content: 'Programs should sell progress, not content.', chunk_id: 'chunk-1', score: 0.8 }] } }),
+  }]);
+  assert.deepEqual(hmResult, [{ query: 'cohort evidence', title: 'Cohort playbook', author: 'A. Expert', ref: 'chunk-1', score: 0.8, excerpt: 'Programs should sell progress, not content.' }], 'structured Hivemind tool results become bounded audit evidence');
+  assert.deepEqual(parseHivemindToolResult([{ type: 'text', text: 'not-json' }]), [], 'malformed tool output never becomes invented evidence');
 
   const { sessionLineFromCodexEvent } = await import('./lib/adapters/codex.mjs');
   assert.equal(
@@ -788,6 +802,7 @@ if (process.env.TEST_NETWORK === '1') {
   const wordsEvents = [
     { type: 'plan', text: 'the plan' },
     { type: 'session', actor: 'maker', line: 'knowledge_search: cohort evidence' },
+    { type: 'grounding_evidence', source: 'adapter_tool_result', results: [{ query: 'cohort evidence', title: 'Cohort playbook', author: 'A. Expert', ref: 'chunk-1', score: 0.8, excerpt: 'Programs should sell progress, not content.' }] },
     { type: 'stage', name: 'ground', status: 'done', connected: true, queried: true, queries: 1, mode: 'claude' },
     { type: 'round', round: 1, cap: 3 },
     { type: 'finding', severity: 'high', title: 'no source', detail: 'd', suggestion: 's' },
@@ -800,7 +815,7 @@ if (process.env.TEST_NETWORK === '1') {
   ];
   const wev = deriveEvidence(wordsEvents);
   assert.equal(wev.plan, 'the plan');
-  assert.deepEqual(wev.grounding, { mode: 'claude', connected: true, queried: true, queryCount: 1, queries: ['cohort evidence'] }, 'adapter grounding evidence survives in the receipt');
+  assert.equal(wev.grounding.results[0].ref, 'chunk-1', 'bounded Hivemind result evidence survives in the receipt');
   assert.equal(wev.rounds.length, 2, 'both review rounds captured in the receipt');
   assert.equal(wev.rounds[0].findings[0].title, 'no source', 'findings ride their round — not dropped from the receipt');
   assert.equal(wev.findings.length, 1, 'flat findings list captured');
@@ -1051,7 +1066,7 @@ if (process.env.TEST_NETWORK === '1') {
       rounds: [{ verdict: 'APPROVED', reviewerModel: 'gpt-5.4', reviewerEffort: 'high', findings: [] }],
       verify: [{ pass: true, checks: [{ id: 'links', status: 'pass', detail: '4 URLs checked' }] }],
       humanDecisions: [{ kind: 'decision', question: 'Which market?', answer: 'Base', at: 42 }],
-      grounding: { mode: 'claude', connected: true, queried: true, queryCount: 1, queries: ['cohort evidence'] },
+      grounding: { mode: 'claude', connected: true, queried: true, queryCount: 1, queries: ['cohort evidence'], results: [{ query: 'cohort evidence', title: 'Cohort playbook', author: 'A. Expert', ref: 'chunk-1', score: 0.8, excerpt: 'Programs should sell progress, not content.' }] },
       gateReport: null,
     },
     statuses: { schemaVersion: 1, execution: 'completed', verification: 'passed', audit: 'independent_clean', publication: 'not_published' },
@@ -1069,6 +1084,7 @@ if (process.env.TEST_NETWORK === '1') {
   assert.deepEqual(pack.verification.checks, [{ id: 'links', status: 'pass', detail: '4 URLs checked' }], 'deterministic checks survive');
   assert.equal(pack.human_decisions[0].at, 42, 'decision time survives into the ledger');
   assert.ok(pack.session_log.includes('hivemind query: cohort evidence'), 'grounding tool evidence is custody-bound in the sealed pack');
+  assert.ok(pack.session_log.some((line) => line.includes('hivemind result: Cohort playbook — A. Expert') && line.includes('excerpt_hash=sha256:')), 'result metadata and content hash are custody-bound');
   assert.equal(shortEvidenceId(pack.artifact_id).length, 12, 'the UI uses a short display ID while the pack keeps the full hash');
   assert.ok(!('headline' in pack), 'derived standing never persists in the pack');
 

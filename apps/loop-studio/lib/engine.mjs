@@ -88,6 +88,7 @@ export async function runLoop(run, ctx) {
     let hmMode = null;
     let hivemindQueries = 0;
     const hivemindQueryTexts = [];
+    const hivemindResults = [];
     if (run.ground) {
       stage('ground', 'active');
       grounding = await hivemind.searchKnowledge(run.goal, 4, log);
@@ -102,6 +103,14 @@ export async function runLoop(run, ctx) {
       for (const query of result.hivemindQueryTexts ?? []) {
         if (!hivemindQueryTexts.includes(query)) hivemindQueryTexts.push(query);
       }
+      const added = [];
+      for (const item of result.hivemindResults ?? []) {
+        const key = `${item.ref ?? ''}|${item.title}|${item.excerpt}`;
+        if (hivemindResults.some((prior) => `${prior.ref ?? ''}|${prior.title}|${prior.excerpt}` === key)) continue;
+        hivemindResults.push(item);
+        added.push(item);
+      }
+      if (added.length) emit('grounding_evidence', { source: 'adapter_tool_result', results: added });
       if (emitStage && result.hivemindQueries) {
         stage('ground', 'done', { connected: true, queried: true, queries: hivemindQueries, via: 'claude', mode: hmMode });
       }
@@ -111,6 +120,7 @@ export async function runLoop(run, ctx) {
       queried: grounding === 'claude' ? hivemindQueries > 0 : !!grounding,
       queryCount: grounding === 'claude' ? hivemindQueries : (grounding ? 1 : 0),
       queries: grounding === 'claude' ? [...hivemindQueryTexts] : (grounding ? [run.goal] : []),
+      results: grounding === 'claude' ? hivemindResults.slice(0, 16) : [],
     };
 
     // ---- Draft -------------------------------------------------------------

@@ -73,7 +73,7 @@ Pill names the pinned models, e.g. `engine: live · sonnet + gpt-5.4 (low)`. Giv
 
 - Draft takes minutes (claude researches with WebSearch/WebFetch plus the selected managed Hivemind search tool; the restrictive `--tools` surface cannot touch local files or other connectors).
 - The Ground stage must finish as `claude ✓`: Studio only awards that badge after observing an actual Hivemind MCP tool call. `claude ✕` means the connector was available but the maker did not query it; do not call that run Hivemind-grounded.
-- The independent review receives the adapter-observed Hivemind call count and query trail. In the sealed evidence pack, `session_log` must carry the same `hivemind query:` entries; maker prose is not accepted as proof of retrieval.
+- The independent review receives the adapter-observed Hivemind call count, query trail, source metadata, and bounded result excerpts. In the sealed evidence pack, `session_log` must carry matching `hivemind query:` and `hivemind result: … excerpt_hash=sha256:…` entries; maker prose is not accepted as proof of retrieval or source content.
 - Findings are real codex output, schema-enforced (`--output-schema`); malformed reviewer output becomes a visible infra card, never a silent pass.
 - Verify runs against the real cited URLs: confirmed-dead fails; bot-blocked corporate sites (403) **warn** with "open it yourself" — by design, the check refuses to claim what it can't verify.
 - The header shows real claude spend; codex burns plan credits.

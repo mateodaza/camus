@@ -40,6 +40,32 @@ export function sessionLineFromEvent(ev) {
   return null;
 }
 
+// Parse only the structured result shape returned by Hivemind. The auditor
+// receives bounded excerpts; the full CLI stream remains ephemeral and is
+// never dumped into Studio's receipts wholesale.
+export function parseHivemindToolResult(content, query = '') {
+  const text = typeof content === 'string'
+    ? content
+    : Array.isArray(content)
+      ? content.filter((item) => item?.type === 'text').map((item) => item.text).join('\n')
+      : '';
+  if (!text) return [];
+  try {
+    const payload = JSON.parse(text);
+    const chunks = payload?.data?.chunks ?? payload?.chunks ?? payload?.results ?? [];
+    return (Array.isArray(chunks) ? chunks : []).slice(0, 4).map((chunk) => ({
+      query: String(payload?.data?.query ?? payload?.query ?? query).slice(0, 300),
+      title: String(chunk?.title ?? 'Untitled Hivemind result').slice(0, 240),
+      author: chunk?.author == null ? null : String(chunk.author).slice(0, 160),
+      ref: chunk?.chunk_id ?? chunk?.notion_id ?? chunk?.id ?? null,
+      score: typeof chunk?.score === 'number' ? chunk.score : null,
+      excerpt: String(chunk?.content ?? chunk?.text ?? '').slice(0, 1200),
+    })).filter((item) => item.excerpt);
+  } catch {
+    return [];
+  }
+}
+
 export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, onSession, model }) {
   const hm = stage === 'plan' ? { enabled: false } : viaClaude();
   const { tools, allowed } = claudeToolSurface({ stage, hivemindEnabled: hm.enabled, serverName: hm.serverName, toolName: hm.toolName });
@@ -70,7 +96,7 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
   } else args.push('--strict-mcp-config');
   if (allowed) args.push('--allowedTools', allowed);
 
-  const { exitCode, stdout, stderr, resultEvent, hivemindQueries, hivemindQueryTexts } = await new Promise((resolve) => {
+  const { exitCode, stdout, stderr, resultEvent, hivemindQueries, hivemindQueryTexts, hivemindResults } = await new Promise((resolve) => {
     const child = spawn('claude', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
@@ -78,9 +104,11 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
     let result = null;
     let hmQueries = 0;
     const hmQueryTexts = [];
+    const hmToolUses = new Map();
+    const hmResults = [];
     let done = false;
     const finish = (code) => {
-      if (!done) { done = true; clearTimeout(t); clearInterval(tick); resolve({ exitCode: code, stdout: out, stderr: err, resultEvent: result, hivemindQueries: hmQueries, hivemindQueryTexts: hmQueryTexts }); }
+      if (!done) { done = true; clearTimeout(t); clearInterval(tick); resolve({ exitCode: code, stdout: out, stderr: err, resultEvent: result, hivemindQueries: hmQueries, hivemindQueryTexts: hmQueryTexts, hivemindResults: hmResults }); }
     };
     const t = setTimeout(() => { child.kill('SIGKILL'); finish(-2); }, TIMEOUTS[stage] ?? 540_000);
     const tick = setInterval(() => onTick?.(stage === 'plan' ? 'planning…' : 'drafting — researching sources…'), 8000);
@@ -98,8 +126,16 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
             for (const item of ev.message?.content ?? []) {
               if (item.type === 'tool_use' && item.name?.startsWith(`mcp__${hm.serverName}__`)) {
                 hmQueries += 1;
-                if (typeof item.input?.query === 'string') hmQueryTexts.push(item.input.query.slice(0, 300));
+                const query = typeof item.input?.query === 'string' ? item.input.query.slice(0, 300) : '';
+                if (query) hmQueryTexts.push(query);
+                if (item.id) hmToolUses.set(item.id, query);
               }
+            }
+          }
+          if (hm.enabled && ev.type === 'user') {
+            for (const item of ev.message?.content ?? []) {
+              if (item.type !== 'tool_result' || !hmToolUses.has(item.tool_use_id)) continue;
+              hmResults.push(...parseHivemindToolResult(item.content, hmToolUses.get(item.tool_use_id)));
             }
           }
           const sess = sessionLineFromEvent(ev);
@@ -143,5 +179,6 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
     hivemindQueried: hivemindQueries > 0,
     hivemindQueries,
     hivemindQueryTexts,
+    hivemindResults,
   };
 }
