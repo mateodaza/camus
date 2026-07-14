@@ -900,7 +900,7 @@ if (process.env.TEST_NETWORK === '1') {
 // "logged in" substring into a false green — the chip would reassure a user
 // straight into a 401.
 {
-  const { parseAuthProbe } = await import('./lib/doctor.mjs');
+  const { parseAuthProbe, runDoctor } = await import('./lib/doctor.mjs');
   assert.equal(parseAuthProbe(null), null, 'probe could not run → unknown, never guessed');
   assert.equal(parseAuthProbe('Logged in as mateo@example.com'), true, 'claude prose sign-in parses');
   assert.equal(parseAuthProbe('{"loggedIn": true, "method": "oauth"}'), true, 'claude JSON sign-in parses');
@@ -909,7 +909,45 @@ if (process.env.TEST_NETWORK === '1') {
   assert.equal(parseAuthProbe('not logged in (run codex login)'), false, 'negation wins whatever the casing/suffix');
   assert.equal(parseAuthProbe('Logged out'), false, 'logged-out phrasing is false');
   assert.equal(parseAuthProbe('{"loggedIn": false}'), false, 'JSON signed-out parses false');
-  assert.equal(parseAuthProbe('some unrelated banner text'), false, 'a successful probe with no sign-in claim is false, not unknown');
+  // Only EXPLICIT claims decide: anything else stays unknown — an implicit
+  // false would be as invented as an implicit green (2026-07-14 review).
+  assert.equal(parseAuthProbe('some unrelated banner text'), null, 'output with no explicit claim stays unknown');
+  assert.equal(parseAuthProbe(''), null, 'empty output claims nothing');
+
+  // Live P1 (2026-07-14): BOTH installed CLIs deliver their signed-out answer
+  // with EXIT CODE 1 (claude: {"loggedIn": false,…}; codex: "Not logged in").
+  // The probe used to discard nonzero-exit output, collapsing the real
+  // signed-out state into "unknown" with ok:true and no fix — the red
+  // preflight could never fire. Fake CLIs on PATH reproduce the exact shapes.
+  {
+    const { mkdtempSync, writeFileSync, chmodSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const bin = mkdtempSync(join(tmpdir(), 'cls-fakebin-'));
+    const fake = (name, body) => {
+      const p = join(bin, name);
+      writeFileSync(p, `#!/bin/sh\n${body}\n`);
+      chmodSync(p, 0o755);
+    };
+    fake('claude', `case "$1" in --version) echo "1.0.0-fake"; exit 0 ;; auth) echo '{"loggedIn": false, "method": null}'; exit 1 ;; *) exit 1 ;; esac`);
+    fake('codex', `case "$1" in --version) echo "0.0.0-fake"; exit 0 ;; login) echo "Not logged in"; exit 1 ;; *) exit 1 ;; esac`);
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${bin}:${oldPath}`;
+    try {
+      const report = await runDoctor({});
+      const claude = report.checks.find((c) => c.id === 'claude');
+      const codex = report.checks.find((c) => c.id === 'codex');
+      assert.equal(claude.auth, false, 'claude {"loggedIn": false} on exit 1 is a REAL signed-out, not unknown');
+      assert.equal(claude.ok, false, 'a signed-out claude fails its check');
+      assert.match(claude.fix ?? '', /sign-in|sign in/i, 'the fix names the sign-in flow');
+      assert.equal(codex.auth, false, 'codex "Not logged in" on exit 1 is a REAL signed-out, not unknown');
+      assert.equal(codex.ok, false, 'a signed-out codex fails its check');
+      assert.equal(report.ok, false, 'a signed-out CLI fails the doctor report');
+    } finally {
+      process.env.PATH = oldPath;
+      rmSync(bin, { recursive: true, force: true });
+    }
+  }
 }
 
 // --- banner policy: every real done* answers to the headline, fail-closed ----
@@ -928,6 +966,15 @@ if (process.env.TEST_NETWORK === '1') {
   assert.match(legacy.label, /no status dimensions/, 'the reason names the missing evidence');
   assert.ok(!legacy.label.includes('reviewed and verified'), 'legacy done never reads reviewed-and-verified');
   assert.match(doneBanner('done_with_findings', undefined, undefined).label, /^DONE WITH FINDINGS \(gate claim\)/, 'the downgrade names the exact claimed status');
+
+  // A headline is presentation, never evidence: a recognized headline WITHOUT
+  // the dimensions it claims to derive from (tampered/torn replay — no honest
+  // server emits it) must not unlock any standing (2026-07-14 review, P2).
+  for (const h of ['verified', 'verified_with_findings', 'same_vendor_reviewed', 'published']) {
+    const tampered = doneBanner('done', h, undefined);
+    assert.equal(tampered.cls, 'meh', `headline ${h} without dimensions never greens`);
+    assert.match(tampered.label, /gate claim/, `headline ${h} without dimensions renders as a claim`);
+  }
 
   // Each recognized standing owns its copy.
   assert.deepEqual(doneBanner('done', 'verified', { verification: 'passed', audit: 'independent_clean' }), { cls: 'good', label: verifiedLabel }, 'verified reads reviewed-and-verified');

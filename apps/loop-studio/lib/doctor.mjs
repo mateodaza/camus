@@ -30,7 +30,11 @@ export const parseAuthProbe = (raw) => {
   if (/loggedIn"?\s*:\s*true/i.test(raw)) return true;
   if (/loggedIn"?\s*:\s*false/i.test(raw)) return false;
   if (/not\s+logged\s+in|logged\s+out|no\s+credentials/i.test(raw)) return false;
-  return /logged\s+in/i.test(raw);
+  if (/logged\s+in/i.test(raw)) return true;
+  // Output with NO explicit claim either way (an error banner, help text, a
+  // partial read) is unknown — an implicit false would be as invented as an
+  // implicit green.
+  return null;
 };
 
 // deep=true adds the slow checks (claude mcp list health round-trip).
@@ -47,8 +51,17 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   ]);
 
   // Installed is not signed-in: both CLIs expose spend-free auth probes.
+  // Their SIGNED-OUT answers arrive with exit code 1 (claude prints
+  // {"loggedIn": false, …}, codex prints "Not logged in") — so the output must
+  // survive a nonzero exit, or the real signed-out state collapses into
+  // "unknown" and the red preflight can never fire (live P1, 2026-07-14). A
+  // nonzero exit with NO output (missing binary, timeout, crash) still ends up
+  // null through the parser's no-claim rule.
   const fullProbe = (cmd, args) =>
-    new Promise((r) => execFile(cmd, args, { timeout: 20_000 }, (err, so, se) => r(err ? null : String(so || se).trim())));
+    new Promise((r) => execFile(cmd, args, { timeout: 20_000 }, (_err, so, se) => {
+      const out = String(so || se || '').trim();
+      r(out || null);
+    }));
   const [claudeAuthRaw, codexAuthRaw] = await Promise.all([
     claudeV ? fullProbe('claude', ['auth', 'status']) : Promise.resolve(null),
     codexV ? fullProbe('codex', ['login', 'status']) : Promise.resolve(null),

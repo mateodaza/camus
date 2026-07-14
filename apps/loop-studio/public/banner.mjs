@@ -9,6 +9,15 @@
 // including every pre-dimension receipt in runs/ — renders as an
 // uncorroborated claim, never as "reviewed and verified".
 export function doneBanner(status, headline, dimensions) {
+  const claim = status === 'done_with_findings' ? 'DONE WITH FINDINGS' : 'DONE';
+  // A headline is disposable PRESENTATION derived from the dimensions — never
+  // evidence on its own. No dimensions on the event means there is nothing the
+  // headline could honestly have been derived from (no current server emits
+  // that shape; a tampered or torn replay can), so it must not unlock any
+  // standing: evidence first, then the word.
+  if (!dimensions || typeof dimensions !== 'object') {
+    return { cls: 'meh', label: `${claim} (gate claim) — the receipt does not corroborate it — this receipt carries no status dimensions (a run from before the trust dimensions, or a torn receipt). Trust the receipts, not the word.` };
+  }
   switch (headline) {
     case 'verified':
       return { cls: 'good', label: 'DONE — reviewed and verified.' };
@@ -23,12 +32,8 @@ export function doneBanner(status, headline, dimensions) {
     default: {
       // Unverified, needs_decision, a headline this UI does not know, or no
       // headline at all — the claim is named as a claim, with the reason.
-      const claim = status === 'done_with_findings' ? 'DONE WITH FINDINGS' : 'DONE';
       const nice = (s) => String(s).replace(/_/g, ' ');
-      const why = dimensions
-        ? `: verification ${nice(dimensions.verification)}, audit ${nice(dimensions.audit)}`
-        : ' — this receipt carries no status dimensions (a run from before the trust dimensions, or a torn receipt)';
-      return { cls: 'meh', label: `${claim} (gate claim) — the receipt does not corroborate it${why}. Trust the receipts, not the word.` };
+      return { cls: 'meh', label: `${claim} (gate claim) — the receipt does not corroborate it: verification ${nice(dimensions.verification)}, audit ${nice(dimensions.audit)}. Trust the receipts, not the word.` };
     }
   }
 }
