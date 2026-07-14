@@ -1243,22 +1243,50 @@ const commitRaw = await agent(
 )
 const commitResult = extractJsonObject(commitRaw) || { committed: false, reason: 'unparseable' }
 const crc = commitReceipt(commitResult)
-// An empty stage PROVEN by a real HEAD sha (priorHead) is a benign no_changes: the normal path has no "land
-// prior work" semantics, so nothing to commit = nothing to merge, never a false done. An empty stage with NO
-// valid sha (kind 'empty') is NOT a trusted no-op — commit.sh emits a sha even on empty, so a sha-less empty
-// is a relay claiming "nothing to do" without evidence (could silently drop real work); it falls through to
-// the infra branch below (Mateo's re-audit 2026-07-06).
+// An empty stage PROVEN by a real HEAD sha (priorHead) is AMBIGUOUS, not automatically a benign
+// no_changes (Studio live smoke 2026-07-13): the implement agent may have COMMITTED the reviewed
+// work itself, so the stage is empty precisely BECAUSE the branch tip already holds the change —
+// recording that as a no-op launders real committed work into "nothing happened". Disambiguate with
+// git, not vibes (camus-feat's noop rescue, applied to the standalone lane): commits on BRANCH that
+// are NOT in the main tree's history mean the work IS committed → bind verify to that tip and take
+// the normal terminal path with the full identity fields. Zero unmerged commits is a genuine no-op.
+// An unreadable count must never become a no-op — missing ancestry evidence fails closed as infra.
+// An empty stage with NO valid sha (kind 'empty') is NOT a trusted no-op either — commit.sh emits a
+// sha even on empty, so a sha-less empty is a relay claiming "nothing to do" without evidence (could
+// silently drop real work); it falls through to the infra branch below (Mateo's re-audit 2026-07-06).
+let rescuedPriorCommit = false
 if (crc.kind === 'priorHead') {
-  return {
-    status: 'no_changes', task: TASK, worktree: WT, branch: BRANCH, rounds: round,
-    note: 'Review passed but the implement step produced no committable change (empty diff). no_changes, never a false done — nothing to merge.',
+  const unmergedRaw = await agent(
+    `THIN git runner. Run EXACTLY this one command and output ONLY its stdout (a number, or an error line):
+  ${HB_TOUCH}${REPO_CD}git rev-list --count HEAD..${JSON.stringify(BRANCH)} --`,
+    { model: MODEL_RUNNER, phase: 'Commit', label: 'noop-audit' }
+  )
+  const unmergedText = String(unmergedRaw == null ? '' : unmergedRaw).trim()
+  const unmerged = /^\d+$/.test(unmergedText) ? parseInt(unmergedText, 10) : null
+  if (unmerged === null) {
+    return {
+      status: 'infra_error', task: TASK, worktree: WT, branch: BRANCH, rounds: round, stage: 'noop_audit',
+      noopAuditOutput: unmergedText.slice(0, 1000),
+      error: `empty stage at HEAD ${crc.head}, and the branch ancestry audit returned no usable count — cannot tell a benign no-op from already-committed work`,
+      note: `The commit gate found an empty stage, but Camus could not verify whether ${BRANCH} holds unmerged commits (noop-audit output was not a non-negative integer). Missing ancestry evidence must not become a no-op. Fix the git/audit issue and re-run with the SAME args.`,
+    }
   }
+  if (unmerged === 0) {
+    return {
+      status: 'no_changes', task: TASK, worktree: WT, branch: BRANCH, rounds: round,
+      tier, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
+      note: 'Review passed but the implement step produced no committable change (empty diff; the branch ancestry audit confirms zero unmerged commits). no_changes, never a false done — nothing to merge.',
+    }
+  }
+  rescuedPriorCommit = true
+  log(`Empty stage BUT ${BRANCH} holds ${unmerged} unmerged commit(s) — the reviewed work was already committed (at implement time). Proceeding as committed at ${crc.head}; verify binds to that tip.`)
 }
 // A committed:true MUST name a real git sha (commit.sh always emits one) — else the receipt is garbled/
 // hallucinated and expectedHead would be null, silently disabling head-binding on the terminal success path
 // (the run-6 cover-up hole). A failed commit is likewise infra. Fail CLOSED: a done must name the sha its
-// verify certifies. (Same infra-vs-findings discipline as the verifier.)
-if (crc.kind !== 'sealed') {
+// verify certifies. (Same infra-vs-findings discipline as the verifier.) A rescued prior commit already
+// carries its proven HEAD (crc.head IS the branch tip the ancestry audit certified), so it passes through.
+if (!rescuedPriorCommit && crc.kind !== 'sealed') {
   return {
     status: 'infra_error', task: TASK, worktree: WT, branch: BRANCH, rounds: round,
     error: crc.kind === 'noSha'
@@ -1270,7 +1298,7 @@ if (crc.kind !== 'sealed') {
   }
 }
 const COMMIT_SHA = crc.head
-log(`Committed reviewed work (${COMMIT_SHA}) to ${BRANCH}${tokSuffix()}.`)
+if (!rescuedPriorCommit) log(`Committed reviewed work (${COMMIT_SHA}) to ${BRANCH}${tokSuffix()}.`)
 
 // ── Phase 3.5 + 4: PREP + VERIFY (deterministic ground truth — final, non-negotiable gate) ─
 // Runs after review passes + commit (review/fix don't need deps). A clean review does NOT override

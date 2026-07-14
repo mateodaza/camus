@@ -2095,10 +2095,50 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
       fix: '', prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [] }),
     }
-    const emptyWithSha = await runLoop({ task: 't' }, { ...nbase, commit: J({ committed: false, reason: 'empty', sha: h40('tip1') }) })
-    ok('F40g normal empty + valid HEAD sha → no_changes (benign)', emptyWithSha.res.status === 'no_changes', emptyWithSha.res.status)
+    const emptyWithSha = await runLoop({ task: 't' }, { ...nbase, commit: J({ committed: false, reason: 'empty', sha: h40('tip1') }), 'noop-audit': '0' })
+    ok('F40g normal empty + valid HEAD sha + zero unmerged → no_changes (benign, ancestry-confirmed)', emptyWithSha.res.status === 'no_changes', emptyWithSha.res.status)
     const emptyNoSha = await runLoop({ task: 't' }, { ...nbase, commit: J({ committed: false, reason: 'empty' }) })
     ok('F40g normal empty + NO sha → infra_error, NOT a false noop', emptyNoSha.res.status === 'infra_error' && /empty stage|no valid HEAD/i.test(emptyNoSha.res.error || ''), emptyNoSha.res.status + ' ' + (emptyNoSha.res.error || '').slice(0, 40))
+  }
+
+  // F56 (Studio live smoke 2026-07-13, P1): the STANDALONE loop's empty stage is ambiguous — the
+  // implement agent may have committed the reviewed work itself, so "nothing staged" can mean "already
+  // on the branch". The feat lane had the noop rescue (F27); the loop now audits ancestry the same way:
+  // unmerged commits → proceed as committed at the branch tip (verify head-bound to it, full terminal
+  // identity fields); zero → genuine no_changes; unreadable count → infra, never an unevidenced no-op.
+  {
+    const nbase = {
+      ...clsStd, ...planOf('clear', ''),
+      implement: { worktree_path: wtPath('t'), branch: 'b', summary: 's', decisions: [] },
+      review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
+      fix: '', prep: J({ prepped: true, ran: [] }),
+    }
+    const priorEmpty = { committed: false, reason: 'empty', sha: h40('tip1') }
+    // unmerged commits on the branch → the no-op claim is REFUSED; verify binds to the prior tip and
+    // the terminal is a normal done carrying commit_sha + the identity fields (what the receipt seals).
+    const rescued = await runLoop({ task: 't' }, {
+      ...nbase, commit: J(priorEmpty), 'noop-audit': '1',
+      verify: J({ pass: true, failures: [], head: h40('tip1') }),
+    })
+    ok('F56a empty stage + unmerged commit → rescued as done at the prior tip (never a false noop)',
+      rescued.res.status === 'done' && rescued.res.commit_sha === h40('tip1'), rescued.res.status + '/' + rescued.res.commit_sha)
+    ok('F56a rescued terminal carries the full identity fields',
+      typeof rescued.res.initialModel === 'string' && typeof rescued.res.finalFixModel === 'string' && typeof rescued.res.escalated === 'boolean', JSON.stringify({ i: rescued.res.initialModel, f: rescued.res.finalFixModel }))
+    // the rescued verify is HEAD-BOUND to the prior tip: a headless green must not certify it.
+    const rescuedHeadless = await runLoop({ task: 't' }, {
+      ...nbase, commit: J(priorEmpty), 'noop-audit': '1',
+      verify: J({ pass: true, failures: [] }),
+    })
+    ok('F56b rescued prior commit + HEADLESS green → verify_failed (head-binding enforced on the rescue)',
+      rescuedHeadless.res.status === 'verify_failed', rescuedHeadless.res.status)
+    // zero unmerged commits → a genuine no-op, now ancestry-evidenced (and it names its models too).
+    const noop = await runLoop({ task: 't' }, { ...nbase, commit: J(priorEmpty), 'noop-audit': '0', verify: J({ pass: true, failures: [] }) })
+    ok('F56c empty stage + zero unmerged → no_changes with identity fields',
+      noop.res.status === 'no_changes' && typeof noop.res.initialModel === 'string', noop.res.status + '/' + noop.res.initialModel)
+    // unreadable ancestry → infra, never a no-op without evidence (the feat lane's F27 discipline).
+    const unread = await runLoop({ task: 't' }, { ...nbase, commit: J(priorEmpty), 'noop-audit': 'fatal: unknown revision', verify: J({ pass: true, failures: [] }) })
+    ok('F56d empty stage + unreadable ancestry audit → infra_error (missing evidence is never a noop)',
+      unread.res.status === 'infra_error' && unread.res.stage === 'noop_audit', unread.res.status + '/' + (unread.res.stage || ''))
   }
 
   // F41: MERGE NULL-RELAY recovery (item 2) — a dropped merge relay must NOT stamp merge_failed
