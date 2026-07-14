@@ -137,7 +137,7 @@ export function createMockAdapters() {
       const revs = [REV1, REV2, REV3, REV4];
       return { ok: true, error: null, text: revs[Math.min(claudeCalls - 1, revs.length - 1)], costUsd: 0 }; // rehearsal spends nothing
     },
-    async codex({ signal, onTick, onSession, model, effort, claims = [], criteria = [], auditOnly = false }) {
+    async codex({ signal, onTick, onSession, model, effort, claims = [], criteria = [], thresholds = [], auditOnly = false }) {
       onTick?.('reviewer reading and drafting findings…');
       onSession?.('turn started');
       await sleep(3000, signal);
@@ -166,6 +166,7 @@ export function createMockAdapters() {
         // never impersonates independent semantic judgment.
         claimAssessments: claims.map((c) => ({ marker: c.marker, decision: 'supported', evidence: 'scripted rehearsal assessment' })),
         coverageAssessments: criteria.map((c) => ({ criterion_id: c.id, decision: 'met', evidence: 'scripted rehearsal assessment' })),
+        thresholdAssessments: thresholds.map((t) => ({ id: t.id, decision: 'policy', evidence: 'scripted rehearsal assessment' })),
       };
     },
   };

@@ -1,7 +1,7 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["verdict", "findings", "questions_for_human", "claim_assessments", "coverage_assessments"],
+  "required": ["verdict", "findings", "questions_for_human", "claim_assessments", "coverage_assessments", "threshold_assessments"],
   "properties": {
     "verdict": {
       "type": "string",
@@ -51,6 +51,20 @@
           "criterion_id": { "type": "string", "pattern": "^C[1-9][0-9]*$" },
           "decision": { "type": "string", "enum": ["met", "unmet", "unclear"] },
           "evidence": { "type": "string", "description": "A concise passage or observation proving the criterion met/unmet, or the reason it remains unclear." }
+        }
+      }
+    },
+    "threshold_assessments": {
+      "type": "array",
+      "description": "Exactly one assessment for every proposed-threshold line in the supplied ledger — lines the citation gate exempted because they are marked as decision policy. Empty when none were exempted.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "decision", "evidence"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^T[1-9][0-9]*$" },
+          "decision": { "type": "string", "enum": ["policy", "observed"] },
+          "evidence": { "type": "string", "description": "Why the line is a genuine proposed decision policy, or which number it presents as real/achieved/observed performance (a statistic wearing the marker to dodge citation)." }
         }
       }
     }

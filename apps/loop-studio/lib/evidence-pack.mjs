@@ -9,6 +9,7 @@ import { seal } from '../../../packages/trust/lib/canonical.mjs';
 import { validateEvidencePack } from '../../../packages/trust/lib/validate.mjs';
 import { buildClaimLedger, claimAssessmentEvidenceHash } from './claims.mjs';
 import { buildCoverageLedger, coverageAssessmentEvidenceHash } from './contract.mjs';
+import { thresholdLineHash, thresholdEvidenceHash } from './verify.mjs';
 
 const hashText = (text) => `sha256:${createHash('sha256').update(String(text), 'utf8').digest('hex')}`;
 const named = (provider, value) => `${provider}:${value || 'not-recorded'}`;
@@ -120,6 +121,7 @@ export function buildEvidencePack({
   // absent/stale assessment coverage remains explicitly unchecked.
   const claimAssessments = simulated ? [] : (finalReview?.claimAssessments ?? []);
   const coverageAssessments = simulated ? [] : (finalReview?.coverageAssessments ?? []);
+  const thresholdAssessments = simulated ? [] : (finalReview?.thresholdAssessments ?? []);
   const claims = lane === 'build'
     ? null
     : buildClaimLedger(deliverable, {
@@ -138,6 +140,13 @@ export function buildEvidencePack({
   const coverageSession = coverageAssessments.map((a) =>
     `coverage assessment ${a.criterion_id}: ${a.decision}; evidence_hash=${coverageAssessmentEvidenceHash(a) ?? 'none'}`,
   );
+  // Threshold decisions are sealed into the receipt exactly like claim/coverage
+  // decisions: a laundered stat caught here (observed) changes the receipt. The
+  // line_hash binds the ordinal T-id to the exact exempted {section, line, stats}
+  // it judged, so the entry states WHAT it refers to, not just a verdict.
+  const thresholdSession = thresholdAssessments.map((a) =>
+    `threshold assessment ${a.id}: ${a.decision}; line_hash=${thresholdLineHash(a) ?? 'none'}; evidence_hash=${thresholdEvidenceHash(a) ?? 'none'}`,
+  );
   const pack = {
     schemaVersion: 2,
     goal,
@@ -146,7 +155,7 @@ export function buildEvidencePack({
       ? { kind: 'code', repo: targetPath, head, diff_hash: null, changed_files: null, deliverable_hash: null, claims: null, contract_coverage: null }
       : { kind: 'research', repo: null, head: null, diff_hash: null, changed_files: null, deliverable_hash: deliverable == null ? null : hashText(deliverable), claims, contract_coverage: contractCoverage },
     verification: { command: null, checks: verificationChecks(evidence) },
-    session_log: [...ids.session, ...claimSession, ...coverageSession],
+    session_log: [...ids.session, ...claimSession, ...coverageSession, ...thresholdSession],
     pairing: {
       schemaVersion: 1,
       executor: ids.executor,

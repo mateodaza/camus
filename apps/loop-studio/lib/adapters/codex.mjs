@@ -18,11 +18,11 @@ const IDLE_KILL_MS = Number(process.env.REVIEW_IDLE_MS || 300_000);
 const TOTAL_TIMEOUT_MS = { low: 420_000, medium: 600_000, high: 900_000, xhigh: 1_200_000 };
 
 function infraError(error) {
-  return { ran: false, error, verdict: 'ERROR', findings: [], questions: [], claimAssessments: [], coverageAssessments: [] };
+  return { ran: false, error, verdict: 'ERROR', findings: [], questions: [], claimAssessments: [], coverageAssessments: [], thresholdAssessments: [] };
 }
 
 // Mirrors camus's normalize_codex guards, adapted to the content schema.
-export function normalizeReview(raw, exitCode, expectedClaims = [], expectedCriteria = []) {
+export function normalizeReview(raw, exitCode, expectedClaims = [], expectedCriteria = [], expectedThresholds = []) {
   if (exitCode !== 0) return infraError(`codex exec exited ${exitCode}`);
   if (!raw || !raw.trim()) return infraError('empty codex output');
   let data;
@@ -74,6 +74,21 @@ export function normalizeReview(raw, exitCode, expectedClaims = [], expectedCrit
   if (missingCriteria.length || extraCriteria.length) {
     return infraError(`coverage assessment mismatch (missing: ${missingCriteria.join(', ') || 'none'}; extra: ${extraCriteria.join(', ') || 'none'})`);
   }
+  if (!Array.isArray(data.threshold_assessments)) return infraError('threshold_assessments is not an array');
+  const expectedThresholdIds = expectedThresholds.map((t) => t.id);
+  const seenThresholds = new Set();
+  for (const a of data.threshold_assessments) {
+    if (!a || typeof a.id !== 'string' || !['policy', 'observed'].includes(a.decision) || typeof a.evidence !== 'string' || !a.evidence.trim()) {
+      return infraError('threshold assessment needs id, policy|observed decision, and evidence/reason');
+    }
+    if (seenThresholds.has(a.id)) return infraError(`duplicate threshold assessment for ${a.id}`);
+    seenThresholds.add(a.id);
+  }
+  const missingThresholds = expectedThresholdIds.filter((id) => !seenThresholds.has(id));
+  const extraThresholds = [...seenThresholds].filter((id) => !expectedThresholdIds.includes(id));
+  if (missingThresholds.length || extraThresholds.length) {
+    return infraError(`threshold assessment mismatch (missing: ${missingThresholds.join(', ') || 'none'}; extra: ${extraThresholds.join(', ') || 'none'})`);
+  }
   const blocking = data.findings.filter((f) => f.severity !== 'low');
   // Consistency guards: a verdict may not contradict its own findings.
   if (data.verdict === 'revise' && blocking.length === 0 && !(data.questions_for_human?.length)) {
@@ -104,6 +119,16 @@ export function normalizeReview(raw, exitCode, expectedClaims = [], expectedCrit
   if (unclear.length && data.verdict === 'clean' && !data.findings.some((f) => f.severity === 'low')) {
     return infraError('inconsistent: unclear acceptance criteria on a clean verdict need a low-severity caveat');
   }
+  // An `observed` threshold is a statistic wearing the proposed-policy marker to
+  // dodge the citation gate — laundering. It can never ride a clean verdict, and
+  // it must carry a blocking finding just like an unsupported claim.
+  const observedThresholds = data.threshold_assessments.filter((a) => a.decision === 'observed');
+  if (observedThresholds.length && data.verdict === 'clean') {
+    return infraError("inconsistent: 'clean' with a proposed threshold assessed as observed performance");
+  }
+  if (observedThresholds.length && blocking.length === 0) {
+    return infraError('inconsistent: a threshold carrying observed performance needs a blocking finding');
+  }
   return {
     ran: true,
     error: null,
@@ -114,10 +139,11 @@ export function normalizeReview(raw, exitCode, expectedClaims = [], expectedCrit
     questions: (data.questions_for_human ?? []).filter((q) => typeof q === 'string' && q.trim()),
     claimAssessments: data.claim_assessments,
     coverageAssessments: data.coverage_assessments,
+    thresholdAssessments: data.threshold_assessments,
   };
 }
 
-export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSession, receiptDir, model, claims = [], criteria = [] }) {
+export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSession, receiptDir, model, claims = [], criteria = [], thresholds = [] }) {
   effort ||= getModels().reviewer.effort;
   model ||= getModels().reviewer.model;
   // codex resolves -o against ITS cwd, not ours — the path must be absolute.
@@ -190,7 +216,7 @@ export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSe
   }
   const norm = readError
     ? infraError(`verdict file exists but could not be read (${readError.code || readError.message})`)
-    : normalizeReview(raw, exitCode, claims, criteria);
+    : normalizeReview(raw, exitCode, claims, criteria, thresholds);
   norm.usage = usage;
   norm.durationMs = Date.now() - startedAt;
   if (!norm.ran && stderrTail) norm.error += ` | codex stderr: ${stderrTail.trim().split('\n').pop()}`;

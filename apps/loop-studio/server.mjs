@@ -18,7 +18,7 @@ import { runClaude } from './lib/adapters/claude.mjs';
 import { runCodexReview } from './lib/adapters/codex.mjs';
 import { createMockAdapters } from './lib/adapters/mock.mjs';
 import * as hivemind from './lib/adapters/hivemind.mjs';
-import { LANES } from './lib/verify.mjs';
+import { LANES, extractThresholdLines, bindThresholdAssessments } from './lib/verify.mjs';
 import { deriveEvidence, receiptCompleteness } from './lib/evidence.mjs';
 import { buildEvidencePack } from './lib/evidence-pack.mjs';
 import { buildAuditReplayPack, createAuditReplayExperiment, finalizeAuditReplayExperiment } from './lib/audit-replay.mjs';
@@ -405,6 +405,10 @@ async function startAuditReplay({ sourceId, sourceReport, reviewerModel, effort,
     try {
       const claims = (sourcePack.artifact.claims ?? []).map(({ decision, ...claim }) => claim);
       const criteria = (sourcePack.artifact.contract_coverage ?? []).map(({ decision, ...criterion }) => criterion);
+      // The threshold ledger is a pure function of the sealed deliverable text
+      // (already bound by deliverable_hash), so it re-derives deterministically
+      // at replay rather than needing its own sealed field.
+      const thresholds = extractThresholdLines(sourceReport.deliverable ?? '');
       const contentAnswers = sourcePack.human_decisions
         .filter((decision) => decision.kind === 'decision')
         .map((decision) => ({ question: decision.question, answer: decision.answer }));
@@ -424,10 +428,12 @@ async function startAuditReplay({ sourceId, sourceReport, reviewerModel, effort,
           groundingEvidence: sourceReport.evidence?.grounding ?? null,
           claims,
           criteria,
+          thresholds,
           auditOnly: true,
         }),
         claims,
         criteria,
+        thresholds,
         auditOnly: true,
         cwd: scratchDir,
         signal: state.abort.signal,
@@ -435,6 +441,9 @@ async function startAuditReplay({ sourceId, sourceReport, reviewerModel, effort,
         onSession: (line) => emit('session', { actor: 'reviewer', line }),
         receiptDir: join(dir, 'review-audit-only'),
       });
+      // Bind the auditor's threshold verdicts to the lines they judged ONCE, so
+      // the streamed event and the sealed replay pack share the same binding.
+      if (review?.ran) review.thresholdAssessments = bindThresholdAssessments(thresholds, review.thresholdAssessments);
       emit('review', {
         round: 'audit replay',
         scope: 'audit_replay',
@@ -446,6 +455,7 @@ async function startAuditReplay({ sourceId, sourceReport, reviewerModel, effort,
         reviewerEffort: review.reviewerEffort ?? effort,
         claimAssessments: review.claimAssessments ?? [],
         coverageAssessments: review.coverageAssessments ?? [],
+        thresholdAssessments: review.thresholdAssessments ?? [],
       });
       for (const finding of review.findings ?? []) emit('finding', { round: 'audit replay', scope: 'audit_replay', rev: run.rev, ...finding });
       emit('stage', { name: 'review', status: 'done', scope: 'audit_replay', verdict: review.verdict });

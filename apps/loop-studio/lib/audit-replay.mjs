@@ -9,6 +9,7 @@ import { sealExperiment } from '../../../packages/trust/lib/experiment.mjs';
 import { validateEvidencePack, validateExperimentRecord } from '../../../packages/trust/lib/validate.mjs';
 import { claimAssessmentEvidenceHash } from './claims.mjs';
 import { coverageAssessmentEvidenceHash } from './contract.mjs';
+import { thresholdLineHash, thresholdEvidenceHash } from './verify.mjs';
 
 const HASH_RE = /^sha256:[0-9a-f]{64}$/;
 const hash = (value) => `sha256:${createHash('sha256').update(canonicalString(value), 'utf8').digest('hex')}`;
@@ -163,6 +164,9 @@ export function buildAuditReplayPack({ sourcePack, review, reviewerModel, effort
   const coverageSession = (simulated || !review?.ran ? [] : review.coverageAssessments ?? []).map((item) =>
     `audit replay coverage ${item.criterion_id}: ${item.decision}; evidence_hash=${coverageAssessmentEvidenceHash(item) ?? 'none'}`,
   );
+  const thresholdSession = (simulated || !review?.ran ? [] : review.thresholdAssessments ?? []).map((item) =>
+    `audit replay threshold ${item.id}: ${item.decision}; line_hash=${thresholdLineHash(item) ?? 'none'}; evidence_hash=${thresholdEvidenceHash(item) ?? 'none'}`,
+  );
   const sessionLog = [
     ...(sourcePack.session_log ?? []),
     `audit replay experiment: ${experimentId}`,
@@ -170,6 +174,7 @@ export function buildAuditReplayPack({ sourcePack, review, reviewerModel, effort
     `audit replay effort requested: ${effort}; actual: ${simulated && review?.ran ? 'scripted' : review?.effortActual ?? 'not reported'}`,
     ...claimSession,
     ...coverageSession,
+    ...thresholdSession,
     ...(!review?.ran ? [`audit replay failure: ${review?.error || 'unknown'}`] : []),
   ];
   const sourceExecutorEconomics = sourcePack.economics.find((item) => item.role === 'executor');

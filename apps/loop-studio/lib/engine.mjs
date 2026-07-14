@@ -5,7 +5,7 @@
 // never a pass, and every pause routes a plain-English question to the human.
 
 import { planPrompt, makePrompt, reviewPrompt, fixPrompt } from './prompts.mjs';
-import { runVerify } from './verify.mjs';
+import { runVerify, extractThresholdLines, bindThresholdAssessments } from './verify.mjs';
 import { getModels } from './models.mjs';
 import { extractClaimCandidates } from './claims.mjs';
 import { extractContractCriteria } from './contract.mjs';
@@ -256,12 +256,14 @@ export async function runLoop(run, ctx) {
       stage('review', 'active', { round });
       emit('round', { round, cap: ROUND_CAP });
       const claims = extractClaimCandidates(draft, { groundingResults: groundingEvidence()?.results ?? [] });
+      const thresholds = extractThresholdLines(draft);
       lastReview = await withRetries(`review round ${round}`, () =>
         adapters.codex({
           model: reviewerModel,
-          prompt: reviewPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, round, priorFindings, answers: contentAnswers(), groundingEvidence: groundingEvidence(), claims, criteria }),
+          prompt: reviewPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, round, priorFindings, answers: contentAnswers(), groundingEvidence: groundingEvidence(), claims, criteria, thresholds }),
           claims,
           criteria,
+          thresholds,
           cwd: ctx.scratchDir,
           effort: reviewerEffort,
           signal,
@@ -281,6 +283,7 @@ export async function runLoop(run, ctx) {
         reviewerEffort: lastReview.reviewerEffort ?? reviewerEffort ?? null,
         claimAssessments: lastReview.claimAssessments ?? [],
         coverageAssessments: lastReview.coverageAssessments ?? [],
+        thresholdAssessments: bindThresholdAssessments(thresholds, lastReview.thresholdAssessments),
       });
       auditedRev = rev;
       for (const f of lastReview.findings) emit('finding', { round, ...f });
@@ -388,12 +391,14 @@ export async function runLoop(run, ctx) {
           log(`The deterministic repair changed rev ${auditedRev ?? 'unreviewed'} to rev ${rev}. Running a fresh closure audit on the exact final artifact.`);
           stage('review', 'active', { scope: 'closure', rev });
           const closureClaims = extractClaimCandidates(draft, { groundingResults: groundingEvidence()?.results ?? [] });
+          const closureThresholds = extractThresholdLines(draft);
           lastReview = await withRetries('closure audit', () =>
             adapters.codex({
               model: reviewerModel,
-              prompt: reviewPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, round: 'closure', priorFindings, answers: contentAnswers(), groundingEvidence: groundingEvidence(), claims: closureClaims, criteria, closure: true }),
+              prompt: reviewPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, round: 'closure', priorFindings, answers: contentAnswers(), groundingEvidence: groundingEvidence(), claims: closureClaims, criteria, thresholds: closureThresholds, closure: true }),
               claims: closureClaims,
               criteria,
+              thresholds: closureThresholds,
               cwd: ctx.scratchDir,
               effort: reviewerEffort,
               signal,
@@ -413,6 +418,7 @@ export async function runLoop(run, ctx) {
             reviewerEffort: lastReview.reviewerEffort ?? reviewerEffort ?? null,
             claimAssessments: lastReview.claimAssessments ?? [],
             coverageAssessments: lastReview.coverageAssessments ?? [],
+            thresholdAssessments: bindThresholdAssessments(closureThresholds, lastReview.thresholdAssessments),
           });
           for (const f of lastReview.findings) emit('finding', { round: 'closure', scope: 'closure', rev, ...f });
           stage('review', 'done', { scope: 'closure', rev, verdict: lastReview.verdict });

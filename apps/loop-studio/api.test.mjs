@@ -97,7 +97,7 @@ try {
     const sourceId = 'source-audit-fixture';
     const sourceDir = join(tmp, sourceId);
     mkdirSync(sourceDir, { recursive: true });
-    const deliverable = '## Notes\n\nA source-bound recommendation with no material numeric claims.\n';
+    const deliverable = '## Notes\n\nA source-bound recommendation with no material numeric claims.\n\n## Decision Rule\n\n- Proposed threshold (decision policy, not observed performance): proceed if retention exceeds 40%.\n';
     const sourcePack = buildEvidencePack({
       goal: 'Test one unchanged artifact under a second auditor configuration.',
       acceptanceContract: ACCEPTANCE,
@@ -165,6 +165,14 @@ try {
     assert.equal(report.experiment.outcome.status, 'completed', 'the scripted arm completed as an experiment outcome');
     assert.equal(report.experiment.outcome.effort_actual, 'scripted', 'requested high effort never becomes a simulated actual');
     assert.equal(report.experiment.outcome.confounded, true, 'requested real reviewer vs scripted actual is visible');
+
+    // The exempted threshold line survives the production replay derivation
+    // (server emit → deriveEvidence), bound to what it judged — and a scripted
+    // audit keeps that decision non-evidence in the sealed pack, like coverage.
+    const replayThreshold = (report.evidence.rounds ?? []).flatMap((r) => r.thresholdAssessments ?? []).find((t) => t.id === 'T1');
+    assert.ok(replayThreshold, 'the replay derivation carries the threshold decision, not only claims/coverage');
+    assert.match(replayThreshold.line, /Proposed threshold/, 'the carried decision is bound to the exempted line, not a bare ordinal');
+    assert.equal(report.evidencePack.session_log.some((line) => line.startsWith('audit replay threshold ')), false, 'a scripted replay never seals threshold decisions as evidence');
   });
 
   await check('parallel execution freezes knowledge once, runs every arm, and retains non-winning outcomes', async () => {

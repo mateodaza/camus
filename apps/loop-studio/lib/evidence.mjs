@@ -39,6 +39,14 @@ export function deriveEvidence(events) {
       decision: a.decision,
       evidence: a.evidence,
     })),
+    thresholdAssessments: (r.thresholdAssessments ?? []).map((a) => ({
+      id: a.id,
+      decision: a.decision,
+      evidence: a.evidence,
+      section: a.section ?? null,
+      line: a.line ?? null,
+      stats: Array.isArray(a.stats) ? a.stats : [],
+    })),
     findings: (r.findings ?? []).map((f) => ({
       severity: f.severity,
       priority: f.priority ?? null,

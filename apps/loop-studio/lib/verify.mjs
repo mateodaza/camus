@@ -3,10 +3,12 @@
 // No model is consulted — this is the stage that cannot be sweet-talked.
 
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const hashText = (text) => `sha256:${createHash('sha256').update(String(text), 'utf8').digest('hex')}`;
 
 const COMPLIANCE = JSON.parse(
   readFileSync(join(__dirname, '..', 'checks', 'compliance.json'), 'utf8'),
@@ -54,32 +56,129 @@ function extractSections(markdown) {
 // Sentences that carry a quantitative claim: numbers with %, $, x-multiples,
 // "million/billion", or 4+ digit figures. Citation = [n] / [Hn] marker or an
 // inline link inside the same sentence.
-export function findUnsourcedStats(markdown) {
+const STAT_RE =
+  /(\d+(\.\d+)?\s*%)|(\$\s?\d[\d,.]*)|(\b\d+(\.\d+)?x\b)|(\b\d[\d,.]*\s*(million|billion|bn|mm|m\b|k\b))|(\b\d{4,}\b)/gi;
+const CITE_RE = /\[(H?\d+)\]|\]\(https?:\/\//;
+const YEAR_RE = /^(19|20)\d{2}$/;
+const RULE_HEADING = /^(#{1,6})\s+(?:decision rules?|success criteria)\b/i;
+const ANY_HEADING = /^(#{1,6})\s+(.*)$/;
+// The proposed-threshold marker is EXACT: a hyphen-bullet line, the precise
+// phrase, the comma, and the colon — case-sensitive. Whitespace runs are the
+// only tolerance. An embedded, lowercase, comma-less, or bullet-less lookalike
+// is NOT a marker, so its numbers are audited like any other statistic.
+const THRESHOLD_MARKER = /^-\s+Proposed threshold\s+\(decision policy,\s+not observed performance\)\s*:/;
+const clip = (s) => (s.length > 180 ? `${s.slice(0, 177)}…` : s);
+const statTokens = (text) => [...text.matchAll(STAT_RE)].map((m) => m[0].trim()).filter((t) => !YEAR_RE.test(t));
+
+// Single pass over the body so the citation gate and the proposed-threshold
+// ledger can NEVER disagree about which lines were exempted: a line the gate
+// skips is exactly a line the ledger hands the auditor to judge.
+//
+// Proposed-threshold exemption. A numeric line bypasses the citation
+// requirement ONLY when BOTH hold: it sits inside a `## Decision Rule` /
+// `## Success Criteria` block AND it carries the EXACT marker. A proposed
+// decision policy is the author's own rule, not an observed statistic — it has
+// no source to cite — so an acceptance contract that asks for a measurable
+// decision rule stops fighting this gate. Both conditions are load-bearing: a
+// factual statistic in the section WITHOUT the marker still fails, and a marked
+// line OUTSIDE the section still fails. The block is BOUNDED — its heading until
+// the next heading at OR ABOVE the entry level — unlike terminal Sources, so a
+// mid-document Decision Rule can never exempt the sections after it, and a
+// nested qualifying sub-heading never shrinks the outer boundary. This gate does
+// not judge whether an exempt line is honest policy or a disguised statistic;
+// the threshold ledger forces the independent auditor to make that call.
+function scanStats(markdown) {
   const body = markdown
-    .split(/^#{1,3}\s+Sources\s*$/im)[0] // claims inside the Sources list are the sources
+    .split(/^#{1,3}\s+Sources\s*$/im)[0] // Sources is TERMINAL — keep the prefix
     .replace(/```[\s\S]*?```/g, ''); // ignore code blocks
 
-  const sentences = body
-    .split(/(?<=[.!?])\s+(?=[A-Z0-9])|\n+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  const statRe =
-    /(\d+(\.\d+)?\s*%)|(\$\s?\d[\d,.]*)|(\b\d+(\.\d+)?x\b)|(\b\d[\d,.]*\s*(million|billion|bn|mm|m\b|k\b))|(\b\d{4,}\b)/gi;
-  const citeRe = /\[(H?\d+)\]|\]\(https?:\/\//;
-  const yearRe = /^(19|20)\d{2}$/;
-
   const offenders = [];
-  for (const s of sentences) {
-    if (s.startsWith('#') || s.startsWith('>')) continue;
-    if (citeRe.test(s)) continue;
-    // Every numeric match counts; bare years are discarded individually so a
+  const thresholds = [];
+  let blockLevel = 0; // 0 = outside any block; else the ENTRY heading level
+  let section = null; // the heading text that opened the active block
+  for (const rawLine of body.split('\n')) {
+    const heading = rawLine.match(ANY_HEADING);
+    if (heading) {
+      const level = heading[1].length;
+      const qualifies = RULE_HEADING.test(rawLine);
+      if (blockLevel) {
+        // Only a heading at or above the entry level closes the block; a deeper
+        // heading stays nested and preserves the outer boundary.
+        if (level <= blockLevel) {
+          blockLevel = qualifies ? level : 0;
+          section = qualifies ? heading[2].trim() : null;
+        }
+      } else if (qualifies) {
+        blockLevel = level;
+        section = heading[2].trim();
+      }
+      continue; // headings never carry countable stats
+    }
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#') || line.startsWith('>')) continue;
+    if (blockLevel && THRESHOLD_MARKER.test(line)) {
+      // Exempt from the citation gate — but sealed into the ledger so the
+      // auditor must still label it policy vs disguised observed performance.
+      // Store the FULL line, never a preview: it is both the auditor's judgment
+      // context and the input to line_hash, so clipping it would truncate context
+      // AND let two long lines that share a 177-char prefix hash to one binding.
+      thresholds.push({ id: `T${thresholds.length + 1}`, section, line, stats: statTokens(line) });
+      continue;
+    }
+    // Split the line into sentences; bare years are discarded individually so a
     // leading "In 2024, …" can't exempt the real stat that follows it.
-    const stats = [...s.matchAll(statRe)].map((m) => m[0].trim()).filter((t) => !yearRe.test(t));
-    if (!stats.length) continue;
-    offenders.push(s.length > 180 ? s.slice(0, 177) + '…' : s);
+    for (const raw of line.split(/(?<=[.!?])\s+(?=[A-Z0-9])/)) {
+      const s = raw.trim();
+      if (!s || CITE_RE.test(s)) continue;
+      if (statTokens(s).length) offenders.push(clip(s));
+    }
   }
-  return offenders;
+  return { offenders, thresholds };
+}
+
+export function findUnsourcedStats(markdown) {
+  return scanStats(markdown).offenders;
+}
+
+// The deterministic proposed-threshold ledger: every line the stat gate exempted
+// (in-section AND exactly marked). The auditor must assess each one, so a
+// statistic wearing the marker to dodge citation cannot pass silently.
+export function extractThresholdLines(markdown) {
+  return scanStats(markdown).thresholds;
+}
+
+// Bind each auditor threshold decision back to the exact ledger line it judged.
+// The auditor returns only { id, decision, evidence }; joining it to the ledger
+// carries WHAT was exempted (section, line, stats) into the emitted event, so
+// the receipt records the line and not merely an ordinal + verdict. A decision
+// with no matching ledger entry keeps null fields rather than inventing one.
+export function bindThresholdAssessments(ledger = [], assessments = []) {
+  const byId = new Map((ledger ?? []).map((t) => [t.id, t]));
+  return (assessments ?? []).map((a) => {
+    const entry = byId.get(a.id) ?? null;
+    return {
+      id: a.id,
+      decision: a.decision,
+      evidence: a.evidence,
+      section: entry?.section ?? null,
+      line: entry?.line ?? null,
+      stats: entry?.stats ?? [],
+    };
+  });
+}
+
+// Deterministic custody hashes for a bound threshold assessment. thresholdLineHash
+// binds the receipt entry to the exact exempted line; thresholdEvidenceHash binds
+// the auditor's rationale. Shared by the normal and audit-replay seal paths so a
+// receipt can never bind T1 to two different lines.
+export function thresholdLineHash(a) {
+  return a && a.line != null
+    ? hashText(JSON.stringify({ section: a.section ?? null, line: a.line, stats: a.stats ?? [] }))
+    : null;
+}
+
+export function thresholdEvidenceHash(a) {
+  return a?.evidence ? hashText(a.evidence) : null;
 }
 
 export function findComplianceHits(markdown) {

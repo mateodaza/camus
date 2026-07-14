@@ -55,6 +55,7 @@ ${depthBrief(depth)}
 
 HARD RULES — a deterministic gate checks these mechanically and WILL bounce the draft:
 1. Every quantitative claim (%, $, multiples, big counts) must carry a [n] citation in the same sentence, resolving to a real URL under ## Sources.
+   Exception — a PROPOSED decision threshold is your own policy, not an observed statistic, so it has no source to cite. ONLY when the acceptance contract asks for a measurable decision rule AND no retrieved source establishes the number, put it in a "## Decision Rule" (or "## Success Criteria") section as a bullet carrying this EXACT marker: "- Proposed threshold (decision policy, not observed performance): proceed if <metric> exceeds <value>." Any figure you present as observed performance still needs its [n] citation — the marker never covers a factual claim.
 2. Only cite URLs you have actually loaded and that support the claim. Never invent or "remember" a URL.
 3. No promissory financial phrasing (guaranteed returns, risk-free, price multiples like "100x", buy calls). Describe mechanics, not price outcomes.
 4. Write like a person: plain sentences, no filler, no hype.${groundingBlock}${answersBlock}
@@ -73,7 +74,7 @@ Deliverable type: ${LANES[lane]?.label ?? 'Freeform'}. ${depthBrief(depth)}
 Reply with 4-6 terse bullet points: the angles you will investigate, the 2-3 source types you will lean on, and the single biggest risk of getting this wrong. Plain text bullets, nothing else.`;
 }
 
-export function reviewPrompt({ goal, acceptanceContract, lane, draft, round, priorFindings, answers, groundingEvidence, claims = [], criteria = [], closure = false, auditOnly = false }) {
+export function reviewPrompt({ goal, acceptanceContract, lane, draft, round, priorFindings, answers, groundingEvidence, claims = [], criteria = [], thresholds = [], closure = false, auditOnly = false }) {
   const prior = priorFindings?.length
     ? `\n\nFINDINGS YOU RAISED IN EARLIER ROUNDS (check whether they are actually resolved; re-raise with the SAME title if not):\n${priorFindings
         .map((f) => `- [${f.severity}] ${f.title}`)
@@ -100,6 +101,9 @@ export function reviewPrompt({ goal, acceptanceContract, lane, draft, round, pri
   const coverageLedger = criteria.length
     ? `\n\nACCEPTANCE COVERAGE TO ASSESS (deterministically extracted; assess every criterion exactly once):\n${criteria.map((c) => `- ${c.id} ${c.text}`).join('\n')}\nReturn met only when the exact deliverable provides concrete evidence that the criterion is satisfied. Return unmet when it does not; raise a high/medium finding and verdict revise. Return unclear when the evidence is insufficient; a clean verdict must keep that uncertainty as a low finding. Do not rewrite, merge, or invent criteria.`
     : '\n\nACCEPTANCE COVERAGE TO ASSESS: no criteria. Return an empty coverage_assessments array.';
+  const thresholdLedger = thresholds.length
+    ? `\n\nPROPOSED-THRESHOLD LEDGER TO ASSESS (deterministically extracted; assess every one exactly once). Each line below was EXEMPTED from the citation gate because it is marked as proposed decision policy — a number the goal owner is CHOOSING, not one they measured:\n${thresholds.map((t) => `- ${t.id} [under "${t.section ?? 'unknown section'}"] ${t.line}${t.stats.length ? `  (numbers: ${t.stats.join(', ')})` : ''}`).join('\n')}\nReturn policy ONLY if the line genuinely sets a forward-looking decision rule. Return observed if ANY number on it is presented as real, achieved, or measured performance — that is a factual statistic wearing the marker to dodge citation, i.e. laundering. An observed threshold must raise a high/medium finding that names it and verdict revise; it can never ride a clean verdict. Do not rewrite or merge these lines.`
+    : '\n\nPROPOSED-THRESHOLD LEDGER TO ASSESS: none. Return an empty threshold_assessments array.';
 
   const auditFrame = auditOnly
     ? 'This is an audit-only replay over an unchanged sealed artifact. Judge the entire exact deliverable fresh; do not propose a rewrite as if you were its maker.'
@@ -123,7 +127,7 @@ Attack it on: (a) claims that are unsupported, overstated, or likely hallucinate
 
 Do NOT nitpick style trivia. Raise only findings that change whether the client should trust or act on this.
 
-If a finding hinges on a decision only the goal owner can make (audience, scope, positioning, risk appetite), do NOT guess — put it in "questions_for_human". Never ask about a decision listed as already made.${runtimeGrounding}${claimLedger}${coverageLedger}${prior}${decided}
+If a finding hinges on a decision only the goal owner can make (audience, scope, positioning, risk appetite), do NOT guess — put it in "questions_for_human". Never ask about a decision listed as already made.${runtimeGrounding}${claimLedger}${coverageLedger}${thresholdLedger}${prior}${decided}
 
 Respond with STRICT JSON only (no markdown fences, no commentary):
 {
@@ -137,9 +141,12 @@ Respond with STRICT JSON only (no markdown fences, no commentary):
   ],
   "coverage_assessments": [
     { "criterion_id": "C1", "decision": "met" | "unmet" | "unclear", "evidence": "<concrete proof from the deliverable, or why coverage remains unclear>" }
+  ],
+  "threshold_assessments": [
+    { "id": "T1", "decision": "policy" | "observed", "evidence": "<why it is a genuine proposed policy, or which number it presents as observed performance>" }
   ]
 }
-"clean" requires zero high or medium findings. Both assessment arrays must cover their supplied ledgers exactly.`;
+"clean" requires zero high or medium findings. All three assessment arrays must cover their supplied ledgers exactly.`;
 }
 
 export function fixPrompt({ goal, acceptanceContract, lane, draft, findings, verifyFailures, answers, viaClaude }) {
@@ -154,7 +161,7 @@ export function fixPrompt({ goal, acceptanceContract, lane, draft, findings, ver
   const verifyBlock = verifyFailures?.length
     ? `\nDETERMINISTIC GATE FAILURES — these are mechanical, not opinions; the exact same check reruns after you revise:\n${verifyFailures
         .map((c) => `- ${c.label}: ${c.detail}`)
-        .join('\n')}`
+        .join('\n')}\nIf a flagged number is actually a PROPOSED decision threshold the contract asks for — not observed performance — do not hunt for a source or soften it away. Move it into a "## Decision Rule" (or "## Success Criteria") section as a bullet with the EXACT marker "- Proposed threshold (decision policy, not observed performance): …". That marker clears the stat check only inside that section; a figure describing real, observed performance still needs a [n] citation.`
     : '';
   const answersBlock = answers?.length
     ? `\nHUMAN DECISIONS (binding):\n${answers.map((a) => `Q: ${a.question}\nA: ${a.answer}`).join('\n')}`

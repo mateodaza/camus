@@ -3,7 +3,7 @@
 // Network-free (skipNetwork) so it runs anywhere, fast.
 
 import assert from 'node:assert/strict';
-import { runVerify, findUnsourcedStats, findComplianceHits, extractUrls } from './lib/verify.mjs';
+import { runVerify, findUnsourcedStats, findComplianceHits, extractUrls, extractThresholdLines } from './lib/verify.mjs';
 
 const BAD = `## Summary
 Community programs produce guaranteed returns for every launch. Apps with active communities retain 61% more of their monthly actives.
@@ -38,6 +38,232 @@ Community-led growth compounds where paid cannot. Retention differs by cohort or
   assert.equal(findUnsourcedStats('In 2024, retention rose 61% across cohorts.').length, 1, 'year-first sentence still flagged');
   assert.equal(findUnsourcedStats('The program launched in 2024.').length, 0, 'bare year alone is not a claim');
   assert.equal(findUnsourcedStats('In 2024, retention rose 61% across cohorts [1].').length, 0, 'cited year-first stat passes');
+}
+
+// --- unit: proposed-threshold exemption (section AND marker, both required) --
+// A proposed decision policy has no source to cite, so an acceptance contract
+// that asks for a measurable decision rule can state one WITHOUT tripping the
+// laundering gate — but only under two conjoined conditions, so the exemption
+// never widens into "any number inside a heading is fine."
+{
+  const MARKER = '- Proposed threshold (decision policy, not observed performance): proceed if retention exceeds 40%.';
+
+  // [1] Unsourced factual statistic OUTSIDE any decision-rule section fails.
+  assert.equal(
+    findUnsourcedStats('## Summary\nRetention improved 61% after the change.\n').length, 1,
+    'a bare statistic outside the section still fails',
+  );
+
+  // [2] Unsourced factual statistic INSIDE the section but WITHOUT the marker fails.
+  const inSectionNoMarker = findUnsourcedStats('## Decision Rule\nRetention improved 61% in the pilot cohort.\n');
+  assert.equal(inSectionNoMarker.length, 1, 'the section is not a blanket exemption');
+  assert.ok(inSectionNoMarker[0].includes('61%'), 'the unmarked in-section stat is the offender');
+
+  // [3] Marked threshold OUTSIDE a decision-rule section fails (marker alone is not enough).
+  const markedOutside = findUnsourcedStats(`## Summary\n${MARKER}\n`);
+  assert.equal(markedOutside.length, 1, 'the marker outside the section does not exempt');
+  assert.ok(markedOutside[0].includes('40%'), 'the misplaced threshold is the offender');
+
+  // [4] Marked threshold INSIDE the section passes.
+  assert.equal(findUnsourcedStats(`## Decision Rule\n${MARKER}\n`).length, 0, 'section + marker exempts the threshold');
+  assert.equal(findUnsourcedStats(`### Success Criteria\n${MARKER}\n`).length, 0, 'Success Criteria is an equivalent section at any heading level');
+
+  // [4b] The block is BOUNDED, not terminal: a mid-document Decision Rule must
+  // NOT exempt statistics in the sections that follow it (the reason we do not
+  // copy the terminal Sources split).
+  const bounded = findUnsourcedStats(
+    `## Decision Rule\n${MARKER}\n\n## Implications\nRetention improved 61% in the observed cohort.\n`,
+  );
+  assert.equal(bounded.length, 1, 'a later section is still checked after the block closes');
+  assert.ok(bounded[0].includes('61%') && !bounded[0].includes('40%'), 'the threshold is exempt, the later factual stat is not');
+
+  // [5] Existing cited statistics and the terminal Sources behavior are unchanged.
+  assert.equal(findUnsourcedStats(GOOD).length, 0, 'cited stats still pass');
+  assert.equal(
+    findUnsourcedStats('## Summary\nClean prose [1].\n\n## Sources\n1. A report showing 61% retention — https://example.com\n').length, 0,
+    'stats inside the terminal Sources list are still not flagged',
+  );
+
+  // [6] Every stat shape (%, currency, multiplier, large number) behaves the
+  // same way through the exemption: exempt when marked-in-section, flagged when not.
+  const mixed = 'ship when CAC falls below $50, LTV to CAC exceeds 3x, and signups pass 10000';
+  const mixedMarker = `- Proposed threshold (decision policy, not observed performance): ${mixed}.`;
+  assert.equal(findUnsourcedStats(`## Success Criteria\n${mixedMarker}\n`).length, 0, 'currency, multiplier, and large-number thresholds all exempt when marked in-section');
+  assert.equal(findUnsourcedStats(`## Success Criteria\nObserved ${mixed}.\n`).length, 1, 'the same shapes still fail when stated as observed facts without the marker');
+  assert.equal(findUnsourcedStats(`## Notes\n${mixedMarker}\n`).length, 1, 'and still fail when marked but outside the section');
+}
+
+// --- unit: a nested qualifying sub-heading must not shrink the outer block ----
+// Under `## Decision Rule` (H2), a nested `### Success Criteria` (H3) is still
+// inside the H2 region, so a later H3 does NOT close the outer block. The old
+// single-level tracker mis-closed here and false-flagged the second threshold.
+{
+  const nested = `## Decision Rule
+### Success Criteria
+- Proposed threshold (decision policy, not observed performance): proceed if retention exceeds 40%.
+### Rollback
+- Proposed threshold (decision policy, not observed performance): revert if CAC exceeds $50.
+`;
+  assert.equal(findUnsourcedStats(nested).length, 0, 'both thresholds stay exempt inside the outer H2 block');
+  // And the outer boundary still closes at an H2, not before it.
+  const closesAtH2 = `${nested}## Implications\nObserved retention was 61%.\n`;
+  const offenders = findUnsourcedStats(closesAtH2);
+  assert.equal(offenders.length, 1, 'the section after the H2 boundary is checked again');
+  assert.ok(offenders[0].includes('61%'), 'the later observed stat is the only offender');
+}
+
+// --- unit: the marker is EXACT — lookalikes are NOT exempt -------------------
+// Each variant sits inside a real Decision Rule block, so ONLY the marker's
+// exactness stops the exemption. Every one must still be flagged.
+{
+  const inRule = (line) => findUnsourcedStats(`## Decision Rule\n${line}\n`);
+  assert.equal(inRule('- Proposed threshold (decision policy, not observed performance): retention exceeds 40%.').length, 0, 'the exact canonical marker is exempt');
+  assert.equal(inRule('We note a Proposed threshold (decision policy, not observed performance): retention 40%.').length, 1, 'embedded mid-line marker is not exempt');
+  assert.equal(inRule('- proposed threshold (decision policy, not observed performance): retention 40%.').length, 1, 'lowercase marker is not exempt');
+  assert.equal(inRule('- Proposed threshold (decision policy not observed performance): retention 40%.').length, 1, 'comma-less marker is not exempt');
+  assert.equal(inRule('Proposed threshold (decision policy, not observed performance): retention 40%.').length, 1, 'bullet-less marker is not exempt');
+}
+
+// --- unit: the threshold ledger is exactly what the gate exempted -----------
+{
+  const doc = `## Summary
+Observed retention was 61%.
+
+## Decision Rule
+- Proposed threshold (decision policy, not observed performance): proceed if retention exceeds 40%.
+### Rollback
+- Proposed threshold (decision policy, not observed performance): revert if CAC exceeds $50 and signups fall below 10000.
+
+## Sources
+1. A report — https://example.com
+`;
+  const ledger = extractThresholdLines(doc);
+  assert.equal(ledger.length, 2, 'one ledger entry per exempted marker line');
+  assert.deepEqual(ledger.map((t) => t.id), ['T1', 'T2'], 'entries are stably numbered');
+  // section names the exemption-granting block root, not a nested sub-heading:
+  // both lines are exempt because they live under the same `## Decision Rule`.
+  assert.equal(ledger[0].section, 'Decision Rule', 'the entry records the block that granted the exemption');
+  assert.equal(ledger[1].section, 'Decision Rule', 'a nested `### Rollback` does not reassign the block root');
+  assert.ok(ledger[0].stats.includes('40%'), 'the exempted numbers are handed to the auditor');
+  assert.deepEqual(ledger[1].stats, ['$50', '10000'], 'currency and large-number thresholds are captured (years excluded)');
+  // An observed stat outside any marker never enters the ledger — it is an offender instead.
+  assert.equal(findUnsourcedStats(doc).some((s) => s.includes('61%')), true, 'the unmarked observed stat is still a gate offender, not a ledger entry');
+
+  // The auditor must actually SEE the exempted lines it is required to judge.
+  const { reviewPrompt: rp } = await import('./lib/prompts.mjs');
+  const withLedger = rp({ goal: 'g', acceptanceContract: 'State thresholds honestly.', lane: 'research_memo', draft: doc, round: 1, priorFindings: [], answers: [], thresholds: ledger });
+  assert.match(withLedger, /PROPOSED-THRESHOLD LEDGER TO ASSESS/, 'the reviewer is handed the threshold ledger');
+  assert.match(withLedger, /T1 \[under "Decision Rule"\]/, 'each exempted line is enumerated for assessment');
+  assert.match(withLedger, /"threshold_assessments"/, 'the required output shape includes threshold_assessments');
+  const noLedger = rp({ goal: 'g', acceptanceContract: 'c', lane: 'research_memo', draft: 'no thresholds here', round: 1, priorFindings: [], answers: [], thresholds: [] });
+  assert.match(noLedger, /PROPOSED-THRESHOLD LEDGER TO ASSESS: none\. Return an empty threshold_assessments array\./, 'an empty ledger still instructs an empty array, never silence');
+
+  // Collision guard: two long marker lines that share a 177-char prefix AND the
+  // same numeric tokens but diverge in meaning afterward must NOT hash alike. A
+  // clipped preview would collapse them; the full stored line keeps them distinct.
+  const { thresholdLineHash } = await import('./lib/verify.mjs');
+  const shared = `- Proposed threshold (decision policy, not observed performance): proceed if retention exceeds 40% after ${'x'.repeat(150)}`;
+  const [entryShip] = extractThresholdLines(`## Decision Rule\n${shared} and we ship the launch.\n`);
+  const [entryHalt] = extractThresholdLines(`## Decision Rule\n${shared} and we halt the launch.\n`);
+  assert.ok(entryShip.line.length > 180, 'the ledger stores the full line, not a 180-char preview');
+  assert.notEqual(entryShip.line, entryHalt.line, 'lines sharing a 177-char prefix are stored distinctly (opposite decisions)');
+  assert.deepEqual(entryShip.stats, entryHalt.stats, 'their numeric tokens are identical — stats alone cannot disambiguate');
+  assert.notEqual(thresholdLineHash(entryShip), thresholdLineHash(entryHalt), 'the binding hash distinguishes them by full text, not a shared prefix');
+}
+
+// --- integration: the marker line reaches the auditor through the whole loop --
+// The P1 was a wiring gap. This drives runLoop end to end with a draft that
+// carries a marker line and a codex adapter that delegates to the REAL
+// normalizeReview: the engine must extract the ledger, hand it to the adapter,
+// and the adapter's fail-closed coverage must be satisfied for the run to green.
+{
+  const { runLoop } = await import('./lib/engine.mjs');
+  const { normalizeReview } = await import('./lib/adapters/codex.mjs');
+  const DRAFT = '## Decision Rule\n\n- Proposed threshold (decision policy, not observed performance): proceed if retention exceeds 40%.\n';
+  const previousOffline = process.env.MOCK_OFFLINE;
+  process.env.MOCK_OFFLINE = '1';
+
+  // A codex adapter that assesses every extracted threshold as honest policy →
+  // the run greens only because extraction and coverage actually connect.
+  const events = [];
+  let sawThresholds = null;
+  const run = {
+    id: 'threshold-wire', goal: 'g', acceptanceContract: 'State any decision rule honestly.',
+    lane: 'freeform', depth: 'quick', ground: false,
+    models: { maker: { model: 'm' }, reviewer: { model: 'r', effort: 'low' }, loop: { roundCap: 1 } },
+  };
+  let claudeCall = 0;
+  const result = await runLoop(run, {
+    emit: (type, data) => events.push({ type, ...data }),
+    waitForAnswer: async () => 'Stop the run',
+    adapters: {
+      claude: async () => (++claudeCall === 1 ? { ok: true, text: '- plan', costUsd: 0 } : { ok: true, text: DRAFT, costUsd: 0 }),
+      codex: async ({ claims, criteria, thresholds }) => {
+        sawThresholds = thresholds;
+        return normalizeReview(JSON.stringify({
+          verdict: 'clean', findings: [], questions_for_human: [],
+          claim_assessments: claims.map((c) => ({ marker: c.marker, decision: 'supported', evidence: 'ok' })),
+          coverage_assessments: criteria.map((c) => ({ criterion_id: c.id, decision: 'met', evidence: 'ok' })),
+          threshold_assessments: thresholds.map((t) => ({ id: t.id, decision: 'policy', evidence: 'a forward-looking rule, not a measurement' })),
+        }), 0, claims, criteria, thresholds);
+      },
+    },
+    hivemind: { searchKnowledge: async () => null, hivemindStatus: () => ({ connected: false, mode: 'stub' }), publishArtifact: async () => null },
+    signal: new AbortController().signal, scratchDir: '/tmp', receiptsDir: '/tmp',
+  });
+  assert.ok(result.status === 'done' || result.status === 'done_with_findings', 'the loop completes with the threshold assessed');
+  assert.equal(sawThresholds?.length, 1, 'the engine extracted the marker line and passed it to the auditor');
+  assert.equal(sawThresholds[0].id, 'T1', 'the ledger id survives the hop into the adapter');
+  const review = events.find((e) => e.type === 'review');
+  assert.equal(review.thresholdAssessments[0].decision, 'policy', 'the sealed review event records the threshold verdict');
+  assert.equal(review.thresholdAssessments[0].id, 'T1', 'the decision is bound to the ledger id');
+  assert.match(review.thresholdAssessments[0].line, /Proposed threshold/, 'the engine binds the decision to the exempted line, not just an ordinal');
+  assert.deepEqual(review.thresholdAssessments[0].stats, ['40%'], 'the bound entry carries the exempted numbers');
+
+  if (previousOffline === undefined) delete process.env.MOCK_OFFLINE; else process.env.MOCK_OFFLINE = previousOffline;
+}
+
+// --- production seal path: derivation + pack must not drop threshold decisions
+// The earlier receipt-parity test hand-built evidence.rounds. This drives the
+// REAL deriveEvidence (event → round) and buildEvidencePack (round → receipt),
+// the exact path the server runs, so a dropped mapping cannot hide behind a
+// hand-assembled fixture.
+{
+  const { deriveEvidence } = await import('./lib/evidence.mjs');
+  const { bindThresholdAssessments } = await import('./lib/verify.mjs');
+  const { buildEvidencePack } = await import('./lib/evidence-pack.mjs');
+
+  // bindThresholdAssessments unit: the auditor's id/decision joins the ledger line.
+  const ledger = [{ id: 'T1', section: 'Decision Rule', line: '- Proposed threshold (…): 40%.', stats: ['40%'] }];
+  const bound = bindThresholdAssessments(ledger, [{ id: 'T1', decision: 'policy', evidence: 'a rule' }]);
+  assert.deepEqual(bound, [{ id: 'T1', decision: 'policy', evidence: 'a rule', section: 'Decision Rule', line: '- Proposed threshold (…): 40%.', stats: ['40%'] }], 'a decision is bound back to the exact ledger line');
+  assert.equal(bindThresholdAssessments([], [{ id: 'T9', decision: 'observed', evidence: 'x' }])[0].line, null, 'a decision with no ledger entry keeps null fields, never a fabricated line');
+
+  const boundEvent = bindThresholdAssessments(ledger, [{ id: 'T1', decision: 'policy', evidence: 'a forward-looking rule' }]);
+  const events = [
+    { type: 'review', round: 1, scope: 'round', rev: 1, verdict: 'APPROVED', reviewerModel: 'gpt-5.4', reviewerEffort: 'low', findings: [], claimAssessments: [], coverageAssessments: [{ criterion_id: 'C1', decision: 'met', evidence: 'The memo states its rule as explicit policy.' }], thresholdAssessments: boundEvent },
+    { type: 'revision', rev: 1, markdown: '## Decision Rule\n\n- Proposed threshold (…): 40%.\n' },
+    { type: 'verify_result', pass: true, checks: [{ id: 'stats', status: 'pass', detail: 'ok' }] },
+  ];
+  const derived = deriveEvidence(events);
+  // The exact P1 regression: the derived round must carry the decision AND its binding.
+  assert.equal(derived.rounds[0].thresholdAssessments.length, 1, 'deriveEvidence carries threshold assessments off the review event');
+  assert.deepEqual(derived.rounds[0].thresholdAssessments[0], { id: 'T1', decision: 'policy', evidence: 'a forward-looking rule', section: 'Decision Rule', line: '- Proposed threshold (…): 40%.', stats: ['40%'] }, 'the full binding survives derivation');
+
+  const pack = buildEvidencePack({
+    goal: 'Choose a launch motion.',
+    acceptanceContract: 'State any decision rule as explicit policy.',
+    lane: 'freeform',
+    deliverable: '## Decision Rule\n\n- Proposed threshold (…): 40%.\n',
+    evidence: derived,
+    statuses: { schemaVersion: 1, execution: 'completed', verification: 'passed', audit: 'independent_clean', publication: 'not_published' },
+    models: { maker: { model: 'sonnet' }, reviewer: { model: 'gpt-5.4', effort: 'low' } },
+    simulated: false,
+    createdAt: 7,
+  });
+  const line = pack.session_log.find((l) => l.startsWith('threshold assessment '));
+  assert.ok(line, 'a real (non-simulated) run seals the threshold decision through the production path');
+  assert.match(line, /threshold assessment T1: policy; line_hash=sha256:[0-9a-f]{64}; evidence_hash=sha256:[0-9a-f]{64}/, 'the sealed entry binds the line and the rationale');
 }
 
 // --- unit: compliance -------------------------------------------------------
@@ -333,7 +559,7 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   const { normalizeReview, usageFromCodexEvent } = await import('./lib/adapters/codex.mjs');
   const infra = (raw, code, why) => assert.equal(normalizeReview(raw, code).ran, false, why);
   const rawReview = (overrides = {}) => JSON.stringify({
-    verdict: 'clean', findings: [], questions_for_human: [], claim_assessments: [], coverage_assessments: [], ...overrides,
+    verdict: 'clean', findings: [], questions_for_human: [], claim_assessments: [], coverage_assessments: [], threshold_assessments: [], ...overrides,
   });
 
   infra('', 0, 'empty output is infra');
@@ -361,7 +587,7 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   assert.equal(clean.nonblocking.length, 1, 'low is nonblocking');
   assert.deepEqual(clean.questions, ['real?'], 'blank questions filtered');
 
-  const fenced = normalizeReview('```json\n{"verdict":"revise","findings":[{"severity":"medium","title":"t","detail":"d","suggestion":"s"}],"questions_for_human":[],"claim_assessments":[],"coverage_assessments":[]}\n```', 0);
+  const fenced = normalizeReview('```json\n{"verdict":"revise","findings":[{"severity":"medium","title":"t","detail":"d","suggestion":"s"}],"questions_for_human":[],"claim_assessments":[],"coverage_assessments":[],"threshold_assessments":[]}\n```', 0);
   assert.equal(fenced.ran, true, 'fenced JSON still parses');
   assert.equal(fenced.blocking.length, 1);
 
@@ -402,6 +628,26 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
     coverage_assessments: [{ criterion_id: 'C1', decision: 'unclear', evidence: 'The deliverable does not provide enough evidence.' }],
   }), 0, [], criteria);
   assert.equal(unclearCoverage.ran, true, 'unclear criterion survives only with its caveat');
+
+  // Proposed-threshold ledger: the auditor MUST assess every exempted line, and
+  // a line assessed `observed` (a statistic wearing the marker) can never pass.
+  const thresholds = [{ id: 'T1', section: 'Decision Rule', line: '- Proposed threshold (…): proceed if retention exceeds 40%.', stats: ['40%'] }];
+  const policyClean = normalizeReview(rawReview({
+    threshold_assessments: [{ id: 'T1', decision: 'policy', evidence: 'A forward-looking rule the owner is setting, not a measurement.' }],
+  }), 0, [], [], thresholds);
+  assert.equal(policyClean.ran, true, 'a genuine proposed policy passes');
+  assert.equal(policyClean.thresholdAssessments[0].decision, 'policy', 'the assessment is carried through');
+  assert.equal(normalizeReview(rawReview(), 0, [], [], thresholds).ran, false, 'missing threshold assessment coverage fails closed');
+  assert.equal(normalizeReview(rawReview({ threshold_assessments: [{ id: 'T2', decision: 'policy', evidence: 'wrong id' }] }), 0, [], [], thresholds).ran, false, 'extra/wrong threshold ids fail closed');
+  assert.equal(normalizeReview(rawReview({ threshold_assessments: [{ id: 'T1', decision: 'observed', evidence: '61% is a measured baseline, not a policy.' }] }), 0, [], [], thresholds).ran, false, 'an observed threshold cannot wear a clean verdict');
+  const laundered = normalizeReview(rawReview({
+    verdict: 'revise',
+    findings: [{ severity: 'high', title: 'Statistic disguised as policy', detail: 'The marker line states a measured 61%, not a proposed rule.', suggestion: 'Cite it or move it to findings.' }],
+    threshold_assessments: [{ id: 'T1', decision: 'observed', evidence: 'The number is presented as achieved performance.' }],
+  }), 0, [], [], thresholds);
+  assert.equal(laundered.ran, true, 'an observed threshold is valid only as a blocking revise verdict');
+  assert.equal(normalizeReview(rawReview({ threshold_assessments: [{ id: 'T1', decision: 'observed', evidence: 'measured' }, { id: 'T1', decision: 'policy', evidence: 'dup' }] }), 0, [], [], thresholds).ran, false, 'duplicate threshold assessments fail closed');
+  assert.equal(normalizeReview(rawReview({ threshold_assessments: [{ id: 'T1', decision: 'maybe', evidence: 'x' }] }), 0, [], [], thresholds).ran, false, 'an unknown threshold decision fails closed');
 }
 
 // --- claim ledger: citations become sealed candidates, not automatic proof --
@@ -465,6 +711,7 @@ Members value practical progress over content volume [H1].
       questions,
       claimAssessments: [],
       coverageAssessments: [],
+      thresholdAssessments: [],
     });
     const ctx = {
       emit: (type, data) => events.push({ type, ...data }),
@@ -1319,6 +1566,32 @@ Members asked for practical milestones [H1].
   assert.equal(changedAssessment.artifact_id, cited.artifact_id, 'changing the auditor judgment does not pretend the artifact changed');
   assert.notEqual(changedAssessment.receipt_id, cited.receipt_id, 'changing the claim judgment mints a new receipt');
 
+  // Threshold decisions seal into the receipt exactly like claim/coverage ones:
+  // a laundering catch (policy → observed) is a judgment change, so it mints a
+  // new receipt without pretending the immutable artifact changed. The bound
+  // assessment carries the line it judged so the receipt records WHAT T1 refers to.
+  const boundThreshold = (decision) => [{ id: 'T1', decision, evidence: `${decision} rationale`, section: 'Decision Rule', line: '- Proposed threshold (…): proceed if retention exceeds 40%.', stats: ['40%'] }];
+  const thresholdBase = {
+    ...citedBase,
+    evidence: { ...citedBase.evidence, rounds: [{ ...citedBase.evidence.rounds[0], thresholdAssessments: boundThreshold('policy') }] },
+  };
+  const withThreshold = buildEvidencePack(thresholdBase);
+  const thresholdLine = withThreshold.session_log.find((line) => line.startsWith('threshold assessment '));
+  assert.ok(thresholdLine, 'threshold decisions seal into the receipt');
+  assert.match(thresholdLine, /threshold assessment T1: policy; line_hash=sha256:[0-9a-f]{64}; evidence_hash=sha256:[0-9a-f]{64}/, 'the entry binds the exempted line AND the rationale by hash');
+  const laundered = buildEvidencePack({
+    ...thresholdBase,
+    evidence: { ...thresholdBase.evidence, rounds: [{ ...thresholdBase.evidence.rounds[0], thresholdAssessments: boundThreshold('observed') }] },
+  });
+  assert.equal(laundered.artifact_id, withThreshold.artifact_id, 'a threshold verdict change does not pretend the artifact changed');
+  assert.notEqual(laundered.receipt_id, withThreshold.receipt_id, 'changing the threshold judgment mints a new receipt');
+  // Same decision, different exempted line → different receipt: the binding is real.
+  const otherLine = buildEvidencePack({
+    ...thresholdBase,
+    evidence: { ...thresholdBase.evidence, rounds: [{ ...thresholdBase.evidence.rounds[0], thresholdAssessments: [{ ...boundThreshold('policy')[0], line: '- Proposed threshold (…): proceed if CAC falls below $50.', stats: ['$50'] }] }] },
+  });
+  assert.notEqual(otherLine.receipt_id, withThreshold.receipt_id, 'binding a policy verdict to a different line mints a different receipt');
+
   const citedRehearsal = buildEvidencePack({ ...citedBase, simulated: true, statuses: { ...citedBase.statuses, audit: 'not_run' } });
   assert.equal(citedRehearsal.artifact.claims.every((c) => c.decision === 'unchecked'), true, 'scripted rehearsal assessments never become evidence');
   assert.equal(citedRehearsal.artifact.contract_coverage.every((c) => c.decision === 'unclear'), true, 'scripted rehearsal coverage never becomes evidence');
@@ -1383,6 +1656,7 @@ Members asked for practical milestones [H1].
     reviewerEffort: 'xhigh',
     claimAssessments: [],
     coverageAssessments: [{ criterion_id: 'C1', decision: 'met', evidence: 'The exact memo satisfies the criterion.' }],
+    thresholdAssessments: [{ id: 'T1', decision: 'policy', evidence: 'A forward-looking rule, not a measurement.', section: 'Decision Rule', line: '- Proposed threshold (…): 40%.', stats: ['40%'] }],
     usage: { input_tokens: 900, cached_input_tokens: 300, output_tokens: 120 },
     durationMs: 4200,
   };
@@ -1400,6 +1674,7 @@ Members asked for practical milestones [H1].
   assert.equal(replayPack.pairing.auditor.actual, 'openai:gpt-5.6-sol', 'the actual pinned replay reviewer survives');
   assert.equal(replayPack.economics.find((item) => item.role === 'auditor').effort, null, 'requested effort is not promoted into an actual when the runtime does not report one');
   assert.ok(replayPack.session_log.includes(`audit replay experiment: ${experiment.experiment_id}`), 'the receipt binds the frozen experiment manifest');
+  assert.ok(replayPack.session_log.some((line) => /^audit replay threshold T1: policy; line_hash=sha256:[0-9a-f]{64}; evidence_hash=sha256:[0-9a-f]{64}$/.test(line)), 'the replay receipt seals the threshold decision bound to its line');
 
   const finalExperiment = finalizeAuditReplayExperiment(experiment, { pack: replayPack, review: replayReview });
   assert.equal(validateExperimentRecord(finalExperiment).ok, true, 'the completed arm validates');
@@ -1414,6 +1689,7 @@ Members asked for practical milestones [H1].
   assert.equal(replayRehearsal.artifact_id, pack.artifact_id, 'rehearsal re-audit still preserves the artifact');
   assert.equal(replayRehearsal.statuses.audit, 'not_run', 'scripted replay never earns audit standing');
   assert.equal(replayRehearsal.artifact.contract_coverage.every((criterion) => criterion.decision === 'unclear'), true, 'scripted replay coverage stays unclear');
+  assert.equal(replayRehearsal.session_log.some((line) => line.startsWith('audit replay threshold ')), false, 'scripted replay never seals a threshold decision as evidence');
 
   const failedReview = { ran: false, error: 'model disappeared', verdict: 'ERROR', findings: [], questions: [], claimAssessments: [], coverageAssessments: [], durationMs: 50, usage: null };
   const failedPack = buildAuditReplayPack({ sourcePack: pack, review: failedReview, reviewerModel: 'gpt-5.6-sol', effort: 'xhigh', experimentId: experiment.experiment_id, createdAt: 203 });
