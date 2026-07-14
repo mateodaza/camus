@@ -485,6 +485,7 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
     gateArgsForRun,
     gateIgniterCliArgs,
     gateSupportsStudio,
+    claudeAuthFailureNote,
     reviewEventFromGateReceipt,
     verifyEventFromGateReport,
   } = await import('./lib/code-lane.mjs');
@@ -544,6 +545,19 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   assert.equal(gateSupportsStudio({ workflow: 'const STANDALONE_ID_SALT = x', worktreeGate: 'create|ensure|attach|resolve' }), true, 'new installed gate advertises both custody capabilities');
   assert.equal(gateSupportsStudio({ workflow: 'const ID_SALT = x', worktreeGate: 'create|attach|resolve' }), false, 'older installed gate is refused instead of silently ignoring identitySalt');
 
+  // Live-fire regression (2026-07-13): Claude's local auth status said logged
+  // in while inference returned 401. Custody correctly refused the absent
+  // Workflow call, but its generic message hid the only useful repair.
+  const retry401 = claudeAuthFailureNote({ type: 'system', subtype: 'api_retry', error_status: 401, error: 'authentication_failed' });
+  assert.match(retry401, /claude auth login/, 'a streamed 401 becomes an actionable reauthentication instruction');
+  assert.equal(
+    claudeAuthFailureNote({ type: 'result', api_error_status: 401, result: 'Invalid authentication credentials' }),
+    retry401,
+    'the terminal 401 produces the same stable user-facing diagnosis',
+  );
+  assert.equal(claudeAuthFailureNote({ type: 'system', subtype: 'api_retry', error_status: 429, error: 'rate_limited' }), null, 'non-auth failures still go through normal custody/error handling');
+  assert.equal(claudeAuthFailureNote({ type: 'result', result: 'done' }), null, 'a normal result is never mislabeled as auth failure');
+
   // Live-fire regression (2026-07-13): gate reviews are envelopes. Reading
   // only root fields made a clean audit look like an unspecified revision and
   // let report.json claim completeness without carrying the verdict.
@@ -582,6 +596,7 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
 // --- build lane: the outer igniter cannot fork or mutate custody ------------
 {
   const { createGateCustodyGuard } = await import('./lib/gate-custody.mjs');
+  const { gateProcessClose } = await import('./lib/code-lane.mjs');
   const expected = { task: 't', targetPath: '/tmp/repo', policy: 'ask_on_ambiguity', roundCap: 3, identitySalt: 'studio-run-1' };
   const tool = (name, input) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', name, input }] } });
 
@@ -610,6 +625,33 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   const escaped = createGateCustodyGuard(expected);
   assert.match(escaped.inspect(tool('Bash', { command: 'git status' })), /non-Workflow/, 'the igniter cannot inspect or repair the repo itself');
   assert.match(createGateCustodyGuard(expected).finish(), /without one fresh/, 'prose without a workflow never becomes a gate result');
+
+  const authBeforeWorkflow = gateProcessClose({
+    code: 0,
+    authFailureNote: 'reauthenticate',
+    custody: createGateCustodyGuard(expected),
+  });
+  assert.deepEqual(authBeforeWorkflow, { exitCode: -6, custodyError: null }, 'pre-workflow auth failure keeps its actionable diagnosis instead of becoming a custody symptom');
+
+  const ordinaryNoWorkflow = gateProcessClose({ code: 0, authFailureNote: null, custody: createGateCustodyGuard(expected) });
+  assert.equal(ordinaryNoWorkflow.exitCode, -5, 'ordinary prose/no-tool output remains a fail-closed custody error');
+  assert.match(ordinaryNoWorkflow.custodyError, /without one fresh/, 'ordinary no-tool output still names the custody breach');
+
+  const authenticatedWorkflow = createGateCustodyGuard(expected);
+  authenticatedWorkflow.inspect(tool('Workflow', { name: 'camus-loop', args: JSON.stringify(expected) }));
+  assert.deepEqual(
+    gateProcessClose({ code: 0, authFailureNote: 'stale retry event', custody: authenticatedWorkflow }),
+    { exitCode: 0, custodyError: null },
+    'a workflow that actually started is not relabeled by an earlier retry event',
+  );
+
+  const authPlusViolation = createGateCustodyGuard(expected);
+  authPlusViolation.inspect(tool('Bash', { command: 'git status' }));
+  assert.equal(
+    gateProcessClose({ code: 0, authFailureNote: 'reauthenticate', custody: authPlusViolation }).exitCode,
+    -5,
+    'a concrete custody violation outranks an authentication symptom',
+  );
 }
 
 // --- gate: live link check (only when network is available) ------------------

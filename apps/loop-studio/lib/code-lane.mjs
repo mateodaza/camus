@@ -55,6 +55,39 @@ export function gateArgsForRun(run, roundCap, humanAnswer = null) {
 
 const GATE_CUSTODY_PROMPT = `You are only the Camus Studio gate igniter. The /camus-loop invocation and every JSON argument are a binding custody contract. Start exactly one fresh camus-loop workflow. If it returns an asynchronous handle, resume only that same workflow run with the exact same args. Never start a second fresh workflow, alter or omit an arg, use another tool, inspect or repair the repository yourself, or work around an infra error. Return the workflow's terminal report verbatim; Studio owns every retry.`;
 
+const CLAUDE_AUTH_FAILURE_NOTE = 'Claude Code authentication failed before Camus could start. Run `claude auth login` in Terminal, then choose Resume the gate.';
+
+// `claude auth status` can report logged-in while an expired/stale session gets
+// a real 401 from inference. The stream is the authoritative signal. Keep this
+// deliberately narrow: an auth failure gets an actionable diagnosis, while any
+// other no-tool response still fails under the custody guard.
+export function claudeAuthFailureNote(event) {
+  if (!event || typeof event !== 'object') return null;
+  const status = Number(event.error_status ?? event.api_error_status);
+  const text = [
+    event.error,
+    event.result,
+    ...(event.message?.content ?? []).map((item) => item?.text),
+  ].filter((value) => typeof value === 'string').join(' ');
+  if (status === 401 || /authentication_failed|failed to authenticate|invalid authentication credentials/i.test(text)) {
+    return CLAUDE_AUTH_FAILURE_NOTE;
+  }
+  return null;
+}
+
+// Close-time precedence is part of the trust boundary. A real custody
+// violation still wins, except for the narrower case where authentication
+// prevented the very first Workflow call: there was no custody to violate yet,
+// and hiding the 401 would send the user toward the wrong repair.
+export function gateProcessClose({ code, authFailureNote, custody }) {
+  const snapshot = custody.snapshot();
+  if (authFailureNote && snapshot.freshCalls === 0 && !snapshot.violation) {
+    return { exitCode: -6, custodyError: null };
+  }
+  const custodyError = custody.finish();
+  return { exitCode: custodyError ? -5 : (code ?? -1), custodyError };
+}
+
 export function gateIgniterCliArgs(invocation) {
   return [
     '-p', invocation,
@@ -308,6 +341,7 @@ export async function runCodeLoop(run, ctx) {
 
     const custody = createGateCustodyGuard(args);
     let custodyError = null;
+    let authFailureNote = null;
     const { exitCode, resultText } = await new Promise((resolve) => {
       // Pin the reviewer (auditor) for the gate's cross-vendor review via the
       // dedicated CAMUS_CODEX_MODEL channel, from the run-start snapshot.
@@ -345,6 +379,7 @@ export async function runCodeLoop(run, ctx) {
           if (!line.trim()) continue;
           try {
             const ev = JSON.parse(line);
+            authFailureNote ||= claudeAuthFailureNote(ev);
             const refused = custody.inspect(ev);
             if (refused) {
               custodyError = refused;
@@ -362,14 +397,16 @@ export async function runCodeLoop(run, ctx) {
       signal.addEventListener('abort', () => { child.kill('SIGTERM'); finish(-4); }, { once: true });
       child.on('error', (e) => { err += `spawn error: ${e.code || e.message}`; finish(-1); });
       child.on('close', (code) => {
-        custodyError ||= custody.finish();
-        finish(custodyError ? -5 : (code ?? -1));
+        const closed = gateProcessClose({ code, authFailureNote, custody });
+        custodyError ||= closed.custodyError;
+        finish(closed.exitCode);
       });
     });
 
     clearInterval(watcher);
 
     if (exitCode === -4) throw new Error('stopped_by_human');
+    if (exitCode === -6) return { status: 'infra_error', note: authFailureNote };
     if (exitCode === -5) return { status: 'infra_error', note: custodyError || 'gate custody could not be established' };
     if (exitCode === -1) return { status: 'infra_error', note: `failed to spawn claude (${String(resultText).slice(0, 200)})` };
     if (exitCode === -2) return { status: 'infra_error', note: `the gate hit the studio's ${Math.round(HARD_TIMEOUT_MS / 60000)} min ceiling — its state is preserved; Resume continues it` };
