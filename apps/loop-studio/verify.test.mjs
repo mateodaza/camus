@@ -1128,6 +1128,26 @@ if (process.env.TEST_NETWORK === '1') {
   assert.equal(rehearsal.pairing.executor.actual, 'simulation:scripted-maker');
   assert.equal(rehearsal.pairing.auditor.actual, 'simulation:scripted-auditor');
   assert.equal(rehearsal.pairing.independence, 'none', 'scripted rehearsal never claims independence');
+
+  const buildPack = buildEvidencePack({
+    ...base,
+    lane: 'build',
+    targetPath: '/tmp/demo-repo',
+    deliverable: null,
+    evidence: {
+      rounds: [{ verdict: 'APPROVED', reviewerModel: 'gpt-5.4', reviewerEffort: 'low', findings: [] }],
+      verify: [{ pass: true, commitSha: 'c92d002abc123', source: 'gate_report_status' }],
+      humanDecisions: [],
+      gateReport: { status: 'done', commit_sha: 'c92d002abc123', initialModel: 'sonnet', finalFixModel: 'opus' },
+    },
+  });
+  assert.equal(validateEvidencePack(buildPack).ok, true, 'developer-role output validates as the same protocol pack');
+  assert.deepEqual(buildPack.artifact, { kind: 'code', repo: '/tmp/demo-repo', head: 'c92d002abc123', diff_hash: null, changed_files: null, deliverable_hash: null, claims: null }, 'the build artifact is bound to the gate-branch head');
+  assert.equal(buildPack.pairing.executor.requested, 'anthropic:sonnet', 'the run-start maker decision survives');
+  assert.equal(buildPack.pairing.executor.actual, 'anthropic:opus', 'the gate-reported final model records escalation honestly');
+  assert.equal(buildPack.pairing.auditor.actual, 'openai:gpt-5.4', 'the code auditor actual is sealed');
+  assert.match(buildPack.verification.checks[0].detail, /c92d002abc123/, 'build verification stays bound to the audited commit');
+  assert.ok(buildPack.session_log.includes('executor initial model: anthropic:sonnet') && buildPack.session_log.includes('executor final model: anthropic:opus'), 'initial and final executor identities remain visible');
 }
 
 // --- banner policy: every real done* answers to the headline, fail-closed ----
