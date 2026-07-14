@@ -19,6 +19,21 @@ function findingKey(f) {
 
 export const boundedGroundingResults = (results, limit = 32) => (results ?? []).slice(-limit);
 
+// Claude occasionally acknowledges a fix before the requested full markdown,
+// separated by a horizontal rule. That acknowledgement is not the artifact.
+// Strip it only when the prefix has no markdown heading and the suffix begins
+// with one; legitimate frontmatter and documents that use later rules survive.
+export function normalizeDeliverable(text) {
+  const value = String(text ?? '').trim();
+  const lines = value.split('\n');
+  const rule = lines.findIndex((line) => line.trim() === '---');
+  if (rule <= 0) return value;
+  const before = lines.slice(0, rule).join('\n').trim();
+  const after = lines.slice(rule + 1).join('\n').trim();
+  if (!/^#{1,6}\s/m.test(before) && /^#{1,6}\s/.test(after)) return after;
+  return value;
+}
+
 export async function runLoop(run, ctx) {
   const { emit, waitForAnswer, adapters, hivemind, signal } = ctx;
   // The run's model decisions are the SNAPSHOT taken at creation — resolve
@@ -157,7 +172,7 @@ export async function runLoop(run, ctx) {
         : 'Hivemind was configured but the maker made no connector query — this draft is not Hivemind-grounded.');
     }
     costUsd += makeRes.costUsd || 0;
-    draft = makeRes.text;
+    draft = normalizeDeliverable(makeRes.text);
     rev = 1;
     emit('revision', { rev, markdown: draft });
     emit('cost', { costUsd });
@@ -263,7 +278,7 @@ export async function runLoop(run, ctx) {
       );
       absorbHivemindEvidence(fixRes);
       costUsd += fixRes.costUsd || 0;
-      draft = fixRes.text;
+      draft = normalizeDeliverable(fixRes.text);
       rev += 1;
       emit('revision', { rev, markdown: draft });
       emit('cost', { costUsd });
@@ -308,7 +323,7 @@ export async function runLoop(run, ctx) {
         );
         absorbHivemindEvidence(fixRes);
         costUsd += fixRes.costUsd || 0;
-        draft = fixRes.text;
+        draft = normalizeDeliverable(fixRes.text);
         rev += 1;
         emit('revision', { rev, markdown: draft });
         emit('cost', { costUsd });
