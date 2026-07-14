@@ -128,7 +128,7 @@ export async function runLoop(run, ctx) {
       lastReview = await withRetries(`review round ${round}`, () =>
         adapters.codex({
           model: reviewerModel,
-          prompt: reviewPrompt({ goal: run.goal, lane: run.lane, draft, round, priorFindings, answers: contentAnswers() }),
+          prompt: reviewPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, round, priorFindings, answers: contentAnswers() }),
           cwd: ctx.scratchDir,
           effort: reviewerEffort,
           signal,
@@ -137,7 +137,14 @@ export async function runLoop(run, ctx) {
           receiptDir: `${ctx.receiptsDir}/review-r${round}`,
         }),
       );
-      emit('review', { round, verdict: lastReview.verdict, findings: lastReview.findings, questions: lastReview.questions });
+      emit('review', {
+        round,
+        verdict: lastReview.verdict,
+        findings: lastReview.findings,
+        questions: lastReview.questions,
+        reviewerModel: lastReview.reviewerModel ?? reviewerModel ?? null,
+        reviewerEffort: lastReview.reviewerEffort ?? reviewerEffort ?? null,
+      });
       for (const f of lastReview.findings) emit('finding', { round, ...f });
       stage('review', 'done', { round, verdict: lastReview.verdict });
 
@@ -200,7 +207,7 @@ export async function runLoop(run, ctx) {
         adapters.claude({
           model: makerModel,
           stage: 'fix',
-          prompt: fixPrompt({ goal: run.goal, lane: run.lane, draft, findings: lastReview.blocking, answers: contentAnswers(), viaClaude: grounding === 'claude' }),
+          prompt: fixPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, findings: lastReview.blocking, answers: contentAnswers(), viaClaude: grounding === 'claude' }),
           cwd: ctx.scratchDir,
           signal,
           onTick: log,
@@ -244,7 +251,7 @@ export async function runLoop(run, ctx) {
           adapters.claude({
             model: makerModel,
             stage: 'fix',
-            prompt: fixPrompt({ goal: run.goal, lane: run.lane, draft, findings: [], verifyFailures: failures, answers: contentAnswers(), viaClaude: grounding === 'claude' }),
+            prompt: fixPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, findings: [], verifyFailures: failures, answers: contentAnswers(), viaClaude: grounding === 'claude' }),
             cwd: ctx.scratchDir,
             signal,
             onTick: log,

@@ -25,7 +25,9 @@ export function depthBrief(depth) {
     : 'Target 700–1,100 words with 4–6 distinct sources. Depth "quick": favor precision over coverage.';
 }
 
-export function makePrompt({ goal, lane, depth, grounding, answers }) {
+const contractBlock = (acceptanceContract) => `ACCEPTANCE CONTRACT — the result is only acceptable if this is true:\n${acceptanceContract || 'No explicit contract was supplied (legacy run); do not infer one.'}`;
+
+export function makePrompt({ goal, acceptanceContract, lane, depth, grounding, answers }) {
   const groundingBlock = grounding === 'claude'
     ? `\n\nGROUNDING — you have Hivemind MCP tools (mcp__hivemind__knowledge_search; also search/fetch where available): Myosin's specialist marketing knowledge, written by practitioners. Before drafting, run 2-4 focused knowledge_search queries on the goal's key angles. Where a returned chunk shapes a claim, cite it [H1], [H2], … and list each under a "### Hivemind" subsection inside ## Sources as "[Hn] Title — Author". If the tools error or return nothing relevant, draft without them — never fabricate an [Hn] citation.`
     : grounding?.length
@@ -44,6 +46,8 @@ export function makePrompt({ goal, lane, depth, grounding, answers }) {
 GOAL:
 ${goal}
 
+${contractBlock(acceptanceContract)}
+
 ${LANE_BRIEFS[lane] ?? LANE_BRIEFS.freeform}
 
 ${depthBrief(depth)}
@@ -57,16 +61,18 @@ HARD RULES — a deterministic gate checks these mechanically and WILL bounce th
 Respond with ONLY the markdown deliverable. No preamble, no commentary.`;
 }
 
-export function planPrompt({ goal, lane, depth }) {
+export function planPrompt({ goal, acceptanceContract, lane, depth }) {
   return `You are planning a research deliverable before writing it. Goal:
 ${goal}
+
+${contractBlock(acceptanceContract)}
 
 Deliverable type: ${LANES[lane]?.label ?? 'Freeform'}. ${depthBrief(depth)}
 
 Reply with 4-6 terse bullet points: the angles you will investigate, the 2-3 source types you will lean on, and the single biggest risk of getting this wrong. Plain text bullets, nothing else.`;
 }
 
-export function reviewPrompt({ goal, lane, draft, round, priorFindings, answers }) {
+export function reviewPrompt({ goal, acceptanceContract, lane, draft, round, priorFindings, answers }) {
   const prior = priorFindings?.length
     ? `\n\nFINDINGS YOU RAISED IN EARLIER ROUNDS (check whether they are actually resolved; re-raise with the SAME title if not):\n${priorFindings
         .map((f) => `- [${f.severity}] ${f.title}`)
@@ -82,6 +88,8 @@ export function reviewPrompt({ goal, lane, draft, round, priorFindings, answers 
 
 THE GOAL THE DELIVERABLE MUST SERVE:
 ${goal}
+
+${contractBlock(acceptanceContract)}
 
 THE DRAFT (${LANES[lane]?.label ?? 'Freeform'}):
 ---
@@ -105,7 +113,7 @@ Respond with STRICT JSON only (no markdown fences, no commentary):
 "clean" requires zero high or medium findings.`;
 }
 
-export function fixPrompt({ goal, lane, draft, findings, verifyFailures, answers, viaClaude }) {
+export function fixPrompt({ goal, acceptanceContract, lane, draft, findings, verifyFailures, answers, viaClaude }) {
   const hmBlock = viaClaude
     ? `\nYou still have the Hivemind MCP tools (mcp__hivemind__knowledge_search) — use them if a fix needs a replacement internal source, and keep every [Hn] marker mapped to a "### Hivemind" entry under ## Sources. Never fabricate an [Hn] citation.\n`
     : '';
@@ -127,6 +135,8 @@ export function fixPrompt({ goal, lane, draft, findings, verifyFailures, answers
 
 GOAL:
 ${goal}
+
+${contractBlock(acceptanceContract)}
 
 CURRENT DRAFT:
 ---

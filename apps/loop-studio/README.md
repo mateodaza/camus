@@ -14,7 +14,7 @@ The studio is the loop's visual front door. What it does today:
 - **Marketing, the tuned vertical** — the compliance wordlist ships web3-marketing defaults and grounding rides Myosin's Hivemind (staging today), because that is where the studio has real internal knowledge to stand on (and the two products co-market).
 - **Code** — the Build lane points the camus gate at a git repo on this machine: isolated worktree, cross-model review, the repo's own tests as the verdict, needs_human pauses answered from the same question card. In beta, newer than the words lanes.
 
-Next, in order: one goal in, the studio decides build or research by itself; then one trust protocol for both — executor/auditor for code, researcher/critic for words, with sealed evidence packs, a claims ledger for citations, and derived trust statuses. The studio is where those receipts become visible. Direction: [docs/DIRECTION-0.3-TRUST-LAYER.md](../../docs/DIRECTION-0.3-TRUST-LAYER.md).
+The first trust-protocol integration now ships in Studio: every new run starts with an explicit acceptance contract; seals raw execution × verification × audit × publication dimensions; records requested/resolved/actual executor and auditor identities plus actual reviewer effort; and mints separate artifact and receipt hashes in a downloadable evidence pack. The one-word standing remains derived presentation and never enters the permanent pack. Next: the citation claims ledger, then automatic lane selection. Direction: [docs/DIRECTION-0.3-TRUST-LAYER.md](../../docs/DIRECTION-0.3-TRUST-LAYER.md).
 
 ## Quickstart
 
@@ -49,7 +49,8 @@ Useful env:
 | `ROUND_CAP=3` | Review round budget (1–6) |
 | `CLAUDE_MODEL`, `CODEX_MODEL`, `CODEX_EFFORT` | Override the models.json decisions for one session |
 | `CAMUS_CODEX_TIER`, `CAMUS_CODEX_DISABLE_MCP` | Passed through to `codex exec` exactly as camus does |
-| `HIVEMIND_MCP_URL`, `HIVEMIND_API_KEY` | Ground drafts via the Hivemind MCP (see below) |
+| `HIVEMIND_VIA_CLAUDE=1` | Use the connected Hivemind Staging entry in Claude (preferred; no Studio key) |
+| `HIVEMIND_MCP_URL`, `HIVEMIND_API_KEY` | Ground drafts via Studio-side Hivemind MCP (see below) |
 | `PORT=1913` | Camus was born in 1913 |
 
 ## What the deterministic gate checks
@@ -71,7 +72,7 @@ The verify stage is mechanical — no model, no mercy ([lib/verify.mjs](lib/veri
 
 ## Receipts
 
-Every run writes `runs/<id>/`: `events.jsonl` (the full event stream — the UI can replay finished runs from it), `rev-N.md` per revision, per-round codex verdicts (live engine), and `report.json`. Every human choice — content decisions, retries, stuck-finding accepts, verify overrides — is recorded in both the event stream and the report's `answers` array, with its kind. Nothing about a run lives only in the browser.
+Every run writes `runs/<id>/`: `events.jsonl` (the full event stream — the UI can replay finished runs from it), `rev-N.md` per revision, per-round codex verdicts (live engine), and `report.json`. Every human choice — content decisions, retries, stuck-finding accepts, verify overrides — is recorded in both the event stream and the report, with its kind and time. `report.json.evidencePack` is the schema-validated trust artifact: explicit acceptance contract, artifact/receipt IDs, pairing actuals, deterministic checks, decisions, raw dimensions, and honest economics (`unknown`/`null` unless the runtime proves more). The run view shows short IDs; **Evidence pack** downloads the full hashes. Nothing about a run lives only in the browser.
 
 ## Hivemind
 
@@ -81,12 +82,11 @@ Every run writes `runs/<id>/`: `events.jsonl` (the full event stream — the UI 
 
 ```bash
 # one-time, interactive (the OAuth consent is yours to give):
-claude mcp add --transport http hivemind https://staging-hivemind.myosin.xyz/api/mcp
-#   then authenticate it via /mcp in an interactive claude session
+# open /mcp in Claude and connect "Hivemind Staging"
 export HIVEMIND_VIA_CLAUDE=1        # optional: HIVEMIND_MCP_URL to point at prod when it ships
 ```
 
-The maker keeps `--strict-mcp-config`: its tool surface is exactly WebSearch, WebFetch, and the hivemind tools — nothing else from your MCP config leaks in. `--doctor` checks the `hivemind` server is registered and prints the setup line if not.
+The maker keeps `--strict-mcp-config`: its tool surface is exactly WebSearch, WebFetch, and the Hivemind tools — nothing else from your MCP config leaks in. Studio injects that connected endpoint under its run-local `hivemind` alias. Deep `--doctor` recognizes the exact staging URL regardless of the managed connector’s display name and never prints the local MCP listing.
 
 **2. Studio-side MCP (`HIVEMIND_MCP_URL` + `HIVEMIND_API_KEY`).** The studio calls `/api/mcp` itself through a zero-dependency client ([lib/mcp-client.mjs](lib/mcp-client.mjs)) with an admin-issued `hm_k_…` key — for headless or hosted setups with no Claude connector.
 
@@ -105,7 +105,8 @@ No key, no token, and no model auth ever leaves the laptop — the web app is gl
 
 ## Demo-day runbook
 
-1. `node server.mjs --doctor` on the venue wifi.
+1. `HIVEMIND_VIA_CLAUDE=1 node server.mjs --doctor` on the venue wifi.
 2. Start the **live** run on stage at minute zero (quick depth), talk over it.
 3. Keep a `npm run rehearse` (`MOCK_SPEED=2`) window ready as the fallback — same UI, scripted beats: 3 findings → fix → a question for the room → fix → clean review → dead-link red gate → fix → green.
-4. Finished runs replay from the launch screen (Recent runs), so yesterday's green is always one click away.
+4. Fill both the goal and **“What must be true for you to trust the result?”**; narrate the latter as the contract the second model judges.
+5. End on the sealed evidence card, then download the full pack. Finished runs replay from Recent runs, so yesterday's green is always one click away.

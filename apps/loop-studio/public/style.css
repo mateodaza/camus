@@ -126,6 +126,7 @@ textarea:focus { outline: none; border-color: var(--ink); }
 .toggle input { accent-color: var(--ink); width: 15px; height: 15px; }
 .toggle:has(input:disabled) { opacity: .45; cursor: default; }
 .hint { font-size: 12.5px; color: var(--faint); margin-top: 3px; max-width: 380px; line-height: 1.5; }
+.trust-hint { margin-top: -12px; max-width: none; }
 
 .primary {
   font-family: var(--mono); font-size: 13px; background: var(--red); color: #fff;
@@ -290,6 +291,15 @@ textarea:focus { outline: none; border-color: var(--ink); }
 .banner .sub a { color: inherit; text-decoration: underline; }
 .banner .resume-btn { font-family: var(--mono); font-size: 12px; background: var(--red); color: #fff; padding: 6px 14px; margin-right: 8px; }
 .banner .resume-btn:hover { background: #fff; color: var(--ink); }
+
+.trust-card { border: 1px solid var(--ink); background: var(--paper); padding: 13px 15px; font-family: var(--mono); font-size: 11.5px; }
+.trust-card.degraded { border-color: var(--red); }
+.trust-title { letter-spacing: .13em; font-size: 10.5px; margin-bottom: 8px; color: var(--ink); }
+.trust-row { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 10px; padding: 3px 0; border-top: 1px solid var(--rule); }
+.trust-key { color: var(--faint); }
+.trust-value { color: var(--ink); overflow-wrap: anywhere; }
+.trust-contract { color: var(--muted); line-height: 1.5; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--rule); }
+.trust-error { color: var(--red); line-height: 1.5; }
 
 /* deliverable */
 .doc-wrap { border-left: 1px solid var(--rule); display: flex; flex-direction: column; min-height: 0; background: var(--paper); }

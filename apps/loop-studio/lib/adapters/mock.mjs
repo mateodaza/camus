@@ -118,7 +118,7 @@ export function createMockAdapters() {
       const revs = [REV1, REV2, REV3, REV4];
       return { ok: true, error: null, text: revs[Math.min(claudeCalls - 1, revs.length - 1)], costUsd: 0 }; // rehearsal spends nothing
     },
-    async codex({ signal, onTick, onSession }) {
+    async codex({ signal, onTick, onSession, model, effort }) {
       onTick?.('reviewer reading and drafting findings…');
       onSession?.('turn started');
       await sleep(3000, signal);
@@ -133,6 +133,8 @@ export function createMockAdapters() {
       const findings = r.findings;
       return {
         ...r,
+        reviewerModel: model ?? 'scripted',
+        reviewerEffort: effort ?? 'scripted',
         findings,
         blocking: findings.filter((f) => f.severity !== 'low'),
         nonblocking: findings.filter((f) => f.severity === 'low'),

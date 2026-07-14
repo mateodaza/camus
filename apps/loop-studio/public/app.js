@@ -428,13 +428,14 @@ $('depth').addEventListener('click', (e) => {
 
 $('start').addEventListener('click', async () => {
   const goal = $('goal').value.trim();
+  const acceptanceContract = $('acceptance-contract').value.trim();
   $('form-error').textContent = '';
   $('start').disabled = true;
   try {
     const res = await fetch(`${API}/api/runs`, {
       method: 'POST',
       headers: postHeaders(),
-      body: JSON.stringify({ goal, lane: state.lane, depth: state.depth, ground: $('ground').checked, targetPath: state.lane === 'build' ? $('target-path').value : undefined }),
+      body: JSON.stringify({ goal, acceptanceContract, lane: state.lane, depth: state.depth, ground: $('ground').checked, targetPath: state.lane === 'build' ? $('target-path').value : undefined }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
@@ -558,16 +559,66 @@ $('download-report').addEventListener('click', async () => {
   try {
     const res = await fetch(`${API}/api/runs/${state.runId}/report`);
     if (!res.ok) throw new Error((await res.json()).error || res.statusText);
-    const blob = new Blob([JSON.stringify(await res.json(), null, 2)], { type: 'application/json' });
+    const report = await res.json();
+    if (!report.evidencePack) throw new Error(report.evidencePackError || 'this run has no sealed evidence pack');
+    const blob = new Blob([JSON.stringify(report.evidencePack, null, 2)], { type: 'application/json' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = `run-${state.runId}-evidence.json`;
+    link.download = `run-${state.runId}-evidence-pack.json`;
     link.click();
   } catch (err) {
     $('download-report').textContent = 'no report yet';
-    setTimeout(() => ($('download-report').textContent = 'Evidence'), 1500);
+    setTimeout(() => ($('download-report').textContent = 'Evidence pack'), 1500);
   }
 });
+
+const shortId = (id) => String(id || '').replace(/^sha256:/, '').slice(0, 12);
+async function renderEvidenceReceipt(standing) {
+  const runId = state.runId;
+  document.getElementById('evidence-pack-card')?.remove();
+  let report = null;
+  // The terminal event is emitted just before report.json is sealed. Replays
+  // resolve immediately; live runs get a bounded wait instead of a false
+  // "missing pack" flash.
+  for (let attempt = 0; attempt < 15 && !report; attempt++) {
+    const res = await fetch(`${API}/api/runs/${runId}/report`).catch(() => null);
+    if (res?.ok) report = await res.json();
+    else await new Promise((r) => setTimeout(r, 200));
+  }
+  if (!report || state.runId !== runId) return;
+  const pack = report.evidencePack;
+  const card = el('div', `trust-card ${pack ? '' : 'degraded'}`);
+  card.id = 'evidence-pack-card';
+  card.appendChild(el('div', 'trust-title', pack ? 'SEALED EVIDENCE PACK' : 'EVIDENCE PACK NOT SEALED'));
+  if (!pack) {
+    card.appendChild(el('div', 'trust-error', report.evidencePackError || 'The report does not contain a pack.'));
+    feed(card);
+    return;
+  }
+  const nice = (s) => String(s || 'unknown').replace(/_/g, ' ');
+  const auditorEconomics = pack.economics.find((e) => e.role === 'auditor');
+  const billing = [...new Set(pack.economics.map((e) => e.billing_mode))].join(' + ');
+  const estimated = pack.economics.some((e) => typeof e.estimated_cost_usd === 'number')
+    ? `$${pack.economics.reduce((n, e) => n + (e.estimated_cost_usd || 0), 0).toFixed(2)} estimated`
+    : 'cost not estimated';
+  const rows = [
+    ['standing (derived)', nice(standing)],
+    ['artifact', shortId(pack.artifact_id)],
+    ['receipt', shortId(pack.receipt_id)],
+    ['executor actual', pack.pairing.executor.actual],
+    ['auditor actual', pack.pairing.auditor.actual],
+    ['auditor effort', auditorEconomics?.effort ?? 'not recorded'],
+    ['economics', `billing ${billing} · ${estimated}`],
+  ];
+  for (const [k, v] of rows) {
+    const row = el('div', 'trust-row');
+    row.appendChild(el('span', 'trust-key', k));
+    row.appendChild(el('span', 'trust-value', v));
+    card.appendChild(row);
+  }
+  card.appendChild(el('div', 'trust-contract', `contract — ${pack.acceptance_contract}`));
+  feed(card);
+}
 
 $('download').addEventListener('click', () => {
   const md = current();
@@ -924,6 +975,7 @@ function handle(ev) {
         const d = ev.dimensions;
         feed(el('div', 'dims', `status dimensions — execution: ${nice(d.execution)} · verification: ${nice(d.verification)} · audit: ${nice(d.audit)} · publication: ${nice(d.publication)}`));
       }
+      void renderEvidenceReceipt(state.simulated ? 'rehearsal' : ev.headline);
       break;
     }
 

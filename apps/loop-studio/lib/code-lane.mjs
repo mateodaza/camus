@@ -37,8 +37,11 @@ export function gateInstalled() {
 }
 
 export function gateArgsForRun(run, roundCap, humanAnswer = null) {
+  const contract = typeof run.acceptanceContract === 'string' && run.acceptanceContract.trim()
+    ? `\n\nAcceptance contract (binding):\n${run.acceptanceContract.trim()}`
+    : '';
   const args = {
-    task: run.goal,
+    task: `${run.goal}${contract}`,
     targetPath: run.targetPath,
     policy: 'ask_on_ambiguity',
     roundCap,

@@ -42,8 +42,13 @@ export function deriveEvidence(events) {
       derived: v.derived ?? false,
       commitSha: v.commitSha ?? null,
       detail: v.detail ?? null,
+      checks: Array.isArray(v.checks) ? v.checks.map((c) => ({
+        id: c.id,
+        status: c.status,
+        detail: c.detail ?? null,
+      })) : null,
     })),
-    humanDecisions: of('answer').map((a) => ({ kind: a.kind ?? 'decision', question: a.question, answer: a.answer })),
+    humanDecisions: of('answer').map((a) => ({ kind: a.kind ?? 'decision', question: a.question, answer: a.answer, at: a.at })),
     gateReport: of('gate_report').map((e) => e.report).pop() ?? null,
   };
 }

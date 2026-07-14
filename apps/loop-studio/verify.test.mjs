@@ -219,6 +219,15 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   const fx = fixPrompt({ goal: 'g', lane: 'research_memo', draft: 'd', findings: [], answers: [], viaClaude: true });
   assert.ok(fx.includes('mcp__hivemind__knowledge_search'), 'fix prompt keeps the tool available');
 
+  const contract = 'Every material claim must trace to a live source.';
+  const { planPrompt, reviewPrompt } = await import('./lib/prompts.mjs');
+  for (const [name, prompt] of [
+    ['plan', planPrompt({ goal: 'g', acceptanceContract: contract, lane: 'research_memo', depth: 'quick' })],
+    ['make', makePrompt({ goal: 'g', acceptanceContract: contract, lane: 'research_memo', depth: 'quick', grounding: null, answers: [] })],
+    ['review', reviewPrompt({ goal: 'g', acceptanceContract: contract, lane: 'research_memo', draft: 'd', round: 1, priorFindings: [], answers: [] })],
+    ['fix', fixPrompt({ goal: 'g', acceptanceContract: contract, lane: 'research_memo', draft: 'd', findings: [], answers: [], viaClaude: false })],
+  ]) assert.ok(prompt.includes(contract), `${name} is constrained by the binding acceptance contract`);
+
   delete process.env.HIVEMIND_VIA_CLAUDE;
 }
 
@@ -550,6 +559,9 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   assert.equal('model' in boundArgs, false, 'no maker snapshot → no model pin (nothing invented)');
   const pinnedArgs = gateArgsForRun({ goal: 't', targetPath: '/tmp/repo', idSalt: 'studio-run-1', models: { maker: { model: 'opus' }, reviewer: { model: 'gpt-5.4' } } }, 3);
   assert.equal(pinnedArgs.model, 'opus', 'the maker is pinned THROUGH the /camus-loop contract from the run-start snapshot, not the outer igniter');
+  const contractedArgs = gateArgsForRun({ goal: 't', acceptanceContract: 'Tests pass and the requested API remains compatible.', targetPath: '/tmp/repo', idSalt: 'studio-run-1' }, 3);
+  assert.match(contractedArgs.task, /Acceptance contract \(binding\):/, 'the code gate receives the contract as part of its binding task');
+  assert.match(contractedArgs.task, /requested API remains compatible/, 'the gate judges the exact user contract');
   const igniterArgs = gateIgniterCliArgs('/camus-loop {}');
   assert.equal(igniterArgs.includes('--tools'), false, 'process-wide tools stay inherited so camus-loop child agents retain Bash/Read/Edit');
   assert.deepEqual(igniterArgs.slice(igniterArgs.indexOf('--allowedTools'), igniterArgs.indexOf('--allowedTools') + 2), ['--allowedTools', 'Workflow'], 'only the outer Workflow call is pre-approved');
@@ -910,7 +922,7 @@ if (process.env.TEST_NETWORK === '1') {
 // "logged in" substring into a false green — the chip would reassure a user
 // straight into a 401.
 {
-  const { parseAuthProbe, runDoctor } = await import('./lib/doctor.mjs');
+  const { parseAuthProbe, hivemindListingHasEndpoint, runDoctor } = await import('./lib/doctor.mjs');
   assert.equal(parseAuthProbe(null), null, 'probe could not run → unknown, never guessed');
   assert.equal(parseAuthProbe('Logged in as mateo@example.com'), true, 'claude prose sign-in parses');
   assert.equal(parseAuthProbe('{"loggedIn": true, "method": "oauth"}'), true, 'claude JSON sign-in parses');
@@ -923,6 +935,13 @@ if (process.env.TEST_NETWORK === '1') {
   // false would be as invented as an implicit green (2026-07-14 review).
   assert.equal(parseAuthProbe('some unrelated banner text'), null, 'output with no explicit claim stays unknown');
   assert.equal(parseAuthProbe(''), null, 'empty output claims nothing');
+  const stagingUrl = 'https://staging-hivemind.myosin.xyz/api/mcp';
+  assert.equal(
+    hivemindListingHasEndpoint(`claude.ai Hivemind Staging: ${stagingUrl} - Connected`, stagingUrl),
+    true,
+    'managed Hivemind Staging is recognized by exact endpoint, not a required local alias',
+  );
+  assert.equal(hivemindListingHasEndpoint('hivemind: https://wrong.example/api/mcp - Connected', stagingUrl), false, 'a matching display name at the wrong endpoint is refused');
 
   // Live P1 (2026-07-14): BOTH installed CLIs deliver their signed-out answer
   // with EXIT CODE 1 (claude: {"loggedIn": false,…}; codex: "Not logged in").
@@ -958,6 +977,50 @@ if (process.env.TEST_NETWORK === '1') {
       rmSync(bin, { recursive: true, force: true });
     }
   }
+}
+
+// --- Studio evidence pack: explicit contract, identity split, honest spend --
+{
+  const { buildEvidencePack, shortEvidenceId } = await import('./lib/evidence-pack.mjs');
+  const { validateEvidencePack } = await import('../../packages/trust/lib/validate.mjs');
+  const base = {
+    goal: 'Decide whether community or paid should lead the quarter.',
+    acceptanceContract: 'Every material claim traces to a live URL and the recommendation states its tradeoffs.',
+    lane: 'research_memo',
+    deliverable: '# Memo\n\nUse community first.\n',
+    evidence: {
+      rounds: [{ verdict: 'APPROVED', reviewerModel: 'gpt-5.4', reviewerEffort: 'high', findings: [] }],
+      verify: [{ pass: true, checks: [{ id: 'links', status: 'pass', detail: '4 URLs checked' }] }],
+      humanDecisions: [{ kind: 'decision', question: 'Which market?', answer: 'Base', at: 42 }],
+      gateReport: null,
+    },
+    statuses: { schemaVersion: 1, execution: 'completed', verification: 'passed', audit: 'independent_clean', publication: 'not_published' },
+    models: { maker: { model: 'sonnet' }, reviewer: { model: 'gpt-5.4', effort: 'high' } },
+    createdAt: 100,
+  };
+  const pack = buildEvidencePack(base);
+  assert.equal(validateEvidencePack(pack).ok, true, 'Studio output validates as the published evidence-pack schema');
+  assert.equal(pack.acceptance_contract, base.acceptanceContract, 'contract is explicit, never aliased from goal');
+  assert.equal(pack.pairing.executor.actual, 'anthropic:sonnet', 'pinned maker is recorded');
+  assert.equal(pack.pairing.auditor.actual, 'openai:gpt-5.4', 'auditor actual comes from the ran review');
+  assert.equal(pack.pairing.independence, 'cross_vendor', 'different recorded providers earn cross-vendor standing');
+  assert.equal(pack.economics.find((e) => e.role === 'auditor').effort, 'high', 'actual reviewer effort survives');
+  assert.equal(pack.economics.every((e) => e.billing_mode === 'unknown' && e.estimated_cost_usd === null), true, 'billing and dollars stay unknown/null');
+  assert.deepEqual(pack.verification.checks, [{ id: 'links', status: 'pass', detail: '4 URLs checked' }], 'deterministic checks survive');
+  assert.equal(pack.human_decisions[0].at, 42, 'decision time survives into the ledger');
+  assert.equal(shortEvidenceId(pack.artifact_id).length, 12, 'the UI uses a short display ID while the pack keeps the full hash');
+  assert.ok(!('headline' in pack), 'derived standing never persists in the pack');
+
+  const changedContract = buildEvidencePack({ ...base, acceptanceContract: 'A materially different acceptance contract.' });
+  assert.notEqual(changedContract.artifact_id, pack.artifact_id, 'changing the contract expires the artifact audit');
+  const changedJudgment = buildEvidencePack({ ...base, statuses: { ...base.statuses, audit: 'independent_findings' } });
+  assert.equal(changedJudgment.artifact_id, pack.artifact_id, 'changing judgment does not pretend the artifact changed');
+  assert.notEqual(changedJudgment.receipt_id, pack.receipt_id, 'changing judgment mints a new receipt');
+
+  const rehearsal = buildEvidencePack({ ...base, simulated: true, statuses: { ...base.statuses, audit: 'not_run' } });
+  assert.equal(rehearsal.pairing.executor.actual, 'simulation:scripted-maker');
+  assert.equal(rehearsal.pairing.auditor.actual, 'simulation:scripted-auditor');
+  assert.equal(rehearsal.pairing.independence, 'none', 'scripted rehearsal never claims independence');
 }
 
 // --- banner policy: every real done* answers to the headline, fail-closed ----

@@ -133,6 +133,13 @@ export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSe
     ? infraError(`verdict file exists but could not be read (${readError.code || readError.message})`)
     : normalizeReview(raw, exitCode);
   if (!norm.ran && stderrTail) norm.error += ` | codex stderr: ${stderrTail.trim().split('\n').pop()}`;
+  // These are actual invocation facts, not requested defaults: the adapter
+  // appended both explicitly to argv and a ran:true verdict proves that exact
+  // invocation completed. They ride the review event into the sealed pack.
+  if (norm.ran) {
+    norm.reviewerModel = model;
+    norm.reviewerEffort = effort;
+  }
   return norm;
 }
 

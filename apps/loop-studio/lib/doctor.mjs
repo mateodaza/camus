@@ -37,6 +37,15 @@ export const parseAuthProbe = (raw) => {
   return null;
 };
 
+// Managed Claude connectors need not use Studio's local alias. Match the exact
+// configured endpoint, never a display name, so "claude.ai Hivemind Staging"
+// is recognized without requiring a duplicate connector named `hivemind`.
+export const hivemindListingHasEndpoint = (raw, endpoint) => {
+  const wanted = String(endpoint || '').trim().replace(/\/$/, '');
+  if (!wanted) return false;
+  return String(raw || '').split('\n').some((line) => line.trim().replace(/\/$/, '').includes(wanted));
+};
+
 // deep=true adds the slow checks (claude mcp list health round-trip).
 export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   const checks = [];
@@ -57,8 +66,8 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   // "unknown" and the red preflight can never fire (live P1, 2026-07-14). A
   // nonzero exit with NO output (missing binary, timeout, crash) still ends up
   // null through the parser's no-claim rule.
-  const fullProbe = (cmd, args) =>
-    new Promise((r) => execFile(cmd, args, { timeout: 20_000 }, (_err, so, se) => {
+  const fullProbe = (cmd, args, timeout = 20_000) =>
+    new Promise((r) => execFile(cmd, args, { timeout }, (_err, so, se) => {
       const out = String(so || se || '').trim();
       r(out || null);
     }));
@@ -123,18 +132,15 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
 
   const hm = hivemindStatus();
   if (hm.mode === 'claude' && deep) {
-    const list = await probe('claude', ['mcp', 'list'], 45_000);
-    // probe returns first line only; ask again for the full listing
-    const full = await new Promise((resolve) =>
-      execFile('claude', ['mcp', 'list'], { timeout: 45_000 }, (_e, stdout) => resolve(String(stdout || ''))),
-    );
-    const registered = /^hivemind:/m.test(full);
+    // Never return or log the listing: local MCP entries may contain inline
+    // credentials. We inspect only whether one line names the exact endpoint.
+    const full = await fullProbe('claude', ['mcp', 'list'], 45_000);
+    const registered = hivemindListingHasEndpoint(full, hm.base);
     add(
       'hivemind', 'Hivemind grounding (via Claude)', registered,
-      registered ? `"hivemind" registered · ${hm.base}` : 'no MCP server named "hivemind" in claude mcp list',
-      registered ? null : `claude mcp add --transport http hivemind ${hm.base}   # then authenticate it via /mcp in a claude session`,
+      registered ? `connected endpoint recognized · ${hm.base}` : `Claude has no connected entry for ${hm.base}`,
+      registered ? null : `open /mcp in Claude and connect Hivemind Staging (${hm.base})`,
     );
-    void list;
   } else {
     add(
       'hivemind', 'Hivemind grounding', hm.connected,

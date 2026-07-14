@@ -12,6 +12,7 @@ import { join } from 'node:path';
 
 const HOST = '127.0.0.1';
 const tmp = mkdtempSync(join(tmpdir(), 'cls-api-'));
+const ACCEPTANCE = 'Every material claim is traceable and the deterministic checks are recorded.';
 
 const server = spawn(process.execPath, ['server.mjs'], {
   // STUDIO_RUNS_DIR points the server at the throwaway tmp dir, so test runs
@@ -87,7 +88,7 @@ try {
     const r = await fetch(`${base}/api/runs`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
-      body: JSON.stringify({ goal: 'lifecycle: community versus paid growth memo', lane: 'freeform', depth: 'quick' }),
+      body: JSON.stringify({ goal: 'lifecycle: community versus paid growth memo', acceptanceContract: ACCEPTANCE, lane: 'freeform', depth: 'quick' }),
     });
     assert.equal(r.status, 201);
     runId = (await r.json()).id;
@@ -101,6 +102,16 @@ try {
       body: JSON.stringify({ goal: 'x'.repeat(2100), lane: 'freeform' }),
     });
     assert.equal(r.status, 400);
+  });
+
+  await check('an explicit acceptance contract is required (400)', async () => {
+    const r = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify({ goal: 'a valid goal that deliberately omits its audit contract', lane: 'freeform' }),
+    });
+    assert.equal(r.status, 400);
+    assert.match((await r.json()).error, /must be true/i);
   });
 
   await check('run.json exists from the start (crash recovery lists it)', async () => {
@@ -150,7 +161,7 @@ try {
     const start = () => fetch(`${base}/api/runs`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
-      body: JSON.stringify({ goal: 'concurrency probe run for the ceiling test', lane: 'freeform' }),
+      body: JSON.stringify({ goal: 'concurrency probe run for the ceiling test', acceptanceContract: ACCEPTANCE, lane: 'freeform' }),
     });
     const codes = [];
     for (let i = 0; i < 4; i++) codes.push((await start()).status);
@@ -172,6 +183,17 @@ try {
     assert.ok(report.statuses && typeof report.statuses.execution === 'string', 'the receipt seals the raw status dimensions');
     assert.ok(!('headline' in report), 'the headline is derived at render — never sealed into the evidence');
     assert.ok(report.models && report.models.maker, 'the receipt carries the run-start model snapshot, like run.json');
+    assert.equal(report.acceptanceContract, ACCEPTANCE, 'the explicit trust contract survives into the report');
+    assert.ok(report.evidencePack, `the evidence pack seals (${report.evidencePackError || 'no error'})`);
+    assert.match(report.evidencePack.artifact_id, /^sha256:[0-9a-f]{64}$/, 'artifact identity is sealed');
+    assert.match(report.evidencePack.receipt_id, /^sha256:[0-9a-f]{64}$/, 'receipt identity is sealed');
+    assert.equal(report.evidencePack.acceptance_contract, ACCEPTANCE, 'the pack uses the explicit contract, never aliases goal');
+    assert.equal(report.evidencePack.pairing.executor.actual, 'simulation:scripted-maker', 'rehearsal actual is scripted, never Claude');
+    assert.equal(report.evidencePack.pairing.auditor.actual, 'simulation:scripted-auditor', 'rehearsal actual is scripted, never Codex');
+    assert.equal(report.evidencePack.pairing.independence, 'none', 'a rehearsal never claims cross-vendor independence');
+    assert.equal(report.evidencePack.economics[0].billing_mode, 'unknown', 'economics do not invent a billing mode');
+    assert.equal(report.evidencePack.economics[0].estimated_cost_usd, null, 'economics do not invent dollar cost');
+    assert.ok(!('headline' in report.evidencePack), 'derived standing never enters the permanent pack');
     // A rehearsal receipt must SAY it is one, permanently — and its scripted
     // rounds can never seal audit standing (mock impersonation P1).
     assert.equal(report.simulated, true, 'a mock-engine receipt seals simulated:true');
@@ -197,7 +219,8 @@ try {
     const evs = text.split('\n\n').filter((c) => c.startsWith('data: ')).map((c) => { try { return JSON.parse(c.slice(6)); } catch { return null; } }).filter(Boolean);
     const streamed = evs.filter((e) => e.type === 'status' && e.dimensions).at(-1);
     assert.ok(streamed, 'a terminal status event with dimensions streams');
-    assert.equal(typeof streamed.headline, 'string', 'the streamed status is decorated with the derived headline');
+    assert.equal(streamed.simulated, true, 'the terminal event seals the rehearsal fact for stateless consumers');
+    assert.equal(streamed.headline, 'rehearsal', 'the streamed mock status is rehearsal, never a trust standing');
     // The permanent receipt seals dimensions only — a headline is presentation
     // and must never be persisted in its place.
     const stored = readFileSync(join(tmp, runId, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
@@ -225,7 +248,7 @@ try {
       assert.ok(evs.some((e) => e.type === 'replay_end'), 'replay closes with the sentinel');
       const replayed = evs.filter((e) => e.type === 'status' && e.dimensions).at(-1);
       assert.ok(replayed, 'the replay streams the terminal status with dimensions');
-      assert.equal(typeof replayed.headline, 'string', 'the replayed status is decorated with the derived headline at stream time');
+      assert.equal(replayed.headline, 'rehearsal', 'a fresh-server replay derives rehearsal from the sealed simulation fact');
     } finally {
       server2.kill('SIGKILL');
       await once(server2, 'close').catch(() => {});

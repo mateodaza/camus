@@ -71,6 +71,10 @@
       <label class="lbl" for="goal">The goal — brief it like you'd brief a strategist</label>
       <textarea id="goal" rows="3" placeholder="e.g. Should our client lead with community programs or paid acquisition for their consumer app this quarter? I need a memo I can defend on Thursday."></textarea>
 
+      <label class="lbl" for="acceptance-contract">What must be true for you to trust the result?</label>
+      <textarea id="acceptance-contract" rows="2" placeholder="e.g. Every material claim traces to a live source; the recommendation states assumptions and tradeoffs; no invented Hivemind evidence."></textarea>
+      <div class="hint trust-hint">This is the audit contract. Changing it changes the artifact’s identity and expires the old audit.</div>
+
       <label class="lbl">Choose a lane</label>
       <div class="lanes" id="lanes">
         <button class="lane selected" data-lane="research_memo">
@@ -160,7 +164,7 @@
           <div class="doc-actions">
             <button id="copy" class="ghost" title="Copy markdown">Copy</button>
             <button id="download" class="ghost" title="Download .md">Download</button>
-            <button id="download-report" class="ghost" title="Download the evidence report (JSON)">Evidence</button>
+            <button id="download-report" class="ghost" title="Download the sealed evidence pack (JSON)">Evidence pack</button>
           </div>
         </div>
         <article class="doc" id="doc"><div class="doc-empty">The deliverable appears here as the loop drafts it.</div></article>

@@ -20,6 +20,7 @@ import { createMockAdapters } from './lib/adapters/mock.mjs';
 import * as hivemind from './lib/adapters/hivemind.mjs';
 import { LANES } from './lib/verify.mjs';
 import { deriveEvidence, receiptCompleteness } from './lib/evidence.mjs';
+import { buildEvidencePack } from './lib/evidence-pack.mjs';
 import { deriveStatusDimensions, deriveHeadline } from './lib/status-dims.mjs';
 import { getModels, updateModels, modelsSummary } from './lib/models.mjs';
 
@@ -77,7 +78,9 @@ const headlineOf = (statuses, simulated = false) => {
 // copy of the rules claimed "verified" standing for a same-vendor audit).
 // events.jsonl and report.json never store it: nothing may persist a headline
 // in place of its dimensions.
-const withHeadline = (ev) => (ev?.type === 'status' && ev.dimensions ? { ...ev, headline: headlineOf(ev.dimensions) } : ev);
+const withHeadline = (ev) => (ev?.type === 'status' && ev.dimensions
+  ? { ...ev, headline: headlineOf(ev.dimensions, ev.simulated === true) }
+  : ev);
 // Replayed receipt lines get the same serve-time decoration. Every line is
 // parsed (no substring fast-path: a receipt re-serialized with different JSON
 // spacing must not silently skip decoration); torn or non-JSON lines stream
@@ -89,7 +92,7 @@ const decorateReplayLine = (l) => {
   } catch { return l; }
 };
 
-async function startRun({ goal, lane, depth, ground, targetPath = null, targetToplevel = null, idSalt = null }) {
+async function startRun({ goal, acceptanceContract, lane, depth, ground, targetPath = null, targetToplevel = null, idSalt = null }) {
   const id = newId();
   const dir = join(RUNS_DIR, id);
   const scratchDir = join(dir, 'scratch');
@@ -106,9 +109,9 @@ async function startRun({ goal, lane, depth, ground, targetPath = null, targetTo
   // must never rewrite this run's manifest. This snapshot is the identity of
   // record (requested/resolved); the gate reports back the models it actually ran.
   const models = getModels();
-  const run = { id, goal, lane, depth, ground, targetPath, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models };
+  const run = { id, goal, acceptanceContract, lane, depth, ground, targetPath, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models };
   // The run exists on disk from second zero — a crash must not orphan it.
-  writeFile(join(dir, 'run.json'), JSON.stringify({ id, goal, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, models, startedAt: run.startedAt }, null, 2))
+  writeFile(join(dir, 'run.json'), JSON.stringify({ id, goal, acceptanceContract, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, models, startedAt: run.startedAt }, null, 2))
     .catch((err) => console.error(`[receipts] failed to write run.json for ${id}: ${err.message}`));
   const state = { run, events: [], subscribers: new Set(), answer: null, abort: new AbortController(), writeChain: Promise.resolve() };
   runs.set(id, state);
@@ -141,6 +144,11 @@ async function startRun({ goal, lane, depth, ground, targetPath = null, targetTo
           simulated: ENGINE === 'mock',
         });
         ev.dimensions = run.statuses;
+        // Persist the raw rehearsal fact beside the dimensions. Without it a
+        // fresh-server replay can only derive `unverified`, while Recents and
+        // the page (which saw the earlier run event) correctly say rehearsal.
+        // One receipt must not have two presentation labels.
+        if (ENGINE === 'mock') ev.simulated = true;
       } catch { /* best-effort on the live event; the sealed report is authoritative */ }
     }
     state.events.push(ev);
@@ -177,7 +185,7 @@ async function startRun({ goal, lane, depth, ground, targetPath = null, targetTo
     ENGINE === 'mock' ? (() => { const m = createMockAdapters(); return { claude: m.claude, codex: m.codex }; })()
       : { claude: runClaude, codex: runCodexReview };
 
-  emit('run', { run: { id, goal, lane, depth, ground, targetPath, engine: ENGINE, roundCap: getModels().loop.roundCap } });
+  emit('run', { run: { id, goal, acceptanceContract, lane, depth, ground, targetPath, engine: ENGINE, roundCap: getModels().loop.roundCap } });
   if (!gitOk) emit('log', { line: '⚠ git unavailable — codex reviews will run outside a git repo (different conditions than camus)' });
 
   const runner = lane === 'build' ? (ENGINE === 'mock' ? runMockCodeLoop : runCodeLoop) : runLoop;
@@ -195,7 +203,7 @@ async function startRun({ goal, lane, depth, ground, targetPath = null, targetTo
     // The receipt CARRIES the challenge trail, not just the final deliverable,
     // and tells the truth about its own completeness.
     const evidence = deriveEvidence(state.events);
-    const { degraded: receiptsDegraded, note: receiptsNote } =
+    let { degraded: receiptsDegraded, note: receiptsNote } =
       receiptCompleteness({ lane, evidence, writeFailed: run.receiptsDegraded });
     // The dimensions rode the terminal status event (computed in emit); the
     // receipt seals the same object. Fall back to a fresh derivation only if a
@@ -205,12 +213,33 @@ async function startRun({ goal, lane, depth, ground, targetPath = null, targetTo
       published: !!(result?.artifactPublished || result?.artifactUrl),
       simulated: ENGINE === 'mock',
     });
+    const endedAt = Date.now();
+    let evidencePack = null;
+    let evidencePackError = null;
+    try {
+      evidencePack = buildEvidencePack({
+        goal,
+        acceptanceContract,
+        lane,
+        targetPath,
+        deliverable: run.lastMarkdown,
+        evidence,
+        statuses,
+        models: run.models,
+        simulated: ENGINE === 'mock',
+        createdAt: endedAt,
+      });
+    } catch (err) {
+      evidencePackError = String(err.message || err);
+      receiptsDegraded = true;
+      receiptsNote = [receiptsNote, `the evidence pack could not be sealed: ${evidencePackError}`].filter(Boolean).join('; ');
+    }
     // models is the run-start snapshot and is authoritative — it sits AFTER ...result
     // so a future result field named `models` can never overwrite the sealed pairing
     // (the same reason draft/deliverable are pinned after the spread). simulated is
     // pinned there too: a rehearsal receipt must SAY it is one, permanently.
     const report = JSON.stringify(
-      { id, goal, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', draft: undefined, deliverable: run.lastMarkdown, evidence, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt: Date.now() },
+      { id, goal, acceptanceContract, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', draft: undefined, deliverable: run.lastMarkdown, evidence, evidencePack, evidencePackError, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt },
       null,
       2,
     );
@@ -277,6 +306,7 @@ const BIND = process.env.STUDIO_BIND || '127.0.0.1';
 const SESSION_TOKEN = randomBytes(16).toString('hex');
 const MAX_ACTIVE_RUNS = Number(process.env.STUDIO_MAX_ACTIVE || 3);
 const MAX_GOAL_CHARS = 2000;
+const MAX_ACCEPTANCE_CHARS = 2000;
 
 // Hosted-UI default origins: camus.sh with and without www (the deployed
 // studio UI — a decision, recorded here and in the README);
@@ -396,8 +426,11 @@ const server = http.createServer(async (req, res) => {
     if (path === '/api/runs' && req.method === 'POST') {
       const body = await readBody(req);
       const goal = String(body.goal || '').trim();
+      const acceptanceContract = String(body.acceptanceContract || '').trim();
       if (goal.length < 12) return json(res, 400, { error: 'Write the goal like you would brief a strategist — a sentence or two.' });
       if (goal.length > MAX_GOAL_CHARS) return json(res, 400, { error: `That goal is ${goal.length} characters — keep it under ${MAX_GOAL_CHARS}; a brief is not a corpus.` });
+      if (acceptanceContract.length < 12) return json(res, 400, { error: 'Say what must be true for you to trust the result — this is the audit contract, not a copy of the goal.' });
+      if (acceptanceContract.length > MAX_ACCEPTANCE_CHARS) return json(res, 400, { error: `That trust contract is ${acceptanceContract.length} characters — keep it under ${MAX_ACCEPTANCE_CHARS}.` });
       const active = [...runs.values()].filter((s2) => ['running', 'needs_human'].includes(s2.run.status)).length;
       if (active >= MAX_ACTIVE_RUNS) return json(res, 429, { error: `${active} runs are already active — the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}.` });
       const lane = body.lane === 'build' ? 'build' : LANES[body.lane] ? body.lane : 'freeform';
@@ -421,7 +454,7 @@ const server = http.createServer(async (req, res) => {
           targetToplevel = v.toplevel;
         }
       }
-      const id = await startRun({ goal, lane, depth: body.depth === 'standard' ? 'standard' : 'quick', ground: !!body.ground, targetPath, targetToplevel });
+      const id = await startRun({ goal, acceptanceContract, lane, depth: body.depth === 'standard' ? 'standard' : 'quick', ground: !!body.ground, targetPath, targetToplevel });
       return json(res, 201, { id });
     }
 
@@ -531,10 +564,10 @@ const server = http.createServer(async (req, res) => {
           if (!v.ok) return json(res, 400, { error: `the original target no longer validates: ${v.error}` });
           if (activeBuilds.size > 0) return json(res, 409, { error: 'a build run is already going — one gate at a time' });
           activeBuilds.add(v.toplevel);
-          const newId = await startRun({ goal: meta.goal, lane: 'build', depth: 'quick', ground: false, targetPath: v.path, targetToplevel: v.toplevel, idSalt: meta.idSalt });
+          const newId = await startRun({ goal: meta.goal, acceptanceContract: meta.acceptanceContract, lane: 'build', depth: 'quick', ground: false, targetPath: v.path, targetToplevel: v.toplevel, idSalt: meta.idSalt });
           return json(res, 201, { id: newId });
         }
-        const newId = await startRun({ goal: meta.goal, lane: 'build', depth: 'quick', ground: false, targetPath: meta.targetPath, idSalt: meta.idSalt });
+        const newId = await startRun({ goal: meta.goal, acceptanceContract: meta.acceptanceContract, lane: 'build', depth: 'quick', ground: false, targetPath: meta.targetPath, idSalt: meta.idSalt });
         return json(res, 201, { id: newId });
       }
 
