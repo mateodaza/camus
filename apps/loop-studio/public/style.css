@@ -58,6 +58,8 @@ a { color: inherit; }
 .hint.preflight { color: var(--red); margin-top: 8px; }
 .scope { margin: 14px auto 0; max-width: 460px; font-size: 13.5px; color: var(--muted); line-height: 1.5; }
 .tools { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
+/* the open panel's button reads as pressed — one panel at a time */
+.tools .ghost.active { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 
 /* setup + settings panels */
 .panel { text-align: left; }
@@ -118,10 +120,6 @@ textarea:focus { outline: none; border-color: var(--ink); }
 .lane.selected { border-color: var(--ink); background: var(--code); }
 
 .row { display: flex; gap: 36px; align-items: flex-start; flex-wrap: wrap; }
-.seg { display: inline-flex; border: 1px solid var(--code-line); border-radius: 2px; overflow: hidden; font-family: var(--mono); font-size: 12.5px; }
-.seg button { padding: 7px 16px; color: var(--muted); }
-.seg button:hover { color: var(--ink); }
-.seg button.selected { background: var(--ink); color: var(--paper); }
 .toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; padding: 5px 0; }
 .toggle input { accent-color: var(--ink); width: 15px; height: 15px; }
 .toggle:has(input:disabled) { opacity: .45; cursor: default; }

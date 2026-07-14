@@ -22,7 +22,7 @@ import { LANES } from './lib/verify.mjs';
 import { deriveEvidence, receiptCompleteness } from './lib/evidence.mjs';
 import { buildEvidencePack } from './lib/evidence-pack.mjs';
 import { deriveStatusDimensions, deriveHeadline } from './lib/status-dims.mjs';
-import { getModels, updateModels, modelsSummary } from './lib/models.mjs';
+import { getModels, updateModels, modelsSummary, modelCatalog } from './lib/models.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dirname, 'public');
@@ -391,6 +391,9 @@ const server = http.createServer(async (req, res) => {
       const m = getModels();
       return json(res, 200, {
         maker: m.maker, reviewer: m.reviewer, loop: m.loop,
+        // What the settings pickers may offer: the machine's real options,
+        // with the current decision always present.
+        catalog: modelCatalog(),
         envOverrides: ['CLAUDE_MODEL', 'CODEX_MODEL', 'CODEX_EFFORT', 'ROUND_CAP'].filter((k) => process.env[k] !== undefined),
       });
     }

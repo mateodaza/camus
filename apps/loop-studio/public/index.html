@@ -44,13 +44,14 @@
         <span id="settings-note" class="hint"></span>
       </div>
       <div class="settings-grid">
+        <!-- Model choices are PICKERS over the machine's real options (the
+             server's catalog), never free text: a model nobody can run is not
+             a decision anyone made. Options are filled when the panel opens. -->
         <label>maker (drafts &amp; fixes)
-          <input id="set-maker" list="maker-models" autocomplete="off" />
-          <datalist id="maker-models"><option value="sonnet"/><option value="opus"/><option value="haiku"/></datalist>
+          <select id="set-maker"></select>
         </label>
         <label>reviewer (codex)
-          <input id="set-reviewer" list="reviewer-models" autocomplete="off" />
-          <datalist id="reviewer-models"><option value="gpt-5.4"/><option value="gpt-5.5"/><option value="gpt-5.4-mini"/><option value="gpt-5.6-sol"/></datalist>
+          <select id="set-reviewer"></select>
         </label>
         <label>reviewer effort
           <select id="set-effort">
@@ -59,6 +60,12 @@
         </label>
         <label>review rounds (1–6)
           <input id="set-roundcap" type="number" min="1" max="6" step="1" />
+        </label>
+        <label>depth (words lanes)
+          <select id="set-depth">
+            <option value="quick">Quick: about 700–1,100 words, 4–6 sources</option>
+            <option value="standard">Standard: about 1,200–1,800 words, 6–10 sources</option>
+          </select>
         </label>
       </div>
       <div class="panel-actions">
@@ -104,22 +111,20 @@
         <div id="preflight-note" class="hint preflight hidden"></div>
       </div>
 
+      <!-- Depth moved into Settings: it is a run preference, not a briefing
+           decision, and the form stays focused on goal, contract, and lane. -->
       <div class="row">
-        <div>
-          <label class="lbl">Depth</label>
-          <div class="seg" id="depth">
-            <button data-v="quick" class="selected" title="≈700–1,100 words, 4–6 sources">Quick</button>
-            <button data-v="standard" title="≈1,200–1,800 words, 6–10 sources">Standard</button>
-          </div>
-          <div class="hint">Quick ≈ 700–1,100 words, 4–6 sources · Standard ≈ 1,200–1,800, 6–10</div>
-        </div>
         <div>
           <label class="lbl">Grounding</label>
           <label class="toggle" id="ground-wrap">
             <input type="checkbox" id="ground" />
             <span>Ground in Hivemind</span>
           </label>
-          <div class="hint" id="ground-hint">Drafts can lean on Hivemind — Myosin's private research knowledge (on staging today).</div>
+          <div class="hint" id="ground-hint">Drafts can lean on Hivemind, Myosin's private research knowledge (on staging today).</div>
+        </div>
+        <div>
+          <label class="lbl">Depth</label>
+          <div class="hint" id="depth-note">Quick, from Settings. Change it there; it applies to the next run.</div>
         </div>
       </div>
 

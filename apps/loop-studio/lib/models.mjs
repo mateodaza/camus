@@ -7,6 +7,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { homedir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FILE_PATH = join(__dirname, '..', 'checks', 'models.json');
@@ -68,4 +69,23 @@ export function updateModels({ maker, reviewer, effort, roundCap }) {
 export function modelsSummary() {
   const m = getModels();
   return `maker ${m.maker.model} · reviewer ${m.reviewer.model} (${m.reviewer.effort}) · rounds ${m.loop.roundCap}`;
+}
+
+// The pickable model lists for the settings panel. Makers are the Claude CLI's
+// stable aliases; reviewers come from codex's own model cache when it exists
+// (the machine's real options) with a curated fallback. The CURRENT decision is
+// always present in its list, so the picker can never show a value it refuses
+// to represent.
+export function modelCatalog() {
+  const maker = ['haiku', 'sonnet', 'opus'];
+  let reviewer = ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-sol'];
+  try {
+    const cache = JSON.parse(readFileSync(join(homedir(), '.codex', 'models_cache.json'), 'utf8'));
+    const slugs = (cache.models ?? []).map((m) => m.slug).filter((s) => typeof s === 'string' && s);
+    if (slugs.length) reviewer = slugs;
+  } catch { /* cache absent: the curated list stands */ }
+  const m = getModels();
+  if (!maker.includes(m.maker.model)) maker.unshift(m.maker.model);
+  if (!reviewer.includes(m.reviewer.model)) reviewer.unshift(m.reviewer.model);
+  return { maker, reviewer };
 }

@@ -97,7 +97,9 @@ function renderMd(md) {
 
 const state = {
   lane: 'research_memo',
-  depth: 'quick',
+  // Depth is a run preference, set from Settings and remembered locally. It is
+  // not part of the model decision record (checks/models.json).
+  depth: ['quick', 'standard'].includes(localStorage.getItem('cls-depth')) ? localStorage.getItem('cls-depth') : 'quick',
   runId: null,
   es: null,
   revs: [],
@@ -281,10 +283,10 @@ function renderInstall() {
   // The waiting line: this page keeps knocking until the server answers.
   const wait = el('div', 'install-wait');
   wait.appendChild(el('span', 'dot'));
-  wait.appendChild(el('span', null, `waiting for the studio at ${API || 'http://localhost:1913'} — it connects by itself once the server answers, then you brief a goal and pick a lane below`));
+  wait.appendChild(el('span', null, `waiting for the studio at ${API || 'http://localhost:1913'}. It connects by itself once the server answers; then you brief a goal and pick a lane below.`));
   box.appendChild(wait);
 
-  box.classList.remove('hidden');
+  setPanel('setup');
 
   clearInterval(installRetry);
   installRetry = setInterval(async () => {
@@ -292,7 +294,7 @@ function renderInstall() {
       const res = await fetch(`${API}/api/status`);
       if (!res.ok) return;
       clearInterval(installRetry);
-      box.classList.add('hidden');
+      setPanel(null);
       $('pill-engine').className = 'pill';
       $('pill-hivemind').className = 'pill';
       boot();
@@ -345,7 +347,7 @@ function renderSetup(report) {
       box.appendChild(fix);
     }
   }
-  box.classList.remove('hidden');
+  setPanel('setup');
 }
 
 async function openSetup(deep) {
@@ -359,8 +361,32 @@ async function openSetup(deep) {
   }
 }
 
+// One panel at a time, open INSTANTLY, and the button says which one is live.
+// The old toggles waited for the doctor's slow connector probe before showing
+// anything (a long blank pause that read as broken) and let both panels stack.
+function setPanel(which) { // 'setup' | 'settings' | null
+  for (const name of ['setup', 'settings']) {
+    const open = which === name;
+    $(`${name}-panel`).classList.toggle('hidden', !open);
+    $(`open-${name}`).classList.toggle('active', open);
+    $(`open-${name}`).setAttribute('aria-expanded', String(open));
+  }
+}
+
 $('open-setup').addEventListener('click', () => {
-  if (!$('setup-panel').classList.contains('hidden')) { $('setup-panel').classList.add('hidden'); return; }
+  if (!$('setup-panel').classList.contains('hidden')) { setPanel(null); return; }
+  setPanel('setup');
+  // Instant feedback, then the real report: the deep pass probes the Hivemind
+  // connector round-trip and can take a while.
+  const box = $('setup-panel');
+  box.innerHTML = '';
+  const head = el('div', 'panel-head');
+  head.appendChild(el('span', 'lbl', 'Setup'));
+  box.appendChild(head);
+  const wait = el('div', 'install-wait');
+  wait.appendChild(el('span', 'dot'));
+  wait.appendChild(el('span', null, 'checking this machine: CLI versions, sign-in, the gate, and the Hivemind connector…'));
+  box.appendChild(wait);
   openSetup(true);
 });
 
@@ -368,26 +394,54 @@ $('open-setup').addEventListener('click', () => {
 // Settings panel — the decision record, editable
 // ---------------------------------------------------------------------------
 
+// A <select> filled from the server's catalog: the machine's real options,
+// with the current decision always selectable.
+function fillPicker(sel, options, current) {
+  sel.innerHTML = '';
+  const list = options.includes(current) ? options : [current, ...options];
+  for (const value of list) {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = value;
+    sel.appendChild(o);
+  }
+  sel.value = current;
+}
+
 async function openSettings() {
   const panel = $('settings-panel');
-  if (!panel.classList.contains('hidden')) { panel.classList.add('hidden'); return; }
+  if (!panel.classList.contains('hidden')) { setPanel(null); return; }
   try {
     const c = await (await fetch(`${API}/api/config`)).json();
-    $('set-maker').value = c.maker.model;
-    $('set-reviewer').value = c.reviewer.model;
+    fillPicker($('set-maker'), c.catalog?.maker ?? ['haiku', 'sonnet', 'opus'], c.maker.model);
+    fillPicker($('set-reviewer'), c.catalog?.reviewer ?? ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5'], c.reviewer.model);
     $('set-effort').value = c.reviewer.effort;
     $('set-roundcap').value = c.loop.roundCap;
+    $('set-depth').value = state.depth;
     $('settings-env').textContent = c.envOverrides.length
-      ? `note: ${c.envOverrides.join(', ')} set in the environment — env wins over these fields this session`
+      ? `note: ${c.envOverrides.join(', ')} set in the environment. Env wins over these fields this session.`
       : '';
     $('settings-note').textContent = '';
-    panel.classList.remove('hidden');
+    setPanel('settings');
   } catch {
     $('settings-note').textContent = 'server unreachable';
   }
 }
 
 $('open-settings').addEventListener('click', openSettings);
+
+// Depth applies immediately (it is a preference, not a saved decision) and the
+// launch form says what will run.
+function reflectDepth() {
+  const note = $('depth-note');
+  if (note) note.textContent = `${state.depth === 'standard' ? 'Standard' : 'Quick'}, from Settings. Change it there; it applies to the next run.`;
+}
+$('set-depth').addEventListener('change', () => {
+  state.depth = $('set-depth').value === 'standard' ? 'standard' : 'quick';
+  localStorage.setItem('cls-depth', state.depth);
+  reflectDepth();
+});
+reflectDepth();
 
 $('save-settings').addEventListener('click', async () => {
   $('settings-note').textContent = 'saving…';
@@ -417,13 +471,6 @@ $('lanes').addEventListener('click', (e) => {
   state.lane = btn.dataset.lane;
   document.querySelectorAll('.lane').forEach((l) => l.classList.toggle('selected', l === btn));
   $('target-wrap').classList.toggle('hidden', state.lane !== 'build');
-});
-
-$('depth').addEventListener('click', (e) => {
-  const btn = e.target.closest('button');
-  if (!btn) return;
-  state.depth = btn.dataset.v;
-  document.querySelectorAll('#depth button').forEach((b) => b.classList.toggle('selected', b === btn));
 });
 
 $('start').addEventListener('click', async () => {
