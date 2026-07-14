@@ -459,6 +459,22 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   process.env.ROUND_CAP = 'three';
   assert.equal(getModels().loop.roundCap, 3, 'NaN cap falls back to 3, never skips review');
   delete process.env.ROUND_CAP;
+
+  // reviewer model and effort are independent decisions: their provenance must
+  // not be conflated (an env model with a file effort, or the reverse).
+  const base = getModels().reviewer;
+  assert.equal(base.modelSource, 'checks/models.json', 'default reviewer model provenance is the file');
+  assert.equal(base.effortSource, 'checks/models.json', 'default reviewer effort provenance is the file');
+  process.env.CODEX_MODEL = 'probe-reviewer';
+  let split = getModels().reviewer;
+  assert.equal(split.modelSource, 'env:CODEX_MODEL', 'an env model names the env as the model source');
+  assert.equal(split.effortSource, 'checks/models.json', 'effort still traces to the file when only the model is overridden');
+  delete process.env.CODEX_MODEL;
+  process.env.CODEX_EFFORT = 'high';
+  split = getModels().reviewer;
+  assert.equal(split.modelSource, 'checks/models.json', 'model still traces to the file when only the effort is overridden');
+  assert.equal(split.effortSource, 'env:CODEX_EFFORT', 'an env effort names the env as the effort source');
+  delete process.env.CODEX_EFFORT;
 }
 
 // --- build lane: spend-free refusals + fail-closed report parsing ------------

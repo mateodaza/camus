@@ -29,7 +29,11 @@ export function getModels() {
     reviewer: {
       model: process.env.CODEX_MODEL || required(file.reviewer?.model, 'reviewer.model'),
       effort: process.env.CODEX_EFFORT || file.reviewer?.effort || 'medium',
-      source: process.env.CODEX_MODEL ? 'env:CODEX_MODEL' : 'checks/models.json',
+      // Model and effort are two decisions and can come from different places
+      // (CODEX_MODEL env but effort from the file, or vice versa), so each names
+      // its own provenance — a single conflated `source` would misattribute one.
+      modelSource: process.env.CODEX_MODEL ? 'env:CODEX_MODEL' : 'checks/models.json',
+      effortSource: process.env.CODEX_EFFORT ? 'env:CODEX_EFFORT' : 'checks/models.json',
     },
     loop: {
       // NaN-proof: a typo'd cap must never skip the review loop.
