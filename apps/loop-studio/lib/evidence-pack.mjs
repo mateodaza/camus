@@ -7,6 +7,8 @@
 import { createHash } from 'node:crypto';
 import { seal } from '../../../packages/trust/lib/canonical.mjs';
 import { validateEvidencePack } from '../../../packages/trust/lib/validate.mjs';
+import { buildClaimLedger, claimAssessmentEvidenceHash } from './claims.mjs';
+import { buildCoverageLedger, coverageAssessmentEvidenceHash } from './contract.mjs';
 
 const hashText = (text) => `sha256:${createHash('sha256').update(String(text), 'utf8').digest('hex')}`;
 const named = (provider, value) => `${provider}:${value || 'not-recorded'}`;
@@ -105,15 +107,42 @@ export function buildEvidencePack({
   const head = lane === 'build'
     ? (evidence?.gateReport?.commit_sha ?? evidence?.gateReport?.commit ?? null)
     : null;
+  const finalRev = (evidence?.revisions ?? []).at(-1)?.rev ?? null;
+  const finalReview = finalRev === null
+    ? null
+    : (evidence?.rounds ?? []).filter((r) => r.rev === finalRev).at(-1) ?? null;
+  // Scripted reviewer decisions are presentation for the rehearsal arc, never
+  // semantic evidence. A live final-revision audit may populate the decisions;
+  // absent/stale assessment coverage remains explicitly unchecked.
+  const claimAssessments = simulated ? [] : (finalReview?.claimAssessments ?? []);
+  const coverageAssessments = simulated ? [] : (finalReview?.coverageAssessments ?? []);
+  const claims = lane === 'build'
+    ? null
+    : buildClaimLedger(deliverable, {
+        groundingResults: evidence?.grounding?.results ?? [],
+        assessments: claimAssessments,
+      });
+  // The Studio words lanes emit structured coverage. The build gate already
+  // receives the acceptance contract, but does not yet return per-criterion
+  // assessments; null is more honest than manufacturing unclear decisions.
+  const contractCoverage = lane === 'build'
+    ? null
+    : buildCoverageLedger(acceptanceContract, { assessments: coverageAssessments });
+  const claimSession = claimAssessments.map((a) =>
+    `claim assessment ${a.marker}: ${a.decision}; evidence_hash=${claimAssessmentEvidenceHash(a) ?? 'none'}`,
+  );
+  const coverageSession = coverageAssessments.map((a) =>
+    `coverage assessment ${a.criterion_id}: ${a.decision}; evidence_hash=${coverageAssessmentEvidenceHash(a) ?? 'none'}`,
+  );
   const pack = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     goal,
     acceptance_contract: acceptanceContract,
     artifact: lane === 'build'
-      ? { kind: 'code', repo: targetPath, head, diff_hash: null, changed_files: null, deliverable_hash: null, claims: null }
-      : { kind: 'research', repo: null, head: null, diff_hash: null, changed_files: null, deliverable_hash: deliverable == null ? null : hashText(deliverable), claims: null },
+      ? { kind: 'code', repo: targetPath, head, diff_hash: null, changed_files: null, deliverable_hash: null, claims: null, contract_coverage: null }
+      : { kind: 'research', repo: null, head: null, diff_hash: null, changed_files: null, deliverable_hash: deliverable == null ? null : hashText(deliverable), claims, contract_coverage: contractCoverage },
     verification: { command: null, checks: verificationChecks(evidence) },
-    session_log: ids.session,
+    session_log: [...ids.session, ...claimSession, ...coverageSession],
     pairing: {
       schemaVersion: 1,
       executor: ids.executor,

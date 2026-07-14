@@ -25,11 +25,25 @@ const SHA_RE = /^[0-9a-f]{7,64}$/i;
 // without that tag. Only APPROVED|REVISE is a usable verdict: a round that ran
 // but produced an unreadable/invalid verdict (UNKNOWN, or any other string)
 // broke — it is infra_failed, and must NEVER fall back to an older clean round.
-function auditFromReviews(rounds, { requireGateSource }) {
+function auditFromReviews(rounds, { requireGateSource, expectedRev = null }) {
   const applicable = (rounds ?? []).filter((r) => !requireGateSource || r.source === 'camus_gate_review');
   if (!applicable.length) return 'not_run';
-  const verdict = applicable.at(-1).verdict;
-  if (verdict === 'APPROVED') return 'independent_clean';
+  const latest = applicable.at(-1);
+  // Words artifacts are mutable markdown revisions. A verdict over rev N says
+  // nothing about a verify-fix that produced rev N+1. Missing revision binding
+  // on a new receipt fails closed; build has its separate commit-SHA binding.
+  if (expectedRev !== null && latest.rev !== expectedRev) return 'not_run';
+  const verdict = latest.verdict;
+  // APPROVED means no blocking finding, not necessarily no finding. Low
+  // findings and explicit unchecked claim assessments are still caveats on
+  // the record and must derive verified_with_findings rather than the plain
+  // verified headline.
+  if (verdict === 'APPROVED') {
+    const hasCaveats = (latest.findings ?? []).length > 0
+      || (latest.claimAssessments ?? []).some((a) => a.decision !== 'supported')
+      || (latest.coverageAssessments ?? []).some((a) => a.decision !== 'met');
+    return hasCaveats ? 'independent_findings' : 'independent_clean';
+  }
   if (verdict === 'REVISE') return 'independent_findings';
   return 'infra_failed'; // a round ran but its latest verdict is unreadable/invalid
 }
@@ -69,7 +83,10 @@ export function verificationAndAudit(lane, evidence) {
   }
   return {
     verification: verificationFrom((evidence?.verify ?? []).at(-1) ?? null, null),
-    audit: auditFromReviews(evidence?.rounds, { requireGateSource: false }),
+    audit: auditFromReviews(evidence?.rounds, {
+      requireGateSource: false,
+      expectedRev: (evidence?.revisions ?? []).at(-1)?.rev ?? null,
+    }),
   };
 }
 

@@ -11,9 +11,11 @@ export function deriveEvidence(events) {
   const groundingQueries = of('session')
     .filter((e) => e.actor === 'maker' && String(e.line || '').startsWith('knowledge_search: '))
     .map((e) => String(e.line).slice('knowledge_search: '.length));
-  const groundingResults = of('grounding_evidence').flatMap((e) => e.results ?? []);
+  const groundingResults = of('grounding_evidence').flatMap((e) => (e.results ?? []).map((r) => ({ ...r, retrievedAt: Number.isInteger(e.at) ? e.at : null })));
   const reviews = of('review').map((r) => ({
     round: r.round,
+    scope: r.scope ?? 'round',
+    rev: Number.isInteger(r.rev) ? r.rev : null,
     verdict: r.verdict,
     rawVerdict: r.rawVerdict ?? null,
     confidence: r.confidence ?? null,
@@ -21,6 +23,17 @@ export function deriveEvidence(events) {
     source: r.source ?? null,
     reviewerModel: r.reviewerModel ?? null,
     reviewerEffort: r.reviewerEffort ?? null,
+    at: Number.isInteger(r.at) ? r.at : null,
+    claimAssessments: (r.claimAssessments ?? []).map((a) => ({
+      marker: a.marker,
+      decision: a.decision,
+      evidence: a.evidence,
+    })),
+    coverageAssessments: (r.coverageAssessments ?? []).map((a) => ({
+      criterion_id: a.criterion_id,
+      decision: a.decision,
+      evidence: a.evidence,
+    })),
     findings: (r.findings ?? []).map((f) => ({
       severity: f.severity,
       priority: f.priority ?? null,
@@ -69,7 +82,7 @@ export function deriveEvidence(events) {
 // Honest completeness → { degraded, note }. A write failure always degrades.
 // A build ignition that produced no review round and no gate report has
 // nothing to verify, whatever its status — claiming otherwise was the bug.
-export function receiptCompleteness({ lane, evidence, writeFailed }) {
+export function receiptCompleteness({ lane, evidence, writeFailed, status = null }) {
   if (writeFailed) return { degraded: true, note: 'a receipt file failed to write; this trail is incomplete' };
   if (lane === 'build') {
     if (!evidence.gateReport) {
@@ -96,8 +109,17 @@ export function receiptCompleteness({ lane, evidence, writeFailed }) {
     }
     return { degraded: false, note: null };
   }
-  if (lane !== 'build' && evidence.rounds.length === 0) {
-    return { degraded: true, note: 'the run produced no independent review round; there is nothing here to verify' };
+  if (lane !== 'build') {
+    if (evidence.rounds.length === 0) {
+      return { degraded: true, note: 'the run produced no independent review round; there is nothing here to verify' };
+    }
+    if (['done', 'done_with_findings'].includes(status)) {
+      const { verification, audit } = verificationAndAudit(lane, evidence);
+      const missing = [];
+      if (!['independent_clean', 'independent_findings'].includes(audit)) missing.push('an independent audit bound to the final revision');
+      if (!['passed', 'passed_with_caveats'].includes(verification)) missing.push('a conclusive deterministic verification');
+      if (missing.length) return { degraded: true, note: `the successful words run is missing ${missing.join(', ')}; do not treat it as a complete receipt` };
+    }
   }
   return { degraded: false, note: null };
 }

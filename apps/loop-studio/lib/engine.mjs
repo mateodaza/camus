@@ -7,6 +7,8 @@
 import { planPrompt, makePrompt, reviewPrompt, fixPrompt } from './prompts.mjs';
 import { runVerify } from './verify.mjs';
 import { getModels } from './models.mjs';
+import { extractClaimCandidates } from './claims.mjs';
+import { extractContractCriteria } from './contract.mjs';
 
 // Run decisions (models, effort, round cap) resolve per run via getModels().
 
@@ -42,6 +44,10 @@ export async function runLoop(run, ctx) {
   // sealed receipt. model/effort are passed explicitly into each adapter below.
   const snapshot = run.models ?? getModels();
   const ROUND_CAP = snapshot.loop.roundCap;
+  // Acceptance coverage must be comparable across rounds and future arms.
+  // Extract once from the immutable run-start contract; the auditor judges
+  // these criteria but never gets to rewrite their boundaries.
+  const criteria = extractContractCriteria(run.acceptanceContract);
   const makerModel = snapshot.maker?.model;
   const reviewerModel = snapshot.reviewer?.model;
   const reviewerEffort = snapshot.reviewer?.effort;
@@ -194,14 +200,22 @@ export async function runLoop(run, ctx) {
     let priorKeys = new Set();
     const priorFindings = [];
     let lastReview = null;
+    // The audit binds to a concrete deliverable revision. A deterministic
+    // verify-fix may change the artifact AFTER the ordinary review loop; that
+    // newer revision must earn a fresh closure audit before it can inherit
+    // independent standing.
+    let auditedRev = null;
 
     for (let round = 1; round <= ROUND_CAP; round++) {
       stage('review', 'active', { round });
       emit('round', { round, cap: ROUND_CAP });
+      const claims = extractClaimCandidates(draft, { groundingResults: groundingEvidence()?.results ?? [] });
       lastReview = await withRetries(`review round ${round}`, () =>
         adapters.codex({
           model: reviewerModel,
-          prompt: reviewPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, round, priorFindings, answers: contentAnswers(), groundingEvidence: groundingEvidence() }),
+          prompt: reviewPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, round, priorFindings, answers: contentAnswers(), groundingEvidence: groundingEvidence(), claims, criteria }),
+          claims,
+          criteria,
           cwd: ctx.scratchDir,
           effort: reviewerEffort,
           signal,
@@ -212,12 +226,17 @@ export async function runLoop(run, ctx) {
       );
       emit('review', {
         round,
+        scope: 'round',
+        rev,
         verdict: lastReview.verdict,
         findings: lastReview.findings,
         questions: lastReview.questions,
         reviewerModel: lastReview.reviewerModel ?? reviewerModel ?? null,
         reviewerEffort: lastReview.reviewerEffort ?? reviewerEffort ?? null,
+        claimAssessments: lastReview.claimAssessments ?? [],
+        coverageAssessments: lastReview.coverageAssessments ?? [],
       });
+      auditedRev = rev;
       for (const f of lastReview.findings) emit('finding', { round, ...f });
       stage('review', 'done', { round, verdict: lastReview.verdict });
 
@@ -298,6 +317,7 @@ export async function runLoop(run, ctx) {
 
     // ---- Deterministic verify ----------------------------------------------
     let verifyFixBudget = 1;
+    let closureFixBudget = 1;
     for (;;) {
       if (signal.aborted) throw new Error('aborted');
       stage('verify', 'active');
@@ -313,6 +333,84 @@ export async function runLoop(run, ctx) {
         if (result.warnings || result.skipped) {
           doneWithFindings = true;
           log(`Verify green with caveats: ${result.warnings} warning(s), ${result.skipped} skipped check(s); recorded, not hidden.`);
+        }
+        // Verification may have repaired the artifact after the last audit.
+        // Never let an older clean verdict travel to a newer deliverable hash.
+        if (auditedRev !== rev) {
+          log(`The deterministic repair changed rev ${auditedRev ?? 'unreviewed'} to rev ${rev}. Running a fresh closure audit on the exact final artifact.`);
+          stage('review', 'active', { scope: 'closure', rev });
+          const closureClaims = extractClaimCandidates(draft, { groundingResults: groundingEvidence()?.results ?? [] });
+          lastReview = await withRetries('closure audit', () =>
+            adapters.codex({
+              model: reviewerModel,
+              prompt: reviewPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, round: 'closure', priorFindings, answers: contentAnswers(), groundingEvidence: groundingEvidence(), claims: closureClaims, criteria, closure: true }),
+              claims: closureClaims,
+              criteria,
+              cwd: ctx.scratchDir,
+              effort: reviewerEffort,
+              signal,
+              onTick: log,
+              onSession: sess('reviewer'),
+              receiptDir: `${ctx.receiptsDir}/review-closure-rev-${rev}`,
+            }),
+          );
+          emit('review', {
+            round: 'closure',
+            scope: 'closure',
+            rev,
+            verdict: lastReview.verdict,
+            findings: lastReview.findings,
+            questions: lastReview.questions,
+            reviewerModel: lastReview.reviewerModel ?? reviewerModel ?? null,
+            reviewerEffort: lastReview.reviewerEffort ?? reviewerEffort ?? null,
+            claimAssessments: lastReview.claimAssessments ?? [],
+            coverageAssessments: lastReview.coverageAssessments ?? [],
+          });
+          for (const f of lastReview.findings) emit('finding', { round: 'closure', scope: 'closure', rev, ...f });
+          stage('review', 'done', { scope: 'closure', rev, verdict: lastReview.verdict });
+          auditedRev = rev;
+
+          for (const q of lastReview.questions) await ask({ kind: 'decision', text: q });
+          if (lastReview.verdict === 'APPROVED') {
+            if (lastReview.nonblocking?.length) doneWithFindings = true;
+            log(`Closure audit on rev ${rev}: clean.`);
+            break;
+          }
+
+          if (closureFixBudget > 0) {
+            closureFixBudget -= 1;
+            stage('fix', 'active', { closure: true });
+            const fixRes = await withRetries('closure-fix', () =>
+              adapters.claude({
+                model: makerModel,
+                stage: 'fix',
+                prompt: fixPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, findings: lastReview.blocking, answers: contentAnswers(), viaClaude: grounding === 'claude' }),
+                cwd: ctx.scratchDir,
+                signal,
+                onTick: log,
+                onSession: sess('maker'),
+              }),
+            );
+            absorbHivemindEvidence(fixRes);
+            costUsd += fixRes.costUsd || 0;
+            draft = normalizeDeliverable(fixRes.text);
+            rev += 1;
+            emit('revision', { rev, markdown: draft });
+            emit('cost', { costUsd });
+            stage('fix', 'done', { closure: true });
+            continue; // deterministic checks and closure audit both rerun
+          }
+
+          const choice = await ask({
+            kind: 'stuck',
+            text: `The closure audit still finds ${lastReview.blocking.length} blocking issue(s) on the exact verified artifact. Accept it with those findings on the record, or stop?`,
+            options: ['Accept and ship (with findings on record)', 'Stop the run'],
+          });
+          if (choice.startsWith('Accept')) {
+            doneWithFindings = true;
+            break;
+          }
+          throw new Error('stopped_by_human');
         }
         break;
       }

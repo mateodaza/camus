@@ -21,8 +21,10 @@ import * as hivemind from './lib/adapters/hivemind.mjs';
 import { LANES } from './lib/verify.mjs';
 import { deriveEvidence, receiptCompleteness } from './lib/evidence.mjs';
 import { buildEvidencePack } from './lib/evidence-pack.mjs';
+import { buildAuditReplayPack, createAuditReplayExperiment, finalizeAuditReplayExperiment } from './lib/audit-replay.mjs';
 import { deriveStatusDimensions, deriveHeadline } from './lib/status-dims.mjs';
 import { getModels, updateModels, modelsSummary, modelCatalog } from './lib/models.mjs';
+import { reviewPrompt } from './lib/prompts.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dirname, 'public');
@@ -204,7 +206,7 @@ async function startRun({ goal, acceptanceContract, lane, depth, ground, targetP
     // and tells the truth about its own completeness.
     const evidence = deriveEvidence(state.events);
     let { degraded: receiptsDegraded, note: receiptsNote } =
-      receiptCompleteness({ lane, evidence, writeFailed: run.receiptsDegraded });
+      receiptCompleteness({ lane, evidence, writeFailed: run.receiptsDegraded, status: run.status });
     // The dimensions rode the terminal status event (computed in emit); the
     // receipt seals the same object. Fall back to a fresh derivation only if a
     // run somehow ended without a status event. The headline is NEVER sealed.
@@ -256,6 +258,239 @@ async function startRun({ goal, acceptanceContract, lane, depth, ground, targetP
   });
 
   return id;
+}
+
+// Re-audit one already-sealed research artifact. This is a new receipt over the
+// SAME artifact, not a new loop: no maker runs, no knowledge is re-queried, the
+// source verification and human decisions remain bound, and no fallback is
+// permitted if the frozen reviewer disappears.
+async function startAuditReplay({ sourceId, sourceReport, reviewerModel, effort, catalog }) {
+  const id = newId();
+  const dir = join(RUNS_DIR, id);
+  const scratchDir = join(dir, 'scratch');
+  await mkdir(scratchDir, { recursive: true });
+  await new Promise((resolve) => {
+    const child = spawn('git', ['init', '-q'], { cwd: scratchDir });
+    child.on('error', () => resolve(false));
+    child.on('close', () => resolve(true));
+  });
+
+  const sourcePack = sourceReport.evidencePack;
+  const startedAt = Date.now();
+  const experiment = createAuditReplayExperiment({
+    sourceRunId: sourceId,
+    sourcePack,
+    sourceEvidence: sourceReport.evidence,
+    sourceDeliverable: sourceReport.deliverable,
+    reviewerModel,
+    effort,
+    catalog,
+    createdAt: startedAt,
+  });
+  const sourceGoal = sourceReport.goal ?? sourcePack.goal;
+  const sourceContract = sourceReport.acceptanceContract ?? sourcePack.acceptance_contract;
+  const displayGoal = `Audit-only replay: ${sourceGoal}`;
+  const run = {
+    id,
+    goal: sourceGoal,
+    displayGoal,
+    acceptanceContract: sourceContract,
+    lane: 'audit_replay',
+    depth: sourceReport.depth,
+    ground: false,
+    targetPath: null,
+    status: 'running',
+    startedAt,
+    lastMarkdown: sourceReport.deliverable,
+    rev: sourceReport.evidence?.revisions?.at(-1)?.rev ?? sourceReport.rev ?? 1,
+    costUsd: 0,
+    receiptsDegraded: false,
+    sourceRunId: sourceId,
+    experiment,
+  };
+  await writeFile(join(dir, 'run.json'), JSON.stringify({
+    id,
+    goal: run.goal,
+    displayGoal,
+    acceptanceContract: run.acceptanceContract,
+    lane: run.lane,
+    engine: ENGINE,
+    sourceRunId: sourceId,
+    experiment,
+    startedAt,
+  }, null, 2));
+
+  const state = { run, events: [], subscribers: new Set(), answer: null, abort: new AbortController(), writeChain: Promise.resolve() };
+  runs.set(id, state);
+  const persistFail = (what, err) => {
+    console.error(`[receipts] failed to write ${what} for audit replay ${id}: ${err.message}`);
+    run.receiptsDegraded = true;
+  };
+  const emit = (type, data) => {
+    const ev = { type, at: Date.now(), ...data };
+    if (type === 'status') {
+      run.status = data.status;
+      if (data.dimensions) {
+        run.statuses = data.dimensions;
+        ev.dimensions = data.dimensions;
+      }
+      if (ENGINE === 'mock') ev.simulated = true;
+    }
+    state.events.push(ev);
+    const line = JSON.stringify(ev);
+    state.writeChain = state.writeChain
+      .then(() => appendFile(join(dir, 'events.jsonl'), line + '\n'))
+      .catch((err) => persistFail('events.jsonl', err));
+    const live = type === 'status' ? JSON.stringify(withHeadline(ev)) : line;
+    for (const res of state.subscribers) res.write(`data: ${live}\n\n`);
+    if (type === 'revision') writeFile(join(dir, `rev-${data.rev}.md`), data.markdown).catch((err) => persistFail(`rev-${data.rev}.md`, err));
+    if (type === 'question') run.status = 'needs_human';
+    if (type === 'question_answered' && run.status === 'needs_human') run.status = 'running';
+  };
+  state.emit = emit;
+  const waitForAnswer = (text) => {
+    const qid = `q-${state.events.filter((event) => event.type === 'question').length + 1}`;
+    emit('question', { id: qid, kind: 'adjudication', text });
+    return new Promise((resolve) => { state.answer = { qid, resolve }; });
+  };
+
+  emit('run', { run: { id, goal: displayGoal, acceptanceContract: run.acceptanceContract, lane: 'audit_replay', ground: false, engine: ENGINE, sourceRunId: sourceId } });
+  emit('revision', { rev: run.rev, markdown: sourceReport.deliverable });
+  emit('log', { line: `Artifact locked to ${sourcePack.artifact_id.slice(0, 19)}…; source receipt ${sourcePack.receipt_id.slice(0, 19)}…. No maker or retrieval will run.` });
+  emit('log', { line: `Reviewer catalog frozen now; ${reviewerModel} at requested effort ${effort}, fallback none.` });
+
+  void (async () => {
+    let review = null;
+    let evidencePack = null;
+    let evidencePackError = null;
+    let finalExperiment = experiment;
+    const auditAnswers = [];
+    try {
+      const claims = (sourcePack.artifact.claims ?? []).map(({ decision, ...claim }) => claim);
+      const criteria = (sourcePack.artifact.contract_coverage ?? []).map(({ decision, ...criterion }) => criterion);
+      const contentAnswers = sourcePack.human_decisions
+        .filter((decision) => decision.kind === 'decision')
+        .map((decision) => ({ question: decision.question, answer: decision.answer }));
+      const adapter = ENGINE === 'mock' ? createMockAdapters().codex : runCodexReview;
+      emit('stage', { name: 'review', status: 'active', scope: 'audit_replay' });
+      review = await adapter({
+        model: reviewerModel,
+        effort,
+        prompt: reviewPrompt({
+          goal: sourcePack.goal,
+          acceptanceContract: sourcePack.acceptance_contract,
+          lane: sourceReport.lane,
+          draft: sourceReport.deliverable,
+          round: 'audit replay',
+          priorFindings: [],
+          answers: contentAnswers,
+          groundingEvidence: sourceReport.evidence?.grounding ?? null,
+          claims,
+          criteria,
+          auditOnly: true,
+        }),
+        claims,
+        criteria,
+        auditOnly: true,
+        cwd: scratchDir,
+        signal: state.abort.signal,
+        onTick: (line) => emit('log', { line }),
+        onSession: (line) => emit('session', { actor: 'reviewer', line }),
+        receiptDir: join(dir, 'review-audit-only'),
+      });
+      emit('review', {
+        round: 'audit replay',
+        scope: 'audit_replay',
+        rev: run.rev,
+        verdict: review.verdict,
+        findings: review.findings ?? [],
+        questions: review.questions ?? [],
+        reviewerModel: review.reviewerModel ?? reviewerModel,
+        reviewerEffort: review.reviewerEffort ?? effort,
+        claimAssessments: review.claimAssessments ?? [],
+        coverageAssessments: review.coverageAssessments ?? [],
+      });
+      for (const finding of review.findings ?? []) emit('finding', { round: 'audit replay', scope: 'audit_replay', rev: run.rev, ...finding });
+      emit('stage', { name: 'review', status: 'done', scope: 'audit_replay', verdict: review.verdict });
+      for (const question of review.questions ?? []) {
+        const answer = await waitForAnswer(question);
+        if (state.abort.signal.aborted) break;
+        const decision = { question, answer, at: Date.now() };
+        auditAnswers.push(decision);
+        emit('answer', { kind: 'adjudication', question, answer });
+      }
+
+      evidencePack = buildAuditReplayPack({
+        sourcePack,
+        review,
+        reviewerModel,
+        effort,
+        experimentId: experiment.experiment_id,
+        auditAnswers,
+        simulated: ENGINE === 'mock',
+        createdAt: Date.now(),
+      });
+      finalExperiment = finalizeAuditReplayExperiment(experiment, {
+        pack: evidencePack,
+        review,
+        stopped: state.abort.signal.aborted,
+        simulated: ENGINE === 'mock',
+      });
+    } catch (err) {
+      evidencePackError = String(err.message || err);
+      review = review?.ran === false ? review : { ran: false, error: evidencePackError, verdict: 'ERROR', findings: [], questions: [], claimAssessments: [], coverageAssessments: [], usage: review?.usage ?? null, durationMs: review?.durationMs ?? null };
+      try {
+        evidencePack = buildAuditReplayPack({ sourcePack, review, reviewerModel, effort, experimentId: experiment.experiment_id, auditAnswers, simulated: ENGINE === 'mock', createdAt: Date.now() });
+        finalExperiment = finalizeAuditReplayExperiment(experiment, { pack: evidencePack, review, stopped: state.abort.signal.aborted, simulated: ENGINE === 'mock' });
+      } catch (sealErr) {
+        evidencePackError = `${evidencePackError}; ${String(sealErr.message || sealErr)}`;
+        finalExperiment = finalizeAuditReplayExperiment(experiment, {
+          pack: null,
+          review: { ...review, ran: false, error: evidencePackError },
+          stopped: state.abort.signal.aborted,
+          simulated: ENGINE === 'mock',
+        });
+      }
+    }
+
+    const flatStatus = state.abort.signal.aborted
+      ? 'stopped'
+      : review?.ran
+        ? (review.verdict === 'APPROVED' && !(review.findings ?? []).length && !(review.questions ?? []).length ? 'done' : 'done_with_findings')
+        : 'failed';
+    const statuses = evidencePack?.statuses ?? { ...sourcePack.statuses, audit: 'infra_failed' };
+    emit('status', { status: flatStatus, rev: run.rev, dimensions: statuses, sourceRunId: sourceId });
+    await state.writeChain;
+    const endedAt = Date.now();
+    const report = {
+      id,
+      goal: sourceGoal,
+      displayGoal,
+      acceptanceContract: sourceContract,
+      lane: 'audit_replay',
+      depth: sourceReport.depth,
+      ground: false,
+      engine: ENGINE,
+      status: flatStatus,
+      sourceRunId: sourceId,
+      simulated: ENGINE === 'mock',
+      deliverable: sourceReport.deliverable,
+      evidence: deriveEvidence(state.events),
+      evidencePack,
+      evidencePackError,
+      experiment: finalExperiment,
+      receiptsDegraded: run.receiptsDegraded || !evidencePack,
+      receiptsNote: evidencePack ? null : evidencePackError,
+      statuses,
+      startedAt,
+      endedAt,
+    };
+    await writeFile(join(dir, 'report.json'), JSON.stringify(report, null, 2)).catch((err) => persistFail('report.json', err));
+    for (const res of state.subscribers) res.end();
+    state.subscribers.clear();
+  })();
+
+  return { id, goal: displayGoal };
 }
 
 // ---------------------------------------------------------------------------
@@ -474,7 +709,7 @@ const server = http.createServer(async (req, res) => {
 
     if (path === '/api/runs' && req.method === 'GET') {
       const list = [];
-      for (const [id, s] of runs) list.push({ id, goal: s.run.goal, lane: s.run.lane, status: s.run.status, headline: headlineOf(s.run.statuses, ENGINE === 'mock'), startedAt: s.run.startedAt, live: true });
+      for (const [id, s] of runs) list.push({ id, goal: s.run.displayGoal ?? s.run.goal, lane: s.run.lane, status: s.run.status, headline: headlineOf(s.run.statuses, ENGINE === 'mock'), startedAt: s.run.startedAt, live: true });
       if (existsSync(RUNS_DIR)) {
         for (const d of await readdir(RUNS_DIR)) {
           if (runs.has(d)) continue;
@@ -482,7 +717,7 @@ const server = http.createServer(async (req, res) => {
             const r = JSON.parse(await readFile(join(RUNS_DIR, d, 'report.json'), 'utf8'));
             // engine === 'mock' is the fallback for rehearsal receipts sealed
             // before `simulated` existed — they must read "rehearsal" too.
-            list.push({ id: d, goal: r.goal, lane: r.lane, status: r.status, headline: headlineOf(r.statuses, r.simulated === true || r.engine === 'mock'), startedAt: r.startedAt, live: false });
+            list.push({ id: d, goal: r.displayGoal ?? r.goal, lane: r.lane, status: r.status, headline: headlineOf(r.statuses, r.simulated === true || r.engine === 'mock'), startedAt: r.startedAt, live: false });
           } catch {
             // No sealed report: if start metadata exists, this run was
             // interrupted — list it honestly instead of hiding it.
@@ -497,10 +732,44 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { runs: list.slice(0, 30) });
     }
 
-    const m = path.match(/^\/api\/runs\/([\w-]+)\/(events|answer|stop|report|resume)$/);
+    const m = path.match(/^\/api\/runs\/([\w-]+)\/(events|answer|stop|report|resume|audit)$/);
     if (m) {
       const [, id, action] = m;
       const state = runs.get(id);
+
+      if (action === 'audit' && req.method === 'POST') {
+        if (state && ['running', 'needs_human'].includes(state.run.status)) return json(res, 409, { error: 'the source run is still going; its artifact is not sealed yet' });
+        let sourceReport;
+        try {
+          sourceReport = JSON.parse(await readFile(join(RUNS_DIR, id, 'report.json'), 'utf8'));
+        } catch (err) {
+          return err.code === 'ENOENT'
+            ? json(res, 404, { error: 'the source run has no sealed report yet' })
+            : json(res, 500, { error: `the source report is unreadable: ${err.message}` });
+        }
+        if (!sourceReport.evidencePack) return json(res, 400, { error: sourceReport.evidencePackError || 'the source run has no sealed evidence pack' });
+        if (sourceReport.receiptsDegraded) return json(res, 400, { error: 'the source receipt is degraded; re-audit requires a complete source pack' });
+        if (sourceReport.evidencePack.schemaVersion !== 2 || sourceReport.evidencePack.artifact?.kind !== 'research') {
+          return json(res, 400, { error: 'audit-only replay currently supports research evidence-pack v2 artifacts' });
+        }
+        if (typeof sourceReport.deliverable !== 'string' || !sourceReport.deliverable.trim()) return json(res, 400, { error: 'the source report has no immutable deliverable to re-audit' });
+        if (ENGINE !== 'mock' && (sourceReport.simulated === true || sourceReport.engine === 'mock')) return json(res, 400, { error: 'a live audit cannot promote a scripted rehearsal artifact; start from a live run' });
+
+        const body = await readBody(req);
+        const catalog = modelCatalog();
+        const reviewerModel = String(body.reviewer || getModels().reviewer.model).trim();
+        const effort = String(body.effort || getModels().reviewer.effort).trim();
+        if (!catalog.reviewer.includes(reviewerModel)) return json(res, 400, { error: `reviewer "${reviewerModel}" is not in the current Codex catalog; no substitution was made` });
+        if (!['low', 'medium', 'high', 'xhigh'].includes(effort)) return json(res, 400, { error: 'effort must be low, medium, high, or xhigh' });
+        const active = [...runs.values()].filter((item) => ['running', 'needs_human'].includes(item.run.status)).length;
+        if (active >= MAX_ACTIVE_RUNS) return json(res, 429, { error: `${active} runs are already active; the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}.` });
+        try {
+          const replay = await startAuditReplay({ sourceId: id, sourceReport, reviewerModel, effort, catalog });
+          return json(res, 201, replay);
+        } catch (err) {
+          return json(res, 400, { error: String(err.message || err) });
+        }
+      }
 
       if (action === 'events' && req.method === 'GET') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });

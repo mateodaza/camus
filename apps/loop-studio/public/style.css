@@ -299,6 +299,11 @@ textarea:focus { outline: none; border-color: var(--ink); }
 .trust-value { color: var(--ink); overflow-wrap: anywhere; }
 .trust-contract { color: var(--muted); line-height: 1.5; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--rule); }
 .trust-error { color: var(--red); line-height: 1.5; }
+.audit-form { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--rule); }
+.audit-note { color: var(--muted); font-family: var(--sans); font-size: 13px; line-height: 1.5; margin: 5px 0 9px; }
+.audit-controls { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(110px, .7fr) auto; gap: 8px; align-items: center; }
+.audit-controls select { min-width: 0; color: var(--ink); background: var(--paper); border: 1px solid var(--code-line); border-radius: 2px; padding: 8px 9px; font: 12px/1.3 var(--mono); }
+.audit-controls .audit-run { padding: 9px 12px; font-size: 11.5px; }
 
 /* deliverable */
 .doc-wrap { border-left: 1px solid var(--rule); display: flex; flex-direction: column; min-height: 0; background: var(--paper); }

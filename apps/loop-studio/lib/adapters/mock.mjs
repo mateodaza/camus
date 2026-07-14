@@ -50,7 +50,7 @@ const REV2 = `## Summary
 Community-led growth and paid acquisition solve different problems for a consumer subscription app; this memo weighs which should lead. The findings are general marketing definitions; the recommendation is an inference from them, to be tested against the client's own data.
 
 ## Key Findings
-1. Digital marketing uses digital channels to promote a product to new audiences, which is the job paid acquisition does [1].
+1. Digital marketing uses digital technologies and platforms to promote products and services [1].
 2. Customer retention is a business's ability to keep its existing customers, so high retention means they keep returning rather than leaving [2].
 3. A product with network effects gives each user more value as more people use it [3].
 4. Word-of-mouth marketing is communication between consumers, independent of direct commercial influence [4].
@@ -67,7 +67,7 @@ const REV3 = `## Summary
 For a consumer subscription app launching self-serve first, this memo recommends leading with community-led growth and using paid acquisition as an amplifier. The findings are general marketing definitions; the recommendation is an inference from them, to be tested against the client's own data before committing budget.
 
 ## Key Findings
-1. Digital marketing uses digital channels to promote a product to new audiences, which is the job paid acquisition does [1].
+1. Digital marketing uses digital technologies and platforms to promote products and services [1].
 2. Customer retention is a business's ability to keep its existing customers, so high retention means they keep returning rather than leaving [2].
 3. A product with network effects gives each user more value as more people use it [3].
 4. Word-of-mouth marketing is communication between consumers, independent of direct commercial influence [4].
@@ -137,7 +137,7 @@ export function createMockAdapters() {
       const revs = [REV1, REV2, REV3, REV4];
       return { ok: true, error: null, text: revs[Math.min(claudeCalls - 1, revs.length - 1)], costUsd: 0 }; // rehearsal spends nothing
     },
-    async codex({ signal, onTick, onSession, model, effort }) {
+    async codex({ signal, onTick, onSession, model, effort, claims = [], criteria = [], auditOnly = false }) {
       onTick?.('reviewer reading and drafting findings…');
       onSession?.('turn started');
       await sleep(3000, signal);
@@ -147,16 +147,25 @@ export function createMockAdapters() {
       onSession?.('reasoning: scanning for promissory phrasing and unsupported multiples');
       await sleep(1000, signal);
       onSession?.('verdict drafted (412 chars)');
-      const r = REVIEWS[Math.min(reviewCalls, REVIEWS.length - 1)];
+      const r = auditOnly
+        ? { ran: true, error: null, verdict: 'APPROVED', findings: [], blocking: 0, questions: [] }
+        : REVIEWS[Math.min(reviewCalls, REVIEWS.length - 1)];
       reviewCalls += 1;
       const findings = r.findings;
       return {
         ...r,
         reviewerModel: model ?? 'scripted',
         reviewerEffort: effort ?? 'scripted',
+        durationMs: 7000,
+        usage: null,
         findings,
         blocking: findings.filter((f) => f.severity !== 'low'),
         nonblocking: findings.filter((f) => f.severity === 'low'),
+        // Scripted assessments make the rehearsal arc legible, but the sealed
+        // pack forces every rehearsal decision back to unchecked. Simulation
+        // never impersonates independent semantic judgment.
+        claimAssessments: claims.map((c) => ({ marker: c.marker, decision: 'supported', evidence: 'scripted rehearsal assessment' })),
+        coverageAssessments: criteria.map((c) => ({ criterion_id: c.id, decision: 'met', evidence: 'scripted rehearsal assessment' })),
       };
     },
   };

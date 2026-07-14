@@ -73,7 +73,7 @@ Deliverable type: ${LANES[lane]?.label ?? 'Freeform'}. ${depthBrief(depth)}
 Reply with 4-6 terse bullet points: the angles you will investigate, the 2-3 source types you will lean on, and the single biggest risk of getting this wrong. Plain text bullets, nothing else.`;
 }
 
-export function reviewPrompt({ goal, acceptanceContract, lane, draft, round, priorFindings, answers, groundingEvidence }) {
+export function reviewPrompt({ goal, acceptanceContract, lane, draft, round, priorFindings, answers, groundingEvidence, claims = [], criteria = [], closure = false, auditOnly = false }) {
   const prior = priorFindings?.length
     ? `\n\nFINDINGS YOU RAISED IN EARLIER ROUNDS (check whether they are actually resolved; re-raise with the SAME title if not):\n${priorFindings
         .map((f) => `- [${f.severity}] ${f.title}`)
@@ -90,8 +90,24 @@ export function reviewPrompt({ goal, acceptanceContract, lane, draft, round, pri
   const runtimeGrounding = groundingEvidence
     ? `\n\nRUNTIME GROUNDING EVIDENCE (emitted from actual adapter tool_use/tool_result events, not from the maker's prose):\n- mode: ${groundingEvidence.mode ?? 'unknown'}\n- Hivemind queried: ${groundingEvidence.queried ? 'yes' : 'no'}\n- observed Hivemind tool calls: ${groundingEvidence.queryCount ?? 0}\n- observed queries: ${(groundingEvidence.queries ?? []).length ? groundingEvidence.queries.map((q) => JSON.stringify(q)).join('; ') : 'none'}${resultEvidence}\nTool calls prove retrieval occurred. Result excerpts let you audit whether cited claims match retrieved material; they do not make the material true or relevant by default.`
     : '';
+  const claimLedger = claims.length
+    ? `\n\nCLAIM LEDGER TO ASSESS (one decision per marker, covering every claim grouped under it):\n${claims.map((c) => {
+        const internal = c.marker.match(/^\[H(\d+)\]$/i);
+        const source = c.url ? c.url : `receipt-bound Hivemind result [R${internal?.[1] ?? '?'}]`;
+        return `- ${c.marker} ${c.claim}; source=${source}`;
+      }).join('\n')}\nFor each marker return supported ONLY if you inspected source content that entails the grouped claim and can name the supporting passage. Return unsupported for a mismatch or overstatement. Return unchecked when the source content was unavailable. A live URL alone is never support. If any item is unsupported, raise a high/medium finding and verdict revise. If a clean verdict contains unchecked items, add a low finding so the caveat survives.`
+    : '\n\nCLAIM LEDGER TO ASSESS: no cited claims. Return an empty claim_assessments array.';
+  const coverageLedger = criteria.length
+    ? `\n\nACCEPTANCE COVERAGE TO ASSESS (deterministically extracted; assess every criterion exactly once):\n${criteria.map((c) => `- ${c.id} ${c.text}`).join('\n')}\nReturn met only when the exact deliverable provides concrete evidence that the criterion is satisfied. Return unmet when it does not; raise a high/medium finding and verdict revise. Return unclear when the evidence is insufficient; a clean verdict must keep that uncertainty as a low finding. Do not rewrite, merge, or invent criteria.`
+    : '\n\nACCEPTANCE COVERAGE TO ASSESS: no criteria. Return an empty coverage_assessments array.';
 
-  return `You are an adversarial reviewer from a different firm, paid to find what is wrong with this deliverable before the client does. You gain nothing from being nice. Round ${round}.
+  const auditFrame = auditOnly
+    ? 'This is an audit-only replay over an unchanged sealed artifact. Judge the entire exact deliverable fresh; do not propose a rewrite as if you were its maker.'
+    : closure
+      ? 'This is the closure audit: a deterministic repair changed the artifact after its prior review, so judge this entire exact deliverable fresh.'
+      : `Round ${round}.`;
+
+  return `You are an adversarial reviewer from a different firm, paid to find what is wrong with this deliverable before the client does. You gain nothing from being nice. ${auditFrame}
 
 THE GOAL THE DELIVERABLE MUST SERVE:
 ${goal}
@@ -107,7 +123,7 @@ Attack it on: (a) claims that are unsupported, overstated, or likely hallucinate
 
 Do NOT nitpick style trivia. Raise only findings that change whether the client should trust or act on this.
 
-If a finding hinges on a decision only the goal owner can make (audience, scope, positioning, risk appetite), do NOT guess — put it in "questions_for_human". Never ask about a decision listed as already made.${runtimeGrounding}${prior}${decided}
+If a finding hinges on a decision only the goal owner can make (audience, scope, positioning, risk appetite), do NOT guess — put it in "questions_for_human". Never ask about a decision listed as already made.${runtimeGrounding}${claimLedger}${coverageLedger}${prior}${decided}
 
 Respond with STRICT JSON only (no markdown fences, no commentary):
 {
@@ -115,9 +131,15 @@ Respond with STRICT JSON only (no markdown fences, no commentary):
   "findings": [
     { "severity": "high" | "medium" | "low", "title": "<short stable title>", "detail": "<what is wrong, with the exact quote>", "suggestion": "<the concrete fix>" }
   ],
-  "questions_for_human": [ "<plain-English question, only if truly undecidable>" ]
+  "questions_for_human": [ "<plain-English question, only if truly undecidable>" ],
+  "claim_assessments": [
+    { "marker": "[1]", "decision": "supported" | "unsupported" | "unchecked", "evidence": "<supporting/contradicting passage, or why it could not be checked>" }
+  ],
+  "coverage_assessments": [
+    { "criterion_id": "C1", "decision": "met" | "unmet" | "unclear", "evidence": "<concrete proof from the deliverable, or why coverage remains unclear>" }
+  ]
 }
-"clean" requires zero high or medium findings.`;
+"clean" requires zero high or medium findings. Both assessment arrays must cover their supplied ledgers exactly.`;
 }
 
 export function fixPrompt({ goal, acceptanceContract, lane, draft, findings, verifyFailures, answers, viaClaude }) {

@@ -322,8 +322,11 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
 
 // --- normalizeReview: no path from broken reviewer output to a verdict -------
 {
-  const { normalizeReview } = await import('./lib/adapters/codex.mjs');
+  const { normalizeReview, usageFromCodexEvent } = await import('./lib/adapters/codex.mjs');
   const infra = (raw, code, why) => assert.equal(normalizeReview(raw, code).ran, false, why);
+  const rawReview = (overrides = {}) => JSON.stringify({
+    verdict: 'clean', findings: [], questions_for_human: [], claim_assessments: [], coverage_assessments: [], ...overrides,
+  });
 
   infra('', 0, 'empty output is infra');
   infra('not json', 0, 'unparseable is infra');
@@ -335,17 +338,102 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
     'revise with nothing actionable is infra');
   infra(JSON.stringify({ verdict: 'revise', findings: [{ severity: 'critical', title: 'x', detail: 'd', suggestion: 's' }], questions_for_human: [] }), 0,
     'unknown severity is infra');
-  infra(JSON.stringify({ verdict: 'clean', findings: [], questions_for_human: [] }), 1, 'nonzero exit is infra even with valid JSON');
+  infra(rawReview(), 1, 'nonzero exit is infra even with valid JSON');
+  infra(rawReview({ questions_for_human: 'not-an-array' }), 0, 'malformed questions fail closed instead of throwing');
+  assert.deepEqual(
+    usageFromCodexEvent(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 120, cached_input_tokens: 40, output_tokens: 30 } })),
+    { input_tokens: 120, cached_input_tokens: 40, output_tokens: 30 },
+    'Codex completion usage is captured as an observation',
+  );
+  assert.equal(usageFromCodexEvent('{"type":"turn.started"}'), null, 'non-completion events invent no usage');
 
-  const clean = normalizeReview(JSON.stringify({ verdict: 'clean', findings: [{ severity: 'low', title: 'nit', detail: 'd', suggestion: 's' }], questions_for_human: ['', '  ', 'real?'] }), 0);
+  const clean = normalizeReview(rawReview({ findings: [{ severity: 'low', title: 'nit', detail: 'd', suggestion: 's' }], questions_for_human: ['', '  ', 'real?'] }), 0);
   assert.equal(clean.ran, true);
   assert.equal(clean.verdict, 'APPROVED', 'clean + low only approves');
   assert.equal(clean.nonblocking.length, 1, 'low is nonblocking');
   assert.deepEqual(clean.questions, ['real?'], 'blank questions filtered');
 
-  const fenced = normalizeReview('```json\n{"verdict":"revise","findings":[{"severity":"medium","title":"t","detail":"d","suggestion":"s"}],"questions_for_human":[]}\n```', 0);
+  const fenced = normalizeReview('```json\n{"verdict":"revise","findings":[{"severity":"medium","title":"t","detail":"d","suggestion":"s"}],"questions_for_human":[],"claim_assessments":[],"coverage_assessments":[]}\n```', 0);
   assert.equal(fenced.ran, true, 'fenced JSON still parses');
   assert.equal(fenced.blocking.length, 1);
+
+  const claims = [{ marker: '[1]', claim: 'Retention improved.', url: 'https://example.com/report' }];
+  const assessed = normalizeReview(rawReview({
+    claim_assessments: [{ marker: '[1]', decision: 'supported', evidence: 'The report states retention improved.' }],
+  }), 0, claims);
+  assert.equal(assessed.ran, true, 'exact claim coverage is accepted');
+  assert.equal(assessed.claimAssessments[0].decision, 'supported');
+  assert.equal(normalizeReview(rawReview(), 0, claims).ran, false, 'missing claim assessment coverage fails closed');
+  assert.equal(normalizeReview(rawReview({ claim_assessments: [{ marker: '[2]', decision: 'supported', evidence: 'wrong source' }] }), 0, claims).ran, false, 'extra/wrong markers fail closed');
+  assert.equal(normalizeReview(rawReview({ claim_assessments: [{ marker: '[1]', decision: 'unsupported', evidence: 'The source says the opposite.' }] }), 0, claims).ran, false, 'unsupported claim cannot wear a clean verdict');
+  assert.equal(normalizeReview(rawReview({ claim_assessments: [{ marker: '[1]', decision: 'unchecked', evidence: 'The source could not be loaded.' }] }), 0, claims).ran, false, 'unchecked claim on clean needs a visible caveat');
+  const unchecked = normalizeReview(rawReview({
+    findings: [{ severity: 'low', title: 'Source could not be checked', detail: 'The cited page was unavailable.', suggestion: 'Recheck before publication.' }],
+    claim_assessments: [{ marker: '[1]', decision: 'unchecked', evidence: 'The source could not be loaded.' }],
+  }), 0, claims);
+  assert.equal(unchecked.ran, true, 'unchecked is allowed only when its caveat survives the verdict');
+
+  const criteria = [{ id: 'C1', text: 'Every claim is supported.' }];
+  const covered = normalizeReview(rawReview({
+    coverage_assessments: [{ criterion_id: 'C1', decision: 'met', evidence: 'Every claim in the deliverable has a supporting assessment.' }],
+  }), 0, [], criteria);
+  assert.equal(covered.ran, true, 'exact acceptance-criterion coverage is accepted');
+  assert.equal(normalizeReview(rawReview(), 0, [], criteria).ran, false, 'missing criterion coverage fails closed');
+  assert.equal(normalizeReview(rawReview({ coverage_assessments: [{ criterion_id: 'C2', decision: 'met', evidence: 'wrong criterion' }] }), 0, [], criteria).ran, false, 'wrong criterion ids fail closed');
+  assert.equal(normalizeReview(rawReview({ coverage_assessments: [{ criterion_id: 'C1', decision: 'met', evidence: 'first' }, { criterion_id: 'C1', decision: 'met', evidence: 'second' }] }), 0, [], criteria).ran, false, 'duplicate criterion assessments fail closed');
+  assert.equal(normalizeReview(rawReview({ coverage_assessments: [{ criterion_id: 'C1', decision: 'unmet', evidence: 'The deliverable omits the required comparison.' }] }), 0, [], criteria).ran, false, 'unmet criterion cannot wear a clean verdict');
+  const unmetCoverage = normalizeReview(rawReview({
+    verdict: 'revise',
+    findings: [{ severity: 'medium', title: 'Contract criterion unmet', detail: 'The required comparison is absent.', suggestion: 'Add it.' }],
+    coverage_assessments: [{ criterion_id: 'C1', decision: 'unmet', evidence: 'The deliverable omits the required comparison.' }],
+  }), 0, [], criteria);
+  assert.equal(unmetCoverage.ran, true, 'unmet coverage is valid only as a blocking revise verdict');
+  assert.equal(normalizeReview(rawReview({ coverage_assessments: [{ criterion_id: 'C1', decision: 'unclear', evidence: 'The deliverable does not provide enough evidence.' }] }), 0, [], criteria).ran, false, 'unclear criterion on clean needs a visible caveat');
+  const unclearCoverage = normalizeReview(rawReview({
+    findings: [{ severity: 'low', title: 'Coverage remains unclear', detail: 'The output lacks outcome evidence.', suggestion: 'Confirm before publication.' }],
+    coverage_assessments: [{ criterion_id: 'C1', decision: 'unclear', evidence: 'The deliverable does not provide enough evidence.' }],
+  }), 0, [], criteria);
+  assert.equal(unclearCoverage.ran, true, 'unclear criterion survives only with its caveat');
+}
+
+// --- claim ledger: citations become sealed candidates, not automatic proof --
+{
+  const { extractClaimCandidates, buildClaimLedger } = await import('./lib/claims.mjs');
+  const { reviewPrompt } = await import('./lib/prompts.mjs');
+  const doc = `## Recommendation
+
+Retention improved after onboarding changed [1]. The same report also records lower churn [1].
+Members value practical progress over content volume [H1].
+
+## Sources
+1. Cohort report — https://example.com/cohorts
+[H1] Member interviews — Research team
+`;
+  const groundingResults = [{ excerpt: 'Members repeatedly asked for practical milestones.', retrievedAt: 123 }];
+  const candidates = extractClaimCandidates(doc, { groundingResults });
+  assert.equal(candidates.length, 2, 'reused markers produce one unambiguous ledger item');
+  assert.match(candidates[0].claim, /Retention improved.*lower churn/, 'all claims bound to one marker stay together');
+  assert.equal(candidates[0].url, 'https://example.com/cohorts', 'the public source URL is bound to the claim');
+  assert.equal(candidates[0].evidence_hash, null, 'a live URL is not silently promoted into captured support');
+  assert.match(candidates[1].evidence_hash, /^sha256:[0-9a-f]{64}$/, 'captured Hivemind evidence is content-bound');
+  assert.equal(candidates[1].retrieved_at, 123, 'captured evidence keeps its retrieval time');
+  assert.equal(candidates.every((c) => c.decision === 'unchecked'), true, 'citation extraction never decides entailment');
+  const prompt = reviewPrompt({
+    goal: 'Choose a strategy.', acceptanceContract: 'Every claim is supported.', lane: 'research_memo',
+    draft: doc, round: 1, priorFindings: [], answers: [],
+    groundingEvidence: { queried: true, queryCount: 1, queries: ['member value'], results: groundingResults },
+    claims: candidates,
+  });
+  assert.match(prompt, /\[H1\].*source=receipt-bound Hivemind result \[R1\]/, 'the auditor gets an explicit H-marker to captured-result mapping');
+
+  const ledger = buildClaimLedger(doc, {
+    groundingResults,
+    assessments: [
+      { marker: '[1]', decision: 'unsupported', evidence: 'The report discusses activation, not retention.' },
+      { marker: '[H1]', decision: 'supported', evidence: 'The captured excerpt directly states the preference.' },
+    ],
+  });
+  assert.deepEqual(ledger.map((c) => c.decision), ['unsupported', 'supported'], 'only explicit auditor assessments populate decisions');
 }
 
 // --- engine harness: stop rules, containment, and answer integrity -----------
@@ -367,6 +455,8 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
       blocking: findings.filter((f) => f.severity !== 'low'),
       nonblocking: findings.filter((f) => f.severity === 'low'),
       questions,
+      claimAssessments: [],
+      coverageAssessments: [],
     });
     const ctx = {
       emit: (type, data) => events.push({ type, ...data }),
@@ -428,7 +518,7 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   {
     const h5 = harness({
       claudeQueue: ['- plan', BAD_DRAFT, CLEAN_DRAFT],
-      codexQueue: [review('APPROVED')],
+      codexQueue: [review('APPROVED'), review('APPROVED')],
       answerQueue: [],
     });
     const res = await h5.run();
@@ -436,6 +526,9 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
     // structure/citations skip) — and caveats are never hidden as plain done.
     assert.equal(res.status, 'done_with_findings', 'fixable red ends green-with-caveats');
     assert.equal(h5.published.length, 1, 'published exactly once');
+    assert.equal(h5.prompts.codex.length, 2, 'a verify-fix triggers a fresh closure audit on the changed artifact');
+    const closure = h5.events.find((e) => e.type === 'review' && e.scope === 'closure');
+    assert.equal(closure.rev, 2, 'the closure audit binds to the repaired revision');
   }
 
   // --- Case C: done_with_findings lanes ---
@@ -833,11 +926,11 @@ if (process.env.TEST_NETWORK === '1') {
     { type: 'stage', name: 'ground', status: 'done', connected: true, queried: true, queries: 1, mode: 'claude' },
     { type: 'round', round: 1, cap: 3 },
     { type: 'finding', severity: 'high', title: 'no source', detail: 'd', suggestion: 's' },
-    { type: 'review', round: 1, verdict: 'REVISE', findings: [{ severity: 'high', title: 'no source', detail: 'd', suggestion: 's' }] },
     { type: 'revision', rev: 1, markdown: '# draft one' },
+    { type: 'review', round: 1, rev: 1, verdict: 'REVISE', findings: [{ severity: 'high', title: 'no source', detail: 'd', suggestion: 's' }] },
     { type: 'answer', kind: 'decision', question: 'q?', answer: 'a' },
-    { type: 'review', round: 2, verdict: 'APPROVED', findings: [] },
     { type: 'revision', rev: 2, markdown: '# draft two, longer' },
+    { type: 'review', round: 2, rev: 2, verdict: 'APPROVED', findings: [] },
     { type: 'verify_result', pass: true, warnings: 1, skipped: 0 },
   ];
   const wev = deriveEvidence(wordsEvents);
@@ -849,7 +942,7 @@ if (process.env.TEST_NETWORK === '1') {
   assert.deepEqual(wev.revisions.map((r) => r.rev), [1, 2], 'the whole revision trail is on the receipt');
   assert.equal(wev.verify[0].pass, true, 'deterministic verify result captured');
   assert.equal(wev.humanDecisions[0].answer, 'a', 'the human decision is on the receipt');
-  assert.equal(receiptCompleteness({ lane: 'research_memo', evidence: wev, writeFailed: false }).degraded, false, 'a full words receipt is not degraded');
+  assert.equal(receiptCompleteness({ lane: 'research_memo', evidence: wev, writeFailed: false, status: 'done_with_findings' }).degraded, false, 'a full words receipt is not degraded');
 
   // Developer-role P0: a build ignition that produced no round and no gate
   // report must NOT claim a trustworthy receipt.
@@ -941,15 +1034,27 @@ if (process.env.TEST_NETWORK === '1') {
   assert.equal(head(pubUnverified), 'needs_decision', 'published-but-unverified never flattens to a pass');
 
   // words lane: no commit SHA — the deliverable itself is the artifact.
-  const words = deriveStatusDimensions({ lane: 'research_memo', status: 'done', evidence: { gateReport: null, verify: [{ pass: true }], rounds: [{ verdict: 'APPROVED' }], revisions: [{ rev: 1 }] } });
+  const words = deriveStatusDimensions({ lane: 'research_memo', status: 'done', evidence: { gateReport: null, verify: [{ pass: true }], rounds: [{ verdict: 'APPROVED', rev: 1 }], revisions: [{ rev: 1 }] } });
   assert.equal(words.verification, 'passed', 'words verification binds to the deliverable, not a SHA');
   assert.equal(head(words), 'verified');
+
+  const wordsWithCaveat = deriveStatusDimensions({ lane: 'research_memo', status: 'done_with_findings', evidence: { gateReport: null, verify: [{ pass: true }], rounds: [{ verdict: 'APPROVED', rev: 1, findings: [{ severity: 'low', title: 'Source unavailable' }], claimAssessments: [{ marker: '[1]', decision: 'unchecked' }] }], revisions: [{ rev: 1 }] } });
+  assert.equal(wordsWithCaveat.audit, 'independent_findings', 'APPROVED with a low/unchecked caveat is not flattened into a clean audit');
+  assert.equal(head(wordsWithCaveat), 'verified_with_findings', 'caveats stay visible in the derived standing');
+
+  const unclearContract = deriveStatusDimensions({ lane: 'research_memo', status: 'done_with_findings', evidence: { gateReport: null, verify: [{ pass: true }], rounds: [{ verdict: 'APPROVED', rev: 1, findings: [{ severity: 'low', title: 'Contract evidence unclear' }], claimAssessments: [], coverageAssessments: [{ criterion_id: 'C1', decision: 'unclear' }] }], revisions: [{ rev: 1 }] } });
+  assert.equal(unclearContract.audit, 'independent_findings', 'unclear acceptance coverage is a visible audit caveat');
+  assert.equal(head(unclearContract), 'verified_with_findings', 'unclear coverage never derives plain verified');
+
+  const staleWordsAudit = deriveStatusDimensions({ lane: 'research_memo', status: 'done', evidence: { gateReport: null, verify: [{ pass: true }], rounds: [{ verdict: 'APPROVED', rev: 1 }], revisions: [{ rev: 1 }, { rev: 2 }] } });
+  assert.equal(staleWordsAudit.audit, 'not_run', 'an audit of rev 1 never travels to a verify-fix that produced rev 2');
+  assert.equal(head(staleWordsAudit), 'unverified', 'a final words artifact with only a stale audit cannot derive verified');
 
   // A REHEARSAL of the same shape can never impersonate that standing
   // (2026-07-14 P1: a mock receipt sealed audit:independent_clean → verified).
   // Scripted rounds stay in the receipt as events, execution and the words
   // lane's REAL deterministic verify stay recorded — but audit seals not_run.
-  const rehearsal = deriveStatusDimensions({ lane: 'research_memo', status: 'done', simulated: true, evidence: { gateReport: null, verify: [{ pass: true }], rounds: [{ verdict: 'APPROVED' }], revisions: [{ rev: 1 }] } });
+  const rehearsal = deriveStatusDimensions({ lane: 'research_memo', status: 'done', simulated: true, evidence: { gateReport: null, verify: [{ pass: true }], rounds: [{ verdict: 'APPROVED', rev: 1 }], revisions: [{ rev: 1 }] } });
   assert.equal(rehearsal.audit, 'not_run', 'scripted APPROVED rounds seal audit not_run under simulation');
   assert.equal(rehearsal.verification, 'passed', 'the rehearsal deterministic verify is real and stays recorded');
   assert.equal(rehearsal.execution, 'completed', 'the rehearsal lifecycle stays honest');
@@ -1083,14 +1188,21 @@ if (process.env.TEST_NETWORK === '1') {
 // --- Studio evidence pack: explicit contract, identity split, honest spend --
 {
   const { buildEvidencePack, shortEvidenceId } = await import('./lib/evidence-pack.mjs');
-  const { validateEvidencePack } = await import('../../packages/trust/lib/validate.mjs');
+  const { buildAuditReplayPack, createAuditReplayExperiment, finalizeAuditReplayExperiment, knowledgeSnapshotId } = await import('./lib/audit-replay.mjs');
+  const { validateEvidencePack, validateExperimentRecord } = await import('../../packages/trust/lib/validate.mjs');
   const base = {
     goal: 'Decide whether community or paid should lead the quarter.',
     acceptanceContract: 'Every material claim traces to a live URL and the recommendation states its tradeoffs.',
     lane: 'research_memo',
     deliverable: '# Memo\n\nUse community first.\n',
     evidence: {
-      rounds: [{ verdict: 'APPROVED', reviewerModel: 'gpt-5.4', reviewerEffort: 'high', findings: [] }],
+      rounds: [{
+        rev: 1,
+        verdict: 'APPROVED', reviewerModel: 'gpt-5.4', reviewerEffort: 'high', findings: [],
+        claimAssessments: [],
+        coverageAssessments: [{ criterion_id: 'C1', decision: 'met', evidence: 'The memo traces its material claim and states its recommendation.' }],
+      }],
+      revisions: [{ rev: 1, chars: 29 }],
       verify: [{ pass: true, checks: [{ id: 'links', status: 'pass', detail: '4 URLs checked' }] }],
       humanDecisions: [{ kind: 'decision', question: 'Which market?', answer: 'Base', at: 42 }],
       grounding: { mode: 'claude', connected: true, queried: true, queryCount: 1, queries: ['cohort evidence'], results: [{ query: 'cohort evidence', title: 'Cohort playbook', author: 'A. Expert', ref: 'chunk-1', score: 0.8, excerpt: 'Programs should sell progress, not content.' }] },
@@ -1102,7 +1214,9 @@ if (process.env.TEST_NETWORK === '1') {
   };
   const pack = buildEvidencePack(base);
   assert.equal(validateEvidencePack(pack).ok, true, 'Studio output validates as the published evidence-pack schema');
+  assert.equal(pack.schemaVersion, 2, 'structured acceptance coverage ships as evidence-pack v2, never as an in-place v1 mutation');
   assert.equal(pack.acceptance_contract, base.acceptanceContract, 'contract is explicit, never aliased from goal');
+  assert.deepEqual(pack.artifact.contract_coverage.map((c) => [c.id, c.decision]), [['C1', 'met']], 'the final-revision coverage decision seals into the pack');
   assert.equal(pack.pairing.executor.actual, 'anthropic:sonnet', 'pinned maker is recorded');
   assert.equal(pack.pairing.auditor.actual, 'openai:gpt-5.4', 'auditor actual comes from the ran review');
   assert.equal(pack.pairing.independence, 'cross_vendor', 'different recorded providers earn cross-vendor standing');
@@ -1112,6 +1226,7 @@ if (process.env.TEST_NETWORK === '1') {
   assert.equal(pack.human_decisions[0].at, 42, 'decision time survives into the ledger');
   assert.ok(pack.session_log.includes('hivemind query: cohort evidence'), 'grounding tool evidence is custody-bound in the sealed pack');
   assert.ok(pack.session_log.some((line) => line.includes('hivemind result: Cohort playbook — A. Expert') && line.includes('excerpt_hash=sha256:')), 'result metadata and content hash are custody-bound');
+  assert.ok(pack.session_log.some((line) => line.startsWith('coverage assessment C1: met; evidence_hash=sha256:')), 'coverage rationale is custody-bound by hash');
   assert.equal(shortEvidenceId(pack.artifact_id).length, 12, 'the UI uses a short display ID while the pack keeps the full hash');
   assert.ok(!('headline' in pack), 'derived standing never persists in the pack');
 
@@ -1124,10 +1239,87 @@ if (process.env.TEST_NETWORK === '1') {
   assert.equal(changedGrounding.artifact_id, pack.artifact_id, 'runtime query evidence is receipt identity, not artifact identity');
   assert.notEqual(changedGrounding.receipt_id, pack.receipt_id, 'changing the grounding trail mints a new receipt');
 
+  const coverageMet = buildEvidencePack({ ...base, statuses: { ...base.statuses, audit: 'independent_findings' } });
+  const coverageUnmet = buildEvidencePack({
+    ...base,
+    statuses: { ...base.statuses, audit: 'independent_findings' },
+    evidence: {
+      ...base.evidence,
+      rounds: [{
+        ...base.evidence.rounds[0],
+        coverageAssessments: [{ criterion_id: 'C1', decision: 'unmet', evidence: 'The memo omits the required tradeoff analysis.' }],
+      }],
+    },
+  });
+  assert.equal(coverageUnmet.artifact_id, coverageMet.artifact_id, 'coverage judgment changes do not pretend the artifact changed');
+  assert.notEqual(coverageUnmet.receipt_id, coverageMet.receipt_id, 'coverage judgment changes mint a new receipt');
+
+  const citedBase = {
+    ...base,
+    deliverable: `# Recommendation
+
+Retention improved after onboarding changed [1].
+Members asked for practical milestones [H1].
+
+## Sources
+1. Cohort report — https://example.com/cohorts
+[H1] Member interviews — Research team
+`,
+    evidence: {
+      ...base.evidence,
+      revisions: [{ rev: 1, chars: 220 }],
+      rounds: [{
+        rev: 1,
+        verdict: 'REVISE',
+        reviewerModel: 'gpt-5.4',
+        reviewerEffort: 'high',
+        findings: [{ severity: 'low', title: 'A separate caveat remains.' }],
+        claimAssessments: [
+          { marker: '[1]', decision: 'supported', evidence: 'The report explicitly attributes the retention change to onboarding.' },
+          { marker: '[H1]', decision: 'supported', evidence: 'The captured interview excerpt asks for practical milestones.' },
+        ],
+      }],
+      grounding: {
+        ...base.evidence.grounding,
+        results: [{ ...base.evidence.grounding.results[0], retrievedAt: 88, excerpt: 'Members asked for practical milestones.' }],
+      },
+    },
+    statuses: { ...base.statuses, audit: 'independent_findings' },
+  };
+  const cited = buildEvidencePack(citedBase);
+  assert.equal(validateEvidencePack(cited).ok, true, 'a claim-bearing Studio pack validates');
+  assert.deepEqual(cited.artifact.claims.map((c) => [c.marker, c.decision]), [['[1]', 'supported'], ['[H1]', 'supported']], 'the final-revision auditor decisions seal into the ledger');
+  assert.equal(cited.artifact.claims[0].url, 'https://example.com/cohorts', 'public claims bind their exact source URL');
+  assert.equal(cited.artifact.claims[0].evidence_hash, null, 'URL reachability alone is not captured support');
+  assert.match(cited.artifact.claims[1].evidence_hash, /^sha256:[0-9a-f]{64}$/, 'Hivemind claims bind captured excerpt content');
+  assert.equal(cited.artifact.claims[1].retrieved_at, 88, 'Hivemind claims bind evidence freshness');
+  assert.equal(cited.session_log.filter((line) => line.startsWith('claim assessment ')).length, 2, 'assessment rationales are custody-bound by hash in the receipt');
+
+  const changedAssessment = buildEvidencePack({
+    ...citedBase,
+    evidence: {
+      ...citedBase.evidence,
+      rounds: [{
+        ...citedBase.evidence.rounds[0],
+        claimAssessments: [
+          { marker: '[1]', decision: 'unsupported', evidence: 'The report discusses activation, not retention.' },
+          citedBase.evidence.rounds[0].claimAssessments[1],
+        ],
+      }],
+    },
+  });
+  assert.equal(changedAssessment.artifact_id, cited.artifact_id, 'changing the auditor judgment does not pretend the artifact changed');
+  assert.notEqual(changedAssessment.receipt_id, cited.receipt_id, 'changing the claim judgment mints a new receipt');
+
+  const citedRehearsal = buildEvidencePack({ ...citedBase, simulated: true, statuses: { ...citedBase.statuses, audit: 'not_run' } });
+  assert.equal(citedRehearsal.artifact.claims.every((c) => c.decision === 'unchecked'), true, 'scripted rehearsal assessments never become evidence');
+  assert.equal(citedRehearsal.artifact.contract_coverage.every((c) => c.decision === 'unclear'), true, 'scripted rehearsal coverage never becomes evidence');
+
   const rehearsal = buildEvidencePack({ ...base, simulated: true, statuses: { ...base.statuses, audit: 'not_run' } });
   assert.equal(rehearsal.pairing.executor.actual, 'simulation:scripted-maker');
   assert.equal(rehearsal.pairing.auditor.actual, 'simulation:scripted-auditor');
   assert.equal(rehearsal.pairing.independence, 'none', 'scripted rehearsal never claims independence');
+  assert.equal(rehearsal.artifact.contract_coverage.every((c) => c.decision === 'unclear'), true, 'rehearsal contract coverage stays explicitly unclear');
 
   const buildPack = buildEvidencePack({
     ...base,
@@ -1142,12 +1334,85 @@ if (process.env.TEST_NETWORK === '1') {
     },
   });
   assert.equal(validateEvidencePack(buildPack).ok, true, 'developer-role output validates as the same protocol pack');
-  assert.deepEqual(buildPack.artifact, { kind: 'code', repo: '/tmp/demo-repo', head: 'c92d002abc123', diff_hash: null, changed_files: null, deliverable_hash: null, claims: null }, 'the build artifact is bound to the gate-branch head');
+  assert.deepEqual(buildPack.artifact, { kind: 'code', repo: '/tmp/demo-repo', head: 'c92d002abc123', diff_hash: null, changed_files: null, deliverable_hash: null, claims: null, contract_coverage: null }, 'the build artifact is bound to the gate-branch head without inventing structured coverage the gate does not emit yet');
   assert.equal(buildPack.pairing.executor.requested, 'anthropic:sonnet', 'the run-start maker decision survives');
   assert.equal(buildPack.pairing.executor.actual, 'anthropic:opus', 'the gate-reported final model records escalation honestly');
   assert.equal(buildPack.pairing.auditor.actual, 'openai:gpt-5.4', 'the code auditor actual is sealed');
   assert.match(buildPack.verification.checks[0].detail, /c92d002abc123/, 'build verification stays bound to the audited commit');
   assert.ok(buildPack.session_log.includes('executor initial model: anthropic:sonnet') && buildPack.session_log.includes('executor final model: anthropic:opus'), 'initial and final executor identities remain visible');
+
+  const catalog = { reviewer: ['gpt-5.4', 'gpt-5.6-sol'], reviewerSource: 'codex_cache' };
+  const experiment = createAuditReplayExperiment({
+    sourceRunId: 'source-run',
+    sourcePack: pack,
+    sourceEvidence: base.evidence,
+    sourceDeliverable: base.deliverable,
+    reviewerModel: 'gpt-5.6-sol',
+    effort: 'xhigh',
+    catalog,
+    createdAt: 200,
+  });
+  assert.equal(validateExperimentRecord(experiment).ok, true, 'audit replay freezes a valid experiment manifest before execution');
+  assert.throws(() => createAuditReplayExperiment({
+    sourceRunId: 'source-run',
+    sourcePack: pack,
+    sourceEvidence: base.evidence,
+    sourceDeliverable: '# Tampered memo\n',
+    reviewerModel: 'gpt-5.6-sol',
+    effort: 'xhigh',
+    catalog,
+    createdAt: 200,
+  }), /does not match the sealed artifact/, 'a changed report deliverable cannot ride the source artifact identity into a replay');
+  assert.match(knowledgeSnapshotId(base.evidence), /^sha256:[0-9a-f]{64}$/, 'private grounding is represented by a local snapshot hash, not copied into the manifest');
+  assert.deepEqual(experiment.manifest.reviewer, { requested: 'openai:gpt-5.6-sol', resolved: 'openai:gpt-5.6-sol' }, 'requested and resolved reviewer are frozen once with no fallback');
+
+  const replayReview = {
+    ran: true,
+    verdict: 'APPROVED',
+    findings: [],
+    questions: [],
+    reviewerModel: 'gpt-5.6-sol',
+    reviewerEffort: 'xhigh',
+    claimAssessments: [],
+    coverageAssessments: [{ criterion_id: 'C1', decision: 'met', evidence: 'The exact memo satisfies the criterion.' }],
+    usage: { input_tokens: 900, cached_input_tokens: 300, output_tokens: 120 },
+    durationMs: 4200,
+  };
+  const replayPack = buildAuditReplayPack({
+    sourcePack: pack,
+    review: replayReview,
+    reviewerModel: 'gpt-5.6-sol',
+    effort: 'xhigh',
+    experimentId: experiment.experiment_id,
+    createdAt: 201,
+  });
+  assert.equal(validateEvidencePack(replayPack).ok, true, 'audit-only replay seals as a normal evidence pack');
+  assert.equal(replayPack.artifact_id, pack.artifact_id, 'audit-only replay preserves the exact source artifact identity');
+  assert.notEqual(replayPack.receipt_id, pack.receipt_id, 'a new auditor/configuration mints a new receipt');
+  assert.equal(replayPack.pairing.auditor.actual, 'openai:gpt-5.6-sol', 'the actual pinned replay reviewer survives');
+  assert.equal(replayPack.economics.find((item) => item.role === 'auditor').effort, null, 'requested effort is not promoted into an actual when the runtime does not report one');
+  assert.ok(replayPack.session_log.includes(`audit replay experiment: ${experiment.experiment_id}`), 'the receipt binds the frozen experiment manifest');
+
+  const finalExperiment = finalizeAuditReplayExperiment(experiment, { pack: replayPack, review: replayReview });
+  assert.equal(validateExperimentRecord(finalExperiment).ok, true, 'the completed arm validates');
+  assert.equal(finalExperiment.outcome.artifact_id, pack.artifact_id, 'experiment outcome keeps the source artifact');
+  assert.equal(finalExperiment.outcome.receipt_id, replayPack.receipt_id, 'experiment outcome points at the new receipt');
+  assert.deepEqual(finalExperiment.outcome.judge_overlap, { arm_provider: 'anthropic', judge_provider: 'openai', same_vendor: false, same_family: false }, 'judge-to-arm vendor/family overlap is explicit');
+  assert.equal(finalExperiment.manifest.effort.requested, 'xhigh', 'requested effort is frozen in the manifest');
+  assert.equal(finalExperiment.outcome.effort_actual, null, 'actual effort stays unknown when Codex reports usage but not applied reasoning budget');
+  assert.deepEqual(finalExperiment.outcome.usage, { input_tokens: 900, cached_input_tokens: 300, output_tokens: 120, duration_ms: 4200 }, 'actual usage observations survive');
+
+  const replayRehearsal = buildAuditReplayPack({ ...({ sourcePack: pack, review: replayReview, reviewerModel: 'gpt-5.6-sol', effort: 'xhigh', experimentId: experiment.experiment_id, createdAt: 202 }), simulated: true });
+  assert.equal(replayRehearsal.artifact_id, pack.artifact_id, 'rehearsal re-audit still preserves the artifact');
+  assert.equal(replayRehearsal.statuses.audit, 'not_run', 'scripted replay never earns audit standing');
+  assert.equal(replayRehearsal.artifact.contract_coverage.every((criterion) => criterion.decision === 'unclear'), true, 'scripted replay coverage stays unclear');
+
+  const failedReview = { ran: false, error: 'model disappeared', verdict: 'ERROR', findings: [], questions: [], claimAssessments: [], coverageAssessments: [], durationMs: 50, usage: null };
+  const failedPack = buildAuditReplayPack({ sourcePack: pack, review: failedReview, reviewerModel: 'gpt-5.6-sol', effort: 'xhigh', experimentId: experiment.experiment_id, createdAt: 203 });
+  const failedExperiment = finalizeAuditReplayExperiment(experiment, { pack: failedPack, review: failedReview });
+  assert.equal(validateExperimentRecord(failedExperiment).ok, true, 'a vanished reviewer remains a valid failed arm instead of disappearing');
+  assert.equal(failedExperiment.outcome.status, 'infra_failed');
+  assert.equal(failedPack.statuses.audit, 'infra_failed', 'a failed audit is sealed as infra, never not_run or clean');
 }
 
 // --- banner policy: every real done* answers to the headline, fail-closed ----
@@ -1279,6 +1544,44 @@ if (process.env.TEST_NETWORK === '1') {
   const cfg = JSON.parse(readFileSync(new URL('./checks/compliance.json', import.meta.url), 'utf8'));
   assert.ok(!/web3|crypto|token|airdrop|presale|onchain/i.test(cfg.description), 'the compliance wordlist describes itself generally, not as a crypto vertical');
   assert.ok(cfg.patterns.some((p) => p.label === 'Guaranteed returns claim' && p.severity === 'fail'), 'the general promissory-returns rule survives the generalization');
+}
+
+// --- contract-coverage ledger: deterministic criteria, auditor decides --------
+// The next Compare & Learn primitive. Extraction must be a pure function of the
+// contract (the same contract → the same criteria across arms, or coverage is not
+// comparable); the auditor supplies met|unmet|unclear, defaulting to unclear.
+{
+  const { extractContractCriteria, applyCoverageAssessments, buildCoverageLedger } = await import('./lib/contract.mjs');
+  const { reviewPrompt } = await import('./lib/prompts.mjs');
+
+  const prose = 'Every material claim traces to a live source; the recommendation states assumptions and tradeoffs; no invented Hivemind evidence.';
+  const c = extractContractCriteria(prose);
+  assert.equal(c.length, 3, 'semicolon/sentence clauses split into criteria');
+  assert.deepEqual(c.map((x) => x.id), ['C1', 'C2', 'C3'], 'ids are stable and ordered');
+  assert.match(c[0].text, /traces to a live source/, 'the first clause is captured');
+  assert.ok(!/[;.]$/.test(c[0].text), 'trailing punctuation is trimmed');
+  // Comparability: identical contract text yields byte-identical criteria.
+  assert.deepEqual(extractContractCriteria(prose), extractContractCriteria(prose), 'same contract → same criteria');
+  const coveragePrompt = reviewPrompt({ goal: 'g', acceptanceContract: prose, lane: 'research_memo', draft: 'd', round: 1, priorFindings: [], answers: [], criteria: c });
+  for (const criterion of c) assert.ok(coveragePrompt.includes(`- ${criterion.id} ${criterion.text}`), `review prompt carries the exact ${criterion.id} criterion`);
+  assert.match(coveragePrompt, /"coverage_assessments"/, 'review output contract requires structured coverage assessments');
+
+  const bullets = extractContractCriteria('- claims cite live sources\n- assumptions are stated\n- no fabricated evidence');
+  assert.equal(bullets.length, 3, 'a bulleted contract splits per item');
+  assert.deepEqual(bullets.map((x) => x.id), ['C1', 'C2', 'C3']);
+
+  assert.deepEqual(extractContractCriteria(''), [], 'empty contract → no criteria');
+  assert.deepEqual(extractContractCriteria('   '), [], 'whitespace-only contract → no criteria');
+  assert.deepEqual(extractContractCriteria('Everything must be perfect.'), [{ id: 'C1', text: 'Everything must be perfect' }], 'a one-clause contract is one criterion');
+
+  // Auditor decisions apply by id; absent/invalid default to unclear, never met.
+  const ledger = buildCoverageLedger('A live source backs every claim; assumptions are stated.', {
+    assessments: [{ criterion_id: 'C1', decision: 'met' }, { criterion_id: 'C2', decision: 'bogus' }],
+  });
+  assert.equal(ledger.find((x) => x.id === 'C1').decision, 'met', 'a valid met decision applies');
+  assert.equal(ledger.find((x) => x.id === 'C2').decision, 'unclear', 'an invalid decision defaults to unclear');
+  assert.ok(applyCoverageAssessments(c, []).every((x) => x.decision === 'unclear'), 'no assessments → every criterion unclear (never silently satisfied)');
+  assert.equal(buildCoverageLedger('One rule: cite everything.', { assessments: [{ criterion_id: 'C1', decision: 'unmet' }] }).find((x) => x.id === 'C1').decision, 'unmet', 'a genuine miss is recorded as unmet');
 }
 
 console.log('verify.test: all assertions passed');

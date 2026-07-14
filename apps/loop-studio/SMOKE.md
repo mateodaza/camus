@@ -27,7 +27,7 @@ npm run rehearse        # MOCK_SPEED=2 npm run rehearse to slow it for narrating
 
 Open http://localhost:1913. Pills should read `engine: rehearsal (mock)` and `hivemind: not connected`.
 
-Type any goal (a sentence or more), then fill **What must be true for you to trust the result?** with the binding audit contract. Keep **Research memo** + **Quick**, hit **Run the loop**. What you're watching, beat by beat:
+Type any goal (a sentence or more), then fill **What must be true for you to trust the result?** with `Every material claim traces to a named source; inference is labeled; deterministic checks pass.` Keep **Research memo** + **Quick**, hit **Run the loop**. The semicolons deliberately produce three stable coverage criteria. What you're watching, beat by beat:
 
 | Beat | What you see | What it proves |
 |---|---|---|
@@ -40,10 +40,20 @@ Type any goal (a sentence or more), then fill **What must be true for you to tru
 | Review r3 | ✓ clean | round loop exit |
 | Verify #1 | checks tick in; **links RED** — a real HTTP check catches the seeded dead GitHub URL (404) | the deterministic gate runs for real, even in rehearsal |
 | Fix + Verify #2 | `rev 4`, all five checks green, **DETERMINISTIC GATE: GREEN** | verify-fail → fix → re-verify loop |
+| Closure audit | `closure audit on rev 4: clean` | rev 3's verdict cannot travel to the repaired artifact |
 | Banner | `REHEARSAL COMPLETE` + `rehearsal` standing | scripted output never impersonates independent evidence |
-| Evidence card | short artifact + receipt IDs, scripted actuals, unknown/null economics, the exact contract | custody and identity split without invented spend |
+| Evidence card | short IDs, `0 supported · 0 unsupported · 5 unchecked`, `0 met · 0 unmet · 3 unclear`, scripted actuals, unknown/null economics, the exact contract | custody and identity split without invented support, coverage, or spend |
 
 Also try: click through rev tabs 1→4 to watch the draft evolve; **Copy** / **Download** / **Evidence pack**.
+
+Then click **Rehearse re-audit** in the finished run. Choose another listed reviewer and effort, then **Run re-audit**. The second view must show only `Re-audit → Receipt`, copy the exact final revision, name the frozen reviewer and `fallback none`, and end with:
+
+- the **same** short artifact id as the source;
+- a **different** receipt id;
+- the parent receipt and experiment ids;
+- no maker or retrieval stages;
+- requested model/effort recorded, but scripted actual effort shown as `scripted`; and
+- rehearsal standing, `audit:not_run`, five `unchecked` claims, and three `unclear` criteria.
 
 No wifi at the venue: `MOCK_OFFLINE=1 npm run rehearse` (link checks skip instead of failing).
 
@@ -56,7 +66,9 @@ grep 'question_answered\|"type":"answer"' runs/<run-id>/events.jsonl
 python3 -m json.tool runs/<run-id>/report.json | head -30
 ```
 
-`report.json` carries the final deliverable, human decisions, raw status dimensions, and `evidencePack`. Confirm that the pack contains the explicit `acceptance_contract`, full `artifact_id` and `receipt_id`, requested/resolved/actual pairing, actual reviewer effort, deterministic checks, and economics recorded as `billing_mode: "unknown"` / `estimated_cost_usd: null`. A rehearsal must say `simulation:scripted-*`, `independence: none`, and `audit: not_run`.
+`report.json` carries the final deliverable, human decisions, raw status dimensions, and `evidencePack`. Confirm `schemaVersion: 2`, the explicit `acceptance_contract`, full `artifact_id` and `receipt_id`, requested/resolved/actual pairing, actual reviewer effort, deterministic checks, final-revision claim and contract-coverage ledgers, and economics recorded as `billing_mode: "unknown"` / `estimated_cost_usd: null`. A rehearsal must say `simulation:scripted-*`, `independence: none`, and `audit: not_run`; every claim decision must be `unchecked` and every coverage decision `unclear`.
+
+For an audit replay, also inspect `report.json.experiment`: `mode` is `audit_only_replay`, the source and outcome `artifact_id` values match, the parent and new receipt ids differ, the frozen catalog contains the resolved reviewer, fallback is `none`, and usage fields are integers or `null` rather than estimates. A failed reviewer must remain as `infra_failed` with a failure record.
 
 ## 5. Replay — yesterday's green (30s)
 

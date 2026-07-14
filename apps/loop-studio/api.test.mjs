@@ -6,10 +6,12 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import http from 'node:http';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildEvidencePack } from './lib/evidence-pack.mjs';
+import { validateExperimentRecord } from '../../packages/trust/lib/validate.mjs';
 
 const HOST = '127.0.0.1';
 const tmp = mkdtempSync(join(tmpdir(), 'cls-api-'));
@@ -89,6 +91,80 @@ try {
       body: JSON.stringify({ reviewer: okReviewer }),
     });
     assert.equal(good.status, 200, `a valid listable reviewer (${okReviewer}) saves`);
+  });
+
+  await check('audit-only replay keeps the artifact, mints a receipt, and keeps rehearsal non-evidence', async () => {
+    const sourceId = 'source-audit-fixture';
+    const sourceDir = join(tmp, sourceId);
+    mkdirSync(sourceDir, { recursive: true });
+    const deliverable = '## Notes\n\nA source-bound recommendation with no material numeric claims.\n';
+    const sourcePack = buildEvidencePack({
+      goal: 'Test one unchanged artifact under a second auditor configuration.',
+      acceptanceContract: ACCEPTANCE,
+      lane: 'freeform',
+      deliverable,
+      evidence: {
+        rounds: [{ rev: 1, verdict: 'APPROVED', reviewerModel: 'gpt-5.4', reviewerEffort: 'low', findings: [], claimAssessments: [], coverageAssessments: [{ criterion_id: 'C1', decision: 'met', evidence: 'scripted source assessment' }] }],
+        revisions: [{ rev: 1, chars: deliverable.length }],
+        verify: [{ pass: true, checks: [{ id: 'structure', status: 'pass', detail: 'present' }] }],
+        humanDecisions: [],
+        grounding: null,
+        gateReport: null,
+      },
+      statuses: { schemaVersion: 1, execution: 'completed', verification: 'passed', audit: 'not_run', publication: 'not_published' },
+      models: { maker: { model: 'sonnet' }, reviewer: { model: 'gpt-5.4', effort: 'low' } },
+      simulated: true,
+      createdAt: 1,
+    });
+    writeFileSync(join(sourceDir, 'report.json'), JSON.stringify({
+      id: sourceId,
+      goal: sourcePack.goal,
+      acceptanceContract: ACCEPTANCE,
+      lane: 'freeform',
+      depth: 'quick',
+      engine: 'mock',
+      simulated: true,
+      deliverable,
+      evidence: { revisions: [{ rev: 1, chars: deliverable.length }], grounding: null },
+      evidencePack: sourcePack,
+      receiptsDegraded: false,
+      statuses: sourcePack.statuses,
+      startedAt: 1,
+      status: 'done',
+    }, null, 2));
+
+    const bad = await fetch(`${base}/api/runs/${sourceId}/audit`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify({ reviewer: 'not-in-the-catalog', effort: 'low' }),
+    });
+    assert.equal(bad.status, 400, 'an unavailable arm is refused, never silently substituted');
+
+    const config = await (await fetch(`${base}/api/config`, { headers: { origin: base } })).json();
+    const reviewer = config.catalog.reviewer[0];
+    const start = await fetch(`${base}/api/runs/${sourceId}/audit`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify({ reviewer, effort: 'high' }),
+    });
+    assert.equal(start.status, 201);
+    const replayId = (await start.json()).id;
+    let report = null;
+    for (let i = 0; i < 30 && !report; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const response = await fetch(`${base}/api/runs/${replayId}/report`, { headers: { origin: base } });
+      if (response.ok) report = await response.json();
+    }
+    assert.ok(report, 'audit replay seals a report');
+    assert.equal(report.sourceRunId, sourceId);
+    assert.equal(report.evidencePack.artifact_id, sourcePack.artifact_id, 'same artifact id');
+    assert.notEqual(report.evidencePack.receipt_id, sourcePack.receipt_id, 'new receipt id');
+    assert.equal(report.evidencePack.statuses.audit, 'not_run', 'mock audit never becomes standing');
+    assert.equal(report.evidencePack.artifact.contract_coverage.every((criterion) => criterion.decision === 'unclear'), true, 'scripted contract judgments stay unclear');
+    assert.equal(validateExperimentRecord(report.experiment).ok, true, 'experiment manifest + outcome validate');
+    assert.equal(report.experiment.outcome.status, 'completed', 'the scripted arm completed as an experiment outcome');
+    assert.equal(report.experiment.outcome.effort_actual, 'scripted', 'requested high effort never becomes a simulated actual');
+    assert.equal(report.experiment.outcome.confounded, true, 'requested real reviewer vs scripted actual is visible');
   });
 
   await check('POST from a disallowed Origin is rejected (403), not executed', async () => {
@@ -232,12 +308,17 @@ try {
     assert.ok(report.models && report.models.maker, 'the receipt carries the run-start model snapshot, like run.json');
     assert.equal(report.acceptanceContract, ACCEPTANCE, 'the explicit trust contract survives into the report');
     assert.ok(report.evidencePack, `the evidence pack seals (${report.evidencePackError || 'no error'})`);
+    assert.equal(report.evidencePack.schemaVersion, 2, 'new Studio receipts use the coverage-aware evidence-pack v2');
     assert.match(report.evidencePack.artifact_id, /^sha256:[0-9a-f]{64}$/, 'artifact identity is sealed');
     assert.match(report.evidencePack.receipt_id, /^sha256:[0-9a-f]{64}$/, 'receipt identity is sealed');
     assert.equal(report.evidencePack.acceptance_contract, ACCEPTANCE, 'the pack uses the explicit contract, never aliases goal');
     assert.equal(report.evidencePack.pairing.executor.actual, 'simulation:scripted-maker', 'rehearsal actual is scripted, never Claude');
     assert.equal(report.evidencePack.pairing.auditor.actual, 'simulation:scripted-auditor', 'rehearsal actual is scripted, never Codex');
     assert.equal(report.evidencePack.pairing.independence, 'none', 'a rehearsal never claims cross-vendor independence');
+    assert.ok(Array.isArray(report.evidencePack.artifact.claims), 'research receipts seal a structured claim ledger');
+    assert.equal(report.evidencePack.artifact.claims.every((claim) => claim.decision === 'unchecked'), true, 'scripted rehearsal judgments never promote citations into support');
+    assert.ok(Array.isArray(report.evidencePack.artifact.contract_coverage) && report.evidencePack.artifact.contract_coverage.length > 0, 'research receipts seal deterministic acceptance criteria');
+    assert.equal(report.evidencePack.artifact.contract_coverage.every((criterion) => criterion.decision === 'unclear'), true, 'scripted rehearsal judgments never promote contract coverage');
     assert.equal(report.evidencePack.economics[0].billing_mode, 'unknown', 'economics do not invent a billing mode');
     assert.equal(report.evidencePack.economics[0].estimated_cost_usd, null, 'economics do not invent dollar cost');
     assert.ok(!('headline' in report.evidencePack), 'derived standing never enters the permanent pack');

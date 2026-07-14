@@ -1,7 +1,7 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["verdict", "findings", "questions_for_human"],
+  "required": ["verdict", "findings", "questions_for_human", "claim_assessments", "coverage_assessments"],
   "properties": {
     "verdict": {
       "type": "string",
@@ -25,6 +25,34 @@
       "type": "array",
       "items": { "type": "string" },
       "description": "Plain-English questions only the goal owner can answer. Empty when none."
+    },
+    "claim_assessments": {
+      "type": "array",
+      "description": "Exactly one assessment for every source marker in the supplied claim ledger. Empty when the draft has no cited claims.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["marker", "decision", "evidence"],
+        "properties": {
+          "marker": { "type": "string", "pattern": "^\\[(?:H)?[0-9]+\\]$" },
+          "decision": { "type": "string", "enum": ["supported", "unsupported", "unchecked"] },
+          "evidence": { "type": "string", "description": "A concise supporting or contradicting passage, or the reason the source could not be checked." }
+        }
+      }
+    },
+    "coverage_assessments": {
+      "type": "array",
+      "description": "Exactly one assessment for every deterministically extracted acceptance criterion. Empty only when no contract criteria were supplied.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["criterion_id", "decision", "evidence"],
+        "properties": {
+          "criterion_id": { "type": "string", "pattern": "^C[1-9][0-9]*$" },
+          "decision": { "type": "string", "enum": ["met", "unmet", "unclear"] },
+          "evidence": { "type": "string", "description": "A concise passage or observation proving the criterion met/unmet, or the reason it remains unclear." }
+        }
+      }
     }
   }
 }

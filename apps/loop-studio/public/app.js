@@ -143,6 +143,10 @@ const STAGE_DEFS = {
     ['review', 'Review'],
     ['ship', 'Ship'],
   ],
+  audit: [
+    ['review', 'Re-audit'],
+    ['ship', 'Receipt'],
+  ],
 };
 
 // ---------------------------------------------------------------------------
@@ -152,6 +156,7 @@ const STAGE_DEFS = {
 async function boot() {
   try {
     const s = await (await fetch(`${API}/api/status`)).json();
+    state.serverEngine = s.engine;
     TOKEN = s.token || '';
     const eng = $('pill-engine');
     eng.textContent = s.engine === 'mock'
@@ -532,6 +537,7 @@ $('start').addEventListener('click', async () => {
 
 function attach(id, goal) {
   state.runId = id;
+  state.currentReport = null;
   state.revs = [];
   state.sessionCount = 0;
   $('session-pre').textContent = '';
@@ -545,6 +551,7 @@ function attach(id, goal) {
   $('run-cost').textContent = ''; // don't carry the previous run's spend
   $('run-timer').textContent = '0:00';
   $('stop').classList.remove('hidden');
+  $('audit-replay').classList.add('hidden');
   state.runStartAt = null;
   $('feed').innerHTML = '';
   $('revtabs').innerHTML = '';
@@ -665,6 +672,7 @@ async function renderEvidenceReceipt(standing) {
     else await new Promise((r) => setTimeout(r, 200));
   }
   if (!report || state.runId !== runId) return;
+  state.currentReport = report;
   const pack = report.evidencePack;
   const card = el('div', `trust-card ${pack ? '' : 'degraded'}`);
   card.id = 'evidence-pack-card';
@@ -680,6 +688,14 @@ async function renderEvidenceReceipt(standing) {
   const estimated = pack.economics.some((e) => typeof e.estimated_cost_usd === 'number')
     ? `$${pack.economics.reduce((n, e) => n + (e.estimated_cost_usd || 0), 0).toFixed(2)} estimated`
     : 'cost not estimated';
+  const claimCounts = (pack.artifact.claims ?? []).reduce((n, c) => {
+    n[c.decision] = (n[c.decision] || 0) + 1;
+    return n;
+  }, {});
+  const coverageCounts = (pack.artifact.contract_coverage ?? []).reduce((n, c) => {
+    n[c.decision] = (n[c.decision] || 0) + 1;
+    return n;
+  }, {});
   const rows = [
     ['standing (derived)', nice(standing)],
     ['artifact', shortId(pack.artifact_id)],
@@ -687,7 +703,27 @@ async function renderEvidenceReceipt(standing) {
     ['executor actual', pack.pairing.executor.actual],
     ['auditor actual', pack.pairing.auditor.actual],
     ['auditor effort', auditorEconomics?.effort ?? 'not recorded'],
+    ...(pack.artifact.kind === 'research'
+      ? [['claim ledger', `${claimCounts.supported || 0} supported · ${claimCounts.unsupported || 0} unsupported · ${claimCounts.unchecked || 0} unchecked`]]
+      : []),
+    ...(Array.isArray(pack.artifact.contract_coverage)
+      ? [['contract coverage', `${coverageCounts.met || 0} met · ${coverageCounts.unmet || 0} unmet · ${coverageCounts.unclear || 0} unclear`]]
+      : []),
     ['economics', `billing ${billing} · ${estimated}`],
+    ...(report.experiment ? [
+      ['experiment', shortId(report.experiment.experiment_id)],
+      ['parent receipt', shortId(report.experiment.source.receipt_id)],
+      ['effort requested', report.experiment.manifest.effort.requested],
+      ['effort actual', report.experiment.outcome.effort_actual ?? 'not reported'],
+      ['audit usage', (() => {
+        const usage = report.experiment.outcome.usage;
+        const tokens = [usage.input_tokens, usage.output_tokens].every((value) => Number.isInteger(value))
+          ? `${usage.input_tokens} in · ${usage.output_tokens} out`
+          : 'tokens not reported';
+        const duration = Number.isInteger(usage.duration_ms) ? ` · ${(usage.duration_ms / 1000).toFixed(1)}s` : '';
+        return `${tokens}${duration}`;
+      })()],
+    ] : []),
   ];
   for (const [k, v] of rows) {
     const row = el('div', 'trust-row');
@@ -696,8 +732,74 @@ async function renderEvidenceReceipt(standing) {
     card.appendChild(row);
   }
   card.appendChild(el('div', 'trust-contract', `contract: ${pack.acceptance_contract}`));
+  if (!report.receiptsDegraded
+      && pack.schemaVersion === 2
+      && pack.artifact.kind === 'research'
+      && Array.isArray(pack.artifact.contract_coverage)
+      && (!report.simulated || state.serverEngine === 'mock')) {
+    $('audit-replay').classList.remove('hidden');
+    $('audit-replay').textContent = report.simulated ? 'Rehearse re-audit' : 'Re-audit';
+  }
   feed(card);
 }
+
+$('audit-replay').addEventListener('click', async () => {
+  const card = document.getElementById('evidence-pack-card');
+  if (!card || !state.currentReport?.evidencePack) return;
+  const existing = card.querySelector('.audit-form');
+  if (existing) { existing.remove(); return; }
+
+  const form = el('div', 'audit-form');
+  form.appendChild(el('div', 'trust-title', 'AUDIT-ONLY REPLAY'));
+  form.appendChild(el('div', 'audit-note', 'Same artifact and verification. A new reviewer decision mints a new receipt; no maker or retrieval runs.'));
+  const controls = el('div', 'audit-controls');
+  const reviewer = document.createElement('select');
+  reviewer.setAttribute('aria-label', 'Replay reviewer model');
+  const effort = document.createElement('select');
+  effort.setAttribute('aria-label', 'Replay reviewer effort');
+  for (const value of ['low', 'medium', 'high', 'xhigh']) {
+    const option = document.createElement('option'); option.value = value; option.textContent = `${value} effort`; effort.appendChild(option);
+  }
+  const run = el('button', 'primary audit-run', 'Run re-audit');
+  const note = el('div', 'audit-note');
+  controls.append(reviewer, effort, run);
+  form.append(controls, note);
+  card.appendChild(form);
+
+  try {
+    const configRes = await fetch(`${API}/api/config`);
+    if (!configRes.ok) throw new Error('model catalog unavailable');
+    const config = await configRes.json();
+    for (const model of config.catalog.reviewer) {
+      const option = document.createElement('option'); option.value = model; option.textContent = model; reviewer.appendChild(option);
+    }
+    reviewer.value = config.catalog.reviewer.includes(config.reviewer.model)
+      ? config.reviewer.model
+      : config.catalog.reviewer[0];
+    effort.value = config.reviewer.effort;
+  } catch (err) {
+    note.textContent = `Cannot load the reviewer catalog: ${err.message}`;
+    run.disabled = true;
+  }
+
+  run.onclick = async () => {
+    run.disabled = true;
+    note.textContent = 'Freezing the catalog and starting the audit…';
+    try {
+      const response = await fetch(`${API}/api/runs/${state.runId}/audit`, {
+        method: 'POST',
+        headers: postHeaders(),
+        body: JSON.stringify({ reviewer: reviewer.value, effort: effort.value }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || response.statusText);
+      attach(data.id, data.goal);
+    } catch (err) {
+      note.textContent = String(err.message || err);
+      run.disabled = false;
+    }
+  };
+});
 
 $('download').addEventListener('click', () => {
   const md = current();
@@ -716,7 +818,8 @@ function buildStages(lane) {
   const nav = $('stages');
   nav.innerHTML = '';
   state.stageEls.clear();
-  for (const [key, label] of STAGE_DEFS[lane === 'build' ? 'build' : 'words']) {
+  const defs = lane === 'build' ? STAGE_DEFS.build : lane === 'audit_replay' ? STAGE_DEFS.audit : STAGE_DEFS.words;
+  for (const [key, label] of defs) {
     const s = el('div', 'stage');
     s.appendChild(el('span', 'dot'));
     s.appendChild(el('span', null, label));
@@ -840,12 +943,17 @@ function handle(ev) {
     case 'review': {
       const clean = ev.verdict === 'APPROVED';
       const revise = ev.verdict === 'REVISE';
+      const reviewName = ev.scope === 'closure'
+        ? `closure audit on rev ${ev.rev}`
+        : ev.scope === 'audit_replay'
+          ? `audit-only replay on rev ${ev.rev}`
+          : `reviewer verdict, round ${ev.round}`;
       const v = el('div', `verdict ${clean ? 'approved' : revise ? 'revise' : ''}`,
         clean
-          ? `✓ reviewer verdict, round ${ev.round}: clean`
+          ? `✓ ${reviewName}: clean`
           : revise
-            ? `✗ reviewer verdict, round ${ev.round}: revise (${ev.findings.filter((f) => f.severity !== 'low').length} blocking)`
-            : `? reviewer verdict, round ${ev.round}: unreadable; the receipt will be marked incomplete`);
+            ? `✗ ${reviewName}: revise (${ev.findings.filter((f) => f.severity !== 'low').length} blocking)`
+            : `? ${reviewName}: unreadable; the receipt will be marked incomplete`);
       feed(v);
       break;
     }
@@ -1043,7 +1151,9 @@ function handle(ev) {
       } else if (good) {
         b.appendChild(el('span', 'sub', state.simulated
           ? `local simulation trace (not evidence) in runs/${state.runId}/`
-          : `rev ${ev.rev} · receipts in runs/${state.runId}/`));
+          : state.runLane === 'audit_replay'
+            ? `same artifact · new receipt in runs/${state.runId}/`
+            : `rev ${ev.rev} · receipts in runs/${state.runId}/`));
       }
       feed(b);
       // The four raw dimensions rode this terminal event. The one-word headline
