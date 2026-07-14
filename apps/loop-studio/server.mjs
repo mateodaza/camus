@@ -180,7 +180,7 @@ async function startRun({ goal, lane, depth, ground, targetPath = null, targetTo
       published: !!(result?.artifactPublished || result?.artifactUrl),
     });
     const report = JSON.stringify(
-      { id, goal, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, ...result, draft: undefined, deliverable: run.lastMarkdown, evidence, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt: Date.now() },
+      { id, goal, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, models: run.models, ...result, draft: undefined, deliverable: run.lastMarkdown, evidence, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt: Date.now() },
       null,
       2,
     );

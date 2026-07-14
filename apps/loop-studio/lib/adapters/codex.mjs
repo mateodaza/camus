@@ -62,8 +62,9 @@ export function normalizeReview(raw, exitCode) {
   };
 }
 
-export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSession, receiptDir }) {
+export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSession, receiptDir, model }) {
   effort ||= getModels().reviewer.effort;
+  model ||= getModels().reviewer.model;
   // codex resolves -o against ITS cwd, not ours — the path must be absolute.
   const dir = resolve(receiptDir);
   await mkdir(dir, { recursive: true });
@@ -71,7 +72,7 @@ export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSe
 
   // Model and effort are always named explicitly — the account default is
   // never reachable (it isn't a decision anyone made).
-  const args = ['exec', '--json', '-s', 'read-only', '-m', getModels().reviewer.model, '-c', `model_reasoning_effort=${effort}`];
+  const args = ['exec', '--json', '-s', 'read-only', '-m', model, '-c', `model_reasoning_effort=${effort}`];
   if (process.env.CAMUS_CODEX_TIER) args.push('-c', `service_tier=${process.env.CAMUS_CODEX_TIER}`);
   for (const id of (process.env.CAMUS_CODEX_DISABLE_MCP || '').split(',').filter(Boolean)) {
     args.push('-c', `mcp_servers.${id.trim()}.enabled=false`);

@@ -19,7 +19,15 @@ function findingKey(f) {
 
 export async function runLoop(run, ctx) {
   const { emit, waitForAnswer, adapters, hivemind, signal } = ctx;
-  const ROUND_CAP = getModels().loop.roundCap;
+  // The run's model decisions are the SNAPSHOT taken at creation — resolve
+  // everything from it, never a live getModels(), so a settings edit mid-run
+  // cannot make the actual maker/reviewer/effort/roundCap disagree with the
+  // sealed receipt. model/effort are passed explicitly into each adapter below.
+  const snapshot = run.models ?? getModels();
+  const ROUND_CAP = snapshot.loop.roundCap;
+  const makerModel = snapshot.maker?.model;
+  const reviewerModel = snapshot.reviewer?.model;
+  const reviewerEffort = snapshot.reviewer?.effort;
   const answers = [];
   let costUsd = 0;
   let doneWithFindings = false;
@@ -69,7 +77,7 @@ export async function runLoop(run, ctx) {
     // ---- Plan ------------------------------------------------------------
     stage('plan', 'active');
     const plan = await withRetries('plan', () =>
-      adapters.claude({ stage: 'plan', prompt: planPrompt(run), cwd: ctx.scratchDir, signal, onTick: log, onSession: sess('maker') }),
+      adapters.claude({ model: makerModel, stage: 'plan', prompt: planPrompt(run), cwd: ctx.scratchDir, signal, onTick: log, onSession: sess('maker') }),
     );
     costUsd += plan.costUsd || 0;
     emit('plan', { text: plan.text });
@@ -92,6 +100,7 @@ export async function runLoop(run, ctx) {
     let rev = 0;
     const makeRes = await withRetries('draft', () =>
       adapters.claude({
+        model: makerModel,
         stage: 'make',
         prompt: makePrompt({ ...run, grounding, answers: contentAnswers() }),
         cwd: ctx.scratchDir,
@@ -118,9 +127,10 @@ export async function runLoop(run, ctx) {
       emit('round', { round, cap: ROUND_CAP });
       lastReview = await withRetries(`review round ${round}`, () =>
         adapters.codex({
+          model: reviewerModel,
           prompt: reviewPrompt({ goal: run.goal, lane: run.lane, draft, round, priorFindings, answers: contentAnswers() }),
           cwd: ctx.scratchDir,
-          effort: getModels().reviewer.effort,
+          effort: reviewerEffort,
           signal,
           onTick: log,
           onSession: sess('reviewer'),
@@ -188,6 +198,7 @@ export async function runLoop(run, ctx) {
       stage('fix', 'active', { round });
       const fixRes = await withRetries('fix', () =>
         adapters.claude({
+          model: makerModel,
           stage: 'fix',
           prompt: fixPrompt({ goal: run.goal, lane: run.lane, draft, findings: lastReview.blocking, answers: contentAnswers(), viaClaude: grounding === 'claude' }),
           cwd: ctx.scratchDir,
@@ -231,6 +242,7 @@ export async function runLoop(run, ctx) {
         stage('fix', 'active', { verify: true });
         const fixRes = await withRetries('verify-fix', () =>
           adapters.claude({
+            model: makerModel,
             stage: 'fix',
             prompt: fixPrompt({ goal: run.goal, lane: run.lane, draft, findings: [], verifyFailures: failures, answers: contentAnswers(), viaClaude: grounding === 'claude' }),
             cwd: ctx.scratchDir,

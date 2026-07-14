@@ -171,6 +171,7 @@ try {
     assert.ok('receiptsNote' in report, 'receiptsNote is present (null when complete)');
     assert.ok(report.statuses && typeof report.statuses.execution === 'string', 'the receipt seals the raw status dimensions');
     assert.ok(!('headline' in report), 'the headline is derived at render — never sealed into the evidence');
+    assert.ok(report.models && report.models.maker, 'the receipt carries the run-start model snapshot, like run.json');
   });
 
   await check('a completed IN-MEMORY run carries a derived headline in Recents (not only after restart)', async () => {

@@ -783,4 +783,31 @@ if (process.env.TEST_NETWORK === '1') {
   assert.equal(head(inconclusive), 'unverified');
 }
 
+// --- P1: the research lane executes the run-start SNAPSHOT, not live getModels
+// The snapshot models are values NOT in checks/models.json, so if the adapters
+// receive them the engine is honoring run.models — not re-resolving mid-run.
+{
+  const { runLoop } = await import('./lib/engine.mjs');
+  const prev = process.env.MOCK_OFFLINE;
+  process.env.MOCK_OFFLINE = '1'; // verify skips the network in this test
+  const calls = [];
+  const adapters = {
+    claude: async ({ model }) => { calls.push({ role: 'maker', model }); return { ok: true, error: null, text: '## Notes\n\nA plain note with no claims.\n', costUsd: 0 }; },
+    codex: async ({ model, effort }) => { calls.push({ role: 'reviewer', model, effort }); return { ran: true, error: null, verdict: 'APPROVED', findings: [], blocking: [], nonblocking: [], questions: [] }; },
+  };
+  const run = { goal: 'g', lane: 'freeform', ground: false, models: { maker: { model: 'SNAPSHOT-MAKER' }, reviewer: { model: 'SNAPSHOT-REVIEWER', effort: 'high' }, loop: { roundCap: 1 } } };
+  const ctx = {
+    emit: () => {}, waitForAnswer: async () => 'ok', adapters,
+    hivemind: { searchKnowledge: async () => null, hivemindStatus: () => ({ mode: 'stub' }) },
+    signal: new AbortController().signal, scratchDir: '/tmp', receiptsDir: '/tmp',
+  };
+  await runLoop(run, ctx);
+  if (prev === undefined) delete process.env.MOCK_OFFLINE; else process.env.MOCK_OFFLINE = prev;
+  const maker = calls.find((c) => c.role === 'maker');
+  const reviewer = calls.find((c) => c.role === 'reviewer');
+  assert.equal(maker?.model, 'SNAPSHOT-MAKER', 'the maker adapter runs the snapshot model, not a live getModels()');
+  assert.equal(reviewer?.model, 'SNAPSHOT-REVIEWER', 'the reviewer adapter runs the snapshot model');
+  assert.equal(reviewer?.effort, 'high', 'the reviewer effort comes from the snapshot, not a live read');
+}
+
 console.log('verify.test: all assertions passed');

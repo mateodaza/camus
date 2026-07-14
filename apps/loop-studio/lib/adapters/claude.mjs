@@ -30,7 +30,7 @@ export function sessionLineFromEvent(ev) {
   return null;
 }
 
-export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, onSession }) {
+export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, onSession, model }) {
   const hm = stage === 'plan' ? { enabled: false } : viaClaude();
   const builtins = stage === 'plan' ? '' : 'WebSearch,WebFetch';
   const mcpTools = hm.enabled
@@ -51,7 +51,7 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
     '--verbose',
     '--max-turns', maxTurns,
     '--strict-mcp-config',
-    '--model', getModels().maker.model,
+    '--model', model || getModels().maker.model,
     '--tools', builtins,
   ];
   if (hm.enabled) {
