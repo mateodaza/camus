@@ -11,12 +11,18 @@ const sleep = (ms, signal) =>
   });
 
 // The rehearsal is scripted, but its FINAL deliverable must be honestly
-// defensible: a demo that ends on a laundered green (specific claims cited to
-// general pages that do not establish them) would show Camus blessing the exact
-// thing it exists to catch. So every [n] here points at a source that genuinely
-// supports the GENERAL claim it carries, the specifics are flagged as needing
-// the client's own data, and the only laundering in the arc is in REV1, which
-// the reviewer catches.
+// defensible: a demo that ends on a laundered green — claims cited to pages that
+// do not establish them — would show Camus blessing the exact thing it exists to
+// catch. So the final memo cites ONLY definitional facts each page genuinely
+// states (verified by hand against the live articles 2026-07-14: Customer
+// retention = "the ability of a company to retain its customers"; Network effect
+// = value "depends on the number of users"; Word-of-mouth marketing =
+// "communication between consumers ... independent of direct commercial
+// influence"; Digital marketing = "uses digital technologies ... to promote
+// products"; Customer acquisition cost = "the cost of persuading a customer to
+// purchase"). The strategic recommendation is LABELLED an inference from those
+// facts, not passed off as sourced. The only unaccountable claims are in REV1,
+// which the reviewer catches.
 const SOURCES_OK = `## Sources
 1. Digital marketing — Wikipedia — https://en.wikipedia.org/wiki/Digital_marketing
 2. Customer retention — Wikipedia — https://en.wikipedia.org/wiki/Customer_retention
@@ -37,21 +43,20 @@ Put the budget into community programs and treat paid as a distraction.
 
 ${SOURCES_OK}`;
 
-// REV2: the three findings fixed. Each claim is now a general marketing
-// principle its cited reference genuinely establishes, the memo hedges that
-// specifics need the client's data, and paid gets its steelman — but the
-// recommendation still does not say which launch strategy it assumes.
+// REV2: the three findings fixed. Each claim is now a definition its cited page
+// states verbatim, the strategic read is labelled an inference, and paid gets
+// its steelman — but the recommendation still does not name a launch strategy.
 const REV2 = `## Summary
-Community-led growth and paid acquisition solve different problems for a consumer subscription app; this memo weighs which should lead. The comparison rests on general marketing principles and should be checked against the client's own retention data before it drives budget.
+Community-led growth and paid acquisition solve different problems for a consumer subscription app; this memo weighs which should lead. The findings are general marketing definitions; the recommendation is an inference from them, to be tested against the client's own data.
 
 ## Key Findings
-1. Retaining existing customers is generally less costly than acquiring new ones, which is why retention is a core growth lever [2].
-2. Word-of-mouth travels through peer recommendation rather than paid placement, so a community's reach compounds as it grows [4].
-3. Products with network effects grow more useful to each user as more people join, which rewards investment in an owned community [3].
-4. Paid channels stay the dependable way to reach audiences a community cannot touch on its own; targeted advertising is built for that job [1].
+1. Digital marketing uses digital channels to promote a product to new audiences, which is the job paid acquisition does [1].
+2. Customer retention is a business's ability to keep its existing customers, so high retention means they keep returning rather than leaving [2].
+3. A product with network effects gives each user more value as more people use it [3].
+4. Word-of-mouth marketing is communication between consumers, independent of direct commercial influence [4].
 
 ## Implications
-Lead with community programs and use paid as an amplifier, so budget follows evidence rather than hope.
+Inference (not a sourced fact): a community compounds retention and word-of-mouth and benefits from network effects, while paid buys reach a community cannot. Lead with community and use paid as an amplifier — but test this against the client's own numbers before it drives budget.
 
 ${SOURCES_OK}`;
 
@@ -59,34 +64,34 @@ ${SOURCES_OK}`;
 // fifth finding added — but its source link is dead, which the reviewer cannot
 // see and the deterministic gate will.
 const REV3 = `## Summary
-For a consumer subscription app launching self-serve first, this memo recommends community-led growth as the primary engine and paid acquisition as an amplifier. The reasoning rests on general marketing principles; confirm it against the client's own retention data before committing budget.
+For a consumer subscription app launching self-serve first, this memo recommends leading with community-led growth and using paid acquisition as an amplifier. The findings are general marketing definitions; the recommendation is an inference from them, to be tested against the client's own data before committing budget.
 
 ## Key Findings
-1. Retaining existing customers is generally less costly than acquiring new ones, which is why retention is a core growth lever [2].
-2. Word-of-mouth travels through peer recommendation rather than paid placement, so a community's reach compounds as it grows [4].
-3. Products with network effects grow more useful to each user as more people join, which rewards investment in an owned community [3].
-4. Paid channels stay the dependable way to reach audiences a community cannot touch on its own; targeted advertising is built for that job [1].
-5. Standard product-launch practice runs in phases rather than all at once, which supports a community-first, paid-second rollout [5].
+1. Digital marketing uses digital channels to promote a product to new audiences, which is the job paid acquisition does [1].
+2. Customer retention is a business's ability to keep its existing customers, so high retention means they keep returning rather than leaving [2].
+3. A product with network effects gives each user more value as more people use it [3].
+4. Word-of-mouth marketing is communication between consumers, independent of direct commercial influence [4].
+5. Customer acquisition cost is what it costs to persuade someone to buy, and it is a core metric related to customer lifetime value [5].
 
 ## Implications
-Sequence the quarter as community first, paid second: establish a retention baseline through owned channels, then buy reach against the segments the community cannot touch. Treat the direction as a hypothesis to validate, not a settled fact.
+Inference (not a sourced fact): a community compounds retention and word-of-mouth and benefits from network effects, which tends to lower acquisition cost, while paid buys the reach a community cannot. Lead with community, use paid as an amplifier, and treat the sequence as a hypothesis to test against the client's own retention and acquisition-cost data.
 
 ${SOURCES_OK}
-5. Launch playbook archive — https://github.com/Myosin-xyz/does-not-exist-archive`;
+5. Customer acquisition cost — reference — https://github.com/Myosin-xyz/does-not-exist-archive`;
 
-// REV4: the dead fifth source swapped for a live reference the phased-launch
-// claim genuinely rests on. Nothing else changes — the claims were already
-// honest — so the final green certifies a deliverable that does not launder.
+// REV4: the dead fifth source swapped for the live page whose definition finding
+// 5 states. Nothing else changes — the claims were already definitional — so the
+// final green certifies a deliverable that cites only what its pages establish.
 const REV4 = REV3.replace(
-  '5. Launch playbook archive — https://github.com/Myosin-xyz/does-not-exist-archive',
-  '5. Product launch — Wikipedia — https://en.wikipedia.org/wiki/Product_launch',
+  '5. Customer acquisition cost — reference — https://github.com/Myosin-xyz/does-not-exist-archive',
+  '5. Customer acquisition cost — Wikipedia — https://en.wikipedia.org/wiki/Customer_acquisition_cost',
 );
 
 const PLAN = `- Frame the decision: community-led vs paid-first for a consumer subscription app
-- State the general principle behind each: retention economics, word-of-mouth, network effects, paid reach
-- Name where paid genuinely wins, so this reads like judgment, not cheerleading
+- Cite only definitions each source genuinely states: paid reach, retention, network effects, word-of-mouth, acquisition cost
+- Keep the strategic recommendation as a labelled inference, never a sourced fact
 - Anchor the recommendation to the client's actual launch strategy
-- Flag every specific number as needing the client's own data before it drives budget`;
+- Flag every specific as needing the client's own data before it drives budget`;
 
 const REVIEWS = [
   {
@@ -136,7 +141,7 @@ export function createMockAdapters() {
       onTick?.('reviewer reading and drafting findings…');
       onSession?.('turn started');
       await sleep(3000, signal);
-      onSession?.('reasoning: checking the retention claim against the cited sources');
+      onSession?.('reasoning: checking each claim against the page it cites');
       onTick?.('reviewer checking evidence…');
       await sleep(3000, signal);
       onSession?.('reasoning: scanning for promissory phrasing and unsupported multiples');

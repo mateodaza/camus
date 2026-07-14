@@ -112,11 +112,21 @@ const state = {
   sessionCount: 0,
 };
 
-// The panel the USER last asked for ('setup' | 'settings' | null). Async panel
-// opens (the deep doctor check, the config fetch) can resolve after the user has
-// switched or closed; each checks this before showing, so a slow response can
-// never reopen a panel the user already left.
+// Panel race control. panelIntent = the panel the USER last asked for
+// ('setup' | 'settings' | null). userTouchedPanels distinguishes "never
+// interacted" from "explicitly closed" — a null intent alone is ambiguous, and
+// boot()'s auto-surface must fire only in the former. panelGen is a generation
+// counter bumped on every user panel action: an async open captures it and bails
+// if it changed, so a late response can never reopen a panel the user has since
+// closed, switched, or reopened.
 let panelIntent = null;
+let userTouchedPanels = false;
+let panelGen = 0;
+function requestPanel(which) { // a user panel action; returns the new generation
+  userTouchedPanels = true;
+  panelIntent = which;
+  return ++panelGen;
+}
 
 const STAGE_DEFS = {
   words: [
@@ -176,9 +186,11 @@ async function boot() {
       $('pill-claude-auth').classList.remove('hidden');
       $('pill-codex-auth').classList.remove('hidden');
       fetch(`${API}/api/doctor`).then((r) => r.json()).then((report) => {
-        // Auto-surface only when the user isn't already viewing a panel — boot()
-        // also runs after Save, and must not yank an open panel away.
-        if (!report.ok && panelIntent === null) { panelIntent = 'setup'; renderSetup(report); }
+        // Auto-surface only when the user has NEVER touched a panel — boot() also
+        // runs after Save, and a user who opened then closed Setup during this
+        // request left panelIntent null but userTouchedPanels true, so a null
+        // intent alone must not reopen it.
+        if (!report.ok && !userTouchedPanels) { panelIntent = 'setup'; renderSetup(report); }
         renderAuthPreflight(report);
       }).catch(() => renderAuthPreflight(null));
     }
@@ -359,12 +371,14 @@ function renderSetup(report) {
 }
 
 async function openSetup(deep) {
+  const gen = panelGen; // whatever the caller's user action set this to
+  const stale = () => gen !== panelGen || panelIntent !== 'setup';
   try {
     const report = await (await fetch(`${API}/api/doctor${deep ? '?deep=1' : ''}`)).json();
-    if (panelIntent !== 'setup') return; // the user switched or closed while the deep check ran
+    if (stale()) return; // the user switched, closed, or reopened while the deep check ran
     renderSetup(report);
   } catch {
-    if (panelIntent !== 'setup') return;
+    if (stale()) return;
     $('setup-panel').innerHTML = '';
     $('setup-panel').appendChild(el('div', 's-detail', 'The studio server is unreachable, so setup cannot be checked. Start it with: node server.mjs'));
     setPanel('setup');
@@ -384,8 +398,8 @@ function setPanel(which) { // 'setup' | 'settings' | null
 }
 
 $('open-setup').addEventListener('click', () => {
-  if (!$('setup-panel').classList.contains('hidden')) { panelIntent = null; setPanel(null); return; }
-  panelIntent = 'setup';
+  if (!$('setup-panel').classList.contains('hidden')) { requestPanel(null); setPanel(null); return; }
+  requestPanel('setup');
   setPanel('setup');
   // Instant feedback, then the real report: the deep pass probes the Hivemind
   // connector round-trip and can take a while.
@@ -421,18 +435,22 @@ function fillPicker(sel, options, current) {
 
 async function openSettings() {
   const panel = $('settings-panel');
-  if (!panel.classList.contains('hidden')) { panelIntent = null; setPanel(null); return; }
-  panelIntent = 'settings';
+  if (!panel.classList.contains('hidden')) { requestPanel(null); setPanel(null); return; }
+  const gen = requestPanel('settings');
   try {
     const c = await (await fetch(`${API}/api/config`)).json();
-    if (panelIntent !== 'settings') return; // the user switched or closed while config loaded
+    if (gen !== panelGen || panelIntent !== 'settings') return; // switched, closed, or reopened while config loaded
     fillPicker($('set-maker'), c.catalog?.maker ?? ['haiku', 'sonnet', 'opus'], c.maker.model);
-    fillPicker($('set-reviewer'), c.catalog?.reviewer ?? ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5'], c.reviewer.model);
+    // Never make the current reviewer selectable when codex does not list it —
+    // offer only offerable models; an unavailable current is named in the note.
+    const revValue = c.catalog?.reviewerCurrentAvailable === false ? (c.catalog.reviewer[0] ?? c.reviewer.model) : c.reviewer.model;
+    fillPicker($('set-reviewer'), c.catalog?.reviewer ?? ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5'], revValue);
     $('set-effort').value = c.reviewer.effort;
     $('set-roundcap').value = c.loop.roundCap;
     $('set-depth').value = state.depth;
     const notes = [];
     if (c.envOverrides.length) notes.push(`${c.envOverrides.join(', ')} set in the environment. Env wins over these fields this session.`);
+    if (c.catalog?.reviewerCurrentAvailable === false) notes.push(`current reviewer "${c.catalog.reviewerCurrent}" is not one codex lists on this machine — pick a listed model to save.`);
     if (c.catalog?.reviewerSource === 'fallback') notes.push('reviewer list is a default: codex has no model cache to read on this machine, so these are not CLI-verified.');
     $('settings-env').textContent = notes.join(' ');
     $('settings-note').textContent = '';

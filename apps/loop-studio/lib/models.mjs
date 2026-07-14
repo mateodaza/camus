@@ -10,7 +10,10 @@ import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const FILE_PATH = join(__dirname, '..', 'checks', 'models.json');
+// STUDIO_MODELS_FILE points the decision record at a throwaway file so tests
+// (and any embedding) never mutate the product's real checks/models.json — the
+// same isolation promise STUDIO_RUNS_DIR makes for receipts.
+const FILE_PATH = process.env.STUDIO_MODELS_FILE || join(__dirname, '..', 'checks', 'models.json');
 
 function required(value, name) {
   if (!value || typeof value !== 'string') {
@@ -87,20 +90,33 @@ export function reviewerSlugsFromCache(cache) {
 // stable aliases; reviewers come from codex's own cache when it exists (the
 // machine's real, listable options) and a small curated fallback otherwise —
 // deliberately conservative, since with no cache we cannot confirm what the
-// installed CLI will accept. The CURRENT decision is always present, so the
-// picker can never show a value it refuses to represent, and `reviewerSource`
-// tells a caller whether the list is CLI-verified or a best-effort default.
+// installed CLI will accept. `reviewerSource` tells a caller whether the list is
+// CLI-verified or a best-effort default, and the server validates writes against
+// these lists so a value that is not offerable can never be saved.
 export function modelCatalog() {
-  const maker = ['haiku', 'sonnet', 'opus'];
+  const m = getModels();
+  // Maker has no model cache to check claude against, so a configured maker is a
+  // real decision, never a hidden one — surface it if it is not a known alias.
+  const makerAliases = ['haiku', 'sonnet', 'opus'];
+  const maker = makerAliases.includes(m.maker.model) ? [...makerAliases] : [m.maker.model, ...makerAliases];
+
   let reviewer = ['gpt-5.4', 'gpt-5.4-mini'];
   let reviewerSource = 'fallback';
   try {
     const cache = JSON.parse(readFileSync(join(homedir(), '.codex', 'models_cache.json'), 'utf8'));
     const slugs = reviewerSlugsFromCache(cache);
     if (slugs.length) { reviewer = slugs; reviewerSource = 'codex_cache'; }
-  } catch { /* cache absent or unreadable: the curated fallback stands */ }
-  const m = getModels();
-  if (!maker.includes(m.maker.model)) maker.unshift(m.maker.model);
-  if (!reviewer.includes(m.reviewer.model)) reviewer.unshift(m.reviewer.model);
-  return { maker, reviewer, reviewerSource };
+  } catch { /* cache absent or unreadable: the conservative fallback stands */ }
+
+  // A current reviewer that codex's cache does NOT list — a hidden model like
+  // codex-auto-review set via CODEX_MODEL, or one dropped from the cache — must
+  // NEVER become selectable just by being the current decision (that was the
+  // hole: the current value was unshifted back into the picker unconditionally).
+  // Report it as current-but-unavailable instead. With no cache we cannot judge
+  // availability, so the fallback still allows the current decision through.
+  const reviewerCurrentAvailable = reviewer.includes(m.reviewer.model) || reviewerSource === 'fallback';
+  if (reviewerSource === 'fallback' && !reviewer.includes(m.reviewer.model)) {
+    reviewer = [m.reviewer.model, ...reviewer];
+  }
+  return { maker, reviewer, reviewerSource, reviewerCurrent: m.reviewer.model, reviewerCurrentAvailable };
 }

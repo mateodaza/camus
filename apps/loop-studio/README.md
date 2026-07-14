@@ -101,7 +101,7 @@ The UI is static and lives at **https://camus.sh/studio/** (the landing's build 
 1. Run the studio locally: `node server.mjs`. The server answers CORS preflights (including `Access-Control-Allow-Private-Network`) for exactly one origin — `https://camus.sh` and `https://www.camus.sh` by default, `STUDIO_ALLOWED_ORIGIN` to point elsewhere (comma-separated for several — previews, staging).
 2. Visit `https://camus.sh/studio/` — served from a public origin, the page defaults to `http://localhost:1913` (`?api=` overrides and persists) and drives the local server; the browser's local-network permission prompt is the user's grant.
 
-The hosted web app never receives your credentials — it is glass. The local server holds your Claude, Codex, and Hivemind logins and calls those providers directly; the model and grounding calls themselves go to those online services, but the auth stays on the machine and never passes through camus.sh.
+The hosted web app never receives your credentials — it is glass. The local server holds your Claude, Codex, and Hivemind logins and calls those providers directly: the credentials go straight to Claude, Codex, or Hivemind over their own authenticated connections and never pass through camus.sh.
 
 ## Demo-day runbook
 

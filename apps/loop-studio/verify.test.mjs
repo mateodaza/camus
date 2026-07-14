@@ -1215,13 +1215,31 @@ if (process.env.TEST_NETWORK === '1') {
   assert.ok(!slugs.includes('codex-auto-review'), 'a hidden internal model is never offered in the picker');
   assert.deepEqual(reviewerSlugsFromCache(null), [], 'no cache → no slugs');
   assert.deepEqual(reviewerSlugsFromCache({ models: 'nope' }), [], 'a malformed cache → no slugs');
+
+  // The hole the review found: a hidden model set as the CURRENT reviewer (via
+  // CODEX_MODEL) was unshifted back into the picker. It must stay unavailable.
+  // Meaningful only when this machine's real cache lists codex-auto-review as
+  // hidden; on a cacheless machine the fallback legitimately allows a current.
+  const { modelCatalog } = await import('./lib/models.mjs');
+  const prevEnv = process.env.CODEX_MODEL;
+  process.env.CODEX_MODEL = 'codex-auto-review';
+  const cat = modelCatalog();
+  if (cat.reviewerSource === 'codex_cache') {
+    assert.ok(!cat.reviewer.includes('codex-auto-review'), 'a hidden model set as the current reviewer is NOT made selectable');
+    assert.equal(cat.reviewerCurrentAvailable, false, 'the hidden current reviewer is reported unavailable');
+  }
+  if (prevEnv === undefined) delete process.env.CODEX_MODEL; else process.env.CODEX_MODEL = prevEnv;
 }
 
 // --- the rehearsal's final deliverable must not launder sources --------------
-// A demo that ends on a laundered green (specific claims cited to pages that do
-// not establish them, blessed clean) would show Camus doing the exact thing it
-// exists to catch. Drive the mock maker to its last revision and assert the
-// deterministic honesty gates genuinely pass on it.
+// A demo that ends on a laundered green would show Camus blessing the exact thing
+// it exists to catch. These are the DETERMINISTIC guarantees (no uncited stat, no
+// compliance failure, every citation resolves, required structure). The gate
+// CANNOT judge claim-to-source entailment — that was verified by hand against the
+// live pages (see mock.mjs), and is guarded here two ways: the memo must LABEL
+// its strategic recommendation as an inference rather than pass it off as
+// sourced, and its Sources must be exactly the hand-verified set, so any source
+// change re-triggers manual entailment review.
 {
   process.env.MOCK_SPEED = '0'; // no real sleeps in the test
   const { createMockAdapters } = await import('./lib/adapters/mock.mjs');
@@ -1232,14 +1250,25 @@ if (process.env.TEST_NETWORK === '1') {
   await call('fix');  // REV2
   await call('fix');  // REV3
   const finalRev = (await call('fix')).text; // REV4 — the approved, verified deliverable
-  assert.equal(findUnsourcedStats(finalRev).length, 0, 'the rehearsal final deliverable carries no uncited statistic');
-  assert.equal(findComplianceHits(finalRev).filter((h) => h.severity === 'fail').length, 0, 'the rehearsal final deliverable trips no compliance failure');
+  assert.equal(findUnsourcedStats(finalRev).length, 0, 'final deliverable: no uncited statistic');
+  assert.equal(findComplianceHits(finalRev).filter((h) => h.severity === 'fail').length, 0, 'final deliverable: no compliance failure');
   const gate = await runVerify(finalRev, 'research_memo', { skipNetwork: true });
-  assert.equal(gate.checks.find((c) => c.id === 'citations').status, 'pass', 'the rehearsal final deliverable has no dangling citation');
-  assert.equal(gate.checks.find((c) => c.id === 'stats').status, 'pass', 'the rehearsal final deliverable passes the stats-must-cite gate');
-  assert.equal(gate.checks.find((c) => c.id === 'structure').status, 'pass', 'the rehearsal final deliverable has the required sections');
-  // The FIRST draft is where the plantable problems live — the loop must catch
-  // them, not the final state.
+  assert.equal(gate.checks.find((c) => c.id === 'citations').status, 'pass', 'final deliverable: every citation resolves to a source');
+  assert.equal(gate.checks.find((c) => c.id === 'stats').status, 'pass', 'final deliverable: passes stats-must-cite');
+  assert.equal(gate.checks.find((c) => c.id === 'structure').status, 'pass', 'final deliverable: required sections present');
+  // The strategic recommendation is LABELLED an inference, not passed off as sourced.
+  assert.match(finalRev, /inference \(not a sourced fact\)/i, 'final deliverable labels its strategic recommendation an inference');
+  assert.match(finalRev, /hypothesis to test|test against the client|test this against/i, 'final deliverable calls for validation against client data');
+  // Sources are EXACTLY the hand-verified set — a change here must re-trigger entailment review.
+  for (const url of [
+    'wikipedia.org/wiki/Digital_marketing',
+    'wikipedia.org/wiki/Customer_retention',
+    'wikipedia.org/wiki/Network_effect',
+    'wikipedia.org/wiki/Word-of-mouth_marketing',
+    'wikipedia.org/wiki/Customer_acquisition_cost',
+  ]) assert.ok(finalRev.includes(url), `final deliverable cites the verified source ${url}`);
+  assert.ok(!finalRev.includes('does-not-exist-archive'), 'final deliverable carries no dead placeholder source');
+  // The FIRST draft is where the plantable problems live — the loop catches them.
   const rev1 = (await createMockAdapters().claude({ stage: 'make', signal: ac.signal, onTick() {}, onSession() {} })).text;
   assert.ok(findUnsourcedStats(rev1).length > 0 || findComplianceHits(rev1).some((h) => h.severity === 'fail'), 'the rehearsal FIRST draft plants a real problem for the reviewer to catch');
 }

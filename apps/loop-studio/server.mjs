@@ -410,6 +410,17 @@ const server = http.createServer(async (req, res) => {
       }
       const maker = body.maker?.trim() || undefined;
       const reviewer = body.reviewer?.trim() || undefined;
+      // Validate model choices SERVER-SIDE against the offerable catalog: a value
+      // the picker never offers (a hidden codex model like codex-auto-review, or
+      // anything else off the list) must not be persistable, or it would slip
+      // back into the picker as the current decision on the next load.
+      const cat = modelCatalog();
+      if (maker !== undefined && !cat.maker.includes(maker)) {
+        return json(res, 400, { error: `maker "${maker}" is not an available model` });
+      }
+      if (reviewer !== undefined && !cat.reviewer.includes(reviewer)) {
+        return json(res, 400, { error: `reviewer "${reviewer}" is not an available reviewer model (codex does not list it)` });
+      }
       const m = updateModels({ maker, reviewer, effort, roundCap });
       return json(res, 200, { maker: m.maker, reviewer: m.reviewer, loop: m.loop, note: 'applies from the next run' });
     }

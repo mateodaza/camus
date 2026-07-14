@@ -6,18 +6,24 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import http from 'node:http';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const HOST = '127.0.0.1';
 const tmp = mkdtempSync(join(tmpdir(), 'cls-api-'));
 const ACCEPTANCE = 'Every material claim is traceable and the deterministic checks are recorded.';
 
+// The config-POST test writes the decision record; STUDIO_MODELS_FILE points it
+// at a throwaway copy so the product's real checks/models.json is never mutated.
+const modelsFile = join(tmp, 'models.json');
+writeFileSync(modelsFile, readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'checks', 'models.json'), 'utf8'));
+
 const server = spawn(process.execPath, ['server.mjs'], {
   // STUDIO_RUNS_DIR points the server at the throwaway tmp dir, so test runs
   // never pollute the product's real runs/ (the temp dir is removed in finally).
-  env: { ...process.env, ENGINE: 'mock', MOCK_SPEED: '0.15', OPEN: '0', PORT: '0', STUDIO_ALLOWED_ORIGIN: 'https://camus.sh', STUDIO_MAX_ACTIVE: '2', STUDIO_RUNS_DIR: tmp },
+  env: { ...process.env, ENGINE: 'mock', MOCK_SPEED: '0.15', OPEN: '0', PORT: '0', STUDIO_ALLOWED_ORIGIN: 'https://camus.sh', STUDIO_MAX_ACTIVE: '2', STUDIO_RUNS_DIR: tmp, STUDIO_MODELS_FILE: modelsFile },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let base = '';
@@ -57,6 +63,32 @@ try {
     assert.ok(c.catalog.reviewer.includes(c.reviewer.model), 'the current reviewer decision is selectable');
     assert.ok(!c.catalog.reviewer.includes('codex-auto-review'), 'a hidden internal reviewer model is never offered');
     assert.ok(['codex_cache', 'fallback'].includes(c.catalog.reviewerSource), 'the catalog names whether the list is CLI-verified');
+  });
+
+  await check('config POST validates model choices server-side (400 on an unoffered reviewer)', async () => {
+    // The picker filters the hidden model out; the write path must too, or it
+    // could be persisted and slip back in as the current decision.
+    const bad = await fetch(`${base}/api/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify({ reviewer: 'codex-auto-review' }),
+    });
+    assert.equal(bad.status, 400, 'a hidden/unoffered reviewer is rejected');
+    const badMaker = await fetch(`${base}/api/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify({ maker: 'not-a-real-maker' }),
+    });
+    assert.equal(badMaker.status, 400, 'an unknown maker is rejected');
+    // A valid listable reviewer still saves.
+    const cfg = await (await fetch(`${base}/api/config`, { headers: { origin: base } })).json();
+    const okReviewer = cfg.catalog.reviewer[0];
+    const good = await fetch(`${base}/api/config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify({ reviewer: okReviewer }),
+    });
+    assert.equal(good.status, 200, `a valid listable reviewer (${okReviewer}) saves`);
   });
 
   await check('POST from a disallowed Origin is rejected (403), not executed', async () => {
