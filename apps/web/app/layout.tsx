@@ -38,9 +38,9 @@ const FAVICON =
 // Override per-environment with NEXT_PUBLIC_SITE_URL (e.g. a preview deploy).
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://camus.sh';
 
-const TITLE = 'Camus: makes it work, knows when to stop';
+const TITLE = 'Camus: independent review for AI work';
 const DESCRIPTION =
-  'Camus is an independent trust layer for agent work. A rival model audits every change, deterministic checks have the final word, and every green binds to the exact artifact it certified — so the receipts, and never the agents, answer whether to trust the work.';
+  'One AI does the work. Another, from a different company, checks it against your acceptance contract. Tests, sources, human decisions, and a sealed receipt show what actually earned trust.';
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -58,7 +58,7 @@ export const metadata: Metadata = {
         url: '/og.png',
         width: 1200,
         height: 630,
-        alt: 'Camus — a coding loop that proves every change. No agent should grade its own work.',
+        alt: 'Camus, independent review and evidence for work made by AI.',
       },
     ],
   },

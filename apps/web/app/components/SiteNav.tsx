@@ -15,8 +15,9 @@ export function SiteNav() {
           <span className="brand-wm">Camus</span>
         </a>
         <div className="nav-links">
-          <a className="nav-sm-hide" href="#watch">how it works</a>
-          <a className="nav-sm-hide" href="#philosophy">philosophy</a>
+          <a className="nav-sm-hide" href="#why">why Camus</a>
+          <a className="nav-sm-hide" href="#proof">proof</a>
+          <a className="nav-sm-hide" href="#how">how it works</a>
           <a href="#studio">studio</a>
           <a href="https://github.com/mateodaza/camus">GitHub</a>
         </div>

@@ -11,264 +11,242 @@ export default function Home() {
       <main id="top">
         <header className="hero">
           <div className="wrap hero-in">
-            <p className="hero-kicker">An independent trust layer for agent work</p>
+            <p className="hero-kicker">Independent review for work made by AI</p>
             <h1 className="hero-h1">
               <span className="lockup">
                 <ClimbLoop />
                 <span className="wordmark">Camus</span>
               </span>
-              <span className="tagline">Makes it work. Knows when to stop.</span>
+              <span className="tagline">Trust the work, not the model that made it.</span>
             </h1>
             <p className="hero-sub">
-              A competing model reviews every change, your own tests have the final word, and
-              every green names the exact commit it certified. When the loop stops being
-              trustworthy, it stops — evidence preserved, a decision on your desk.
-              No agent grades its own work.
+              One AI does the work. Another, from a different company, checks it
+              against what you said must be true. Tests and sources settle what they
+              can. You make the calls they should not.
             </p>
             <div className="cta-row">
-              <a className="cta" href="https://www.npmjs.com/package/camus-cli">npx camus-cli install</a>
-              <a className="cta-ghost" href="https://github.com/mateodaza/camus">GitHub &#8599;</a>
+              <a className="cta" href="/studio/">Open Loop Studio</a>
+              <a className="cta-ghost" href="#proof">See a real catch ↓</a>
             </div>
-            <div className="hero-proof">
-              <b>cross-vendor audit</b>
-              <b>isolated worktrees</b>
-              <b>head-bound verify</b>
-              <b>crash-safe resume</b>
-              <b>named human halts</b>
-              <b>run history + canary</b>
+            <div className="hero-proof" aria-label="What Camus gives you">
+              <b>an independent second opinion</b>
+              <b>sources and tests attached</b>
+              <b>human decisions preserved</b>
+              <b>a receipt for the exact result</b>
             </div>
           </div>
         </header>
 
-        <section className="sec" id="watch">
+        <section className="sec sec--soft" id="why">
           <div className="wrap">
             <Reveal>
-              <div className="sec-head">
+              <p className="section-label">The problem</p>
+              <div className="sec-head sec-head--wide">
                 <div>
-                  <h2 className="sec-h2">Watch it work.</h2>
+                  <h2 className="sec-h2">A confident answer is not the same as a trustworthy one.</h2>
                   <p className="sec-sub">
-                    It ships as a skill and three workflows, so it runs wherever skills run. Every phase
-                    of every task is on screen as it happens.
+                    The model that made the work shares its own assumptions, omissions,
+                    and incentives. Asking it to check itself can produce a more polished
+                    version of the same blind spot.
                   </p>
                 </div>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img className="sec-art" src="/brand/covers/the-glare.svg" alt="A cover study after The Stranger" width="400" height="600" />
+                <img className="sec-art" src="/brand/covers/the-glare.svg" alt="An original Camus cover study" width="400" height="600" />
               </div>
             </Reveal>
-            <Reveal>
-              <div className="term term--tree">
-                <pre>
-{`camus · feat "harden input boundaries" · 3 tasks
 
-  `}<span className="g">✓</span>{`  env + baseline
-  │
-  `}<span className="g">✓</span>{`  1  guard empty input · embedding.ts        sonnet
-  │     plan · implement · review · verify          → a1f9c2e
-  │
-  `}<span className="g">✓</span>{`  2  filter empty roles · chunk-roles.ts     sonnet → opus
-  │     plan · implement · `}<span className="r">review ⇄ fix ×2</span>{` · verify  → 3c4d5e6
-  │
-  `}<span className="r">▍</span>{`  3  guard the question counter · counter.ts  sonnet
-  │     plan · implement · `}<span className="r">reviewing …</span>{`
-  │
-  …  integration verify · report → ~/.camus/reports/harden-…json`}
-                </pre>
-              </div>
+            <div className="value-grid">
+              <Reveal className="value-card">
+                <span className="card-num">01</span>
+                <h3>The maker can miss its own mistake.</h3>
+                <p>Stronger models make better work, but confidence is still not evidence.</p>
+              </Reveal>
+              <Reveal className="value-card">
+                <span className="card-num">02</span>
+                <h3>Self-review shares the blind spot.</h3>
+                <p>The same model family tends to defend the choices and style it already produced.</p>
+              </Reveal>
+              <Reveal className="value-card">
+                <span className="card-num">03</span>
+                <h3>Review can detach from the final result.</h3>
+                <p>A clean verdict is meaningless if the artifact changes after the reviewer saw it.</p>
+              </Reveal>
+            </div>
+
+            <Reveal>
+              <p className="thesis-line">
+                Camus keeps the artifact, the evidence, the independent verdict, and
+                the human decision bound together.
+              </p>
             </Reveal>
           </div>
         </section>
 
-        <section className="sec" id="honest">
+        <section className="sec" id="proof">
           <div className="wrap">
             <Reveal>
-              <div className="sec-head">
+              <p className="section-label">A live example</p>
+              <div className="sec-head sec-head--wide">
                 <div>
-                  <h2 className="sec-h2">Every change clears an outside reviewer.</h2>
+                  <h2 className="sec-h2">The first model sounded right. The second model checked.</h2>
                   <p className="sec-sub">
-                    Real accountability comes from outside. Claude could run the whole loop and sign
-                    off on itself, so Camus pairs it with a rival — Codex today — and abides by the
-                    verdict. Models will change monthly; the independence is the point.
+                    In a real research run, Sonnet drafted a plausible strategy from
+                    Hivemind material. GPT-5.4 found claims the source did not support,
+                    including a raw search score rewritten as “Relevance: 76%” after
+                    the contract explicitly forbade interpreting score semantics.
                   </p>
                 </div>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img className="sec-art" src="/brand/covers/the-crossing.svg" alt="A cover study after The First Man" width="400" height="600" />
               </div>
             </Reveal>
 
-            <div className="evs">
-              <Reveal className="ev">
-                <p className="ev-cap">
-                  The review comes from Codex, built by a competitor.{' '}
-                  <em>Claude relays its verdict and abides by it.</em>
-                </p>
-                <Artifact tone="dark" path="~/.camus/reviews/harden-x1f9q2-r1.json" label="A Codex review verdict">
-{`{
-  `}<span className="k">&quot;ran&quot;</span>{`: true,
-  `}<span className="k">&quot;clean&quot;</span>{`: `}<span className="rej">false</span>{`,
-  `}<span className="k">&quot;blocking&quot;</span>{`: [
-    { `}<span className="k">&quot;priority&quot;</span>{`: 1, `}<span className="k">&quot;title&quot;</span>{`: "missing empty-input guard" }
-  ]
-}`}
-                </Artifact>
+            <div className="proof-layout">
+              <Reveal className="proof-story">
+                <div className="proof-row">
+                  <span>Made</span>
+                  <p>Sonnet produced the initial strategy using the frozen research context.</p>
+                </div>
+                <div className="proof-row proof-row--caught">
+                  <span>Caught</span>
+                  <p>GPT-5.4 blocked unsupported interpretations instead of rewarding persuasive prose.</p>
+                </div>
+                <div className="proof-row">
+                  <span>Human</span>
+                  <p>One decision reached the human: authorize one more repair round.</p>
+                </div>
+                <div className="proof-row proof-row--sealed">
+                  <span>Sealed</span>
+                  <p>The repaired result passed verification and earned an independent clean audit.</p>
+                </div>
               </Reveal>
 
-              <Reveal className="ev">
-                <p className="ev-cap">
-                  A clean review still has to clear the repo&apos;s own checks — and the
-                  verdict names the commit it ran against.{' '}
-                  <em>A green run means real checks passed on that exact commit.</em>
-                </p>
-                <Artifact tone="dark" path="camus verify" label="A verification run">
-{`$ pnpm type-check     `}<span className="ok">ok</span>{`
-$ pnpm test           `}<span className="ok">ok</span>{`   163 passed
-→ done · commit a1f9c2e · `}<span className="ok">head-bound: a1f9c2e</span>{``}
-                </Artifact>
-              </Reveal>
+              <Reveal className="proof-receipt">
+                <p className="receipt-kicker">The result did not merely say “done.”</p>
+                <Artifact tone="dark" path="sealed evidence pack" label="A compact Camus evidence receipt">
+{`standing       `}<span className="ok">verified</span>{`
+execution      completed
+verification   passed
+audit          independent_clean
+publication    not_published
 
-              <Reveal className="ev">
-                <p className="ev-cap">
-                  Every judgment call is logged with its reason and the option it rejected.{' '}
-                  <em>You can read the reasoning, change by change.</em>
-                </p>
-                <Artifact path="~/.camus/reports/harden-input-boundaries.json" label="A decision in the run report">
-{`  `}<span className="k">&quot;decisions&quot;</span>{`: [
-    {
-      `}<span className="k">&quot;what&quot;</span>{`:     "widened content type to unknown",
-      `}<span className="k">&quot;why&quot;</span>{`:      "callers pass non-string payloads",
-      `}<span className="k">&quot;rejected&quot;</span>{`: "a string-only guard"
-    }
-  ]`}
+executor       anthropic:sonnet
+auditor        openai:gpt-5.4
+artifact       59ee19193b8b
+receipt        0b8960d2e40d`}
                 </Artifact>
+                <p className="receipt-note">
+                  The full receipt also preserves the acceptance contract, exact model
+                  identities, human decisions, checks, findings, and evidence bundle.
+                </p>
               </Reveal>
             </div>
           </div>
         </section>
 
-        <section className="sec" id="autonomy">
+        <section className="sec sec--ink" id="how">
           <div className="wrap">
             <Reveal>
-              <div className="sec-head">
-                <div>
-                  <h2 className="sec-h2">
-                    Unattended,<br />
-                    <em>and accountable.</em>
-                  </h2>
-                  <p className="sec-sub">
-                    It stays quiet when that is safe, and asks a real question when a task is
-                    genuinely ambiguous. Your answer resumes the same run.
-                  </p>
-                </div>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img className="sec-art" src="/brand/covers/the-break.svg" alt="A cover study after The Rebel" width="400" height="600" />
-              </div>
+              <p className="section-label">How Camus works</p>
+              <h2 className="sec-h2">Four parts. One honest result.</h2>
+              <p className="sec-sub">
+                Camus does not need to control every agent. It controls what the work
+                must satisfy, what was actually checked, and who gets to decide.
+              </p>
             </Reveal>
 
-            <Reveal>
-              <div className="pol">
-                <b>autonomous</b>
-                <span>·</span>
-                <span>
-                  <b>ask_on_ambiguity</b> (default)
-                </span>
-                <span>·</span>
-                <b>ask_on_major</b>
-              </div>
-            </Reveal>
-
-            <div className="evs">
-              <Reveal className="ev">
-                <p className="ev-cap">
-                  When a call is genuinely ambiguous, it stops and asks you. <em>Your answer resumes the run.</em>
-                </p>
-                <Artifact path="~/.camus/reports/feat-9c2.json" label="A run paused for a human">
-{`  `}<span className="k">&quot;status&quot;</span>{`:   `}<span className="rej">&quot;needs_human&quot;</span>{`,
-  `}<span className="k">&quot;question&quot;</span>{`: "Two callers expect different shapes.
-              Which contract should win?"`}
-                </Artifact>
+            <div className="flow-grid">
+              <Reveal className="flow-step">
+                <span>1</span>
+                <h3>Set the contract</h3>
+                <p>State the goal, what must be true, the permitted knowledge, and the budget.</p>
+              </Reveal>
+              <Reveal className="flow-step">
+                <span>2</span>
+                <h3>Let the executor work</h3>
+                <p>Use a single model or its native agents. Camus treats the whole system as the maker.</p>
+              </Reveal>
+              <Reveal className="flow-step">
+                <span>3</span>
+                <h3>Challenge it independently</h3>
+                <p>A different model audits the artifact. Tests and captured sources arbitrate where possible.</p>
+              </Reveal>
+              <Reveal className="flow-step">
+                <span>4</span>
+                <h3>Decide and seal</h3>
+                <p>Ambiguity goes to you. Every verdict binds to the exact artifact it certified.</p>
               </Reveal>
             </div>
           </div>
         </section>
 
-        <section className="sec" id="stop">
+        <section className="sec" id="human">
           <div className="wrap">
             <Reveal>
-              <div className="sec-head">
-                <div>
-                  <h2 className="sec-h2">It knows when to stop.</h2>
-                  <p className="sec-sub">
-                    Review rounds are capped, and a finding that survives its own fix stops the loop
-                    early. When review stalls but your tests stay green, that becomes a decision on
-                    your desk — with the reviewer&apos;s own conviction trend as context.
-                  </p>
-                </div>
-              </div>
+              <p className="section-label">Human in the loop</p>
+              <h2 className="sec-h2">You are not removed from the loop. You are removed from babysitting it.</h2>
             </Reveal>
 
-            <div className="evs">
-              <Reveal className="ev">
-                <p className="ev-cap">
-                  A re-raised finding with falling reviewer conviction reads as a stale flag, so the
-                  loop stops and shows its work. <em>You get a decision, not churn.</em>
-                </p>
-                <Artifact path="~/.camus/feats/harden-x1f9q2.json" label="A run stopped for a decision">
-{`  `}<span className="k">&quot;status&quot;</span>{`:      `}<span className="rej">&quot;needs_decision&quot;</span>{`,
-  `}<span className="k">&quot;verifyClean&quot;</span>{`: true,
-  `}<span className="k">&quot;stuck&quot;</span>{`: [{ `}<span className="k">&quot;title&quot;</span>{`: "missing empty-input guard",
-              `}<span className="k">&quot;confidenceTrend&quot;</span>{`: { `}<span className="k">&quot;dir&quot;</span>{`: "falling", `}<span className="k">&quot;series&quot;</span>{`: [0.9, 0.8] } }]`}
-                </Artifact>
+            <div className="authority-grid">
+              <Reveal className="authority-col">
+                <h3>Camus handles the repetition</h3>
+                <ul>
+                  <li>draft, review, repair, and bounded retry</li>
+                  <li>deterministic checks and source capture</li>
+                  <li>model identity, artifact lineage, and receipts</li>
+                  <li>stopping when another round is not justified</li>
+                </ul>
               </Reveal>
-
-              <Reveal className="ev">
-                <p className="ev-cap">
-                  Kill the run anywhere. Finished tasks skip, proven work lands itself through commit
-                  and verify, and only unproven work re-runs. <em>Nothing re-implements what is already proven.</em>
-                </p>
-                <Artifact tone="dark" path="camus resume" label="A resume after a crash mid-merge">
-{`prior state: `}<span className="k">&quot;ready_to_merge&quot;</span>{`   `}<span className="c"># killed between commit and merge</span>{`
-▸ Task 1 — LAND (resuming interrupted merge) → commit → verify → merge…
-`}<span className="ok">✓</span>{` merged a1f9c2e · zero review rounds spent`}
-                </Artifact>
+              <Reveal className="authority-col authority-col--human">
+                <h3>You keep authority</h3>
+                <ul>
+                  <li>define success and the allowed knowledge</li>
+                  <li>resolve ambiguity and reviewer disagreement</li>
+                  <li>approve high-cost or high-risk work</li>
+                  <li>choose, publish, merge, or walk away</li>
+                </ul>
               </Reveal>
             </div>
           </div>
         </section>
 
-        <section className="sec" id="philosophy">
+        <section className="sec sec--direction" id="direction">
           <div className="wrap">
             <Reveal>
-              <div className="sec-head">
-                <div>
-                  <h2 className="sec-h2">Bigger than code.</h2>
-                  <p className="sec-sub">
-                    It is built for code, but the principle is bigger: nothing should be the judge of
-                    its own work.
-                  </p>
-                </div>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img className="sec-art" src="/brand/covers/the-cascade.svg" alt="A cover study after The Myth of Sisyphus" width="400" height="600" />
+              <p className="section-label">Where Camus goes next</p>
+              <div className="direction-head">
+                <h2 className="sec-h2">Better models make Camus more useful, not less.</h2>
+                <p className="sec-sub">
+                  Frontier models are becoming excellent orchestrators. Camus will let
+                  them own the workers while it compares what they produce under one
+                  contract and keeps any model from awarding itself trusted standing.
+                </p>
               </div>
             </Reveal>
+
+            <div className="direction-grid">
+              <Reveal className="direction-card direction-card--now">
+                <p className="direction-tag">Available now</p>
+                <h3>Independent trust</h3>
+                <p>
+                  One executor, one cross-vendor auditor, deterministic checks, human
+                  checkpoints, and a sealed evidence pack for the exact result.
+                </p>
+              </Reveal>
+              <Reveal className="direction-card">
+                <p className="direction-tag">Planned: Compare &amp; Learn</p>
+                <h3>Evidence-backed improvement</h3>
+                <p>
+                  Run the same goal and frozen knowledge across different models,
+                  efforts, or orchestration strategies. Keep failed arms. Compare
+                  blindly. Learn locally, and route only when enough evidence exists.
+                </p>
+              </Reveal>
+            </div>
+
             <Reveal>
-              <div className="creed">
-                <p><em>A craftsman knows how to work. An artist knows when to stop.</em></p>
-                <p>
-                  Underneath, it treats agent work the way a database treats a transaction:
-                  every handoff carries evidence, every green names the state it certified,
-                  and a halt preserves the proof instead of the mess.
-                </p>
-                <p>
-                  An agent can always run one more round, so Camus treats stopping as judgment:
-                  it tells one more round from a decision worth a human, because perfection is out
-                  of reach and knowing when to stop is not.
-                </p>
-                <p>It pairs rival models, so every change answers to an outside auditor. The models will change; the independence stays.</p>
-                <p>
-                  It surrenders choreography and keeps custody: whoever&apos;s agents do the work,
-                  the artifact, the verdict, and the merge stay bound to evidence.
-                </p>
-                <p>It runs unwatched, so the checks are what let you trust a green run.</p>
-              </div>
+              <p className="direction-law">
+                The quality floor comes first. Only then does Camus optimize tokens,
+                time, and cost. Cheap failure never wins.
+              </p>
             </Reveal>
           </div>
         </section>
@@ -276,111 +254,111 @@ $ pnpm test           `}<span className="ok">ok</span>{`   163 passed
         <section className="sec" id="studio">
           <div className="wrap">
             <Reveal>
-              <div className="sec-head">
-                <div>
-                  <h2 className="sec-h2">
-                    The same loop,<br />
-                    <em>on words.</em>
-                  </h2>
-                  <p className="sec-sub">
-                    Loop Studio points the loop at words — research and analysis on any topic, the
-                    deliverables you stake your name on. Claude drafts, Codex tears the draft apart,
-                    and checks that cannot be argued with decide: links resolve, every number traces
-                    to a live source. The same loop runs on your own code today. It needs no terminal
-                    and runs on your machine, watchable in a browser.
-                  </p>
-                </div>
-              </div>
+              <p className="section-label">Two ways in</p>
+              <h2 className="sec-h2">Built for work you stake your name on.</h2>
+              <p className="sec-sub">
+                The trust protocol is the same. The interface meets you where the work lives.
+              </p>
             </Reveal>
 
-            <Reveal>
-              <div className="pol">
-                <span>
-                  <b>words, any topic</b> marketing is the tuned vertical, grounded in Hivemind
-                </span>
-                <span>·</span>
-                <span>
-                  <b>and code</b> the Build lane ignites the camus gate on a repo of yours, right now
-                </span>
-              </div>
-            </Reveal>
-
-            <div className="evs">
-              <Reveal className="ev">
-                <p className="ev-cap">
-                  The only questions that reach a human are the ones a machine should not answer.{' '}
-                  <em>Everything else is drafted, reviewed, and verified before you see it.</em>
+            <div className="audience-grid">
+              <Reveal className="audience-card">
+                <p className="audience-kicker">For research and marketing</p>
+                <h3>Loop Studio</h3>
+                <p>
+                  Write a memo, investigate competitors, or turn Hivemind knowledge
+                  into a grounded deliverable. Use plain language, inspect every
+                  objection, and step in only for real judgment calls.
                 </p>
-                <div className="term term--tree">
-                  <pre>
-{`loop-studio · "Community programs or paid acquisition this quarter?"
+                <ul>
+                  <li>browser interface, no JSON noise</li>
+                  <li>acceptance contract in your own words</li>
+                  <li>Hivemind grounding through your Claude MCP</li>
+                  <li>downloadable evidence pack</li>
+                </ul>
+                <a className="cta" href="/studio/">Open Loop Studio</a>
+              </Reveal>
 
-  `}<span className="g">✓</span>{`  plan · draft rev 1
-  `}<span className="r">✗</span>{`  review r1: revise `}<span className="c">(3 blocking · codex)</span>{`
-  `}<span className="g">✓</span>{`  fix → rev 2 · review r2: 1 question
-  `}<span className="o">?</span>{`  THE LOOP IS ASKING YOU
-     `}<span className="p">"Base-first or multichain — which fits the Q3 goal?"</span>{`
-  `}<span className="g">✓</span>{`  human decided: Base-first → rev 3 · review r3: clean
-  `}<span className="g">✓</span>{`  verify · links · stats cite · compliance · structure → `}<span className="g">GREEN</span>{`
-  done · receipts in runs/20260712-082909/`}
-                  </pre>
-                </div>
+              <Reveal className="audience-card audience-card--code">
+                <p className="audience-kicker">For developers</p>
+                <h3>Camus CLI</h3>
+                <p>
+                  Give an agent a real repository without giving up custody. Work stays
+                  isolated, reviews bind to exact commits, tests have the final word,
+                  and only proven changes reach your branch.
+                </p>
+                <ul>
+                  <li>isolated worktrees and controlled merge</li>
+                  <li>cross-vendor code review</li>
+                  <li>HEAD-bound verification</li>
+                  <li>crash-safe resume and named human halts</li>
+                </ul>
+                <a className="cta-ghost audience-link" href="https://www.npmjs.com/package/camus-cli">View camus-cli on npm ↗</a>
               </Reveal>
             </div>
-
-            <Reveal>
-              <div className="cta-row cta-row--left">
-                <a className="cta" href="/studio/">Open Loop Studio</a>
-                <a className="cta-ghost" href="https://github.com/mateodaza/camus/tree/main/apps/loop-studio">apps/loop-studio &#8599;</a>
-              </div>
-            </Reveal>
           </div>
         </section>
 
-        <section className="sec" id="run">
+        <section className="sec sec--soft" id="run">
           <div className="wrap">
             <Reveal>
+              <p className="section-label">Run it locally</p>
               <div className="sec-head">
                 <div>
-                  <h2 className="sec-h2">Run it.</h2>
+                  <h2 className="sec-h2">Your machine keeps custody.</h2>
                   <p className="sec-sub">
-                    It runs in Claude Code today: a subscription, the Codex CLI authenticated, node,
-                    python3, and a repo you trust.
+                    Orchestration and receipts stay on your machine. Model and Hivemind
+                    requests go to the services you already authenticate. Camus does
+                    not bundle or proxy your subscriptions.
                   </p>
                 </div>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img className="sec-art" src="/brand/covers/the-descent.svg" alt="A cover study after The Fall" width="400" height="600" />
+                <img className="sec-art" src="/brand/covers/the-descent.svg" alt="An original Camus cover study" width="400" height="600" />
               </div>
             </Reveal>
+
             <Reveal>
               <div className="term">
                 <pre>
-{`# one-time
-$ npm i -g camus-cli
-$ camus install        `}<span className="c"># a frozen copy into ~/.claude — what you ran is what runs</span>{`
-$ camus auto-setup     `}<span className="c"># opt-in scoped unattended profile</span>{`
-
-# per run, from your repo
-$ camus check          `}<span className="c"># installed == package, safe to run</span>{`
-$ camus canary         `}<span className="c"># optional: prove the toolchain on a throwaway repo first</span>{`
-$ claude --permission-mode auto
+{`$ npm i -g camus-cli
+$ camus install
+$ camus check
 
 > /camus-feat { feat: "Harden input boundaries", tasks: [...] }
-`}<span className="o">✓</span>{` env + baseline · 3/3 tasks done · integration verify green, head-bound`}
+
+`}<span className="g">✓</span>{` executor finished in an isolated worktree
+`}<span className="r">✗</span>{` independent review found a missing guard
+`}<span className="g">✓</span>{` repair passed 163 tests
+`}<span className="g">✓</span>{` verified receipt bound to commit a1f9c2e`}
                 </pre>
+              </div>
+            </Reveal>
+
+            <Reveal>
+              <div className="cta-row cta-row--left">
+                <a className="cta" href="/studio/">Try the visual Studio</a>
+                <a className="cta-ghost" href="https://github.com/mateodaza/camus">Read the source ↗</a>
               </div>
             </Reveal>
           </div>
         </section>
 
-        <section className="sec closing" id="camus">
-          <div className="wrap">
+        <section className="sec closing" id="philosophy">
+          <div className="wrap closing-grid">
             <Reveal>
               <figure className="closing-mark">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src="/brand/covers/the-climb.svg" alt="The Camus loop, held as a still" width="400" height="600" />
                 <figcaption>Camus</figcaption>
               </figure>
+            </Reveal>
+            <Reveal className="closing-copy">
+              <p className="section-label">The principle</p>
+              <h2 className="sec-h2">No intelligence should be the only judge of its own work.</h2>
+              <p className="sec-sub">
+                Models will change. The need for independent judgment, inspectable
+                evidence, and a meaningful human decision will not.
+              </p>
             </Reveal>
           </div>
         </section>
