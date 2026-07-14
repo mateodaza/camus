@@ -227,7 +227,9 @@ async function startRun({ goal, lane, depth, ground, targetPath = null, targetTo
 // HTTP plumbing
 // ---------------------------------------------------------------------------
 
-const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.md': 'text/markdown' };
+// .mjs must be real JS: the page loads as a module now (app.js imports the
+// pure banner policy), and browsers refuse module scripts served octet-stream.
+const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.md': 'text/markdown' };
 
 function json(res, code, obj) {
   const body = JSON.stringify(obj);

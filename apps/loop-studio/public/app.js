@@ -1,4 +1,8 @@
-/* Camus Loop Studio front-end. No framework: one SSE stream in, DOM out. */
+/* Camus Loop Studio front-end. No framework: one SSE stream in, DOM out.
+   Loaded as an ES module (see index.html) so the pure banner policy is one
+   shared file, importable here and by verify.test.mjs alike. */
+
+import { doneBanner } from './banner.mjs';
 
 // Hosted-UI mode: when this page is served from a public origin, ?api=
 // points it at the local studio server (persisted after the first visit).
@@ -855,33 +859,28 @@ function handle(ev) {
       setStage('ship', ev.status.startsWith('done') ? 'done' : 'idle');
       const good = ev.status === 'done' || ev.status === 'done_with_findings';
       let cls = state.simulated ? 'meh' : good ? 'good' : ['stopped', 'no_changes'].includes(ev.status) ? 'meh' : 'bad';
+      // done/done_with_findings are ABSENT from this flat map on purpose: for a
+      // real run their copy is owned by the headline policy below, and a flat
+      // default here would be exactly the false-green a legacy event rides in on.
       let label = state.simulated
         ? (ev.status === 'stopped'
             ? 'REHEARSAL STOPPED — a simulation; nothing ran.'
             : 'REHEARSAL COMPLETE — a scripted simulation. No models or target-repository commands ran; Studio saved only a local simulation trace. No real evidence or model spend.')
         : ({
-            done: 'DONE — reviewed and verified.',
-            done_with_findings: 'DONE WITH FINDINGS — green, with findings or caveats on the record.',
             no_changes: 'NO CHANGES — the gate proved an empty diff; nothing shipped, nothing failed.',
             verify_failed: 'VERIFY FAILED — shipped by human override, recorded as red.',
             failed: 'FAILED — the loop refused to fake a green.',
             stopped: 'STOPPED by human.',
           }[ev.status] || ev.status);
-      // The verified claim answers to the trust protocol's ONE headline
-      // derivation, riding the event at serve time (never sealed) — the UI does
-      // not re-derive audit policy. A hand-rolled copy of the rules here let a
-      // same-vendor advisory audit claim "verified"; protocol rule 6 says
-      // advisory is its own standing, never verified. Anything the derivation
-      // does not vouch for renders as a gate claim the receipt does not back.
-      if (!state.simulated && good && ev.dimensions) {
-        if (ev.headline === 'same_vendor_reviewed') {
-          cls = 'meh';
-          label = `${ev.status === 'done' ? 'DONE' : 'DONE WITH FINDINGS'} — same-vendor reviewed. The audit ran on the maker's own vendor; advisory review never earns independent verified standing.`;
-        } else if (!['verified', 'verified_with_findings', 'published'].includes(ev.headline)) {
-          cls = 'meh';
-          const nice = (s) => String(s).replace(/_/g, ' ');
-          label = `${ev.status === 'done' ? 'DONE (gate claim)' : 'DONE WITH FINDINGS (gate claim)'} — the receipt does not corroborate it: verification ${nice(ev.dimensions.verification)}, audit ${nice(ev.dimensions.audit)}. Trust the dimensions below, not the word.`;
-        }
+      // EVERY real done* event enters the headline policy (banner.mjs) — the
+      // trust protocol's one derivation, riding the event at serve time. That
+      // includes events with NO dimensions/headline (legacy receipts): missing
+      // evidence fails closed to an uncorroborated gate claim, never to
+      // "reviewed and verified". The UI never re-derives audit policy.
+      if (!state.simulated && good) {
+        const b = doneBanner(ev.status, ev.headline, ev.dimensions);
+        cls = b.cls;
+        label = b.label;
       }
       const b = el('div', `banner ${cls}`, label);
       if (state.runLane === 'build' && ['stopped', 'failed', 'verify_failed'].includes(ev.status)) {

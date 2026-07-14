@@ -912,4 +912,42 @@ if (process.env.TEST_NETWORK === '1') {
   assert.equal(parseAuthProbe('some unrelated banner text'), false, 'a successful probe with no sign-in claim is false, not unknown');
 }
 
+// --- banner policy: every real done* answers to the headline, fail-closed ----
+// The pure mapping the UI renders from (public/banner.mjs). Two receipts bit
+// us here: a legacy done with NO dimensions bypassed the old guard and kept
+// "reviewed and verified" (P1 — several real runs/ receipts have that shape),
+// and done + verified_with_findings hid its caveats behind the flat copy (P2).
+{
+  const { doneBanner } = await import('./public/banner.mjs');
+  const verifiedLabel = 'DONE — reviewed and verified.';
+
+  // Missing evidence fails CLOSED — the legacy-receipt shape, both flat statuses.
+  const legacy = doneBanner('done', undefined, undefined);
+  assert.equal(legacy.cls, 'meh', 'legacy done (no dimensions) is never a green banner');
+  assert.match(legacy.label, /gate claim/, 'legacy done renders as a claim, not a verdict');
+  assert.match(legacy.label, /no status dimensions/, 'the reason names the missing evidence');
+  assert.ok(!legacy.label.includes('reviewed and verified'), 'legacy done never reads reviewed-and-verified');
+  assert.match(doneBanner('done_with_findings', undefined, undefined).label, /^DONE WITH FINDINGS \(gate claim\)/, 'the downgrade names the exact claimed status');
+
+  // Each recognized standing owns its copy.
+  assert.deepEqual(doneBanner('done', 'verified', { verification: 'passed', audit: 'independent_clean' }), { cls: 'good', label: verifiedLabel }, 'verified reads reviewed-and-verified');
+  const vwf = doneBanner('done', 'verified_with_findings', { verification: 'passed', audit: 'independent_findings' });
+  assert.equal(vwf.cls, 'good', 'verified_with_findings is still a green standing');
+  assert.match(vwf.label, /findings or caveats/, 'the caveats ride the banner itself');
+  assert.notEqual(vwf.label, verifiedLabel, 'done + verified_with_findings never hides its caveats behind the plain verified copy');
+  const advisory = doneBanner('done', 'same_vendor_reviewed', { verification: 'passed', audit: 'advisory_clean' });
+  assert.equal(advisory.cls, 'meh');
+  assert.match(advisory.label, /same-vendor reviewed/, 'advisory standing is named');
+  assert.ok(!advisory.label.includes('reviewed and verified'), 'advisory never claims verified standing');
+  assert.match(doneBanner('done', 'published', { verification: 'passed', audit: 'independent_clean' }).label, /published/, 'published standing is named');
+
+  // Anything else — unverified, needs_decision, a headline this UI does not
+  // know — is an uncorroborated claim naming the dimensions when present.
+  const unv = doneBanner('done', 'unverified', { verification: 'not_run', audit: 'independent_clean' });
+  assert.equal(unv.cls, 'meh');
+  assert.match(unv.label, /verification not run/, 'the downgrade names the verification dimension');
+  assert.match(unv.label, /audit independent clean/, 'the downgrade names the audit dimension');
+  assert.match(doneBanner('done', 'BANANA', { verification: 'passed', audit: 'independent_clean' }).label, /gate claim/, 'an unknown headline is a claim, never trusted');
+}
+
 console.log('verify.test: all assertions passed');
