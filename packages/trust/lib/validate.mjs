@@ -202,7 +202,7 @@ export function validateBenchmarkRecord(r, path = 'benchmark_record') {
 const HASH_RE = /^sha256:[0-9a-f]{64}$/;
 const nullOrNonNegativeInt = (value) => value === null || (Number.isInteger(value) && value >= 0);
 
-export function validateExperimentRecord(r, path = 'experiment') {
+function validateAuditExperimentV1(r, path = 'experiment') {
   if (!isObj(r)) return err(path, 'must be an object');
   const rootFields = ['schemaVersion', 'experiment_id', 'mode', 'created_at', 'source', 'manifest', 'outcome'];
   const rootExtra = Object.keys(r).filter((key) => !rootFields.includes(key));
@@ -295,4 +295,155 @@ export function validateExperimentRecord(r, path = 'experiment') {
     return err(path, `manifest projection failed: ${e.message}`);
   }
   return OK;
+}
+
+const exactFields = (value, fields, path) => {
+  if (!isObj(value)) return err(path, 'must be an object');
+  const extra = Object.keys(value).filter((key) => !fields.includes(key));
+  return extra.length ? err(path, `unknown fields: ${extra.join(', ')}`) : OK;
+};
+
+const validateIdentityDecision = (value, path) => {
+  const shape = exactFields(value, ['requested', 'resolved'], path);
+  if (!shape.ok) return shape;
+  if (typeof value.requested !== 'string' || !value.requested || typeof value.resolved !== 'string' || !value.resolved) {
+    return err(path, 'requested and resolved are required');
+  }
+  if (value.requested !== value.resolved) return err(path, 'fallback is none, so requested must equal resolved');
+  return OK;
+};
+
+function validateParallelExperimentV2(r, path) {
+  const rootFields = ['schemaVersion', 'experiment_id', 'mode', 'created_at', 'goal', 'acceptance_contract', 'knowledge', 'manifest', 'outcome'];
+  const rootShape = exactFields(r, rootFields, path);
+  if (!rootShape.ok) return rootShape;
+  if (!HASH_RE.test(r.experiment_id ?? '')) return err(`${path}.experiment_id`, 'must be sha256:<hex64>');
+  if (r.mode !== 'parallel_execution') return err(`${path}.mode`, 'must be parallel_execution');
+  if (!Number.isInteger(r.created_at)) return err(`${path}.created_at`, 'must be epoch ms');
+  if (typeof r.goal !== 'string' || !r.goal) return err(`${path}.goal`, 'required');
+  if (typeof r.acceptance_contract !== 'string' || !r.acceptance_contract) return err(`${path}.acceptance_contract`, 'required');
+
+  const knowledge = r.knowledge;
+  const knowledgeShape = exactFields(knowledge, ['snapshot_id', 'privacy', 'mode', 'query', 'item_count', 'retriever'], `${path}.knowledge`);
+  if (!knowledgeShape.ok) return knowledgeShape;
+  if (!HASH_RE.test(knowledge.snapshot_id ?? '')) return err(`${path}.knowledge.snapshot_id`, 'must be sha256:<hex64>');
+  if (!['none', 'internal', 'secret_redacted'].includes(knowledge.privacy)) return err(`${path}.knowledge.privacy`, 'unknown privacy class');
+  if (!['none', 'hivemind_mcp', 'hivemind_rest', 'hivemind_claude', 'simulation'].includes(knowledge.mode)) return err(`${path}.knowledge.mode`, 'unknown knowledge mode');
+  if (typeof knowledge.query !== 'string') return err(`${path}.knowledge.query`, 'must be a string');
+  if (!Number.isInteger(knowledge.item_count) || knowledge.item_count < 0) return err(`${path}.knowledge.item_count`, 'must be a non-negative integer');
+  const retrieverShape = exactFields(knowledge.retriever, ['requested', 'resolved', 'actual'], `${path}.knowledge.retriever`);
+  if (!retrieverShape.ok) return retrieverShape;
+  for (const key of ['requested', 'resolved', 'actual']) {
+    if (knowledge.retriever[key] !== null && (typeof knowledge.retriever[key] !== 'string' || !knowledge.retriever[key])) return err(`${path}.knowledge.retriever.${key}`, 'must be a non-empty string or null');
+  }
+  if ((knowledge.retriever.requested === null) !== (knowledge.retriever.resolved === null)) return err(`${path}.knowledge.retriever`, 'requested and resolved must both be null or both be set');
+  if (knowledge.retriever.requested !== knowledge.retriever.resolved) return err(`${path}.knowledge.retriever`, 'fallback is none, so requested must equal resolved');
+  if (knowledge.mode === 'none' && (knowledge.item_count !== 0 || knowledge.retriever.actual !== null)) return err(`${path}.knowledge`, 'none mode cannot claim items or an actual retriever');
+
+  const manifest = r.manifest;
+  const manifestShape = exactFields(manifest, ['task', 'catalog', 'reviewer', 'reviewer_effort', 'round_cap', 'fallback_policy', 'arms'], `${path}.manifest`);
+  if (!manifestShape.ok) return manifestShape;
+  if (manifest.fallback_policy !== 'none') return err(`${path}.manifest.fallback_policy`, 'v2 permits no fallback');
+  const taskShape = exactFields(manifest.task, ['lane', 'depth'], `${path}.manifest.task`);
+  if (!taskShape.ok) return taskShape;
+  if (!['research_memo', 'competitor_teardown', 'freeform'].includes(manifest.task.lane)) return err(`${path}.manifest.task.lane`, 'unknown research lane');
+  if (!['quick', 'standard'].includes(manifest.task.depth)) return err(`${path}.manifest.task.depth`, 'must be quick | standard');
+  if (!Number.isInteger(manifest.round_cap) || manifest.round_cap < 1 || manifest.round_cap > 6) return err(`${path}.manifest.round_cap`, 'must be an integer from 1 to 6');
+  const catalog = manifest.catalog;
+  const catalogShape = exactFields(catalog, ['resolved_at', 'maker_source', 'maker_models', 'reviewer_source', 'reviewer_models'], `${path}.manifest.catalog`);
+  if (!catalogShape.ok) return catalogShape;
+  if (!Number.isInteger(catalog.resolved_at)) return err(`${path}.manifest.catalog.resolved_at`, 'must be epoch ms');
+  if (catalog.maker_source !== 'studio_catalog') return err(`${path}.manifest.catalog.maker_source`, 'must be studio_catalog');
+  if (!['codex_cache', 'fallback'].includes(catalog.reviewer_source)) return err(`${path}.manifest.catalog.reviewer_source`, 'must be codex_cache | fallback');
+  for (const key of ['maker_models', 'reviewer_models']) {
+    if (!Array.isArray(catalog[key]) || !catalog[key].length || catalog[key].some((model) => typeof model !== 'string' || !model) || new Set(catalog[key]).size !== catalog[key].length) {
+      return err(`${path}.manifest.catalog.${key}`, 'must be a non-empty unique string array');
+    }
+  }
+  const reviewerValid = validateIdentityDecision(manifest.reviewer, `${path}.manifest.reviewer`);
+  if (!reviewerValid.ok) return reviewerValid;
+  if (!catalog.reviewer_models.includes(manifest.reviewer.resolved.split(':').slice(1).join(':'))) return err(`${path}.manifest.reviewer.resolved`, 'must appear in the frozen reviewer catalog');
+  const reviewerEffortShape = exactFields(manifest.reviewer_effort, ['requested', 'semantics'], `${path}.manifest.reviewer_effort`);
+  if (!reviewerEffortShape.ok) return reviewerEffortShape;
+  if (!['low', 'medium', 'high', 'xhigh'].includes(manifest.reviewer_effort.requested) || manifest.reviewer_effort.semantics !== 'requested_only') return err(`${path}.manifest.reviewer_effort`, 'needs requested low|medium|high|xhigh and semantics requested_only');
+  if (!Array.isArray(manifest.arms) || manifest.arms.length < 2) return err(`${path}.manifest.arms`, 'requires at least two arms');
+  const armIds = new Set();
+  for (const [index, arm] of manifest.arms.entries()) {
+    const armPath = `${path}.manifest.arms[${index}]`;
+    const armShape = exactFields(arm, ['arm_id', 'executor', 'orchestration', 'effort'], armPath);
+    if (!armShape.ok) return armShape;
+    if (typeof arm.arm_id !== 'string' || !arm.arm_id || armIds.has(arm.arm_id)) return err(`${armPath}.arm_id`, 'must be a unique non-empty string');
+    armIds.add(arm.arm_id);
+    const executorValid = validateIdentityDecision(arm.executor, `${armPath}.executor`);
+    if (!executorValid.ok) return executorValid;
+    if (!catalog.maker_models.includes(arm.executor.resolved.split(':').slice(1).join(':'))) return err(`${armPath}.executor.resolved`, 'must appear in the frozen maker catalog');
+    const orchestrationShape = exactFields(arm.orchestration, ['requested', 'semantics'], `${armPath}.orchestration`);
+    if (!orchestrationShape.ok) return orchestrationShape;
+    if (arm.orchestration.requested !== 'provider_native' || arm.orchestration.semantics !== 'opaque') return err(`${armPath}.orchestration`, 'must be provider_native with opaque semantics');
+    const effortShape = exactFields(arm.effort, ['requested', 'semantics'], `${armPath}.effort`);
+    if (!effortShape.ok) return effortShape;
+    if (arm.effort.requested !== null || arm.effort.semantics !== 'not_configured') return err(`${armPath}.effort`, 'executor effort is not configured in v2');
+  }
+
+  const outcome = r.outcome;
+  const outcomeShape = exactFields(outcome, ['status', 'arms'], `${path}.outcome`);
+  if (!outcomeShape.ok) return outcomeShape;
+  if (!['running', 'completed', 'stopped', 'infra_failed'].includes(outcome.status)) return err(`${path}.outcome.status`, 'unknown status');
+  if (!Array.isArray(outcome.arms) || outcome.arms.length !== manifest.arms.length) return err(`${path}.outcome.arms`, 'must cover every manifest arm exactly once');
+  const outcomeIds = new Set();
+  for (const [index, arm] of outcome.arms.entries()) {
+    const armPath = `${path}.outcome.arms[${index}]`;
+    const fields = ['arm_id', 'run_id', 'status', 'artifact_id', 'receipt_id', 'executor_actual', 'auditor_actual', 'quality_floor', 'usage', 'judge_overlap', 'failure', 'confounded'];
+    const armShape = exactFields(arm, fields, armPath);
+    if (!armShape.ok) return armShape;
+    if (!armIds.has(arm.arm_id) || outcomeIds.has(arm.arm_id)) return err(`${armPath}.arm_id`, 'must identify one manifest arm exactly once');
+    outcomeIds.add(arm.arm_id);
+    if (arm.run_id !== null && (typeof arm.run_id !== 'string' || !arm.run_id)) return err(`${armPath}.run_id`, 'must be a string or null');
+    if (!['pending', 'running', 'completed', 'quality_floor_failed', 'infra_failed', 'stopped'].includes(arm.status)) return err(`${armPath}.status`, 'unknown status');
+    for (const key of ['artifact_id', 'receipt_id']) if (arm[key] !== null && !HASH_RE.test(arm[key])) return err(`${armPath}.${key}`, 'must be sha256:<hex64> or null');
+    for (const key of ['executor_actual', 'auditor_actual']) if (arm[key] !== null && (typeof arm[key] !== 'string' || !arm[key])) return err(`${armPath}.${key}`, 'must be a string or null');
+    if (!['unknown', 'passed', 'failed'].includes(arm.quality_floor)) return err(`${armPath}.quality_floor`, 'unknown value');
+    const usageShape = exactFields(arm.usage, ['input_tokens', 'cached_input_tokens', 'output_tokens', 'duration_ms'], `${armPath}.usage`);
+    if (!usageShape.ok) return usageShape;
+    for (const key of ['input_tokens', 'cached_input_tokens', 'output_tokens', 'duration_ms']) if (!nullOrNonNegativeInt(arm.usage[key])) return err(`${armPath}.usage.${key}`, 'must be a non-negative integer or null');
+    const overlap = arm.judge_overlap;
+    const overlapShape = exactFields(overlap, ['arm_provider', 'judge_provider', 'same_vendor', 'same_family'], `${armPath}.judge_overlap`);
+    if (!overlapShape.ok) return overlapShape;
+    if (typeof overlap.arm_provider !== 'string' || !overlap.arm_provider) return err(`${armPath}.judge_overlap.arm_provider`, 'required');
+    if (overlap.judge_provider !== null && (typeof overlap.judge_provider !== 'string' || !overlap.judge_provider)) return err(`${armPath}.judge_overlap.judge_provider`, 'must be a string or null');
+    for (const key of ['same_vendor', 'same_family']) if (overlap[key] !== null && typeof overlap[key] !== 'boolean') return err(`${armPath}.judge_overlap.${key}`, 'must be boolean or null');
+    if (typeof arm.confounded !== 'boolean') return err(`${armPath}.confounded`, 'must be boolean');
+    const planned = manifest.arms.find((item) => item.arm_id === arm.arm_id);
+    const substituted = arm.executor_actual !== null && arm.executor_actual !== planned.executor.resolved;
+    if (arm.confounded !== substituted) return err(`${armPath}.confounded`, 'must say whether resolved and actual executor identities differ');
+    const terminal = ['completed', 'quality_floor_failed', 'infra_failed', 'stopped'].includes(arm.status);
+    if (['completed', 'quality_floor_failed'].includes(arm.status)) {
+      if (!arm.run_id || !HASH_RE.test(arm.artifact_id ?? '') || !HASH_RE.test(arm.receipt_id ?? '') || !arm.executor_actual || !arm.auditor_actual) return err(armPath, 'completed arms require run, artifact, receipt, executor and auditor identities');
+      if (arm.failure !== null) return err(`${armPath}.failure`, 'completed arms cannot carry a failure');
+      if (arm.quality_floor !== (arm.status === 'completed' ? 'passed' : 'failed')) return err(`${armPath}.quality_floor`, 'must agree with the terminal arm status');
+    } else if (['infra_failed', 'stopped'].includes(arm.status)) {
+      if (!isObj(arm.failure) || typeof arm.failure.stage !== 'string' || typeof arm.failure.code !== 'string' || typeof arm.failure.detail !== 'string') return err(`${armPath}.failure`, 'failed/stopped arms require stage, code and detail');
+      const failureShape = exactFields(arm.failure, ['stage', 'code', 'detail'], `${armPath}.failure`);
+      if (!failureShape.ok) return failureShape;
+      if (arm.quality_floor !== 'unknown') return err(`${armPath}.quality_floor`, 'failed/stopped arms have unknown quality');
+    } else {
+      if (arm.failure !== null || arm.artifact_id !== null || arm.receipt_id !== null || arm.executor_actual !== null || arm.auditor_actual !== null || arm.quality_floor !== 'unknown') return err(armPath, 'pending/running arms cannot claim terminal evidence');
+    }
+    if (!terminal && outcome.status !== 'running') return err(`${path}.outcome.status`, 'only a running experiment may contain non-terminal arms');
+  }
+  if (outcome.status === 'running' && outcome.arms.every((arm) => ['completed', 'quality_floor_failed', 'infra_failed', 'stopped'].includes(arm.status))) return err(`${path}.outcome.status`, 'all arms are terminal; experiment cannot remain running');
+  if (outcome.status !== 'running' && outcome.arms.some((arm) => ['pending', 'running'].includes(arm.status))) return err(`${path}.outcome.status`, 'terminal experiment cannot contain active arms');
+
+  try {
+    if (!experimentMatches(r)) return err(`${path}.experiment_id`, 'does not match the frozen manifest');
+  } catch (e) {
+    return err(path, `manifest projection failed: ${e.message}`);
+  }
+  return OK;
+}
+
+export function validateExperimentRecord(r, path = 'experiment') {
+  if (!isObj(r)) return err(path, 'must be an object');
+  if (r.schemaVersion === 2) return validateParallelExperimentV2(r, path);
+  return validateAuditExperimentV1(r, path);
 }

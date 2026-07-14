@@ -80,6 +80,9 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
   const experimentSchema = JSON.parse(readFileSync(new URL('./schemas/experiment.v1.schema.json', import.meta.url)));
   assert.equal(experimentSchema.properties.mode.const, 'audit_only_replay', 'experiment v1 starts with audit-only replay');
   assert.ok(experimentSchema.properties.outcome.required.includes('failure'), 'failed arms are first-class records');
+  const experimentV2Schema = JSON.parse(readFileSync(new URL('./schemas/experiment.v2.schema.json', import.meta.url)));
+  assert.equal(experimentV2Schema.properties.mode.const, 'parallel_execution', 'parallel execution extends experiments through v2');
+  assert.equal(experimentV2Schema.properties.manifest.properties.arms.minItems, 2, 'a parallel experiment requires at least two arms');
 }
 
 // --- canonicalization + artifact identity ------------------------------------
@@ -158,6 +161,91 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
   };
   assert.equal(validateExperimentRecord(failed).ok, true, 'failed arms remain valid experiment data');
   assert.equal(validateExperimentRecord({ ...planned, surprise: true }).ok, false, 'unknown experiment fields fail loudly');
+
+  const snapshot = 'sha256:' + 'd'.repeat(64);
+  const parallelDraft = {
+    schemaVersion: 2,
+    mode: 'parallel_execution',
+    created_at: 20,
+    goal: 'Choose the strongest launch strategy.',
+    acceptance_contract: 'Every recommendation names its evidence and tradeoff.',
+    knowledge: {
+      snapshot_id: snapshot,
+      privacy: 'internal',
+      mode: 'hivemind_claude',
+      query: 'launch strategy evidence',
+      item_count: 3,
+      retriever: { requested: 'anthropic:sonnet', resolved: 'anthropic:sonnet', actual: 'anthropic:sonnet' },
+    },
+    manifest: {
+      task: { lane: 'research_memo', depth: 'quick' },
+      catalog: {
+        resolved_at: 20,
+        maker_source: 'studio_catalog',
+        maker_models: ['sonnet', 'opus'],
+        reviewer_source: 'codex_cache',
+        reviewer_models: ['gpt-5.4'],
+      },
+      reviewer: { requested: 'openai:gpt-5.4', resolved: 'openai:gpt-5.4' },
+      reviewer_effort: { requested: 'high', semantics: 'requested_only' },
+      round_cap: 3,
+      fallback_policy: 'none',
+      arms: ['sonnet', 'opus'].map((model, index) => ({
+        arm_id: `arm-${index + 1}`,
+        executor: { requested: `anthropic:${model}`, resolved: `anthropic:${model}` },
+        orchestration: { requested: 'provider_native', semantics: 'opaque' },
+        effort: { requested: null, semantics: 'not_configured' },
+      })),
+    },
+    outcome: {
+      status: 'running',
+      arms: ['arm-1', 'arm-2'].map((arm_id) => ({
+        arm_id,
+        run_id: null,
+        status: 'pending',
+        artifact_id: null,
+        receipt_id: null,
+        executor_actual: null,
+        auditor_actual: null,
+        quality_floor: 'unknown',
+        usage: { input_tokens: null, cached_input_tokens: null, output_tokens: null, duration_ms: null },
+        judge_overlap: { arm_provider: 'anthropic', judge_provider: null, same_vendor: null, same_family: null },
+        failure: null,
+        confounded: false,
+      })),
+    },
+  };
+  const parallel = sealExperiment(parallelDraft);
+  assert.equal(validateExperimentRecord(parallel).ok, true, JSON.stringify(validateExperimentRecord(parallel)));
+  assert.ok(experimentMatches(parallel), 'parallel experiment id binds its frozen inputs and arms');
+  const terminalParallel = {
+    ...parallel,
+    outcome: {
+      status: 'completed',
+      arms: parallel.outcome.arms.map((arm, index) => index === 0
+        ? {
+            ...arm,
+            run_id: 'run-a',
+            status: 'completed',
+            artifact_id: 'sha256:' + 'e'.repeat(64),
+            receipt_id: 'sha256:' + 'f'.repeat(64),
+            executor_actual: 'anthropic:sonnet',
+            auditor_actual: 'openai:gpt-5.4',
+            quality_floor: 'passed',
+            judge_overlap: { arm_provider: 'anthropic', judge_provider: 'openai', same_vendor: false, same_family: false },
+          }
+        : {
+            ...arm,
+            run_id: 'run-b',
+            status: 'infra_failed',
+            failure: { stage: 'make', code: 'model_unavailable', detail: 'resolved model disappeared' },
+          }),
+    },
+  };
+  assert.equal(validateExperimentRecord(terminalParallel).ok, true, 'parallel outcomes keep successful and failed arms together');
+  assert.equal(computeExperimentId(terminalParallel), parallel.experiment_id, 'parallel outcomes never rewrite the planned experiment');
+  assert.equal(validateExperimentRecord({ ...terminalParallel, manifest: { ...terminalParallel.manifest, arms: [terminalParallel.manifest.arms[0]] } }).ok, false, 'parallel is never silently collapsed to one surviving arm');
+  assert.equal(validateExperimentRecord({ ...terminalParallel, outcome: { ...terminalParallel.outcome, arms: [terminalParallel.outcome.arms[0]] } }).ok, false, 'dropping a failed arm is rejected');
 }
 
 // --- the two identities: artifact vs receipt -----------------------------------

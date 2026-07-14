@@ -19,6 +19,44 @@ function pick(obj, { take, ignore = [] }, path) {
 }
 
 export function experimentManifestProjection(record) {
+  if (record?.schemaVersion === 2) {
+    const root = pick(record, {
+      take: ['schemaVersion', 'mode', 'created_at', 'goal', 'acceptance_contract', 'knowledge', 'manifest'],
+      ignore: ['experiment_id', 'outcome'],
+    }, 'experimentManifestProjection(record v2)');
+    root.knowledge = pick(root.knowledge, {
+      take: ['snapshot_id', 'privacy', 'mode', 'query', 'item_count', 'retriever'],
+    }, 'experimentManifestProjection(knowledge)');
+    root.knowledge.retriever = pick(root.knowledge.retriever, {
+      take: ['requested', 'resolved', 'actual'],
+    }, 'experimentManifestProjection(retriever)');
+    root.manifest = pick(root.manifest, {
+      take: ['task', 'catalog', 'reviewer', 'reviewer_effort', 'round_cap', 'fallback_policy', 'arms'],
+    }, 'experimentManifestProjection(manifest v2)');
+    root.manifest.task = pick(root.manifest.task, {
+      take: ['lane', 'depth'],
+    }, 'experimentManifestProjection(task v2)');
+    root.manifest.catalog = pick(root.manifest.catalog, {
+      take: ['resolved_at', 'maker_source', 'maker_models', 'reviewer_source', 'reviewer_models'],
+    }, 'experimentManifestProjection(catalog v2)');
+    root.manifest.reviewer = pick(root.manifest.reviewer, {
+      take: ['requested', 'resolved'],
+    }, 'experimentManifestProjection(reviewer v2)');
+    root.manifest.reviewer_effort = pick(root.manifest.reviewer_effort, {
+      take: ['requested', 'semantics'],
+    }, 'experimentManifestProjection(reviewer effort)');
+    root.manifest.arms = root.manifest.arms.map((arm, index) => {
+      const projected = pick(arm, {
+        take: ['arm_id', 'executor', 'orchestration', 'effort'],
+      }, `experimentManifestProjection(arms[${index}])`);
+      projected.executor = pick(projected.executor, { take: ['requested', 'resolved'] }, `experimentManifestProjection(arms[${index}].executor)`);
+      projected.orchestration = pick(projected.orchestration, { take: ['requested', 'semantics'] }, `experimentManifestProjection(arms[${index}].orchestration)`);
+      projected.effort = pick(projected.effort, { take: ['requested', 'semantics'] }, `experimentManifestProjection(arms[${index}].effort)`);
+      return projected;
+    });
+    return { projectionVersion: 2, ...root };
+  }
+  if (record?.schemaVersion !== 1) throw new TypeError(`experimentManifestProjection: unsupported schemaVersion ${record?.schemaVersion}`);
   const root = pick(record, {
     take: ['schemaVersion', 'mode', 'created_at', 'source', 'manifest'],
     ignore: ['experiment_id', 'outcome'],

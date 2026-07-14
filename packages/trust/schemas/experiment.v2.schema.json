@@ -1,0 +1,183 @@
+{
+  "$id": "https://camus.sh/schemas/experiment/v2",
+  "title": "Camus parallel experiment record v2",
+  "description": "A local parallel-execution experiment: one frozen goal, acceptance contract, knowledge snapshot, catalog and reviewer decision; two or more executor arms; no silent fallback; every terminal arm retained.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "experiment_id", "mode", "created_at", "goal", "acceptance_contract", "knowledge", "manifest", "outcome"],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "experiment_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "mode": { "const": "parallel_execution" },
+    "created_at": { "type": "integer" },
+    "goal": { "type": "string" },
+    "acceptance_contract": { "type": "string" },
+    "knowledge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshot_id", "privacy", "mode", "query", "item_count", "retriever"],
+      "properties": {
+        "snapshot_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "privacy": { "enum": ["none", "internal", "secret_redacted"] },
+        "mode": { "enum": ["none", "hivemind_mcp", "hivemind_rest", "hivemind_claude", "simulation"] },
+        "query": { "type": "string" },
+        "item_count": { "type": "integer", "minimum": 0 },
+        "retriever": { "$ref": "#/$defs/nullableIdentity" }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task", "catalog", "reviewer", "reviewer_effort", "round_cap", "fallback_policy", "arms"],
+      "properties": {
+        "task": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["lane", "depth"],
+          "properties": {
+            "lane": { "enum": ["research_memo", "competitor_teardown", "freeform"] },
+            "depth": { "enum": ["quick", "standard"] }
+          }
+        },
+        "catalog": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["resolved_at", "maker_source", "maker_models", "reviewer_source", "reviewer_models"],
+          "properties": {
+            "resolved_at": { "type": "integer" },
+            "maker_source": { "const": "studio_catalog" },
+            "maker_models": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+            "reviewer_source": { "enum": ["codex_cache", "fallback"] },
+            "reviewer_models": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+          }
+        },
+        "reviewer": { "$ref": "#/$defs/identity" },
+        "reviewer_effort": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requested", "semantics"],
+          "properties": {
+            "requested": { "enum": ["low", "medium", "high", "xhigh"] },
+            "semantics": { "const": "requested_only" }
+          }
+        },
+        "round_cap": { "type": "integer", "minimum": 1, "maximum": 6 },
+        "fallback_policy": { "const": "none" },
+        "arms": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["arm_id", "executor", "orchestration", "effort"],
+            "properties": {
+              "arm_id": { "type": "string" },
+              "executor": { "$ref": "#/$defs/identity" },
+              "orchestration": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["requested", "semantics"],
+                "properties": {
+                  "requested": { "const": "provider_native" },
+                  "semantics": { "const": "opaque" }
+                }
+              },
+              "effort": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["requested", "semantics"],
+                "properties": {
+                  "requested": { "type": "null" },
+                  "semantics": { "const": "not_configured" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "arms"],
+      "properties": {
+        "status": { "enum": ["running", "completed", "stopped", "infra_failed"] },
+        "arms": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "$ref": "#/$defs/armOutcome" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested", "resolved"],
+      "properties": {
+        "requested": { "type": "string" },
+        "resolved": { "type": "string" }
+      }
+    },
+    "nullableIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested", "resolved", "actual"],
+      "properties": {
+        "requested": { "type": ["string", "null"] },
+        "resolved": { "type": ["string", "null"] },
+        "actual": { "type": ["string", "null"] }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input_tokens", "cached_input_tokens", "output_tokens", "duration_ms"],
+      "properties": {
+        "input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "cached_input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "output_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "duration_ms": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "armOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["arm_id", "run_id", "status", "artifact_id", "receipt_id", "executor_actual", "auditor_actual", "quality_floor", "usage", "judge_overlap", "failure", "confounded"],
+      "properties": {
+        "arm_id": { "type": "string" },
+        "run_id": { "type": ["string", "null"] },
+        "status": { "enum": ["pending", "running", "completed", "quality_floor_failed", "infra_failed", "stopped"] },
+        "artifact_id": { "type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$" },
+        "receipt_id": { "type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$" },
+        "executor_actual": { "type": ["string", "null"] },
+        "auditor_actual": { "type": ["string", "null"] },
+        "quality_floor": { "enum": ["unknown", "passed", "failed"] },
+        "usage": { "$ref": "#/$defs/usage" },
+        "judge_overlap": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["arm_provider", "judge_provider", "same_vendor", "same_family"],
+          "properties": {
+            "arm_provider": { "type": "string" },
+            "judge_provider": { "type": ["string", "null"] },
+            "same_vendor": { "type": ["boolean", "null"] },
+            "same_family": { "type": ["boolean", "null"] }
+          }
+        },
+        "failure": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["stage", "code", "detail"],
+          "properties": {
+            "stage": { "type": "string" },
+            "code": { "type": "string" },
+            "detail": { "type": "string" }
+          }
+        },
+        "confounded": { "type": "boolean" }
+      }
+    }
+  }
+}
