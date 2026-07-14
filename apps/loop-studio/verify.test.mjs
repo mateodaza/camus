@@ -249,6 +249,7 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   process.env.MOCK_OFFLINE = '1';
   for (const [queried, expected] of [[false, false], [true, true]]) {
     const events = [];
+    const reviewerPrompts = [];
     let claudeCall = 0;
     const run = {
       id: `ground-${queried}`, goal: 'g', acceptanceContract: 'State evidence honestly.',
@@ -263,9 +264,9 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
           claudeCall += 1;
           return claudeCall === 1
             ? { ok: true, text: '- plan', costUsd: 0 }
-            : { ok: true, text: '## Notes\n\nA plain note.\n', costUsd: 0, hivemindQueried: queried, hivemindQueries: queried ? 2 : 0 };
+            : { ok: true, text: '## Notes\n\nA plain note.\n', costUsd: 0, hivemindQueried: queried, hivemindQueries: queried ? 2 : 0, hivemindQueryTexts: queried ? ['cohort evidence', 'launch gaps'] : [] };
         },
-        codex: async () => ({ ran: true, verdict: 'APPROVED', findings: [], blocking: [], nonblocking: [], questions: [] }),
+        codex: async ({ prompt }) => { reviewerPrompts.push(prompt); return { ran: true, verdict: 'APPROVED', findings: [], blocking: [], nonblocking: [], questions: [] }; },
       },
       hivemind: {
         searchKnowledge: async () => 'claude',
@@ -278,6 +279,8 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
     assert.ok(result.status === 'done' || result.status === 'done_with_findings', 'the grounding probe completes the full loop');
     assert.equal(groundDone?.queried, expected, `grounding records actual connector use (${queried})`);
     assert.equal(groundDone?.connected, expected, 'configured-but-unused never wears a connected/grounded badge');
+    assert.ok(reviewerPrompts[0].includes(`Hivemind queried: ${queried ? 'yes' : 'no'}`), 'auditor receives adapter evidence, not maker self-attestation');
+    if (queried) assert.ok(reviewerPrompts[0].includes('"cohort evidence"'), 'auditor receives the observed query trail');
   }
   if (previousOffline === undefined) delete process.env.MOCK_OFFLINE; else process.env.MOCK_OFFLINE = previousOffline;
 }
@@ -784,6 +787,8 @@ if (process.env.TEST_NETWORK === '1') {
 
   const wordsEvents = [
     { type: 'plan', text: 'the plan' },
+    { type: 'session', actor: 'maker', line: 'knowledge_search: cohort evidence' },
+    { type: 'stage', name: 'ground', status: 'done', connected: true, queried: true, queries: 1, mode: 'claude' },
     { type: 'round', round: 1, cap: 3 },
     { type: 'finding', severity: 'high', title: 'no source', detail: 'd', suggestion: 's' },
     { type: 'review', round: 1, verdict: 'REVISE', findings: [{ severity: 'high', title: 'no source', detail: 'd', suggestion: 's' }] },
@@ -795,6 +800,7 @@ if (process.env.TEST_NETWORK === '1') {
   ];
   const wev = deriveEvidence(wordsEvents);
   assert.equal(wev.plan, 'the plan');
+  assert.deepEqual(wev.grounding, { mode: 'claude', connected: true, queried: true, queryCount: 1, queries: ['cohort evidence'] }, 'adapter grounding evidence survives in the receipt');
   assert.equal(wev.rounds.length, 2, 'both review rounds captured in the receipt');
   assert.equal(wev.rounds[0].findings[0].title, 'no source', 'findings ride their round — not dropped from the receipt');
   assert.equal(wev.findings.length, 1, 'flat findings list captured');
@@ -1045,6 +1051,7 @@ if (process.env.TEST_NETWORK === '1') {
       rounds: [{ verdict: 'APPROVED', reviewerModel: 'gpt-5.4', reviewerEffort: 'high', findings: [] }],
       verify: [{ pass: true, checks: [{ id: 'links', status: 'pass', detail: '4 URLs checked' }] }],
       humanDecisions: [{ kind: 'decision', question: 'Which market?', answer: 'Base', at: 42 }],
+      grounding: { mode: 'claude', connected: true, queried: true, queryCount: 1, queries: ['cohort evidence'] },
       gateReport: null,
     },
     statuses: { schemaVersion: 1, execution: 'completed', verification: 'passed', audit: 'independent_clean', publication: 'not_published' },
@@ -1061,6 +1068,7 @@ if (process.env.TEST_NETWORK === '1') {
   assert.equal(pack.economics.every((e) => e.billing_mode === 'unknown' && e.estimated_cost_usd === null), true, 'billing and dollars stay unknown/null');
   assert.deepEqual(pack.verification.checks, [{ id: 'links', status: 'pass', detail: '4 URLs checked' }], 'deterministic checks survive');
   assert.equal(pack.human_decisions[0].at, 42, 'decision time survives into the ledger');
+  assert.ok(pack.session_log.includes('hivemind query: cohort evidence'), 'grounding tool evidence is custody-bound in the sealed pack');
   assert.equal(shortEvidenceId(pack.artifact_id).length, 12, 'the UI uses a short display ID while the pack keeps the full hash');
   assert.ok(!('headline' in pack), 'derived standing never persists in the pack');
 
@@ -1069,6 +1077,9 @@ if (process.env.TEST_NETWORK === '1') {
   const changedJudgment = buildEvidencePack({ ...base, statuses: { ...base.statuses, audit: 'independent_findings' } });
   assert.equal(changedJudgment.artifact_id, pack.artifact_id, 'changing judgment does not pretend the artifact changed');
   assert.notEqual(changedJudgment.receipt_id, pack.receipt_id, 'changing judgment mints a new receipt');
+  const changedGrounding = buildEvidencePack({ ...base, evidence: { ...base.evidence, grounding: { ...base.evidence.grounding, queries: ['different query'] } } });
+  assert.equal(changedGrounding.artifact_id, pack.artifact_id, 'runtime query evidence is receipt identity, not artifact identity');
+  assert.notEqual(changedGrounding.receipt_id, pack.receipt_id, 'changing the grounding trail mints a new receipt');
 
   const rehearsal = buildEvidencePack({ ...base, simulated: true, statuses: { ...base.statuses, audit: 'not_run' } });
   assert.equal(rehearsal.pairing.executor.actual, 'simulation:scripted-maker');

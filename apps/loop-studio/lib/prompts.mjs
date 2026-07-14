@@ -73,7 +73,7 @@ Deliverable type: ${LANES[lane]?.label ?? 'Freeform'}. ${depthBrief(depth)}
 Reply with 4-6 terse bullet points: the angles you will investigate, the 2-3 source types you will lean on, and the single biggest risk of getting this wrong. Plain text bullets, nothing else.`;
 }
 
-export function reviewPrompt({ goal, acceptanceContract, lane, draft, round, priorFindings, answers }) {
+export function reviewPrompt({ goal, acceptanceContract, lane, draft, round, priorFindings, answers, groundingEvidence }) {
   const prior = priorFindings?.length
     ? `\n\nFINDINGS YOU RAISED IN EARLIER ROUNDS (check whether they are actually resolved; re-raise with the SAME title if not):\n${priorFindings
         .map((f) => `- [${f.severity}] ${f.title}`)
@@ -83,6 +83,9 @@ export function reviewPrompt({ goal, acceptanceContract, lane, draft, round, pri
     ? `\n\nDECISIONS THE GOAL OWNER ALREADY MADE (settled — judge the draft against them; do NOT re-raise them as questions):\n${answers
         .map((a) => `Q: ${a.question}\nA: ${a.answer}`)
         .join('\n')}`
+    : '';
+  const runtimeGrounding = groundingEvidence
+    ? `\n\nRUNTIME GROUNDING EVIDENCE (emitted from actual adapter tool_use events, not from the maker's prose):\n- mode: ${groundingEvidence.mode ?? 'unknown'}\n- Hivemind queried: ${groundingEvidence.queried ? 'yes' : 'no'}\n- observed Hivemind tool calls: ${groundingEvidence.queryCount ?? 0}\n- observed queries: ${(groundingEvidence.queries ?? []).length ? groundingEvidence.queries.map((q) => JSON.stringify(q)).join('; ') : 'none'}\nThis proves whether connector calls occurred. It does NOT prove that returned material was relevant, accurately represented, or correctly cited; audit those separately.`
     : '';
 
   return `You are an adversarial reviewer from a different firm, paid to find what is wrong with this deliverable before the client does. You gain nothing from being nice. Round ${round}.
@@ -101,7 +104,7 @@ Attack it on: (a) claims that are unsupported, overstated, or likely hallucinate
 
 Do NOT nitpick style trivia. Raise only findings that change whether the client should trust or act on this.
 
-If a finding hinges on a decision only the goal owner can make (audience, scope, positioning, risk appetite), do NOT guess — put it in "questions_for_human". Never ask about a decision listed as already made.${prior}${decided}
+If a finding hinges on a decision only the goal owner can make (audience, scope, positioning, risk appetite), do NOT guess — put it in "questions_for_human". Never ask about a decision listed as already made.${runtimeGrounding}${prior}${decided}
 
 Respond with STRICT JSON only (no markdown fences, no commentary):
 {

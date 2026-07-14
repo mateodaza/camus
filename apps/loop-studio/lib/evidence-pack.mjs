@@ -41,6 +41,10 @@ function actuals({ lane, evidence, models, simulated }) {
   if (initial) session.push(`executor initial model: ${named('anthropic', initial)}`);
   if (final) session.push(`executor final model: ${named('anthropic', final)}`);
   if (latestReview?.reviewerEffort) session.push(`auditor actual effort: ${latestReview.reviewerEffort}`);
+  if (evidence?.grounding) {
+    session.push(`grounding ${evidence.grounding.mode || 'unknown'}: ${evidence.grounding.queried ? 'queried' : 'not queried'} (${evidence.grounding.queryCount || 0} observed tool calls)`);
+    for (const query of evidence.grounding.queries ?? []) session.push(`hivemind query: ${query}`);
+  }
   return {
     executor: { requested: requestedExecutor, resolved: requestedExecutor, actual: executorActual },
     auditor: { requested: requestedAuditor, resolved: requestedAuditor, actual: auditorActual },

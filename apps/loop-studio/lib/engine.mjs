@@ -87,6 +87,7 @@ export async function runLoop(run, ctx) {
     let grounding = null;
     let hmMode = null;
     let hivemindQueries = 0;
+    const hivemindQueryTexts = [];
     if (run.ground) {
       stage('ground', 'active');
       grounding = await hivemind.searchKnowledge(run.goal, 4, log);
@@ -95,6 +96,22 @@ export async function runLoop(run, ctx) {
       hmMode = hivemind.hivemindStatus().mode;
       if (grounding !== 'claude') stage('ground', 'done', { connected: !!grounding, mode: hmMode });
     }
+    const absorbHivemindEvidence = (result, { emitStage = true } = {}) => {
+      if (grounding !== 'claude') return;
+      hivemindQueries += result.hivemindQueries || 0;
+      for (const query of result.hivemindQueryTexts ?? []) {
+        if (!hivemindQueryTexts.includes(query)) hivemindQueryTexts.push(query);
+      }
+      if (emitStage && result.hivemindQueries) {
+        stage('ground', 'done', { connected: true, queried: true, queries: hivemindQueries, via: 'claude', mode: hmMode });
+      }
+    };
+    const groundingEvidence = () => !run.ground ? null : {
+      mode: hmMode,
+      queried: grounding === 'claude' ? hivemindQueries > 0 : !!grounding,
+      queryCount: grounding === 'claude' ? hivemindQueries : (grounding ? 1 : 0),
+      queries: grounding === 'claude' ? [...hivemindQueryTexts] : (grounding ? [run.goal] : []),
+    };
 
     // ---- Draft -------------------------------------------------------------
     stage('make', 'active');
@@ -112,7 +129,7 @@ export async function runLoop(run, ctx) {
       }),
     );
     if (grounding === 'claude') {
-      hivemindQueries += makeRes.hivemindQueries || 0;
+      absorbHivemindEvidence(makeRes, { emitStage: false });
       stage('ground', 'done', {
         connected: makeRes.hivemindQueried === true,
         queried: makeRes.hivemindQueried === true,
@@ -143,7 +160,7 @@ export async function runLoop(run, ctx) {
       lastReview = await withRetries(`review round ${round}`, () =>
         adapters.codex({
           model: reviewerModel,
-          prompt: reviewPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, round, priorFindings, answers: contentAnswers() }),
+          prompt: reviewPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, round, priorFindings, answers: contentAnswers(), groundingEvidence: groundingEvidence() }),
           cwd: ctx.scratchDir,
           effort: reviewerEffort,
           signal,
@@ -229,10 +246,7 @@ export async function runLoop(run, ctx) {
           onSession: sess('maker'),
         }),
       );
-      if (grounding === 'claude' && fixRes.hivemindQueries) {
-        hivemindQueries += fixRes.hivemindQueries;
-        stage('ground', 'done', { connected: true, queried: true, queries: hivemindQueries, via: 'claude', mode: hmMode });
-      }
+      absorbHivemindEvidence(fixRes);
       costUsd += fixRes.costUsd || 0;
       draft = fixRes.text;
       rev += 1;
@@ -277,10 +291,7 @@ export async function runLoop(run, ctx) {
             onSession: sess('maker'),
           }),
         );
-        if (grounding === 'claude' && fixRes.hivemindQueries) {
-          hivemindQueries += fixRes.hivemindQueries;
-          stage('ground', 'done', { connected: true, queried: true, queries: hivemindQueries, via: 'claude', mode: hmMode });
-        }
+        absorbHivemindEvidence(fixRes);
         costUsd += fixRes.costUsd || 0;
         draft = fixRes.text;
         rev += 1;

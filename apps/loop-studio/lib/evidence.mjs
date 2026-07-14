@@ -7,6 +7,10 @@ import { verificationAndAudit } from './status-dims.mjs';
 
 export function deriveEvidence(events) {
   const of = (t) => events.filter((e) => e.type === t);
+  const ground = of('stage').filter((e) => e.name === 'ground' && e.status === 'done').at(-1) ?? null;
+  const groundingQueries = of('session')
+    .filter((e) => e.actor === 'maker' && String(e.line || '').startsWith('knowledge_search: '))
+    .map((e) => String(e.line).slice('knowledge_search: '.length));
   const reviews = of('review').map((r) => ({
     round: r.round,
     verdict: r.verdict,
@@ -31,6 +35,13 @@ export function deriveEvidence(events) {
   const rounds = reviews.length ? reviews : of('round').map((r) => ({ round: r.round, verdict: null, findings: [] }));
   return {
     plan: of('plan').map((e) => e.text).pop() ?? null,
+    grounding: ground ? {
+      mode: ground.mode ?? null,
+      connected: ground.connected === true,
+      queried: ground.queried === true,
+      queryCount: Number.isInteger(ground.queries) ? ground.queries : groundingQueries.length,
+      queries: groundingQueries,
+    } : null,
     rounds,
     findings: of('finding').map((f) => ({ severity: f.severity, title: f.title, detail: f.detail, suggestion: f.suggestion })),
     revisions: of('revision').map((r) => ({ rev: r.rev, chars: (r.markdown ?? '').length })),

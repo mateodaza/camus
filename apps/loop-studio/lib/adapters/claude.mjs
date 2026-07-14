@@ -70,16 +70,17 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
   } else args.push('--strict-mcp-config');
   if (allowed) args.push('--allowedTools', allowed);
 
-  const { exitCode, stdout, stderr, resultEvent, hivemindQueries } = await new Promise((resolve) => {
+  const { exitCode, stdout, stderr, resultEvent, hivemindQueries, hivemindQueryTexts } = await new Promise((resolve) => {
     const child = spawn('claude', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
     let lineBuf = '';
     let result = null;
     let hmQueries = 0;
+    const hmQueryTexts = [];
     let done = false;
     const finish = (code) => {
-      if (!done) { done = true; clearTimeout(t); clearInterval(tick); resolve({ exitCode: code, stdout: out, stderr: err, resultEvent: result, hivemindQueries: hmQueries }); }
+      if (!done) { done = true; clearTimeout(t); clearInterval(tick); resolve({ exitCode: code, stdout: out, stderr: err, resultEvent: result, hivemindQueries: hmQueries, hivemindQueryTexts: hmQueryTexts }); }
     };
     const t = setTimeout(() => { child.kill('SIGKILL'); finish(-2); }, TIMEOUTS[stage] ?? 540_000);
     const tick = setInterval(() => onTick?.(stage === 'plan' ? 'planning…' : 'drafting — researching sources…'), 8000);
@@ -95,7 +96,10 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
           if (ev.type === 'result') result = ev;
           if (hm.enabled && ev.type === 'assistant') {
             for (const item of ev.message?.content ?? []) {
-              if (item.type === 'tool_use' && item.name?.startsWith(`mcp__${hm.serverName}__`)) hmQueries += 1;
+              if (item.type === 'tool_use' && item.name?.startsWith(`mcp__${hm.serverName}__`)) {
+                hmQueries += 1;
+                if (typeof item.input?.query === 'string') hmQueryTexts.push(item.input.query.slice(0, 300));
+              }
             }
           }
           const sess = sessionLineFromEvent(ev);
@@ -138,5 +142,6 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
     // citation gate remains responsible for that evidence-level judgement.
     hivemindQueried: hivemindQueries > 0,
     hivemindQueries,
+    hivemindQueryTexts,
   };
 }
