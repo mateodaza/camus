@@ -17,6 +17,8 @@ function findingKey(f) {
   return t || null;
 }
 
+export const boundedGroundingResults = (results, limit = 32) => (results ?? []).slice(-limit);
+
 export async function runLoop(run, ctx) {
   const { emit, waitForAnswer, adapters, hivemind, signal } = ctx;
   // The run's model decisions are the SNAPSHOT taken at creation — resolve
@@ -120,7 +122,10 @@ export async function runLoop(run, ctx) {
       queried: grounding === 'claude' ? hivemindQueries > 0 : !!grounding,
       queryCount: grounding === 'claude' ? hivemindQueries : (grounding ? 1 : 0),
       queries: grounding === 'claude' ? [...hivemindQueryTexts] : (grounding ? [run.goal] : []),
-      results: grounding === 'claude' ? hivemindResults.slice(0, 16) : [],
+      // Keep the newest evidence so replacement sources fetched during a fix
+      // are visible to the next auditor. Keeping the first N made every fix-
+      // round citation look invented once the initial window filled.
+      results: grounding === 'claude' ? boundedGroundingResults(hivemindResults) : [],
     };
 
     // ---- Draft -------------------------------------------------------------

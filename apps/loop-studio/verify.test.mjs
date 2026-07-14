@@ -244,7 +244,8 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
 
 // --- via-Claude grounding is a runtime fact, not a configuration claim -----
 {
-  const { runLoop } = await import('./lib/engine.mjs');
+  const { runLoop, boundedGroundingResults } = await import('./lib/engine.mjs');
+  assert.deepEqual(boundedGroundingResults(Array.from({ length: 40 }, (_, id) => ({ id }))).map((r) => r.id), Array.from({ length: 32 }, (_, i) => i + 8), 'the auditor sees the newest fix-round sources when the evidence window fills');
   const previousOffline = process.env.MOCK_OFFLINE;
   process.env.MOCK_OFFLINE = '1';
   for (const [queried, expected] of [[false, false], [true, true]]) {
