@@ -5,7 +5,7 @@
 
 import { execFile } from 'node:child_process';
 import { getModels, modelsSummary } from './models.mjs';
-import { hivemindStatus } from './adapters/hivemind.mjs';
+import { CLAUDE_HIVEMIND_DISPLAY, hivemindStatus } from './adapters/hivemind.mjs';
 import { gateInstalled } from './code-lane.mjs';
 
 const probe = (cmd, args, timeout = 20_000) =>
@@ -46,7 +46,9 @@ export const hivemindListingHasEndpoint = (raw, endpoint) => {
   return String(raw || '').split('\n').some((line) => line.trim().replace(/\/$/, '').includes(wanted));
 };
 
-// deep=true adds the slow checks (claude mcp list health round-trip).
+export const managedConnectorIsConnected = (raw) => /Status:\s*[^\n]*Connected/i.test(String(raw || ''));
+
+// deep=true adds the slow managed-connector health round-trip.
 export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   const checks = [];
   const add = (id, label, ok, detail, fix = null, extra = {}) => checks.push({ id, label, ok, detail, fix, ...extra });
@@ -132,13 +134,14 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
 
   const hm = hivemindStatus();
   if (hm.mode === 'claude' && deep) {
-    // Never return or log the listing: local MCP entries may contain inline
-    // credentials. We inspect only whether one line names the exact endpoint.
-    const full = await fullProbe('claude', ['mcp', 'list'], 45_000);
-    const registered = hivemindListingHasEndpoint(full, hm.base);
+    // Probe ONLY the managed connector. `mcp list` health-checks every local
+    // entry and their stderr may contain inline credentials; this targeted
+    // command neither initializes nor exposes unrelated MCP configuration.
+    const full = await fullProbe('claude', ['mcp', 'get', CLAUDE_HIVEMIND_DISPLAY], 30_000);
+    const registered = managedConnectorIsConnected(full);
     add(
       'hivemind', 'Hivemind grounding (via Claude)', registered,
-      registered ? `connected endpoint recognized · ${hm.base}` : `Claude has no connected entry for ${hm.base}`,
+      registered ? `connected managed connector recognized · ${CLAUDE_HIVEMIND_DISPLAY}` : `Claude has no connected ${CLAUDE_HIVEMIND_DISPLAY} entry`,
       registered ? null : `open /mcp in Claude and connect Hivemind Staging (${hm.base})`,
     );
   } else {

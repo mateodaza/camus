@@ -3,6 +3,7 @@
 // strict JSON, and a fixer that is forbidden from arguing with the verifier.
 
 import { LANES } from './verify.mjs';
+import { CLAUDE_HIVEMIND_TOOL } from './adapters/hivemind.mjs';
 
 const LANE_BRIEFS = {
   research_memo: `Structure the deliverable EXACTLY with these markdown sections:
@@ -29,7 +30,7 @@ const contractBlock = (acceptanceContract) => `ACCEPTANCE CONTRACT — the resul
 
 export function makePrompt({ goal, acceptanceContract, lane, depth, grounding, answers }) {
   const groundingBlock = grounding === 'claude'
-    ? `\n\nGROUNDING — you have Hivemind MCP tools (mcp__hivemind__knowledge_search; also search/fetch where available): Myosin's specialist marketing knowledge, written by practitioners. Before drafting, run 2-4 focused knowledge_search queries on the goal's key angles. Where a returned chunk shapes a claim, cite it [H1], [H2], … and list each under a "### Hivemind" subsection inside ## Sources as "[Hn] Title — Author". If the tools error or return nothing relevant, draft without them — never fabricate an [Hn] citation.`
+    ? `\n\nGROUNDING — Myosin's specialist marketing knowledge is available through its managed Hivemind connector. First use ToolSearch with "select:${CLAUDE_HIVEMIND_TOOL}" to load the exact tool. Before drafting, run 2-4 focused knowledge_search queries on the goal's key angles. Where a returned chunk shapes a claim, cite it [H1], [H2], … and list each under a "### Hivemind" subsection inside ## Sources as "[Hn] Title — Author". If the tool errors or returns nothing relevant, draft without it — never fabricate an [Hn] citation.`
     : grounding?.length
       ? `\n\nGROUNDING — internal knowledge retrieved from Hivemind (Myosin's specialist network). Prefer these over general knowledge where they apply, and cite them as [H1], [H2], … in a "### Hivemind" subsection under Sources ("[Hn] Title — Author"):\n${grounding
           .map((g, i) => `[H${i + 1}] ${g.title}\n${g.text}`)
@@ -115,7 +116,7 @@ Respond with STRICT JSON only (no markdown fences, no commentary):
 
 export function fixPrompt({ goal, acceptanceContract, lane, draft, findings, verifyFailures, answers, viaClaude }) {
   const hmBlock = viaClaude
-    ? `\nYou still have the Hivemind MCP tools (mcp__hivemind__knowledge_search) — use them if a fix needs a replacement internal source, and keep every [Hn] marker mapped to a "### Hivemind" entry under ## Sources. Never fabricate an [Hn] citation.\n`
+    ? `\nYou still have the managed Hivemind MCP tool. If a fix needs a replacement internal source, first load it with ToolSearch query "select:${CLAUDE_HIVEMIND_TOOL}", then call it. Keep every [Hn] marker mapped to a "### Hivemind" entry under ## Sources. Never fabricate an [Hn] citation.\n`
     : '';
   const findingsBlock = findings?.length
     ? `REVIEWER FINDINGS TO RESOLVE (all of them):\n${findings

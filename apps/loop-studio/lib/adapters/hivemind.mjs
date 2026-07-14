@@ -25,6 +25,9 @@ import { McpClient } from '../mcp-client.mjs';
 // HIVEMIND_MCP_URL when production ships. A default is still a decision —
 // this one is recorded here, in doctor output, and in the README.
 const DEFAULT_CLAUDE_MCP_URL = 'https://staging-hivemind.myosin.xyz/api/mcp';
+export const CLAUDE_HIVEMIND_SERVER = 'claude_ai_Hivemind_Staging';
+export const CLAUDE_HIVEMIND_TOOL = `mcp__${CLAUDE_HIVEMIND_SERVER}__knowledge_search`;
+export const CLAUDE_HIVEMIND_DISPLAY = 'claude.ai Hivemind Staging';
 
 const SEARCH_PATH = () => process.env.HIVEMIND_SEARCH_PATH || '/api/v1/knowledge/search';
 const ARTIFACT_PATH = () => process.env.HIVEMIND_ARTIFACT_PATH || '/api/v1/artifacts';
@@ -52,7 +55,9 @@ function config() {
 // What the claude adapter needs to wire the maker's own MCP surface.
 export function viaClaude() {
   const c = config();
-  return c.mode === 'claude' ? { enabled: true, url: c.base, serverName: 'hivemind' } : { enabled: false };
+  return c.mode === 'claude'
+    ? { enabled: true, url: c.base, serverName: CLAUDE_HIVEMIND_SERVER, toolName: CLAUDE_HIVEMIND_TOOL }
+    : { enabled: false };
 }
 
 let client = null;

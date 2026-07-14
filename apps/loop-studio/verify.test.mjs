@@ -209,9 +209,15 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   const st = hivemindStatus();
   assert.equal(st.mode, 'claude', 'mode is claude');
   assert.ok(st.base.endsWith('/api/mcp'), 'base points at an /api/mcp endpoint');
-  assert.deepEqual(viaClaude(), { enabled: true, url: st.base, serverName: 'hivemind' }, 'viaClaude exposes the wiring');
-  const surface = claudeToolSurface({ stage: 'make', hivemindEnabled: true, serverName: 'hivemind' });
-  assert.match(surface.tools, /mcp__hivemind__knowledge_search/, 'Hivemind tools EXIST in the restrictive --tools surface, not merely in --allowedTools');
+  assert.deepEqual(viaClaude(), {
+    enabled: true,
+    url: st.base,
+    serverName: 'claude_ai_Hivemind_Staging',
+    toolName: 'mcp__claude_ai_Hivemind_Staging__knowledge_search',
+  }, 'viaClaude exposes the managed connector wiring');
+  const surface = claudeToolSurface({ stage: 'make', hivemindEnabled: true, serverName: 'claude_ai_Hivemind_Staging' });
+  assert.match(surface.tools, /ToolSearch/, 'managed deferred tools can be loaded');
+  assert.match(surface.tools, /mcp__claude_ai_Hivemind_Staging__knowledge_search/, 'only the selected managed Hivemind tool EXISTS in the restrictive surface');
   assert.equal(surface.allowed, surface.tools, 'every available maker tool is pre-approved for headless use');
   assert.deepEqual(claudeToolSurface({ stage: 'plan', hivemindEnabled: false }), { tools: '', allowed: '' }, 'planning remains tool-free');
 
@@ -219,10 +225,10 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   assert.equal(marker, 'claude', 'retrieval is delegated, not performed');
 
   const mk = makePrompt({ goal: 'g', lane: 'research_memo', depth: 'quick', grounding: 'claude', answers: [] });
-  assert.ok(mk.includes('mcp__hivemind__knowledge_search'), 'make prompt names the MCP tool');
+  assert.ok(mk.includes('select:mcp__claude_ai_Hivemind_Staging__knowledge_search'), 'make prompt loads the exact managed MCP tool');
   assert.ok(mk.includes('never fabricate'), 'make prompt forbids fabricated [Hn]');
   const fx = fixPrompt({ goal: 'g', lane: 'research_memo', draft: 'd', findings: [], answers: [], viaClaude: true });
-  assert.ok(fx.includes('mcp__hivemind__knowledge_search'), 'fix prompt keeps the tool available');
+  assert.ok(fx.includes('select:mcp__claude_ai_Hivemind_Staging__knowledge_search'), 'fix prompt can reload the managed tool');
 
   const contract = 'Every material claim must trace to a live source.';
   const { planPrompt, reviewPrompt } = await import('./lib/prompts.mjs');
@@ -493,8 +499,8 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
     sessionLineFromEvent({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'WebSearch', input: { query: 'crypto ad policy' } }] } }),
     'WebSearch: crypto ad policy', 'claude tool_use becomes a session line');
   assert.equal(
-    sessionLineFromEvent({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'mcp__hivemind__knowledge_search', input: { query: 'gtm' } }] } }),
-    'knowledge_search: gtm', 'mcp prefix stripped');
+    sessionLineFromEvent({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'mcp__claude_ai_Hivemind_Staging__knowledge_search', input: { query: 'gtm' } }] } }),
+    'knowledge_search: gtm', 'managed MCP prefix (including underscores) stripped');
   assert.equal(sessionLineFromEvent({ type: 'result', result: 'x' }), null, 'result events are not session lines');
 
   const { sessionLineFromCodexEvent } = await import('./lib/adapters/codex.mjs');
@@ -967,7 +973,7 @@ if (process.env.TEST_NETWORK === '1') {
 // "logged in" substring into a false green — the chip would reassure a user
 // straight into a 401.
 {
-  const { parseAuthProbe, hivemindListingHasEndpoint, runDoctor } = await import('./lib/doctor.mjs');
+  const { parseAuthProbe, hivemindListingHasEndpoint, managedConnectorIsConnected, runDoctor } = await import('./lib/doctor.mjs');
   assert.equal(parseAuthProbe(null), null, 'probe could not run → unknown, never guessed');
   assert.equal(parseAuthProbe('Logged in as mateo@example.com'), true, 'claude prose sign-in parses');
   assert.equal(parseAuthProbe('{"loggedIn": true, "method": "oauth"}'), true, 'claude JSON sign-in parses');
@@ -987,6 +993,8 @@ if (process.env.TEST_NETWORK === '1') {
     'managed Hivemind Staging is recognized by exact endpoint, not a required local alias',
   );
   assert.equal(hivemindListingHasEndpoint('hivemind: https://wrong.example/api/mcp - Connected', stagingUrl), false, 'a matching display name at the wrong endpoint is refused');
+  assert.equal(managedConnectorIsConnected('claude.ai Hivemind Staging:\n  Status: ✔ Connected'), true, 'targeted managed connector probe recognizes connected');
+  assert.equal(managedConnectorIsConnected('claude.ai Hivemind Staging:\n  Status: ✘ Needs authentication'), false, 'targeted managed connector probe refuses signed-out');
 
   // Live P1 (2026-07-14): BOTH installed CLIs deliver their signed-out answer
   // with EXIT CODE 1 (claude: {"loggedIn": false,…}; codex: "Not logged in").

@@ -86,7 +86,7 @@ Every run writes `runs/<id>/`: `events.jsonl` (the full event stream — the UI 
 export HIVEMIND_VIA_CLAUDE=1        # optional: HIVEMIND_MCP_URL to point at prod when it ships
 ```
 
-The maker keeps `--strict-mcp-config`: its tool surface is exactly WebSearch, WebFetch, and the Hivemind tools — nothing else from your MCP config leaks in. Studio injects that connected endpoint under its run-local `hivemind` alias. Deep `--doctor` recognizes the exact staging URL regardless of the managed connector’s display name and never prints the local MCP listing. The launch view says the connector is *available*; the Ground stage earns `claude ✓` only after Studio observes a real Hivemind tool call (`claude ✕` means configured but unused).
+In managed-connector mode Studio excludes user, local, and project settings, then gives the maker a restrictive surface containing WebSearch, WebFetch, ToolSearch, and the exact Hivemind `knowledge_search` tool. Claude.ai connectors authenticate through Anthropic's managed proxy, so re-adding the raw URL under a local alias would not inherit the signed-in session. Other connected services are never exposed to the model. Deep `--doctor` recognizes the exact staging endpoint regardless of the managed connector’s display name and never prints the local MCP listing. The launch view says the connector is *available*; the Ground stage earns `claude ✓` only after Studio observes a real Hivemind tool call (`claude ✕` means configured but unused).
 
 **2. Studio-side MCP (`HIVEMIND_MCP_URL` + `HIVEMIND_API_KEY`).** The studio calls `/api/mcp` itself through a zero-dependency client ([lib/mcp-client.mjs](lib/mcp-client.mjs)) with an admin-issued `hm_k_…` key — for headless or hosted setups with no Claude connector.
 

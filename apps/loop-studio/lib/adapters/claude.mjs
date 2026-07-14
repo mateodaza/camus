@@ -15,11 +15,12 @@ function fail(error) {
   return { ok: false, error, text: null, costUsd: 0 };
 }
 
-export function claudeToolSurface({ stage, hivemindEnabled = false, serverName = 'hivemind' }) {
+export function claudeToolSurface({ stage, hivemindEnabled = false, serverName = 'claude_ai_Hivemind_Staging', toolName }) {
   const builtins = stage === 'plan' ? '' : 'WebSearch,WebFetch';
-  const mcpTools = hivemindEnabled
-    ? `mcp__${serverName}__knowledge_search,mcp__${serverName}__search,mcp__${serverName}__fetch`
-    : '';
+  // Claude.ai connectors are deferred: ToolSearch must load the selected
+  // managed tool before the model can call it. The exact selection keeps every
+  // other connected service outside the model's tool surface.
+  const mcpTools = hivemindEnabled ? `ToolSearch,${toolName || `mcp__${serverName}__knowledge_search`}` : '';
   const tools = [builtins, mcpTools].filter(Boolean).join(',');
   return { tools, allowed: tools };
 }
@@ -32,7 +33,7 @@ export function sessionLineFromEvent(ev) {
     if (item.type === 'tool_use') {
       const input = item.input ?? {};
       const arg = input.query ?? input.url ?? input.prompt ?? input.command ?? input.file_path ?? input.path ?? Object.values(input).find((v) => typeof v === 'string') ?? '';
-      const name = item.name.replace(/^mcp__[^_]+__/, '');
+      const name = item.name.replace(/^mcp__.+?__/, '');
       return `${name}: ${String(arg).slice(0, 110)}`;
     }
   }
@@ -41,21 +42,18 @@ export function sessionLineFromEvent(ev) {
 
 export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, onSession, model }) {
   const hm = stage === 'plan' ? { enabled: false } : viaClaude();
-  const { tools, allowed } = claudeToolSurface({ stage, hivemindEnabled: hm.enabled, serverName: hm.serverName });
+  const { tools, allowed } = claudeToolSurface({ stage, hivemindEnabled: hm.enabled, serverName: hm.serverName, toolName: hm.toolName });
   const maxTurns = stage === 'plan' ? '1' : stage === 'fix' ? '12' : '20';
 
   // The model is always named explicitly — never the CLI's configured default.
-  // --tools RESTRICTS the built-in surface (plan: none; research: web only);
-  // --allowedTools pre-approves what remains so headless runs don't stall on
-  // permissions; --strict-mcp-config keeps MCP to exactly the server we
-  // grant in via-claude mode (auth = the token from the human's one-time
-  // interactive OAuth).
+  // --tools RESTRICTS the built-in surface (plan: none; research: web plus
+  // the selected Hivemind connector); --allowedTools pre-approves what
+  // remains so headless runs don't stall on permissions.
   const args = [
     '-p', prompt,
     '--output-format', 'stream-json',
     '--verbose',
     '--max-turns', maxTurns,
-    '--strict-mcp-config',
     '--model', model || getModels().maker.model,
     // --tools defines what EXISTS; --allowedTools only pre-approves that
     // surface. Omitting MCP from --tools made a connected Hivemind impossible
@@ -63,8 +61,13 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
     '--tools', tools,
   ];
   if (hm.enabled) {
-    args.push('--mcp-config', JSON.stringify({ mcpServers: { [hm.serverName]: { type: 'http', url: hm.url } } }));
-  }
+    // Managed Claude.ai connectors authenticate through Anthropic's proxy;
+    // re-adding the raw endpoint under a local alias does not inherit OAuth.
+    // An empty settings-source list excludes user/local/project MCP entries
+    // while Claude.ai connectors remain available. --tools still exposes only
+    // WebSearch/WebFetch/ToolSearch and the one selected Hivemind tool.
+    args.push('--setting-sources', '');
+  } else args.push('--strict-mcp-config');
   if (allowed) args.push('--allowedTools', allowed);
 
   const { exitCode, stdout, stderr, resultEvent, hivemindQueries } = await new Promise((resolve) => {
