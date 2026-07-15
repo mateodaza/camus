@@ -21,6 +21,33 @@ An orchestrator never awards itself independent verified standing. Its output
 may pass deterministic checks, and its own vendor may provide advisory review,
 but independent standing still requires an auditor outside that vendor.
 
+## Loop modes are inputs, not territory to own
+
+Agent systems can be described by what the human hands off: a check in an
+exploratory turn-based loop, a stopping condition in a goal-based loop, a
+trigger in a scheduled loop, or prompt generation and execution in a proactive
+workflow. Camus should work across all of these modes without rebuilding their
+choreography.
+
+The durable product distinction is what remains bound after autonomy increases:
+the acceptance contract, permitted knowledge, artifact identity, evidence,
+verdict, human decisions, and publication authority. External schedulers and
+native orchestrators may trigger and execute work; Camus receives their
+artifacts and receipts, applies the trust protocol, and records what the
+evidence justifies learning.
+
+Future manifests may therefore record `trigger_type`, `stop_policy`,
+`verification_cadence`, and `escalation_policy`. These are inspectable trust
+inputs, not a commitment to build a scheduler. Useful extensions include audit
+on artifact change and recurring re-audit through external triggers. Even in a
+proactive workflow, a generated prompt is not the control boundary: a stable
+policy and acceptance contract remain authoritative.
+
+The concise product line is:
+
+> Let any agent do the work. Camus keeps the goal, evidence, verdict, and human
+> decisions bound together.
+
 ## Product shape
 
 Camus grows from a single executor/auditor loop into a local experiment and
