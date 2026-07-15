@@ -66,7 +66,30 @@ const ANY_HEADING = /^(#{1,6})\s+(.*)$/;
 // phrase, the comma, and the colon — case-sensitive. Whitespace runs are the
 // only tolerance. An embedded, lowercase, comma-less, or bullet-less lookalike
 // is NOT a marker, so its numbers are audited like any other statistic.
-const THRESHOLD_MARKER = /^-\s+Proposed threshold\s+\(decision policy,\s+not observed performance\)\s*:/;
+//
+// It MAY be wrapped in ONE balanced Markdown emphasis run (**, *, __, _) that
+// opens right after the bullet and closes immediately before or after the colon
+// — the bold form the live smoke produced renders identically to the plain
+// marker. Emphasis is tolerated ONLY as that balanced wrapper: stray * or _
+// inside the words ("- Pro*posed threshold …") is corruption, not emphasis, and
+// stays red. The regex reads the RAW line (never a stripped copy), so it cannot
+// be fooled by delimiters it did not pair, and the stored line stays byte-exact.
+const THRESHOLD_PHRASE = 'Proposed threshold\\s+\\(decision policy,\\s+not observed performance\\)';
+// The closing delimiter must hug the marker: immediately after `)` (before the
+// colon) or immediately after the colon. A space before the closing run — `): **`
+// — is not a valid CommonMark closing delimiter, so it renders as literal
+// asterisks, not bold, and must stay red. Whitespace BEFORE the colon is fine;
+// the plain marker already tolerates it.
+//
+// The after-colon close also needs a boundary AFTER it: `:**retention` is a run
+// preceded by punctuation and followed by an alphanumeric, which is not
+// right-flanking either — it renders literally, so require whitespace or line end
+// after the delimiter. The before-colon close needs no such guard: a colon
+// (punctuation) always follows it, which keeps it right-flanking.
+const THRESHOLD_MARKER = new RegExp(
+  `^-\\s+(?:(\\*\\*|__|\\*|_)${THRESHOLD_PHRASE}(?:\\1\\s*:|\\s*:\\1(?=\\s|$))|${THRESHOLD_PHRASE}\\s*:)`,
+);
+const isThresholdMarker = (line) => THRESHOLD_MARKER.test(line);
 const clip = (s) => (s.length > 180 ? `${s.slice(0, 177)}…` : s);
 const statTokens = (text) => [...text.matchAll(STAT_RE)].map((m) => m[0].trim()).filter((t) => !YEAR_RE.test(t));
 
@@ -116,7 +139,7 @@ function scanStats(markdown) {
     }
     const line = rawLine.trim();
     if (!line || line.startsWith('#') || line.startsWith('>')) continue;
-    if (blockLevel && THRESHOLD_MARKER.test(line)) {
+    if (blockLevel && isThresholdMarker(line)) {
       // Exempt from the citation gate — but sealed into the ledger so the
       // auditor must still label it policy vs disguised observed performance.
       // Store the FULL line, never a preview: it is both the auditor's judgment

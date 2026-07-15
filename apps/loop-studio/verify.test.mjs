@@ -122,6 +122,56 @@ Community-led growth compounds where paid cannot. Retention differs by cohort or
   assert.equal(inRule('- proposed threshold (decision policy, not observed performance): retention 40%.').length, 1, 'lowercase marker is not exempt');
   assert.equal(inRule('- Proposed threshold (decision policy not observed performance): retention 40%.').length, 1, 'comma-less marker is not exempt');
   assert.equal(inRule('Proposed threshold (decision policy, not observed performance): retention 40%.').length, 1, 'bullet-less marker is not exempt');
+
+  // Markdown emphasis around the marker renders identically, so it stays exempt
+  // (the live smoke's closure repair bolded it). Emphasis never relaxes the
+  // exact-match discipline, and it cannot substitute for the hyphen bullet.
+  assert.equal(inRule('- **Proposed threshold (decision policy, not observed performance):** retention exceeds 40%.').length, 0, 'a fully bolded marker is exempt');
+  assert.equal(inRule('- **Proposed threshold (decision policy, not observed performance)**: retention exceeds 40%.').length, 0, 'bold closing before the colon is exempt');
+  assert.equal(inRule('- _Proposed threshold (decision policy, not observed performance):_ retention exceeds 40%.').length, 0, 'an italicized marker is exempt');
+  assert.equal(inRule('- **proposed threshold (decision policy, not observed performance):** 40%.').length, 1, 'bold does not excuse lowercase');
+  assert.equal(inRule('- **Proposed threshold (decision policy not observed performance):** 40%.').length, 1, 'bold does not excuse a missing comma');
+  assert.equal(inRule('**- Proposed threshold (decision policy, not observed performance):** 40%.').length, 1, 'emphasis cannot stand in for the hyphen bullet');
+
+  // Only a BALANCED wrapper around the whole marker is emphasis. Stray * or _
+  // inside the words is corruption, not formatting, and must stay red — the gate
+  // reads the raw line, never a globally stripped copy.
+  assert.equal(inRule('- Pro*posed threshold (decision policy, not observed performance): 40%.').length, 1, 'a stray asterisk inside the phrase is not exempt');
+  assert.equal(inRule('- Pro_po_sed threshold (decision policy, not observed performance): 40%.').length, 1, 'stray underscores inside the phrase are not exempt');
+  assert.equal(inRule('- **Proposed threshold** (decision policy, not observed performance): 40%.').length, 1, 'emphasis closing mid-phrase does not wrap the marker');
+  assert.equal(inRule('- **Proposed threshold (decision policy, not observed performance):* 40%.').length, 1, 'an unbalanced wrapper (** opened, * closed) is not exempt');
+
+  // The closing delimiter must hug the marker. A space between the colon and the
+  // close (`): **`) is not a valid CommonMark closing run — it renders as literal
+  // asterisks, not bold — so it must stay red. Whitespace before the colon is
+  // still fine (the close hugs `)`), consistent with the plain marker.
+  assert.equal(inRule('- **Proposed threshold (decision policy, not observed performance): ** retention 40%.').length, 1, 'a space between the colon and the closing ** is not valid emphasis');
+  assert.equal(inRule('- _Proposed threshold (decision policy, not observed performance): _ retention 40%.').length, 1, 'the same spaced-closing hole is closed for single-char emphasis too');
+  assert.equal(inRule('- **Proposed threshold (decision policy, not observed performance)** : retention 40%.').length, 0, 'but a close that hugs the phrase with space only before the colon still renders as bold');
+
+  // The after-colon close also needs a boundary AFTER it: `:**retention` is a run
+  // preceded by punctuation and followed by an alphanumeric — not right-flanking,
+  // so it renders literally and must stay red. A space or line end makes it valid.
+  assert.equal(inRule('- **Proposed threshold (decision policy, not observed performance):**retention 40%.').length, 1, 'no gap after the colon-inside close is not valid emphasis');
+  assert.equal(inRule('- _Proposed threshold (decision policy, not observed performance):_retention 40%.').length, 1, 'the no-gap hole is closed for single-char emphasis too');
+  // A line with no numeric token yields no offender either way, so probe the $
+  // branch through the ledger: the entry appears only if the marker matched.
+  assert.equal(extractThresholdLines('## Decision Rule\n- **Proposed threshold (decision policy, not observed performance):**\n').length, 1, 'the colon-inside close is valid at end of line (enters the ledger)');
+  assert.equal(inRule('- **Proposed threshold (decision policy, not observed performance)**:retention 40%.').length, 0, 'the before-colon close stays valid — a colon follows its closing run');
+}
+
+// --- unit: live-smoke reproduction — the closure repair bolded the marker -----
+// Run 20260714-185050-d95g failed verify because rev5-6 wrapped the exact marker
+// in bold. It renders identically, so the gate must exempt it AND the ledger must
+// still bind it — to the RAW (bolded) line, matching the artifact byte-for-byte.
+{
+  const liveLine = '- **Proposed threshold (decision policy, not observed performance):** expand only if cost-per-qualified-opportunity (CPQO) falls at or below $1,200 and the pilot produces at least 8 qualified opportunities — both conditions must hold simultaneously.';
+  const doc = `## Decision Rule\n\n${liveLine}\n\nThese are owner-approved policy constraints, not claims about the market.\n`;
+  assert.equal(findUnsourcedStats(doc).length, 0, 'the bolded marker passes deterministic verification, as it did not in the live smoke');
+  const [entry] = extractThresholdLines(doc);
+  assert.ok(entry, 'the bolded marker still enters the threshold ledger for the auditor');
+  assert.equal(entry.line, liveLine, 'the ledger binds the exact RAW line, emphasis intact');
+  assert.deepEqual(entry.stats, ['$1,200'], 'the exempted threshold figure is captured through the emphasis');
 }
 
 // --- unit: the threshold ledger is exactly what the gate exempted -----------
