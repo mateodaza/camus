@@ -526,6 +526,38 @@ async function openSettings() {
 
 $('open-settings').addEventListener('click', openSettings);
 
+// The pairing shown in step 3 READS the decision record; Settings remains the
+// only writer, so there is no second source of truth to drift out of sync.
+// Failure is explicit — a pairing nobody can read must not look like a choice.
+async function refreshPairing() {
+  try {
+    const res = await fetch(`${API}/api/config`);
+    if (!res.ok) throw new Error(`config returned ${res.status}`);
+    const c = await res.json();
+    $('pairing-maker').textContent = c.maker?.model ?? 'not set';
+    $('pairing-auditor').textContent = c.reviewer?.effort
+      ? `${c.reviewer.model} · ${c.reviewer.effort}`
+      : (c.reviewer?.model ?? 'not set');
+  } catch {
+    $('pairing-maker').textContent = 'unavailable';
+    $('pairing-auditor').textContent = 'unavailable';
+  }
+}
+$('pairing-change').addEventListener('click', openSettings);
+$('jump-recents').addEventListener('click', () => {
+  // Compute the target rather than scrollIntoView: that derives its position
+  // from viewport height and silently no-ops where the height is degenerate.
+  // Instant, not smooth — smooth-scroll has bitten this app before, it is what
+  // reduced-motion users get regardless, and a jump should just arrive.
+  const recents = $('recents');
+  const top = recents.getBoundingClientRect().top + window.scrollY - 12;
+  window.scrollTo(0, Math.max(0, top));
+  // A visual jump must also move the keyboard/screen-reader position. The
+  // section is programmatically focusable without entering the normal tab order.
+  recents.focus({ preventScroll: true });
+});
+refreshPairing();
+
 // Depth applies immediately (it is a preference, not a saved decision) and the
 // launch form says what will run.
 function reflectDepth() {
@@ -556,6 +588,7 @@ $('save-settings').addEventListener('click', async () => {
     if (!res.ok) throw new Error(data.error || res.statusText);
     $('settings-note').textContent = 'saved. Applies from the next run.';
     boot(); // pills reflect the new decisions
+    refreshPairing(); // step 3 must not keep showing the superseded pairing
   } catch (err) {
     $('settings-note').textContent = `not saved: ${err.message}`;
   }

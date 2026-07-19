@@ -33,6 +33,9 @@
       <div class="tools">
         <button id="open-setup" class="ghost">setup</button>
         <button id="open-settings" class="ghost">settings</button>
+        <!-- Jump, not a tab. Real Launch|Runs navigation introduces routing,
+             responsive and accessibility work that deserves its own testing. -->
+        <button id="jump-recents" class="ghost" aria-controls="recents">recent runs ↓</button>
       </div>
     </header>
 
@@ -75,10 +78,10 @@
     </section>
 
     <section class="card form">
-      <label class="lbl" for="goal">The goal: brief it like you'd brief a strategist</label>
+      <label class="lbl step" for="goal"><span class="step-n">1</span> Describe the job — brief it like you'd brief a strategist</label>
       <textarea id="goal" rows="3" placeholder="e.g. Should our client lead with community programs or paid acquisition for their consumer app this quarter? I need a memo I can defend on Thursday."></textarea>
 
-      <label class="lbl" for="acceptance-contract">What must be true for you to trust the result?</label>
+      <label class="lbl step" for="acceptance-contract"><span class="step-n">2</span> Define what must be true for you to trust the result</label>
       <textarea id="acceptance-contract" rows="2" placeholder="e.g. Every material claim traces to a live source; the recommendation states assumptions and tradeoffs; no invented Hivemind evidence."></textarea>
       <div class="hint trust-hint">This is what the reviewer holds the work to. Change it and any earlier review of this work no longer counts.</div>
       <!-- The contract is the most important input and the least guessable, so
@@ -92,7 +95,21 @@
         <button type="button" class="preset" data-clause="Plain language: no hype, no unsupported superlatives.">no hype</button>
       </div>
 
-      <label class="lbl">Choose a lane</label>
+      <label class="lbl step"><span class="step-n">3</span> Choose maker and auditor, then run</label>
+      <!-- The two-model pairing is the whole thesis, so it belongs on the launch
+           screen rather than hidden in Settings. Shown live from /api/config;
+           Settings stays the one place that WRITES it, so there is no second
+           source of truth to drift. Effort and rounds stay there too — they are
+           advanced controls, deliberately secondary to this decision. -->
+      <div class="pairing" id="pairing">
+        <span class="pairing-role"><span class="pairing-lbl">maker</span> <span id="pairing-maker" class="mono">…</span></span>
+        <span class="pairing-arrow" aria-hidden="true">→</span>
+        <span class="pairing-role"><span class="pairing-lbl">auditor</span> <span id="pairing-auditor" class="mono">…</span></span>
+        <button type="button" id="pairing-change" class="ghost">change</button>
+      </div>
+      <div class="hint">One model makes the work. A different one tries to break it.</div>
+
+      <label class="lbl sub-lbl">Lane</label>
       <div class="lanes" id="lanes">
         <button class="lane selected" data-lane="research_memo">
           <strong>Research memo</strong>
@@ -144,7 +161,7 @@
       </div>
       <div id="compare-panel" class="compare-panel hidden">
         <div class="trust-title">SAME BRIEF, TWO MODELS</div>
-        <div class="hint">Both models get the same brief, the same trust contract, the same reviewer, and the same frozen set of research. Neither can look anything up mid-run or publish, so the model is the only thing that differs. This runs both, so expect about twice the cost of one run.</div>
+        <div class="hint">Both models get the same brief, the same trust contract, the same reviewer, and the same frozen set of research. Neither can look anything up mid-run or publish, so the model is the only thing that differs. This runs both, so expect roughly twice the model usage of one run.</div>
         <div class="compare-controls">
           <label>model A<select id="compare-maker-a"></select></label>
           <label>model B<select id="compare-maker-b"></select></label>
@@ -159,7 +176,7 @@
       <div id="form-error" class="form-error"></div>
     </section>
 
-    <section id="recents" class="recents"></section>
+    <section id="recents" class="recents" tabindex="-1" aria-label="Recent runs"></section>
 
     <footer class="foot">
       Claude drafts. Codex, a different vendor, reviews it adversarially. Deterministic checks decide, so every run leaves receipts in <code>./runs/</code>.

@@ -8,7 +8,7 @@ This is the durable source for the short presentation and recorded Myosin Learns
 
 **Show rather than tell. Use concrete before/after evidence wherever possible.**
 
-**Rehearse and present from the sealed receipts, not from live provider calls.** A finished run replays from disk with no models involved, so the demo cannot be derailed by latency, a provider outage, or a fresh run reaching a different verdict. Live running is optional upside, never the plan.
+**The proof rests on sealed receipts. Starting a live run is planned; finishing one is optional.** A finished run replays from disk with no models involved, so nothing load-bearing depends on latency, a provider outage, or a fresh run reaching a different verdict. The live run exists to show that a person can operate this — choose the roles, write a brief and a trust contract, press Run — not to supply the evidence. Camus is something users operate, not a gallery of prepared runs; the receipts are what make it accountable.
 
 The primary proof is Studio run `20260719-093340-9fuc`: eight Hivemind items were captured and frozen under a single snapshot before drafting; Claude (`anthropic:claude-sonnet-4-6`) drafted the deliverable; GPT-5.6-sol, from a different vendor, raised four distinct blocking findings across three rounds, re-raising what was not fixed — invented executive experience, material claims lacking citation, limitations exceeding the cited excerpt, and a recommendation outrunning the evidence. The goal owner authorised one further round rather than settling, then accepted findings on the record. Deterministic checks passed with caveats. Standing is honestly **verified with findings**, not clean. Artifact `872816c02580`; nothing was published.
 
@@ -120,6 +120,49 @@ Rehearse from these sealed receipts. They replay from disk with no models involv
 ⚠️ **`runs/` is gitignored, so these exist only on this machine.** A verified portable copy is at `~/Documents/camus-demo-receipts-2026-07-19.tgz` (sha256 `11d9e899cfb779341cef34fe60d32b13e1c856004c46a2ae204ae9573d6aa0dd`, scratch worktrees excluded). Restore by copying a run directory back into `apps/loop-studio/runs/`. Do not commit them: the snapshots contain private Hivemind excerpts.
 
 Studio runs locally on port 1913. Confirm before presenting: Setup shows Claude and Codex signed in and the Hivemind connector connected; Recents shows the two real audit-comparison cards.
+
+## Running order on the day
+
+Use **two browser tabs** so the live run and the hero replay cannot disturb each other: tab A for the live run, tab B parked on `9fuc`. Never drive both from one tab.
+
+1. **Slides** carry the thesis. The UI supplies proof; it should never be the thing the audience has to decode.
+2. **Start one live run in tab A** so Shane watches a normal user choose the roles, write a brief and a trust contract, and press Run. Then leave it running.
+3. **Switch to tab B** and walk `9fuc`: frozen evidence, the draft, GPT's objections, the human decision, the standing, the receipt and its derivation.
+4. **Show the matched low/high comparison card** with the takeaway verbatim.
+5. **Return to tab A** and take whichever outcome it landed on.
+
+### The live task
+
+Freeform lane, no grounding, Quick depth, Sonnet executor, GPT reviewer at low requested effort.
+
+**Goal**
+
+> Turn these notes into a concise LinkedIn announcement: Myosin Learns is a live session for marketers exploring AI workflows. It includes a practical walkthrough and Q&A. Attendees leave with one reusable workflow template. The date and registration link are not finalized.
+
+**Acceptance contract**
+
+> Write 120–160 words using only the supplied facts. Include the audience, format, benefit and one CTA. Say the date and registration details are coming soon. Do not invent pricing, testimonials, performance claims, dates or availability.
+
+### The live outcomes, decided in advance
+
+Say which one you are in, then continue. Do not troubleshoot on the call.
+
+- **Finished** — open its receipt. A second, unrehearsed artifact with the same custody as the prepared ones.
+- **Needs a human** — demonstrate the checkpoint. This usefully shows the bounded human decision: the loop paused rather than guessing, and what it wants is a call only the goal owner can make.
+- **Still running** — "It continues locally and will seal its receipt when complete." Return to `9fuc` and move on.
+- **Failed** — "The attempt failed; Camus preserves the failure trace." Return to `9fuc` and do not troubleshoot live. A failed run does not continue, and its trace is evidence of the failure rather than a complete replayable receipt like the prepared ones.
+
+Do not predict which outcome will occur. The providers and loop are nondeterministic; the four responses above are the prepared paths, not a promise about the next run.
+
+### Observed rehearsal — 2026-07-19
+
+Run `20260719-125205-zb99` used the live-task configuration above. It reached its first human checkpoint after **2m15s**. The goal owner chose **one more round**, then **stop** when the remaining high finding still described invented mechanics and the draft carried multiple calls to action. It completed three draft revisions and three independent review rounds; verification never ran.
+
+The loop's terminal status is **stopped**. The receipt's derived standing is **not verified**, from `interrupted × not run × independent findings × not published`. Keep those two facts separate: “stopped” is what happened operationally; “not verified” is what the evidence supports.
+
+Total wall time was 34m18s, but 30m15s of that was the two human-response waits. Runtime outside those waits was about **4m03s**. This is one rehearsal, not a latency forecast. Its practical lesson is only that a human checkpoint can arrive quickly enough to demonstrate live, while the prepared receipt remains the proof if it does not.
+
+Do not describe the run's `$0.29` UI counter as cost. Its sealed economics remain `billing unknown` and `cost not estimated`; this demo reports usage and elapsed time, not billing.
 
 ## Meeting context
 
