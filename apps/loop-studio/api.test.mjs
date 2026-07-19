@@ -166,6 +166,42 @@ try {
     assert.equal(report.experiment.outcome.effort_actual, 'scripted', 'requested high effort never becomes a simulated actual');
     assert.equal(report.experiment.outcome.confounded, true, 'requested real reviewer vs scripted actual is visible');
 
+    const inMemoryList = await (await fetch(`${base}/api/runs`)).json();
+    const inMemoryArm = inMemoryList.runs.find((run) => run.id === replayId);
+    assert.equal(inMemoryArm.live, true, 'the just-finished replay is still served from memory');
+    assert.equal(inMemoryArm.artifactId, sourcePack.artifact_id, 'in-memory Recents carries the grouping authority before any restart');
+    assert.equal(inMemoryArm.receiptId, report.evidencePack.receipt_id, 'the directly openable receipt is projected in memory');
+    assert.equal(inMemoryArm.effortRequested, 'high');
+    assert.equal(inMemoryArm.effortActual, 'scripted');
+    assert.equal(inMemoryArm.auditorActual, 'simulation:scripted-auditor');
+    assert.equal(inMemoryArm.findingCount, 0, 'a real zero finding count survives the in-memory projection');
+
+    // An interrupted audit arm has no report or receipt yet, but run.json still
+    // binds it to the source artifact. It must remain groupable as an incomplete
+    // arm rather than disappear from the record.
+    const interruptedReplayId = 'interrupted-audit-arm';
+    const interruptedReplayDir = join(tmp, interruptedReplayId);
+    mkdirSync(interruptedReplayDir, { recursive: true });
+    writeFileSync(join(interruptedReplayDir, 'run.json'), JSON.stringify({
+      id: interruptedReplayId,
+      goal: sourcePack.goal,
+      displayGoal: `Audit-only replay: ${sourcePack.goal}`,
+      lane: 'audit_replay',
+      sourceRunId: sourceId,
+      startedAt: 2,
+      experiment: {
+        source: { run_id: sourceId, artifact_id: sourcePack.artifact_id, receipt_id: sourcePack.receipt_id },
+        manifest: { effort: { requested: 'low' } },
+        outcome: { artifact_id: sourcePack.artifact_id, receipt_id: null, auditor_actual: null, effort_actual: null, usage: {} },
+      },
+    }));
+    const withInterrupted = await (await fetch(`${base}/api/runs`)).json();
+    const interruptedArm = withInterrupted.runs.find((run) => run.id === interruptedReplayId);
+    assert.equal(interruptedArm.status, 'incomplete');
+    assert.equal(interruptedArm.artifactId, sourcePack.artifact_id, 'report-less audit metadata retains the exact grouping hash');
+    assert.equal(interruptedArm.receiptId, null, 'an interrupted arm never invents a receipt');
+    assert.equal(interruptedArm.effortRequested, 'low');
+
     // The exempted threshold line survives the production replay derivation
     // (server emit → deriveEvidence), bound to what it judged — and a scripted
     // audit keeps that decision non-evidence in the sealed pack, like coverage.

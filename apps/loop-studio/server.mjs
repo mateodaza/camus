@@ -78,6 +78,27 @@ const headlineOf = (statuses, simulated = false) => {
   try { return statuses ? deriveHeadline(statuses) : null; } catch { return null; }
 };
 
+// Audit-only replays carry the small, non-content facts Recents needs to show
+// them as arms over ONE artifact. This works for sealed reports, in-memory
+// runs, and interrupted run.json metadata: a failed/report-less arm remains
+// part of the record instead of disappearing until restart (or forever).
+const auditArmFields = (r) => {
+  if (r?.lane !== 'audit_replay') return {};
+  const outcome = r.experiment?.outcome ?? null;
+  const manifest = r.experiment?.manifest ?? null;
+  return {
+    artifactId: r.evidencePack?.artifact_id ?? outcome?.artifact_id ?? r.experiment?.source?.artifact_id ?? null,
+    receiptId: r.evidencePack?.receipt_id ?? outcome?.receipt_id ?? null,
+    sourceRunId: r.sourceRunId ?? r.experiment?.source?.run_id ?? null,
+    effortRequested: manifest?.effort?.requested ?? null,
+    effortActual: outcome?.effort_actual ?? null,
+    auditorActual: r.evidencePack?.pairing?.auditor?.actual ?? outcome?.auditor_actual ?? null,
+    outputTokens: outcome?.usage?.output_tokens ?? null,
+    durationMs: outcome?.usage?.duration_ms ?? null,
+    findingCount: (r.evidence?.rounds ?? []).at(-1)?.findings?.length ?? null,
+  };
+};
+
 // The headline rides OUTBOUND status events at serve time — live, catch-up, and
 // disk replay alike — so the UI consumes the trust protocol's ONE derivation
 // instead of re-deriving audit policy client-side (the advisory-audit P1: a UI
@@ -550,7 +571,15 @@ async function startAuditReplay({ sourceId, sourceReport, reviewerModel, effort,
       startedAt,
       endedAt,
     };
-    await writeFile(join(dir, 'report.json'), JSON.stringify(report, null, 2)).catch((err) => persistFail('report.json', err));
+    try {
+      await writeFile(join(dir, 'report.json'), JSON.stringify(report, null, 2));
+      // Keep only the Recents projection in memory. The full private report
+      // stays on disk, while a just-finished replay groups identically before
+      // and after a server restart.
+      run.auditArm = auditArmFields(report);
+    } catch (err) {
+      persistFail('report.json', err);
+    }
     for (const res of state.subscribers) res.end();
     state.subscribers.clear();
   })();
@@ -1183,7 +1212,11 @@ const server = http.createServer(async (req, res) => {
 
     if (path === '/api/runs' && req.method === 'GET') {
       const list = [];
-      for (const [id, s] of runs) list.push({ id, goal: s.run.displayGoal ?? s.run.goal, lane: s.run.lane, status: s.run.status, headline: headlineOf(s.run.statuses, ENGINE === 'mock'), startedAt: s.run.startedAt, live: true });
+      for (const [id, s] of runs) list.push({
+        id, goal: s.run.displayGoal ?? s.run.goal, lane: s.run.lane, status: s.run.status,
+        headline: headlineOf(s.run.statuses, ENGINE === 'mock'), startedAt: s.run.startedAt, live: true,
+        ...auditArmFields(s.run), ...(s.run.auditArm ?? {}),
+      });
       if (existsSync(RUNS_DIR)) {
         for (const d of await readdir(RUNS_DIR)) {
           if (runs.has(d)) continue;
@@ -1191,13 +1224,13 @@ const server = http.createServer(async (req, res) => {
             const r = JSON.parse(await readFile(join(RUNS_DIR, d, 'report.json'), 'utf8'));
             // engine === 'mock' is the fallback for rehearsal receipts sealed
             // before `simulated` existed — they must read "rehearsal" too.
-            list.push({ id: d, goal: r.displayGoal ?? r.goal, lane: r.lane, status: r.status, headline: headlineOf(r.statuses, r.simulated === true || r.engine === 'mock'), startedAt: r.startedAt, live: false });
+            list.push({ id: d, goal: r.displayGoal ?? r.goal, lane: r.lane, status: r.status, headline: headlineOf(r.statuses, r.simulated === true || r.engine === 'mock'), startedAt: r.startedAt, live: false, ...auditArmFields(r) });
           } catch {
             // No sealed report: if start metadata exists, this run was
             // interrupted — list it honestly instead of hiding it.
             try {
               const r = JSON.parse(await readFile(join(RUNS_DIR, d, 'run.json'), 'utf8'));
-              list.push({ id: d, goal: r.goal, lane: r.lane, status: 'incomplete', startedAt: r.startedAt, live: false });
+              list.push({ id: d, goal: r.displayGoal ?? r.goal, lane: r.lane, status: 'incomplete', startedAt: r.startedAt, live: false, ...auditArmFields(r) });
             } catch { /* neither file — not a run */ }
           }
         }

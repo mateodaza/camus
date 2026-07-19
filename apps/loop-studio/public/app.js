@@ -4,6 +4,7 @@
 
 import { comparisonBanner, doneBanner } from './banner.mjs';
 import { effectiveStanding, runStory, standingPill, standingExplanation } from './story.mjs';
+import { groupRuns, armFacts, comparisonNote, shortHash } from './grouping.mjs';
 
 // Hosted-UI mode: when this page is served from a public origin, ?api=
 // points it at the local studio server (persisted after the first visit).
@@ -340,11 +341,11 @@ async function loadRecents() {
     box.innerHTML = '';
     if (!runs.length) return;
     box.appendChild(el('h3', null, 'Recent runs'));
-    for (const r of runs) {
-      // One label per row. A status pill AND a headline tag side by side made
-      // every row ask the reader to reconcile two vocabularies; the derived
-      // standing wins, and a row without one shows the loop's claim marked as a
-      // claim rather than silently reading like a verdict.
+    // One label per row. A status pill AND a headline tag side by side made every
+    // row ask the reader to reconcile two vocabularies; the derived standing
+    // wins, and a row without one shows the loop's claim marked as a claim
+    // rather than silently reading like a verdict.
+    const recentRow = (r) => {
       const b = el('button', 'recent');
       const presentation = standingPill(r.status, r.headline);
       const pill = el('span', `pill ${presentation.className}`, presentation.label);
@@ -357,9 +358,47 @@ async function loadRecents() {
       b.appendChild(el('span', 'g', r.goal));
       b.appendChild(el('span', 'mono muted', new Date(r.startedAt).toLocaleTimeString()));
       b.onclick = () => attach(r.id, r.goal);
-      box.appendChild(b);
+      return b;
+    };
+    for (const entry of groupRuns(runs)) {
+      box.appendChild(entry.kind === 'run' ? recentRow(entry.run) : auditComparisonCard(entry));
     }
   } catch { /* cosmetic */ }
+}
+
+// Audit replays of ONE artifact, shown as arms of a single comparison. The
+// artifact hash is the grouping authority, so the card can state plainly that
+// the arms judged identical bytes. It records the difference and stops there:
+// no winner, no "high effort is better", because two runs are not a sample.
+function auditComparisonCard(entry) {
+  const card = el('div', 'audit-compare');
+  const head = el('div', 'audit-compare-head');
+  head.appendChild(el('span', 'trust-title', 'AUDIT COMPARISON'));
+  head.appendChild(el('span', 'mono muted', `artifact ${shortHash(entry.artifactId)} · ${entry.arms.length} audit attempts on identical bytes`));
+  card.appendChild(head);
+
+  for (const arm of entry.arms) {
+    const facts = armFacts(arm);
+    const row = el('button', 'audit-arm');
+    const presentation = standingPill(arm.status, arm.headline);
+    row.appendChild(el('span', `pill ${presentation.className}`, presentation.label));
+    row.appendChild(el('span', 'arm-effort', `requested ${facts.effortRequested}`));
+    const cells = [
+      facts.effortActual === 'not reported' ? 'actual not reported' : `actual ${facts.effortActual}`,
+      facts.auditorActual ? `auditor ${facts.auditorActual}` : 'auditor not recorded',
+      facts.findings === null ? 'findings not recorded' : `${facts.findings} finding${facts.findings === 1 ? '' : 's'}`,
+      facts.outputTokens === null ? 'tokens not recorded' : `${facts.outputTokens.toLocaleString()} out`,
+      facts.durationSeconds === null ? 'duration not recorded' : `${facts.durationSeconds}s`,
+      facts.receipt ?? 'no receipt',
+    ];
+    row.appendChild(el('span', 'mono muted arm-facts', cells.join(' · ')));
+    row.title = facts.receipt ? 'Open this receipt' : 'Open this audit trace';
+    row.onclick = () => attach(arm.id, arm.goal);
+    card.appendChild(row);
+  }
+
+  card.appendChild(el('div', 'audit-compare-note', comparisonNote(entry.arms)));
+  return card;
 }
 
 // ---------------------------------------------------------------------------

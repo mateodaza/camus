@@ -2266,4 +2266,67 @@ Members asked for practical milestones [H1].
   assert.equal(odd.lines.length, 4, 'and still occupies its slot');
 }
 
+// --- Recents grouping: the artifact hash is the ONLY grouping authority ------
+{
+  const { groupRuns, armFacts, comparisonNote, shortHash } = await import('./public/grouping.mjs');
+  const A = 'sha256:' + 'a'.repeat(64);
+  const B = 'sha256:' + 'b'.repeat(64);
+  const replay = (id, artifactId, over = {}) => ({ id, lane: 'audit_replay', artifactId, status: 'done', headline: 'verified', startedAt: 100, goal: 'g', ...over });
+
+  // Two replays of ONE artifact become a single comparison; a lone one does not.
+  const grouped = groupRuns([replay('r1', A, { effortRequested: 'high', startedAt: 200 }), replay('r2', A, { effortRequested: 'low', startedAt: 100 }), replay('solo', B)]);
+  assert.deepEqual(grouped.map((e) => e.kind), ['audit_comparison', 'run'], 'a pair groups; a single replay stays an ordinary row');
+  assert.deepEqual(grouped[0].arms.map((a) => a.effortRequested), ['low', 'high'], 'arms read weakest to strongest requested effort, not by finish time');
+  assert.equal(grouped[0].artifactId, A);
+  assert.equal(grouped[0].arms.length, 2);
+
+  // Similar goals, adjacent timestamps and matching models must NEVER group.
+  const lookalikes = groupRuns([
+    replay('x', A, { goal: 'same goal', startedAt: 500 }),
+    replay('y', B, { goal: 'same goal', startedAt: 500 }),
+  ]);
+  assert.deepEqual(lookalikes.map((e) => e.kind), ['run', 'run'], 'identical goals and timestamps over DIFFERENT artifacts never group');
+
+  // Non-replays and malformed hashes are never folded in.
+  assert.deepEqual(groupRuns([
+    replay('a', A), replay('b', A),
+    { id: 'normal', lane: 'research_memo', artifactId: A, status: 'done', startedAt: 1 },
+  ]).map((e) => e.kind), ['audit_comparison', 'run'], 'a normal run sharing the artifact is not an audit arm');
+  assert.deepEqual(groupRuns([replay('m1', 'not-a-hash'), replay('m2', 'not-a-hash')]).map((e) => e.kind), ['run', 'run'], 'a malformed artifact id never becomes a grouping key');
+  assert.deepEqual(groupRuns([replay('n1', null), replay('n2', null)]).map((e) => e.kind), ['run', 'run'], 'a missing artifact id never groups');
+
+  // Failed and incomplete arms are RETAINED — a comparison is a record, not a highlight reel.
+  const withFailure = groupRuns([replay('ok', A, { effortRequested: 'low' }), replay('bad', A, { effortRequested: 'high', status: 'failed', headline: 'unverified' })]);
+  assert.equal(withFailure[0].arms.length, 2, 'a failed arm stays in the comparison');
+  assert.ok(withFailure[0].arms.some((a) => a.status === 'failed'), 'and keeps its real status');
+
+  // Unreported facts read as unreported — never zero, never inferred.
+  const sparse = armFacts({ effortRequested: 'high' });
+  assert.equal(sparse.effortActual, 'not reported', 'unapplied-effort is never invented from the request');
+  assert.equal(sparse.outputTokens, null, 'missing tokens are null, not 0');
+  assert.equal(sparse.durationSeconds, null, 'missing duration is null, not 0');
+  assert.equal(sparse.findings, null, 'missing finding count is null, not 0');
+  assert.equal(sparse.receipt, null, 'a missing receipt hash is null');
+  const full = armFacts({ effortRequested: 'low', effortActual: 'low', auditorActual: 'openai:gpt-5.6-sol', outputTokens: 777, durationMs: 26040, findingCount: 0, receiptId: A });
+  assert.equal(full.durationSeconds, 26, 'duration renders in seconds');
+  assert.equal(full.findings, 0, 'a real zero findings is preserved, distinct from unrecorded');
+  assert.equal(full.receipt, 'a'.repeat(12), 'the receipt hash is shortened for display');
+  assert.equal(full.auditorActual, 'openai:gpt-5.6-sol');
+  assert.equal(armFacts({ outputTokens: -1, durationMs: 1.5, findingCount: -2 }).outputTokens, null, 'invalid usage never renders as receipt fact');
+  assert.equal(shortHash('nope'), null, 'a malformed hash has no short form');
+
+  const matchedNote = comparisonNote([
+    { auditorActual: 'openai:gpt-5.6-sol', effortRequested: 'low' },
+    { auditorActual: 'openai:gpt-5.6-sol', effortRequested: 'high' },
+  ]);
+  assert.match(matchedNote, /assigned the same sealed artifact/, 'failed or incomplete attempts are never narrated as if they completed an audit');
+  assert.match(matchedNote, /recorded auditor matches.*requested effort differs/i, 'an effort comparison is described only when the recorded auditor also matches');
+  assert.doesNotMatch(matchedNote, /cost/i, 'tokens and time are usage, never silently promoted into economic cost');
+  assert.match(comparisonNote([
+    { auditorActual: 'openai:gpt-5.6-sol', effortRequested: 'low' },
+    { auditorActual: 'openai:gpt-5.4', effortRequested: 'high' },
+  ]), /not an effort-only comparison/i, 'same artifact with different auditors is grouped but named as confounded');
+  assert.match(comparisonNote([{ effortRequested: 'low' }, { effortRequested: 'high' }]), /not proven to be an effort-only comparison/i, 'missing auditor identity fails closed');
+}
+
 console.log('verify.test: all assertions passed');
