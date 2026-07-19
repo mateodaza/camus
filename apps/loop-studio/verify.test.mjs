@@ -2192,4 +2192,78 @@ Members asked for practical milestones [H1].
   assert.equal(rehearsalStory.timeline.find((b) => b.beat === 'Independent challenge').state, 'skipped');
 }
 
+// --- one standing vocabulary, and the derivation behind it ------------------
+// The run bar, Recents and the story card all read standings from story.mjs, so
+// a receipt can never be worded three ways. An unrecognised standing has no
+// label on purpose — callers must fail closed instead of printing a raw token.
+{
+  const { effectiveStanding, standingLabel, standingPill, standingExplanation } = await import('./public/story.mjs');
+
+  assert.equal(standingLabel('verified_with_findings'), 'Verified with findings');
+  assert.equal(standingLabel('same_vendor_reviewed'), 'Reviewed by the same vendor');
+  assert.equal(standingLabel('gold_star'), null, 'an unrecognised standing has no label, so callers fail closed');
+  assert.equal(standingLabel(undefined), null, 'a missing standing has no label');
+  assert.equal(effectiveStanding(undefined, true), 'rehearsal', 'a legacy mock event cannot lose its rehearsal standing merely because it predates headline decoration');
+  assert.equal(effectiveStanding('verified', true), 'rehearsal', 'the sealed simulation fact outranks any trust-like presentation headline');
+  assert.equal(effectiveStanding('verified', false), 'verified', 'real runs keep the receipt-derived standing');
+  assert.deepEqual(standingPill('done_with_findings', 'unverified'), {
+    label: 'Not verified', className: 'standing danger', derived: true, claim: false,
+  }, 'the receipt-backed label also owns its danger styling; it cannot inherit the gate claim’s success colour');
+  assert.deepEqual(standingPill('running', undefined), {
+    label: 'running', className: 'status running', derived: false, claim: false,
+  }, 'a live operational state is honest without a terminal standing and is never mislabeled as an uncorroborated claim');
+  assert.deepEqual(standingPill('done', undefined), {
+    label: 'done', className: 'status done claim', derived: false, claim: true,
+  }, 'a terminal gate claim without receipt standing stays visible but explicitly claim-styled');
+  assert.equal(standingPill('done', 'rehearsal').className, 'standing rehearsal', 'a rehearsal has its own non-trust tone');
+
+  const dims = (over = {}) => ({ schemaVersion: 1, execution: 'completed', verification: 'passed_with_caveats', audit: 'independent_findings', publication: 'not_published', ...over });
+
+  const agreed = standingExplanation({ status: 'done_with_findings', statuses: dims() }, 'verified_with_findings');
+  assert.equal(agreed.disagrees, false, 'a corroborated gate claim does not read as a conflict');
+  assert.equal(agreed.standing, 'Verified with findings');
+  assert.equal(agreed.gateClaim, 'done_with_findings', 'the loop’s own claim stays visible beside the standing');
+  assert.equal(agreed.lines.length, 4, 'all four dimensions are explained');
+  assert.match(agreed.lines.join(' '), /different vendor/, 'independent audit is named as such');
+
+  // The case the trust layer exists for: the loop claims success, the receipt does not.
+  const conflict = standingExplanation({ status: 'done', statuses: dims({ verification: 'failed', audit: 'not_run' }) }, 'unverified');
+  assert.equal(conflict.disagrees, true, 'a success claim over a receipt that does not support it IS a conflict');
+  assert.match(conflict.lines.join(' '), /did not pass/, 'the failing dimension is stated plainly');
+  assert.match(conflict.lines.join(' '), /No independent review ran/, 'the missing audit is stated plainly');
+
+  // Advisory standing is not a success, so a done claim over it still conflicts.
+  assert.equal(standingExplanation({ status: 'done', statuses: dims({ audit: 'advisory_clean' }) }, 'same_vendor_reviewed').disagrees, true,
+    'same-vendor review never satisfies a done claim');
+
+  // A non-success claim over a non-success standing is agreement, not conflict.
+  assert.equal(standingExplanation({ status: 'verify_failed', statuses: dims({ verification: 'failed' }) }, 'unverified').disagrees, false,
+    'an honest red claim matching an unverified standing is not a conflict');
+
+  assert.equal(standingExplanation({ status: 'verify_failed', statuses: dims() }, 'verified_with_findings').disagrees, true,
+    'disagreement is detected in the other direction too: a red gate claim cannot silently wear a green standing');
+
+  assert.equal(standingExplanation({
+    status: 'done_with_findings',
+    statuses: dims({ verification: 'passed', audit: 'independent_clean' }),
+  }, 'verified').disagrees, true,
+  'a clean derived standing cannot silently erase the gate’s narrower claim that findings remained');
+
+  assert.equal(standingExplanation({ status: 'done', statuses: dims() }, 'verified_with_findings').disagrees, false,
+    'plain done does not claim a caveat-free receipt, so recorded findings remain compatible');
+
+  assert.equal(standingExplanation({ status: 'done', simulated: true, statuses: dims({ audit: 'not_run' }) }, 'rehearsal').disagrees, false,
+    'a successfully completed rehearsal is not a contradiction; completion and non-evidence are orthogonal');
+
+  // Unknown schema fails closed rather than explaining a standing it cannot derive.
+  const legacy = standingExplanation({ status: 'done', statuses: { schemaVersion: 99, execution: 'completed' } }, 'verified');
+  assert.equal(legacy.lines.length, 1, 'an unrecognised schema explains nothing');
+  assert.match(legacy.lines[0], /cannot be derived from evidence/, 'and says why');
+
+  // An unrecognised dimension VALUE is named, never silently dropped.
+  const odd = standingExplanation({ status: 'done', statuses: dims({ audit: 'banana' }) }, 'verified');
+  assert.match(odd.lines.join(' '), /does not recognise/, 'an unknown dimension value is surfaced');
+  assert.equal(odd.lines.length, 4, 'and still occupies its slot');
+}
+
 console.log('verify.test: all assertions passed');

@@ -3,7 +3,7 @@
    shared file, importable here and by verify.test.mjs alike. */
 
 import { comparisonBanner, doneBanner } from './banner.mjs';
-import { runStory } from './story.mjs';
+import { effectiveStanding, runStory, standingPill, standingExplanation } from './story.mjs';
 
 // Hosted-UI mode: when this page is served from a public origin, ?api=
 // points it at the local studio server (persisted after the first visit).
@@ -341,9 +341,19 @@ async function loadRecents() {
     if (!runs.length) return;
     box.appendChild(el('h3', null, 'Recent runs'));
     for (const r of runs) {
+      // One label per row. A status pill AND a headline tag side by side made
+      // every row ask the reader to reconcile two vocabularies; the derived
+      // standing wins, and a row without one shows the loop's claim marked as a
+      // claim rather than silently reading like a verdict.
       const b = el('button', 'recent');
-      b.appendChild(el('span', `pill status ${r.status}`, r.status.replace(/_/g, ' ')));
-      if (r.headline) b.appendChild(el('span', 'headline-tag', r.headline.replace(/_/g, ' ')));
+      const presentation = standingPill(r.status, r.headline);
+      const pill = el('span', `pill ${presentation.className}`, presentation.label);
+      pill.title = presentation.derived
+        ? `Standing derived from the sealed receipt. The loop reported “${r.status.replace(/_/g, ' ')}”.`
+        : presentation.claim
+          ? 'Reported by the loop; no derived standing on this receipt.'
+          : 'Current operational state; no terminal standing exists yet.';
+      b.appendChild(pill);
       b.appendChild(el('span', 'g', r.goal));
       b.appendChild(el('span', 'mono muted', new Date(r.startedAt).toLocaleTimeString()));
       b.onclick = () => attach(r.id, r.goal);
@@ -862,6 +872,30 @@ function renderRunStory(report, standing) {
   for (const line of story.sentences) body.appendChild(el('p', null, line));
   card.appendChild(body);
 
+  // The bridge from layer 1 to layer 2: the standing is a derivation, so it owes
+  // the reader the dimensions it came from — and, when the loop's own claim
+  // disagrees with them, says so instead of quietly preferring one.
+  const why = standingExplanation(report, standing);
+  const toggle = el('button', 'story-why', 'Why this standing?');
+  const detail = el('div', 'story-why-detail hidden');
+  detail.id = 'story-why-detail';
+  toggle.setAttribute('aria-controls', detail.id);
+  toggle.setAttribute('aria-expanded', 'false');
+  for (const line of why.lines) detail.appendChild(el('p', null, line));
+  if (why.gateClaim) {
+    detail.appendChild(el('p', 'story-why-claim', why.disagrees
+      ? `The loop reported “${why.gateClaim.replace(/_/g, ' ')}”, which these dimensions do not support. The receipt is authoritative, not the claim.`
+      : `The loop reported “${why.gateClaim.replace(/_/g, ' ')}”, consistent with the dimensions above.`));
+  }
+  if (why.disagrees) card.classList.add('degraded');
+  toggle.onclick = () => {
+    const hidden = detail.classList.toggle('hidden');
+    toggle.setAttribute('aria-expanded', String(!hidden));
+    toggle.textContent = hidden ? 'Why this standing?' : 'Hide the derivation';
+  };
+  card.appendChild(toggle);
+  card.appendChild(detail);
+
   const rail = el('div', 'story-rail');
   for (const { beat, state: beatState } of story.timeline) {
     const step = el('span', `story-beat ${beatState}`, beat);
@@ -1065,10 +1099,22 @@ function setStage(name, status, extra = {}) {
   }
 }
 
-function setStatus(status) {
+// One label, not two. While a run is live there is no standing yet, so the flat
+// status IS the honest answer. At the end the receipt's derived standing
+// replaces it — a run bar reading "done with findings" beside a card reading
+// "Verified with findings" made the user arbitrate between two vocabularies for
+// the same run. An unrecognised or underivable standing falls back to the flat
+// claim and is MARKED as a claim, never dressed up as a verdict.
+function setStatus(status, headline) {
   const p = $('run-status');
-  p.className = `pill status ${status}`;
-  p.textContent = status.replace(/_/g, ' ');
+  const presentation = standingPill(status, headline);
+  p.className = `pill ${presentation.className}`;
+  p.textContent = presentation.label;
+  p.title = presentation.derived
+    ? `Standing derived from the sealed receipt. The loop itself reported “${status.replace(/_/g, ' ')}”.`
+    : presentation.claim
+      ? 'Reported by the loop; not corroborated by a derived standing.'
+      : 'Current operational state; no terminal standing exists yet.';
 }
 
 function startTimer(t0) {
@@ -1358,7 +1404,8 @@ function handle(ev) {
 
     case 'status': {
       state.sawTerminal = true;
-      setStatus(ev.status);
+      const terminalStanding = effectiveStanding(ev.headline, state.simulated);
+      setStatus(ev.status, terminalStanding);
       stopTimer();
       $('stop').classList.add('hidden');
       if (state.runStartAt && ev.at) {
@@ -1442,7 +1489,7 @@ function handle(ev) {
         feed(el('div', 'dims', `sealed dimensions · execution ${nice(d.execution)} · verification ${nice(d.verification)} · audit ${nice(d.audit)} · publication ${nice(d.publication)}`));
       }
       if (state.runLane === 'comparison') void renderComparisonReceipt();
-      else void renderEvidenceReceipt(state.simulated ? 'rehearsal' : ev.headline);
+      else void renderEvidenceReceipt(terminalStanding);
       break;
     }
 

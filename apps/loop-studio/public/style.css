@@ -196,14 +196,6 @@ textarea:focus { outline: none; border-color: var(--ink); }
   background: var(--code);
   border-radius: 2px;
 }
-.headline-tag {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  text-transform: uppercase;
-  letter-spacing: .04em;
-  color: var(--red);
-  margin-left: 8px;
-}
 .pill.status.disconnected, .pill.status.incomplete { color: var(--red); background: transparent; box-shadow: inset 0 0 0 1px var(--rule); }
 
 .qcard .qerr { font-family: var(--mono); font-size: 12px; color: var(--term-soft); margin-top: 8px; }
@@ -379,3 +371,14 @@ textarea:focus { outline: none; border-color: var(--ink); }
 .story-beat.done { color: var(--ink); }
 .story-beat.failed { color: var(--red); }
 .story-beat.unknown { font-style: italic; }
+.pill.standing.trusted { background: var(--ink); color: var(--paper); }
+.pill.standing.danger { color: var(--red); background: transparent; box-shadow: inset 0 0 0 1px var(--red); }
+.pill.standing.advisory { color: var(--muted); background: transparent; box-shadow: inset 0 0 0 1px var(--rule); }
+.pill.standing.rehearsal { color: var(--ink); background: var(--code); box-shadow: inset 0 0 0 1px var(--rule); }
+.pill.status.claim { color: var(--muted); background: transparent; box-shadow: inset 0 0 0 1px var(--rule); font-style: italic; }
+.story-why { font-family: var(--mono); font-size: 11.5px; letter-spacing: .02em; color: var(--muted); padding: 0; margin-top: 10px; text-decoration: underline; text-underline-offset: 3px; }
+.story-why:hover { color: var(--ink); }
+.story-why-detail { margin-top: 8px; padding-left: 12px; border-left: 1px solid var(--rule); }
+.story-why-detail p { margin: 0 0 4px; font-size: 13.5px; line-height: 1.5; color: var(--muted); max-width: 62ch; }
+.story-why-detail .story-why-claim { margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--rule); color: var(--ink); }
+.story-card.degraded .story-why-detail .story-why-claim { color: var(--red); }

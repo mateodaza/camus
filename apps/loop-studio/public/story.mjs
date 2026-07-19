@@ -41,6 +41,136 @@ const repeatedBlocking = (rounds) => {
 
 export const STORY_BEATS = ['Brief', 'Evidence frozen', 'Draft', 'Independent challenge', 'Human decision', 'Verification', 'Sealed receipt'];
 
+// The one standing vocabulary. Every surface that shows a standing reads it from
+// here, so the run bar, Recents and the story card can never word the same
+// receipt three different ways. An unrecognised standing has NO label on
+// purpose: callers must fail closed rather than print a raw token as if it were
+// a verdict.
+const STANDING_LABELS = {
+  verified: 'Verified',
+  verified_with_findings: 'Verified with findings',
+  same_vendor_reviewed: 'Reviewed by the same vendor',
+  published: 'Verified and published',
+  unverified: 'Not verified',
+  needs_decision: 'Needs a decision',
+  rehearsal: 'Rehearsal',
+};
+export const standingLabel = (headline) => STANDING_LABELS[headline] ?? null;
+// The raw rehearsal fact outranks a missing or stale decorated headline. This
+// keeps legacy mock replays honest even when their old terminal event predates
+// dimensions/headline decoration.
+export const effectiveStanding = (headline, simulated = false) => simulated ? 'rehearsal' : headline;
+
+const STANDING_TONES = {
+  verified: 'trusted',
+  verified_with_findings: 'trusted',
+  published: 'trusted',
+  same_vendor_reviewed: 'advisory',
+  unverified: 'danger',
+  needs_decision: 'danger',
+  rehearsal: 'rehearsal',
+};
+const OPERATIONAL_STATUSES = new Set(['running', 'needs_human', 'disconnected', 'incomplete']);
+
+// Text and semantic tone travel together. Otherwise a receipt-derived
+// "Not verified" can accidentally inherit the success styling of the loop's
+// underlying `done` claim, which is worse than showing two labels.
+export function standingPill(status, headline) {
+  const label = standingLabel(headline);
+  if (label) return { label, className: `standing ${STANDING_TONES[headline]}`, derived: true, claim: false };
+
+  const token = String(status ?? 'unknown');
+  const operational = OPERATIONAL_STATUSES.has(token);
+  return {
+    label: token.replace(/_/g, ' '),
+    className: `status ${token}${operational ? '' : ' claim'}`,
+    derived: false,
+    claim: !operational,
+  };
+}
+
+// A standing the receipt corroborates, versus the flat status the loop claimed.
+// They are different facts and may disagree — that disagreement is the whole
+// reason the trust layer exists, so it is surfaced rather than smoothed over.
+const GATE_CLAIM_SUCCESS = new Map([
+  ['done', true],
+  ['done_with_findings', true],
+  ['verify_failed', false],
+  ['stopped', false],
+  ['failed', false],
+]);
+const STANDING_SUCCESS = new Map([
+  ['verified', true],
+  ['verified_with_findings', true],
+  ['published', true],
+  ['same_vendor_reviewed', false],
+  ['unverified', false],
+  ['needs_decision', false],
+]);
+
+const DIMENSION_PROSE = {
+  execution: {
+    completed: 'The run reached its own end.',
+    interrupted: 'The run was interrupted before it finished.',
+    running: 'The run had not finished.',
+  },
+  verification: {
+    passed: 'The deterministic checks passed.',
+    passed_with_caveats: 'The deterministic checks passed, with caveats recorded.',
+    failed: 'The deterministic checks did not pass.',
+    not_run: 'The deterministic checks never ran.',
+    infra_failed: 'The deterministic checks broke before they could decide.',
+  },
+  audit: {
+    independent_clean: 'A reviewer from a different vendor found nothing blocking.',
+    independent_findings: 'A reviewer from a different vendor found issues, recorded here.',
+    advisory_clean: 'The review shared the maker’s vendor, so it is advisory only.',
+    advisory_findings: 'The review shared the maker’s vendor, so its findings are advisory only.',
+    not_run: 'No independent review ran.',
+    infra_failed: 'The review broke before it could reach a verdict.',
+  },
+  publication: {
+    not_published: 'Nothing was published.',
+    published: 'The artifact was published.',
+  },
+};
+
+// Layer-2 answer to "why this standing?": the dimensions it was derived from,
+// the loop's own claim beside it, and an explicit warning when they conflict.
+export function standingExplanation(report, headline) {
+  const dims = report?.evidencePack?.statuses ?? report?.statuses ?? null;
+  const gateClaim = report?.status ?? null;
+  if (!dims || dims.schemaVersion !== 1) {
+    return {
+      gateClaim,
+      standing: standingLabel(headline),
+      disagrees: false,
+      lines: ['This receipt carries no status dimensions this version recognises, so the standing above cannot be derived from evidence. Read the raw trail.'],
+    };
+  }
+  const lines = ['execution', 'verification', 'audit', 'publication']
+    .map((dim) => DIMENSION_PROSE[dim]?.[dims[dim]] ?? `The ${dim} dimension reads “${String(dims[dim] ?? 'unknown').replace(/_/g, ' ')}”, which this view does not recognise.`);
+  // Rehearsal is orthogonal, not a contradiction: the scripted loop may finish
+  // successfully while still earning no trust standing. For real terminal
+  // runs, catch disagreement in BOTH directions (including a red gate claim
+  // paired with an implausibly green receipt-derived standing).
+  const gateSuccess = GATE_CLAIM_SUCCESS.get(gateClaim);
+  const standingSuccess = STANDING_SUCCESS.get(headline);
+  const successDisagrees = gateSuccess != null && standingSuccess != null && gateSuccess !== standingSuccess;
+  // `done_with_findings` also makes a narrower factual claim. A clean receipt
+  // cannot silently erase it just because both labels sit on the success side
+  // of the coarse trust boundary. `done` makes no corresponding clean claim,
+  // so it remains compatible with a receipt that records caveats.
+  const receiptCarriesFindings = dims.verification === 'passed_with_caveats'
+    || dims.audit === 'independent_findings'
+    || dims.audit === 'advisory_findings';
+  const findingsDisagree = gateClaim === 'done_with_findings'
+    && standingSuccess === true
+    && !receiptCarriesFindings;
+  const disagrees = successDisagrees || findingsDisagree;
+  return { gateClaim, standing: standingLabel(headline), disagrees, lines };
+}
+
 // state: done (it happened) | skipped (legitimately did not apply) | failed
 // (it happened and did not pass) | unknown (the receipt cannot say)
 function beatStates(report, pack) {
@@ -180,16 +310,7 @@ export function runStory(report, headline) {
   if (dims.publication === 'not_published') sentences.push('Nothing was published.');
   if (dims.publication === 'published') sentences.push('The artifact was published.');
 
-  const HEADLINES = {
-    verified: 'Verified',
-    verified_with_findings: 'Verified with findings',
-    same_vendor_reviewed: 'Reviewed by the same vendor',
-    published: 'Verified and published',
-    unverified: 'Not verified',
-    needs_decision: 'Needs a decision',
-    rehearsal: 'Rehearsal',
-  };
-  const label = HEADLINES[headline] ?? null;
+  const label = standingLabel(headline);
 
   const lines = label ? sentences : [...sentences, 'This run reports a standing this view does not recognise, so the summary above is not a claim about it. Read the raw trail.'];
   return {
