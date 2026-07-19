@@ -520,6 +520,8 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   assert.deepEqual(claudeToolSurface({ stage: 'make', hivemindEnabled: false, toolPolicy: 'none' }), { tools: '', allowed: '' }, 'a frozen comparison arm has no live web or MCP retrieval surface');
   const hmOnly = claudeToolSurface({ stage: 'ground', hivemindEnabled: true, serverName: 'claude_ai_Hivemind_Staging', toolPolicy: 'hivemind_only' });
   assert.ok(!hmOnly.tools.includes('WebSearch') && hmOnly.tools.includes('knowledge_search'), 'the snapshot retriever can see Hivemind without opening general web tools');
+  const webOnly = claudeToolSurface({ stage: 'make', hivemindEnabled: true, serverName: 'claude_ai_Hivemind_Staging', toolPolicy: 'web_only' });
+  assert.equal(webOnly.tools, 'WebSearch,WebFetch', 'a snapshot-bound maker keeps web research but cannot re-query Hivemind');
   assert.deepEqual(usageFromClaudeResult({ modelUsage: { 'claude-sonnet-4-6': { inputTokens: 120, cacheReadInputTokens: 40, outputTokens: 30 } } }, 'sonnet'), {
     usage: { input_tokens: 120, cached_input_tokens: 40, output_tokens: 30 },
     modelActual: 'anthropic:claude-sonnet-4-6',
@@ -546,10 +548,13 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
     ['fix', fixPrompt({ goal: 'g', acceptanceContract: contract, lane: 'research_memo', draft: 'd', findings: [], answers: [], viaClaude: false })],
   ]) assert.ok(prompt.includes(contract), `${name} is constrained by the binding acceptance contract`);
 
+  const { groundingPrompt } = await import('./lib/prompts.mjs');
+  assert.ok(groundingPrompt({ goal: 'g', acceptanceContract: contract }).includes('select:mcp__claude_ai_Hivemind_Staging__knowledge_search'), 'the frozen retriever loads the deferred managed tool before searching');
+
   delete process.env.HIVEMIND_VIA_CLAUDE;
 }
 
-// --- via-Claude grounding is a runtime fact, not a configuration claim -----
+// --- via-Claude grounding freezes first; the artifact gets stable [Hn]s ----
 {
   const { runLoop, boundedGroundingResults, normalizeDeliverable } = await import('./lib/engine.mjs');
   assert.deepEqual(boundedGroundingResults(Array.from({ length: 40 }, (_, id) => ({ id }))).map((r) => r.id), Array.from({ length: 32 }, (_, i) => i + 8), 'the auditor sees the newest fix-round sources when the evidence window fills');
@@ -561,7 +566,9 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   for (const [queried, expected] of [[false, false], [true, true]]) {
     const events = [];
     const reviewerPrompts = [];
-    let claudeCall = 0;
+    const claudeCalls = [];
+    const groundingQuestions = [];
+    let persistedSnapshot = null;
     const run = {
       id: `ground-${queried}`, goal: 'g', acceptanceContract: 'State evidence honestly.',
       lane: 'freeform', depth: 'quick', ground: true,
@@ -569,18 +576,22 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
     };
     const result = await runLoop(run, {
       emit: (type, data) => events.push({ type, ...data }),
-      waitForAnswer: async () => 'Stop the run',
+      waitForAnswer: async (question) => {
+        groundingQuestions.push(question);
+        return question.kind === 'grounding' ? 'Continue ungrounded' : 'Stop the run';
+      },
       adapters: {
-        claude: async () => {
-          claudeCall += 1;
-          return claudeCall === 1
-            ? { ok: true, text: '- plan', costUsd: 0 }
-            : {
-                ok: true, text: '## Notes\n\nA plain note.\n', costUsd: 0,
-                hivemindQueried: queried, hivemindQueries: queried ? 2 : 0,
-                hivemindQueryTexts: queried ? ['cohort evidence', 'launch gaps'] : [],
-                hivemindResults: queried ? [{ query: 'cohort evidence', title: 'Cohort playbook', author: 'A. Expert', ref: 'chunk-1', score: 0.8, excerpt: 'Programs should sell progress, not content.' }] : [],
-              };
+        claude: async ({ stage, prompt, toolPolicy }) => {
+          claudeCalls.push({ stage, prompt, toolPolicy });
+          if (stage === 'plan') return { ok: true, text: '- plan', costUsd: 0 };
+          if (stage === 'ground') return {
+            ok: true, text: 'Snapshot ready.', costUsd: 0,
+            modelActual: 'anthropic:multiple[retrieval-helper+maker]',
+            hivemindQueried: queried, hivemindQueries: queried ? 2 : 0,
+            hivemindQueryTexts: queried ? ['cohort evidence', 'launch gaps'] : [],
+            hivemindResults: queried ? [{ query: 'cohort evidence', title: 'Cohort playbook', author: 'A. Expert', ref: 'chunk-1', score: 0.8, excerpt: 'Programs should sell progress, not content.' }] : [],
+          };
+          return { ok: true, text: '## Notes\n\nA plain note.\n', costUsd: 0, modelActual: 'anthropic:maker' };
         },
         codex: async ({ prompt }) => { reviewerPrompts.push(prompt); return { ran: true, verdict: 'APPROVED', findings: [], blocking: [], nonblocking: [], questions: [] }; },
       },
@@ -590,13 +601,22 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
         publishArtifact: async () => null,
       },
       signal: new AbortController().signal, scratchDir: '/tmp', receiptsDir: '/tmp',
+      persistKnowledgeSnapshot: async (snapshot) => { persistedSnapshot = snapshot; },
     });
     const groundDone = events.findLast((event) => event.type === 'stage' && event.name === 'ground' && event.status === 'done');
     assert.ok(result.status === 'done' || result.status === 'done_with_findings', 'the grounding probe completes the full loop');
     assert.equal(groundDone?.queried, expected, `grounding records actual connector use (${queried})`);
     assert.equal(groundDone?.connected, expected, 'configured-but-unused never wears a connected/grounded badge');
+    assert.equal(groundDone?.itemCount, queried ? 1 : 0, 'the frozen stage reports the captured item count used by the UI');
+    assert.equal(groundingQuestions.filter((question) => question.kind === 'grounding').length, queried ? 0 : 1, 'zero captured excerpts require an explicit human downgrade');
+    if (!queried) assert.match(groundingQuestions.find((question) => question.kind === 'grounding')?.text ?? '', /without calling knowledge_search/, 'the checkpoint distinguishes no tool call from a queried empty result');
+    assert.ok(persistedSnapshot?.snapshot_id, 'the single-run knowledge snapshot is sealed before drafting');
+    assert.equal(claudeCalls.find((call) => call.stage === 'ground')?.toolPolicy, 'hivemind_only', 'retrieval can use Hivemind but not the web');
+    assert.equal(claudeCalls.find((call) => call.stage === 'make')?.toolPolicy, 'web_only', 'drafting cannot re-query the frozen internal corpus');
+    assert.deepEqual(result.makerActualModels, ['anthropic:maker'], 'retriever helpers stay in stage usage and never become the artifact executor actual');
     assert.ok(reviewerPrompts[0].includes(`Hivemind queried: ${queried ? 'yes' : 'no'}`), 'auditor receives adapter evidence, not maker self-attestation');
     if (queried) {
+      assert.ok(claudeCalls.find((call) => call.stage === 'make')?.prompt.includes('[H1] Cohort playbook — A. Expert'), 'Camus, not the maker, assigns the stable artifact marker');
       assert.ok(reviewerPrompts[0].includes('"cohort evidence"'), 'auditor receives the observed query trail');
       assert.ok(reviewerPrompts[0].includes('Programs should sell progress, not content.'), 'auditor receives the bounded tool-result excerpt');
     }
@@ -1982,6 +2002,56 @@ Members asked for practical milestones [H1].
   assert.equal(ledger.find((x) => x.id === 'C2').decision, 'unclear', 'an invalid decision defaults to unclear');
   assert.ok(applyCoverageAssessments(c, []).every((x) => x.decision === 'unclear'), 'no assessments → every criterion unclear (never silently satisfied)');
   assert.equal(buildCoverageLedger('One rule: cite everything.', { assessments: [{ criterion_id: 'C1', decision: 'unmet' }] }).find((x) => x.id === 'C1').decision, 'unmet', 'a genuine miss is recorded as unmet');
+}
+
+// --- doctor: skills are reported, including symlinked installs ---------------
+// Marketplace/plugin installs SYMLINK skills into ~/.claude/skills, and
+// Dirent.isDirectory() is false for a symlink — that silently hid 23 of 26 real
+// skills on the first pass. Report-only: the loop cannot invoke these yet.
+{
+  const { listSkills } = await import('./lib/doctor.mjs');
+  const { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  const home = mkdtempSync(join(tmpdir(), 'skills-home-'));
+  const store = mkdtempSync(join(tmpdir(), 'skills-store-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'skills-proj-'));
+  mkdirSync(join(cwd, '.git'));
+  const skillsDir = join(home, '.claude', 'skills');
+  mkdirSync(skillsDir, { recursive: true });
+
+  const write = (dir, name, front) => {
+    mkdirSync(join(dir, name), { recursive: true });
+    writeFileSync(join(dir, name, 'SKILL.md'), `---\n${front}\n---\n\nbody\n`);
+  };
+  write(skillsDir, 'plain', 'name: plain\ndescription: An inline description.');
+  write(skillsDir, 'blocky', 'name: blocky\ndescription: |\n  A block scalar description.');
+  write(store, 'linked', 'name: linked\ndescription: Installed via symlink.');
+  symlinkSync(join(store, 'linked'), join(skillsDir, 'linked'));
+  mkdirSync(join(skillsDir, 'not-a-skill'), { recursive: true }); // no SKILL.md
+
+  const found = listSkills({ home, cwd });
+  assert.deepEqual(found.map((s) => s.name), ['blocky', 'linked', 'plain'], 'symlinked skills are reported alongside real directories, sorted');
+  assert.equal(found.find((s) => s.name === 'linked').description, 'Installed via symlink.', 'a symlinked skill resolves its metadata');
+  assert.equal(found.find((s) => s.name === 'blocky').description, 'A block scalar description.', 'a YAML block scalar description is read, not captured as "|"');
+  assert.ok(!found.some((s) => s.name === 'not-a-skill'), 'a directory without SKILL.md is not a skill');
+
+  // Project skills shadow user skills of the same name, matching Claude Code.
+  const projSkills = join(cwd, '.claude', 'skills');
+  mkdirSync(projSkills, { recursive: true });
+  write(projSkills, 'plain', 'name: plain\ndescription: Project override.');
+  const shadowed = listSkills({ home, cwd });
+  assert.equal(shadowed.filter((s) => s.name === 'plain').length, 1, 'a shadowed skill is not listed twice');
+  assert.equal(shadowed.find((s) => s.name === 'plain').scope, 'project', 'the project copy wins');
+
+  const nested = join(cwd, 'apps', 'studio');
+  mkdirSync(nested, { recursive: true });
+  assert.equal(listSkills({ home, cwd: nested }).find((s) => s.name === 'plain')?.scope, 'project', 'a server started below the git root still sees project skills');
+
+  assert.deepEqual(listSkills({ home: mkdtempSync(join(tmpdir(), 'skills-empty-')), cwd: mkdtempSync(join(tmpdir(), 'skills-empty2-')) }), [], 'a machine with no skills reports none, never an error');
+
+  for (const dir of [home, store, cwd]) rmSync(dir, { recursive: true, force: true });
 }
 
 console.log('verify.test: all assertions passed');

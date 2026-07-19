@@ -91,10 +91,18 @@ const withHeadline = (ev) => (ev?.type === 'status' && ev.dimensions
 // parsed (no substring fast-path: a receipt re-serialized with different JSON
 // spacing must not silently skip decoration); torn or non-JSON lines stream
 // verbatim — fail-open on presentation, the receipt itself is untouched.
-const decorateReplayLine = (l) => {
+const decorateReplayLine = (l, { knowledgeItemCount = null } = {}) => {
   try {
     const ev = JSON.parse(l);
-    return ev?.type === 'status' ? JSON.stringify(withHeadline(ev)) : l;
+    if (ev?.type === 'status') return JSON.stringify(withHeadline(ev));
+    // Older frozen-run events predate itemCount on the stage event. Derive the
+    // display badge from the separately sealed local knowledge snapshot at
+    // serve time; never rewrite the receipt to repair presentation.
+    if (ev?.type === 'stage' && ev.name === 'ground' && ev.status === 'done' && ev.frozen === true
+      && !Number.isInteger(ev.itemCount) && Number.isInteger(knowledgeItemCount)) {
+      return JSON.stringify({ ...ev, itemCount: knowledgeItemCount });
+    }
+    return l;
   } catch { return l; }
 };
 
@@ -135,7 +143,8 @@ async function startRun({
   const models = modelsSnapshot ? JSON.parse(JSON.stringify(modelsSnapshot)) : getModels();
   const run = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, frozenKnowledge, toolPolicy, publish, experimentContext };
   // The run exists on disk from second zero — a crash must not orphan it.
-  writeFile(join(dir, 'run.json'), JSON.stringify({ id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, models, knowledgeSnapshotId: frozenKnowledge?.snapshot_id ?? null, experimentContext, startedAt: run.startedAt }, null, 2))
+  const runMetadata = () => ({ id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, models, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, experimentContext, startedAt: run.startedAt });
+  await writeFile(join(dir, 'run.json'), JSON.stringify(runMetadata(), null, 2))
     .catch((err) => console.error(`[receipts] failed to write run.json for ${id}: ${err.message}`));
   const state = { run, events: [], subscribers: new Set(), answer: null, abort: new AbortController(), writeChain: Promise.resolve() };
   runs.set(id, state);
@@ -236,6 +245,15 @@ async function startRun({
     signal: state.abort.signal,
     scratchDir,
     receiptsDir: dir,
+    persistKnowledgeSnapshot: async (snapshot) => {
+      run.frozenKnowledge = snapshot;
+      try {
+        await writeFile(join(dir, 'knowledge.json'), JSON.stringify(snapshot, null, 2));
+        await writeFile(join(dir, 'run.json'), JSON.stringify(runMetadata(), null, 2));
+      } catch (err) {
+        persistFail('knowledge snapshot', err);
+      }
+    },
   }).then(async (result) => {
     if (targetToplevel) activeBuilds.delete(targetToplevel);
     await state.writeChain; // receipt stream flushed before the report seals the run
@@ -278,7 +296,7 @@ async function startRun({
     // so a future result field named `models` can never overwrite the sealed pairing
     // (the same reason draft/deliverable are pinned after the spread). simulated is
     // pinned there too: a rehearsal receipt must SAY it is one, permanently.
-    const reportObject = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', experimentContext, knowledgeSnapshotId: frozenKnowledge?.snapshot_id ?? null, draft: undefined, deliverable: run.lastMarkdown, evidence, evidencePack, evidencePackError, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt };
+    const reportObject = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', experimentContext, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, draft: undefined, deliverable: run.lastMarkdown, evidence, evidencePack, evidencePackError, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt };
     const report = JSON.stringify(reportObject, null, 2);
     try {
       await writeFile(join(dir, 'report.json'), report);
@@ -1246,13 +1264,18 @@ const server = http.createServer(async (req, res) => {
         // status (e.g. the server crashed mid-run).
         const file = join(RUNS_DIR, id, 'events.jsonl');
         if (!existsSync(file)) { res.write(`data: ${JSON.stringify({ type: 'replay_end', empty: true })}\n\n`); res.end(); return; }
+        let knowledgeItemCount = null;
+        try {
+          const knowledge = JSON.parse(await readFile(join(RUNS_DIR, id, 'knowledge.json'), 'utf8'));
+          if (Array.isArray(knowledge.items)) knowledgeItemCount = knowledge.items.length;
+        } catch { /* legacy or ungrounded run */ }
         const stream = createReadStream(file, 'utf8');
         let buf = '';
         stream.on('data', (c) => {
           buf += c;
           const lines = buf.split('\n');
           buf = lines.pop();
-          for (const l of lines) if (l.trim()) res.write(`data: ${decorateReplayLine(l)}\n\n`);
+          for (const l of lines) if (l.trim()) res.write(`data: ${decorateReplayLine(l, { knowledgeItemCount })}\n\n`);
         });
         const finish = () => { res.write(`data: ${JSON.stringify({ type: 'replay_end' })}\n\n`); res.end(); };
         stream.on('end', finish);

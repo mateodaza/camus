@@ -9,7 +9,7 @@ export function deriveEvidence(events) {
   const of = (t) => events.filter((e) => e.type === t);
   const ground = of('stage').filter((e) => e.name === 'ground' && e.status === 'done').at(-1) ?? null;
   const groundingQueries = of('session')
-    .filter((e) => e.actor === 'maker' && String(e.line || '').startsWith('knowledge_search: '))
+    .filter((e) => ['maker', 'retriever'].includes(e.actor) && String(e.line || '').startsWith('knowledge_search: '))
     .map((e) => String(e.line).slice('knowledge_search: '.length));
   const groundingEvents = of('grounding_evidence');
   const groundingResults = groundingEvents.flatMap((e) => (e.results ?? []).map((r) => ({

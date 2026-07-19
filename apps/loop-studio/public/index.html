@@ -80,7 +80,17 @@
 
       <label class="lbl" for="acceptance-contract">What must be true for you to trust the result?</label>
       <textarea id="acceptance-contract" rows="2" placeholder="e.g. Every material claim traces to a live source; the recommendation states assumptions and tradeoffs; no invented Hivemind evidence."></textarea>
-      <div class="hint trust-hint">This is the audit contract. Changing it changes the artifact’s identity and expires the old audit.</div>
+      <div class="hint trust-hint">This is what the reviewer holds the work to. Change it and any earlier review of this work no longer counts.</div>
+      <!-- The contract is the most important input and the least guessable, so
+           offer the standard demands as one-click clauses. They append, so a
+           brief can compose several; the text stays fully editable. -->
+      <div class="contract-presets" id="contract-presets" aria-label="Common trust clauses">
+        <span class="presets-lbl">add a clause:</span>
+        <button type="button" class="preset" data-clause="Every material claim traces to a live source and names it. No invented evidence.">traceable claims</button>
+        <button type="button" class="preset" data-clause="The recommendation states its assumptions and tradeoffs.">assumptions stated</button>
+        <button type="button" class="preset" data-clause="State any go/no-go as an explicit proposed decision rule, never as observed performance.">decision rule</button>
+        <button type="button" class="preset" data-clause="Plain language: no hype, no unsupported superlatives.">no hype</button>
+      </div>
 
       <label class="lbl">Choose a lane</label>
       <div class="lanes" id="lanes">
@@ -130,19 +140,19 @@
 
       <div class="launch-actions">
         <button id="start" class="primary">Run the loop</button>
-        <button id="open-compare" class="ghost">Compare executors</button>
+        <button id="open-compare" class="ghost">Compare two models</button>
       </div>
       <div id="compare-panel" class="compare-panel hidden">
-        <div class="trust-title">COMPARE &amp; LEARN</div>
-        <div class="hint">Two executor models receive the same goal, acceptance contract, frozen knowledge snapshot, reviewer and round cap. Arms cannot re-query Hivemind or publish. This runs both arms, so approve the extra spend deliberately.</div>
+        <div class="trust-title">SAME BRIEF, TWO MODELS</div>
+        <div class="hint">Both models get the same brief, the same trust contract, the same reviewer, and the same frozen set of research. Neither can look anything up mid-run or publish, so the model is the only thing that differs. This runs both, so expect about twice the cost of one run.</div>
         <div class="compare-controls">
-          <label>executor A<select id="compare-maker-a"></select></label>
-          <label>executor B<select id="compare-maker-b"></select></label>
-          <label>shared reviewer<select id="compare-reviewer"></select></label>
+          <label>model A<select id="compare-maker-a"></select></label>
+          <label>model B<select id="compare-maker-b"></select></label>
+          <label>reviewer, same for both<select id="compare-reviewer"></select></label>
           <label>reviewer effort<select id="compare-effort"><option>low</option><option>medium</option><option>high</option><option>xhigh</option></select></label>
         </div>
         <div class="panel-actions">
-          <button id="start-compare" class="primary">Run both arms</button>
+          <button id="start-compare" class="primary">Run the comparison</button>
           <span id="compare-note" class="hint"></span>
         </div>
       </div>
@@ -176,7 +186,7 @@
       <section class="feed-wrap">
         <div class="feed" id="feed" role="log" aria-label="Run activity"></div>
         <div class="session-wrap">
-          <button id="session-toggle" class="ghost">Show the session</button>
+          <button id="session-toggle" class="ghost">Show the model’s work</button>
           <div id="session" class="session hidden"><pre id="session-pre" aria-label="Raw model session"></pre></div>
         </div>
       </section>

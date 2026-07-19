@@ -365,8 +365,12 @@ function renderSetup(report) {
   head.appendChild(again);
   box.appendChild(head);
   for (const c of report.checks) {
-    const row = el('div', `setup-row ${c.ok ? 'ok' : 'miss'}`);
-    row.appendChild(el('span', 'ic', c.ok ? '✓' : '✕'));
+    // A red ✕ means "this blocks you". Advisory rows (reported, not usable) and
+    // absent OPTIONAL pieces are neither broken nor ready, so they read neutral —
+    // otherwise "this machine is ready" sits above what looks like an error.
+    const state = c.advisory || (c.optional && !c.ok) ? 'info' : c.ok ? 'ok' : 'miss';
+    const row = el('div', `setup-row ${state}`);
+    row.appendChild(el('span', 'ic', state === 'info' ? '·' : state === 'ok' ? '✓' : '✕'));
     row.appendChild(el('span', 's-label', c.label));
     row.appendChild(el('span', 's-detail', c.detail));
     box.appendChild(row);
@@ -542,12 +546,41 @@ $('open-compare').addEventListener('click', async () => {
     $('compare-note').textContent = config.catalog.reviewerSource === 'fallback'
       ? 'The reviewer catalog is a conservative fallback because Codex has no readable cache.'
       : 'The catalog is read from this machine and freezes when you start.';
-    $('start-compare').textContent = state.serverEngine === 'mock' ? 'Rehearse both arms' : 'Approve spend & run both arms';
+    $('start-compare').textContent = state.serverEngine === 'mock' ? 'Rehearse the comparison' : 'Approve the spend and run both';
   } catch (err) {
     $('compare-note').textContent = String(err.message || err);
     $('start-compare').disabled = true;
   }
 });
+
+// Trust-contract clauses. They APPEND rather than replace, so a brief can
+// compose several, and the textarea stays the source of truth — a clause the
+// user then edits or deletes is simply gone, and the chip re-arms.
+$('contract-presets').addEventListener('click', (event) => {
+  const chip = event.target.closest('.preset');
+  if (!chip) return;
+  const box = $('acceptance-contract');
+  const clause = chip.dataset.clause;
+  if (box.value.includes(clause)) return; // already demanded; adding it twice says nothing new
+  const existing = box.value.trim();
+  const joiner = existing && !/[.!?]$/.test(existing) ? '. ' : ' ';
+  box.value = existing ? `${existing}${joiner}${clause}` : clause;
+  box.dispatchEvent(new Event('input', { bubbles: true }));
+  box.focus();
+  syncPresetChips();
+});
+
+// A chip is spent only while its exact clause is present, so deleting the text
+// brings the chip back rather than stranding it.
+function syncPresetChips() {
+  const value = $('acceptance-contract').value;
+  for (const chip of document.querySelectorAll('#contract-presets .preset')) {
+    const used = value.includes(chip.dataset.clause);
+    chip.classList.toggle('used', used);
+    chip.setAttribute('aria-disabled', String(used));
+  }
+}
+$('acceptance-contract').addEventListener('input', syncPresetChips);
 
 $('start-compare').addEventListener('click', async () => {
   const goal = $('goal').value.trim();
@@ -617,7 +650,7 @@ function attach(id, goal) {
   state.revs = [];
   state.sessionCount = 0;
   $('session-pre').textContent = '';
-  $('session-toggle').textContent = 'Show the session';
+  $('session-toggle').textContent = 'Show the model’s work';
   state.selectedRev = null;
   state.followRev = true;
   state.reviewRounds = 0;
@@ -701,7 +734,7 @@ function comparisonRecoveryControl() {
 $('session-toggle').addEventListener('click', () => {
   const box = $('session');
   const open = box.classList.toggle('hidden');
-  $('session-toggle').textContent = open ? `Show the session (${state.sessionCount})` : 'Hide the session';
+  $('session-toggle').textContent = open ? `Show the model’s work (${state.sessionCount})` : 'Hide the model’s work';
   if (!open) box.scrollTop = box.scrollHeight;
 });
 
@@ -1121,7 +1154,7 @@ function handle(ev) {
       while (pre.childNodes.length > 800) pre.removeChild(pre.firstChild);
       const box = $('session');
       if (!box.classList.contains('hidden')) box.scrollTop = box.scrollHeight;
-      if (box.classList.contains('hidden')) $('session-toggle').textContent = `Show the session (${state.sessionCount})`;
+      if (box.classList.contains('hidden')) $('session-toggle').textContent = `Show the model’s work (${state.sessionCount})`;
       break;
     }
 

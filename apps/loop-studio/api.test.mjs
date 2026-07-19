@@ -494,6 +494,11 @@ try {
   });
 
   await check('a disk replay from a FRESH server session decorates the headline at stream time', async () => {
+    const legacyFrozenId = 'legacy-frozen-stage-count';
+    const legacyFrozenDir = join(tmp, legacyFrozenId);
+    mkdirSync(legacyFrozenDir, { recursive: true });
+    writeFileSync(join(legacyFrozenDir, 'events.jsonl'), `${JSON.stringify({ type: 'stage', at: 1, name: 'ground', status: 'done', frozen: true, snapshotId: 'sha256:fixture' })}\n`);
+    writeFileSync(join(legacyFrozenDir, 'knowledge.json'), JSON.stringify({ items: [{ excerpt: 'one' }, { excerpt: 'two' }] }));
     // A second server process with no in-memory state replays the receipt from
     // disk — the decoration must come from the serve path, not from storage.
     const server2 = spawn(process.execPath, ['server.mjs'], {
@@ -513,6 +518,11 @@ try {
       const replayed = evs.filter((e) => e.type === 'status' && e.dimensions).at(-1);
       assert.ok(replayed, 'the replay streams the terminal status with dimensions');
       assert.equal(replayed.headline, 'rehearsal', 'a fresh-server replay derives rehearsal from the sealed simulation fact');
+
+      const legacy = await fetch(`${base2}/api/runs/${legacyFrozenId}/events`, { headers: { origin: base2 } });
+      const legacyText = await legacy.text();
+      const legacyEvents = legacyText.split('\n\n').filter((c) => c.startsWith('data: ')).map((c) => { try { return JSON.parse(c.slice(6)); } catch { return null; } }).filter(Boolean);
+      assert.equal(legacyEvents.find((e) => e.type === 'stage' && e.name === 'ground')?.itemCount, 2, 'a fresh-server replay derives the frozen badge count from sealed knowledge without mutating legacy events');
     } finally {
       server2.kill('SIGKILL');
       await once(server2, 'close').catch(() => {});

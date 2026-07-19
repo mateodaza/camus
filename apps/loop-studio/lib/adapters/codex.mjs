@@ -175,6 +175,7 @@ export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSe
     let lastTick = 0;
     let lineBuf = '';
     const onData = (buf) => {
+      if (done) return; // ignore buffers racing with abort/timeout completion
       poke();
       lineBuf += buf;
       const lines = lineBuf.split('\n');
@@ -193,7 +194,7 @@ export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSe
       }
     };
     child.stdout.on('data', onData);
-    child.stderr.on('data', (b) => { poke(); stderrTail = (stderrTail + b).slice(-400); });
+    child.stderr.on('data', (b) => { if (!done) { poke(); stderrTail = (stderrTail + b).slice(-400); } });
     signal?.addEventListener('abort', () => { child.kill('SIGKILL'); finish(-4); }, { once: true });
     child.on('error', (e) => { stderrTail = `spawn error: ${e.code || e.message}`; finish(-1); });
     child.on('close', (code) => finish(code ?? -1));

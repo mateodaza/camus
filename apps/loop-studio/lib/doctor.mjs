@@ -4,9 +4,78 @@
 // app does not debug PATHs.
 
 import { execFile } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { getModels, modelsSummary } from './models.mjs';
 import { CLAUDE_HIVEMIND_DISPLAY, hivemindStatus } from './adapters/hivemind.mjs';
 import { gateInstalled } from './code-lane.mjs';
+
+// A skill is a directory holding SKILL.md, whose YAML frontmatter names it.
+// Only `name` is required; a directory without readable frontmatter still
+// counts under its folder name rather than vanishing from the report.
+const skillMeta = (text) => {
+  const front = /^---\n([\s\S]*?)\n---/.exec(String(text || ''));
+  if (!front) return null;
+  const name = /^name:\s*(.+)$/m.exec(front[1])?.[1]?.trim();
+  // `description:` may be inline or a YAML block scalar (`|`, `>`), in which
+  // case the text starts on the following indented line.
+  const desc = /^description:[ \t]*(\|-?|>-?)?[ \t]*(.*)$/m.exec(front[1]);
+  let description = null;
+  if (desc) {
+    description = desc[1]
+      ? front[1].slice(desc.index + desc[0].length).split('\n').map((l) => l.trim()).find(Boolean) ?? null
+      : desc[2].trim() || null;
+  }
+  return name ? { name, description } : null;
+};
+
+const readSkillDir = (dir, scope) => {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return []; // absent directory is not an error — most machines have none
+  }
+  const out = [];
+  for (const entry of entries) {
+    // Symlinks count: plugin and marketplace installs symlink skills into
+    // ~/.claude/skills, and Dirent.isDirectory() is false for a symlink, which
+    // silently hid most of them. readFileSync below follows the link.
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    let text = null;
+    try {
+      text = readFileSync(join(dir, entry.name, 'SKILL.md'), 'utf8');
+    } catch {
+      continue; // a directory without SKILL.md is not a skill
+    }
+    const meta = skillMeta(text);
+    out.push({ name: meta?.name || entry.name, description: meta?.description ?? null, scope });
+  }
+  return out;
+};
+
+// Skills visible to Claude Code in this environment. REPORT-ONLY: the maker
+// runs with a restricted `--tools` surface that has no Skill tool, and managed
+// grounding passes `--setting-sources ''`, so a loop cannot invoke any of these
+// today. They are surfaced for orientation only — reporting them as usable
+// would advertise capability the loop does not have.
+export function listSkills({ home = homedir(), cwd = process.cwd() } = {}) {
+  const found = new Map();
+  for (const skill of readSkillDir(join(home, '.claude', 'skills'), 'user')) found.set(skill.name, skill);
+  // Studio normally starts from apps/loop-studio, while Claude's project
+  // settings live at the repository root. Walk only to the nearest git root;
+  // checking cwd alone made real project skills disappear from the report.
+  const start = resolve(cwd);
+  let projectRoot = start;
+  for (let dir = start; ; dir = dirname(dir)) {
+    if (existsSync(join(dir, '.git'))) { projectRoot = dir; break; }
+    if (dirname(dir) === dir) break;
+  }
+  // Project skills shadow user skills of the same name, matching Claude Code.
+  for (const skill of readSkillDir(join(projectRoot, '.claude', 'skills'), 'project')) found.set(skill.name, skill);
+  return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
 
 const probe = (cmd, args, timeout = 20_000) =>
   new Promise((resolve) =>
@@ -112,6 +181,7 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
     'gate', 'Camus gate (Build lane)', gate,
     gate ? 'installed in ~/.claude with standalone custody support' : 'missing or too old. Build requires the identity-bound custody gate; the words lanes run without it.',
     gate ? null : 'npm install -g camus-cli && camus install   # or, from this repo: bash packages/cli/install.sh',
+    { optional: true },
   );
 
   let models;
@@ -143,16 +213,30 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
       'hivemind', 'Hivemind grounding (via Claude)', registered,
       registered ? `connected managed connector recognized · ${CLAUDE_HIVEMIND_DISPLAY}` : `Claude has no connected ${CLAUDE_HIVEMIND_DISPLAY} entry`,
       registered ? null : `open /mcp in Claude and connect Hivemind Staging (${hm.base})`,
+      { optional: true },
     );
   } else {
     add(
       'hivemind', 'Hivemind grounding', hm.connected,
       hm.connected ? `${hm.mode}: ${hm.base}` : 'not connected. Myosin’s Hivemind (staging) is optional; runs proceed ungrounded.',
       hm.connected ? null : 'optional: HIVEMIND_VIA_CLAUDE=1 (Claude connector) or HIVEMIND_MCP_URL + HIVEMIND_API_KEY',
+      { optional: true },
     );
   }
 
-  const required = checks.filter((c) => !['hivemind', 'gate'].includes(c.id)); // both optional: words lanes run without them
+  const skills = listSkills();
+  add(
+    'skills', 'Skills in this environment', true,
+    skills.length
+      ? `${skills.length} found (${skills.slice(0, 3).map((s) => s.name).join(', ')}${skills.length > 3 ? ', …' : ''}). Listed for reference: loops run with a restricted tool surface and cannot invoke them yet.`
+      : 'none found. Loops do not use skills yet.',
+    null,
+    { skills, advisory: true },
+  );
+
+  // hivemind/gate are optional (words lanes run without them); skills is purely
+  // informational and must never gate a run.
+  const required = checks.filter((c) => !['hivemind', 'gate', 'skills'].includes(c.id));
   return {
     engine,
     ok: engine === 'mock' || required.every((c) => c.ok),

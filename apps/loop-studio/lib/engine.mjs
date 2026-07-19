@@ -4,11 +4,12 @@
 // halt instead of re-litigating, oscillating findings halt, infra failures are
 // never a pass, and every pause routes a plain-English question to the human.
 
-import { planPrompt, makePrompt, reviewPrompt, fixPrompt } from './prompts.mjs';
+import { planPrompt, groundingPrompt, makePrompt, reviewPrompt, fixPrompt } from './prompts.mjs';
 import { runVerify, extractThresholdLines, bindThresholdAssessments } from './verify.mjs';
 import { getModels } from './models.mjs';
 import { extractClaimCandidates } from './claims.mjs';
 import { extractContractCriteria } from './contract.mjs';
+import { knowledgeSnapshotMatches, sealKnowledgeSnapshot } from './comparison.mjs';
 
 // Run decisions (models, effort, round cap) resolve per run via getModels().
 
@@ -60,10 +61,13 @@ export async function runLoop(run, ctx) {
   const stage = (name, status, extra = {}) => emit('stage', { name, status, ...extra });
   const log = (line) => emit('log', { line });
   const sess = (actor) => (line) => emit('session', { actor, line });
-  const recordMakerCall = (stageName, result) => {
+  const recordMakerCall = (stageName, result, { executor = true } = {}) => {
     if (!result || result.ok === false) return;
     const actual = result.modelActual ?? (makerModel ? `anthropic:${makerModel}` : null);
-    if (actual && !makerActualModels.includes(actual)) makerActualModels.push(actual);
+    // Retrieval can legitimately use provider helpers (for example ToolSearch
+    // on Haiku before Sonnet). Keep that observed identity in stage usage and
+    // the knowledge snapshot, but never promote it into the artifact executor.
+    if (executor && actual && !makerActualModels.includes(actual)) makerActualModels.push(actual);
     makerUsage.push({
       stage: stageName,
       usage: result.usage ?? { input_tokens: null, cached_input_tokens: null, output_tokens: null },
@@ -127,27 +131,79 @@ export async function runLoop(run, ctx) {
     let hivemindQueries = 0;
     const hivemindQueryTexts = [];
     const hivemindResults = [];
-    if (run.frozenKnowledge) {
-      if (!run.frozenKnowledge.snapshot_id) throw new Error('frozen knowledge is missing its snapshot identity');
-      stage('ground', 'active', { frozen: true });
-      hmMode = run.frozenKnowledge.mode;
-      grounding = (run.frozenKnowledge.items ?? []).map((item) => ({
+    const useFrozenKnowledge = (snapshot, { activate = true } = {}) => {
+      if (!knowledgeSnapshotMatches(snapshot)) throw new Error('frozen knowledge no longer matches its snapshot identity');
+      run.frozenKnowledge = snapshot;
+      if (activate) stage('ground', 'active', { frozen: true });
+      hmMode = snapshot.mode;
+      grounding = (snapshot.items ?? []).map((item) => ({
         title: [item.title, item.author].filter(Boolean).join(' — ') || item.title,
         text: item.excerpt,
         ref: item.ref ?? null,
         score: item.score ?? null,
       }));
-      for (const item of run.frozenKnowledge.items ?? []) hivemindResults.push({ ...item, retrievedAt: run.frozenKnowledge.captured_at });
-      if (hivemindResults.length) emit('grounding_evidence', { source: 'frozen_snapshot', snapshotId: run.frozenKnowledge.snapshot_id, results: hivemindResults });
+      for (const item of snapshot.items ?? []) hivemindResults.push({ ...item, retrievedAt: snapshot.captured_at });
+      for (const query of hivemindResults.map((item) => item.query).filter(Boolean)) {
+        if (!hivemindQueryTexts.includes(query)) hivemindQueryTexts.push(query);
+      }
+      if (hivemindQueries === 0) hivemindQueries = hivemindQueryTexts.length;
+      if (hivemindResults.length) emit('grounding_evidence', { source: 'frozen_snapshot', snapshotId: snapshot.snapshot_id, results: hivemindResults });
       stage('ground', 'done', {
         connected: hivemindResults.length > 0,
-        queried: hivemindResults.length > 0,
-        queries: run.frozenKnowledge.retriever?.actual ? 1 : 0,
+        queried: hivemindQueries > 0,
+        queries: hivemindQueries,
+        itemCount: hivemindResults.length,
         frozen: true,
-        snapshotId: run.frozenKnowledge.snapshot_id,
+        snapshotId: snapshot.snapshot_id,
         mode: hmMode,
       });
-      log(`Knowledge frozen before execution: ${run.frozenKnowledge.snapshot_id.slice(0, 19)}… (${hivemindResults.length} item${hivemindResults.length === 1 ? '' : 's'}). Live retrieval is disabled for this arm.`);
+      log(`Knowledge frozen before drafting: ${snapshot.snapshot_id.slice(0, 19)}… (${hivemindResults.length} item${hivemindResults.length === 1 ? '' : 's'}). Live retrieval is disabled for the rest of this run.`);
+    };
+
+    if (run.frozenKnowledge) {
+      useFrozenKnowledge(run.frozenKnowledge);
+    } else if (run.ground && hivemind.hivemindStatus().mode === 'claude') {
+      stage('ground', 'active');
+      const retrieval = await withRetries('grounding', () =>
+        adapters.claude({
+          model: makerModel,
+          stage: 'ground',
+          prompt: groundingPrompt(run),
+          cwd: ctx.scratchDir,
+          signal,
+          onTick: log,
+          onSession: sess('retriever'),
+          toolPolicy: 'hivemind_only',
+        }),
+      );
+      recordMakerCall('ground', retrieval, { executor: false });
+      costUsd += retrieval.costUsd || 0;
+      emit('cost', { costUsd });
+      hivemindQueries = retrieval.hivemindQueries || 0;
+      for (const query of retrieval.hivemindQueryTexts ?? []) if (!hivemindQueryTexts.includes(query)) hivemindQueryTexts.push(query);
+      if (!(retrieval.hivemindResults ?? []).length) {
+        const choice = await ask({
+          kind: 'grounding',
+          text: retrieval.hivemindQueries > 0
+            ? `Hivemind was queried, but no usable source excerpts were captured. Continuing would make this an ungrounded run. Continue without Hivemind, or stop?`
+            : `The Hivemind retriever returned without calling knowledge_search, so no source excerpts were captured. Continuing would make this an ungrounded run. Continue without Hivemind, or stop?`,
+          options: ['Continue ungrounded', 'Stop the run'],
+        });
+        if (choice !== 'Continue ungrounded') throw new Error('stopped_by_human');
+        log('The human chose to continue without Hivemind evidence; the empty frozen snapshot keeps that downgrade visible and prevents a later silent re-query.');
+      }
+      const frozen = sealKnowledgeSnapshot({
+        query: run.goal,
+        mode: 'hivemind_claude',
+        items: retrieval.hivemindResults ?? [],
+        retriever: {
+          requested: makerModel ? `anthropic:${makerModel}` : null,
+          resolved: makerModel ? `anthropic:${makerModel}` : null,
+          actual: retrieval.modelActual ?? (makerModel ? `anthropic:${makerModel}` : null),
+        },
+      });
+      await ctx.persistKnowledgeSnapshot?.(frozen);
+      useFrozenKnowledge(frozen, { activate: false });
     } else if (run.ground) {
       stage('ground', 'active');
       grounding = await hivemind.searchKnowledge(run.goal, 4, log);
@@ -176,9 +232,9 @@ export async function runLoop(run, ctx) {
     };
     const groundingEvidence = () => run.frozenKnowledge ? {
       mode: hmMode,
-      queried: hivemindResults.length > 0,
-      queryCount: run.frozenKnowledge.retriever?.actual ? 1 : 0,
-      queries: run.frozenKnowledge.query ? [run.frozenKnowledge.query] : [],
+      queried: hivemindQueries > 0,
+      queryCount: hivemindQueries,
+      queries: [...hivemindQueryTexts],
       results: boundedGroundingResults(hivemindResults),
       snapshotId: run.frozenKnowledge.snapshot_id,
       frozen: true,
@@ -217,7 +273,7 @@ export async function runLoop(run, ctx) {
         signal,
         onTick: log,
         onSession: sess('maker'),
-        toolPolicy: run.toolPolicy ?? 'research',
+        toolPolicy: run.toolPolicy ?? (run.frozenKnowledge ? 'web_only' : 'research'),
       }),
     );
     recordMakerCall('make', makeRes);
@@ -353,7 +409,7 @@ export async function runLoop(run, ctx) {
           signal,
           onTick: log,
           onSession: sess('maker'),
-          toolPolicy: run.toolPolicy ?? 'research',
+          toolPolicy: run.toolPolicy ?? (run.frozenKnowledge ? 'web_only' : 'research'),
         }),
       );
       recordMakerCall('fix', fixRes);
@@ -443,7 +499,7 @@ export async function runLoop(run, ctx) {
                 signal,
                 onTick: log,
                 onSession: sess('maker'),
-                toolPolicy: run.toolPolicy ?? 'research',
+                toolPolicy: run.toolPolicy ?? (run.frozenKnowledge ? 'web_only' : 'research'),
               }),
             );
             recordMakerCall('closure_fix', fixRes);
@@ -485,7 +541,7 @@ export async function runLoop(run, ctx) {
             signal,
             onTick: log,
             onSession: sess('maker'),
-            toolPolicy: run.toolPolicy ?? 'research',
+            toolPolicy: run.toolPolicy ?? (run.frozenKnowledge ? 'web_only' : 'research'),
           }),
         );
         recordMakerCall('verify_fix', fixRes);

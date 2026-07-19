@@ -16,11 +16,13 @@ function fail(error) {
 }
 
 export function claudeToolSurface({ stage, hivemindEnabled = false, serverName = 'claude_ai_Hivemind_Staging', toolName, toolPolicy = 'research' }) {
-  const builtins = stage === 'plan' || toolPolicy !== 'research' ? '' : 'WebSearch,WebFetch';
+  const builtins = stage === 'plan' || !['research', 'web_only'].includes(toolPolicy) ? '' : 'WebSearch,WebFetch';
   // Claude.ai connectors are deferred: ToolSearch must load the selected
   // managed tool before the model can call it. The exact selection keeps every
   // other connected service outside the model's tool surface.
-  const mcpTools = hivemindEnabled ? `ToolSearch,${toolName || `mcp__${serverName}__knowledge_search`}` : '';
+  const mcpTools = hivemindEnabled && toolPolicy !== 'web_only'
+    ? `ToolSearch,${toolName || `mcp__${serverName}__knowledge_search`}`
+    : '';
   const tools = [builtins, mcpTools].filter(Boolean).join(',');
   return { tools, allowed: tools };
 }
@@ -67,7 +69,7 @@ export function parseHivemindToolResult(content, query = '') {
 }
 
 export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, onSession, model, toolPolicy = 'research' }) {
-  const configuredHm = stage === 'plan' || toolPolicy === 'none' ? { enabled: false } : viaClaude();
+  const configuredHm = stage === 'plan' || ['none', 'web_only'].includes(toolPolicy) ? { enabled: false } : viaClaude();
   const hm = toolPolicy === 'hivemind_only' && !configuredHm.enabled ? { enabled: false } : configuredHm;
   const { tools, allowed } = claudeToolSurface({ stage, hivemindEnabled: hm.enabled, serverName: hm.serverName, toolName: hm.toolName, toolPolicy });
   const maxTurns = stage === 'plan' ? '1' : stage === 'ground' ? '8' : stage === 'fix' ? '12' : '20';
@@ -115,6 +117,7 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
     const t = setTimeout(() => { child.kill('SIGKILL'); finish(-2); }, TIMEOUTS[stage] ?? 540_000);
     const tick = setInterval(() => onTick?.(stage === 'plan' ? 'planning…' : stage === 'ground' ? 'freezing the knowledge snapshot…' : 'drafting — researching sources…'), 8000);
     child.stdout.on('data', (b) => {
+      if (done) return; // an aborted/terminal run must not receive late session lines
       out += b;
       lineBuf += b;
       const lines = lineBuf.split('\n');
@@ -145,7 +148,7 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
         } catch { /* partial or non-JSON line */ }
       }
     });
-    child.stderr.on('data', (b) => { err += b; });
+    child.stderr.on('data', (b) => { if (!done) err += b; });
     signal?.addEventListener('abort', () => { child.kill('SIGKILL'); finish(-4); }, { once: true });
     child.on('error', (e) => { err += `spawn error: ${e.code || e.message}`; finish(-1); });
     child.on('close', (code) => finish(code ?? -1));

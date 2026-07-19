@@ -5,9 +5,9 @@
     "why": "Claude Code alias, stable across CLI versions; drafts and fixes are research+writing work where Sonnet's speed/cost fits a live demo. Decided 2026-07-12."
   },
   "reviewer": {
-    "model": "gpt-5.4",
+    "model": "gpt-5.6-sol",
     "effort": "low",
-    "why": "Verified working on codex-cli 0.137.0 (2026-07-12 live fire). The account default gpt-5.6-sol requires a newer CLI — after upgrading codex, revisit this pin deliberately. Effort low keeps demo rounds fast; raise to medium for real deliverables."
+    "why": "Revisited deliberately 2026-07-19, as the previous pin's note required. Two conditions changed: codex-cli is now 0.144.1 (was 0.137.0), so this line is reachable; and codex demoted gpt-5.4 to hidden in its own catalog, so the old pin was no longer selectable in Settings. Verified by live fire 2026-07-19: answered the review schema, normalized to a real REVISE with 3 findings, and classified a proposed-threshold ledger entry as policy with cited reasoning (18.2k in / 654 out, 32s at low effort). Effort stays low to keep demo rounds fast — the low-vs-high difference is shown as its own comparison rather than assumed."
   },
   "loop": {
     "roundCap": 3,

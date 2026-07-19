@@ -28,6 +28,17 @@ export function depthBrief(depth) {
 
 const contractBlock = (acceptanceContract) => `ACCEPTANCE CONTRACT — the result is only acceptable if this is true:\n${acceptanceContract || 'No explicit contract was supplied (legacy run); do not infer one.'}\nThis contract outranks generic length, source-count, and query-count suggestions below. Never add material merely to hit those defaults.`;
 
+export function groundingPrompt({ goal, acceptanceContract }) {
+  return `Freeze the internal knowledge this research run may use. First use ToolSearch with "select:${CLAUDE_HIVEMIND_TOOL}" to load the exact managed Hivemind tool, then use only that knowledge_search tool. Run 2-4 focused queries that can answer the goal, test its assumptions, and expose tradeoffs. If the goal names a document, author, brand, or exact phrase, search that exact wording before broadening. If a query returns nothing, reformulate it rather than treating an empty result as evidence. Do not draft the deliverable and do not use web search.
+
+GOAL:
+${goal}
+
+${contractBlock(acceptanceContract)}
+
+After the tool calls, reply with one sentence saying the snapshot is ready. Camus will assign stable [Hn] markers to the captured results before drafting.`;
+}
+
 export function makePrompt({ goal, acceptanceContract, lane, depth, grounding, answers }) {
   const groundingBlock = grounding === 'claude'
     ? `\n\nGROUNDING — Myosin's specialist marketing knowledge is available through its managed Hivemind connector. First use ToolSearch with "select:${CLAUDE_HIVEMIND_TOOL}" to load the exact tool. Before drafting, normally run 2-4 focused knowledge_search queries on the goal's key angles; use fewer when the acceptance contract explicitly narrows the query or source scope. Where a returned chunk shapes a claim, cite it [H1], [H2], … and list each under a "### Hivemind" subsection inside ## Sources as "[Hn] Title — Author". If the tool errors or returns nothing relevant, draft without it — never fabricate an [Hn] citation.`

@@ -69,6 +69,7 @@ a { color: inherit; }
 .setup-row .ic { font-family: var(--mono); width: 16px; flex: none; }
 .setup-row.ok .ic { color: var(--ink); }
 .setup-row.miss .ic { color: var(--red); }
+.setup-row.info .ic { color: var(--faint); }
 .setup-row .s-label { font-weight: 600; font-size: 14.5px; min-width: 170px; }
 .setup-row .s-detail { color: var(--muted); font-size: 14px; flex: 1; }
 .setup-fix { margin: 4px 0 8px 26px; }
@@ -125,6 +126,11 @@ textarea:focus { outline: none; border-color: var(--ink); }
 .toggle:has(input:disabled) { opacity: .45; cursor: default; }
 .hint { font-size: 13.5px; color: var(--muted); margin-top: 3px; max-width: 420px; line-height: 1.55; }
 .trust-hint { margin-top: -12px; max-width: none; }
+.contract-presets { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-top: 8px; }
+.contract-presets .presets-lbl { font-family: var(--mono); font-size: 11.5px; letter-spacing: .04em; color: var(--faint); text-transform: uppercase; margin-right: 2px; }
+.preset { font: inherit; font-size: 13px; color: var(--muted); background: transparent; border: 1px solid var(--rule); border-radius: 3px; padding: 3px 9px; cursor: pointer; }
+.preset:hover { border-color: var(--ink); color: var(--ink); }
+.preset.used { color: var(--faint); border-color: var(--rule); cursor: default; }
 
 .primary {
   font-family: var(--mono); font-size: 13px; background: var(--red); color: #fff;
