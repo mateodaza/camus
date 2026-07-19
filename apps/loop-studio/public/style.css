@@ -365,3 +365,17 @@ textarea:focus { outline: none; border-color: var(--ink); }
   .fcard, .plancard, .qcard, .vcheck, .banner { animation: none; }
   .stage.active .dot, .pill.status.needs_human { animation: none; }
 }
+
+/* Run story — layer 1 of the disclosure stack, above the deliverable. Reads as
+   editorial prose, not a dashboard: the point is that a marketer can follow it. */
+.story-card { border: 1px solid var(--rule); border-left: 3px solid var(--ink); border-radius: 3px; padding: 16px 18px 14px; margin-bottom: 18px; }
+.story-card.degraded { border-left-color: var(--red); }
+.story-headline { font-family: var(--serif, inherit); font-size: 19px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 8px; }
+.story-card.degraded .story-headline { color: var(--red); }
+.story-body p { margin: 0 0 5px; font-size: 15px; line-height: 1.55; color: var(--ink); max-width: 62ch; }
+.story-rail { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 13px; padding-top: 11px; border-top: 1px solid var(--rule); }
+.story-beat { font-family: var(--mono); font-size: 11px; letter-spacing: .02em; color: var(--faint); white-space: nowrap; }
+.story-beat + .story-beat::before { content: "→"; margin-right: 6px; color: var(--rule); }
+.story-beat.done { color: var(--ink); }
+.story-beat.failed { color: var(--red); }
+.story-beat.unknown { font-style: italic; }

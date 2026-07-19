@@ -3,6 +3,7 @@
    shared file, importable here and by verify.test.mjs alike. */
 
 import { comparisonBanner, doneBanner } from './banner.mjs';
+import { runStory } from './story.mjs';
 
 // Hosted-UI mode: when this page is served from a public origin, ?api=
 // points it at the local studio server (persisted after the first visit).
@@ -666,6 +667,7 @@ function attach(id, goal) {
   $('feed').innerHTML = '';
   $('revtabs').innerHTML = '';
   $('doc').innerHTML = '<div class="doc-empty">The deliverable appears here as the loop drafts it.</div>';
+  document.getElementById('run-story-card')?.remove(); // a prior run's story must never head a new one
   state.simulated = false;
   { const sb = $('sim-banner'); sb.classList.add('hidden'); sb.textContent = ''; }
   setStatus('running');
@@ -846,6 +848,31 @@ Every arm received the same sealed goal, acceptance contract, model-catalog deci
 This slice records execution evidence only. It does **not** declare a winner. Blinded cross-arm judging and human disagreement handling are the next protocol step.`);
 }
 
+// Layer 1 of the disclosure stack: the story, above the deliverable, for someone
+// who will never open a receipt. Layers 2 and 3 (evidence card, raw trail) stay
+// exactly where they are. Every sentence is derived by story.mjs from the sealed
+// receipt — nothing here is written for the demo.
+function renderRunStory(report, standing) {
+  document.getElementById('run-story-card')?.remove();
+  const story = runStory(report, standing);
+  const card = el('div', `story-card ${story.degraded ? 'degraded' : ''}`);
+  card.id = 'run-story-card';
+  card.appendChild(el('div', 'story-headline', story.headline));
+  const body = el('div', 'story-body');
+  for (const line of story.sentences) body.appendChild(el('p', null, line));
+  card.appendChild(body);
+
+  const rail = el('div', 'story-rail');
+  for (const { beat, state: beatState } of story.timeline) {
+    const step = el('span', `story-beat ${beatState}`, beat);
+    step.title = { done: 'happened', skipped: 'did not apply to this run', failed: 'happened and did not pass', unknown: 'the receipt cannot say' }[beatState];
+    rail.appendChild(step);
+  }
+  card.appendChild(rail);
+  const doc = document.querySelector('.doc-wrap');
+  doc?.insertBefore(card, doc.firstChild);
+}
+
 async function renderEvidenceReceipt(standing) {
   const runId = state.runId;
   document.getElementById('evidence-pack-card')?.remove();
@@ -860,6 +887,7 @@ async function renderEvidenceReceipt(standing) {
   }
   if (!report || state.runId !== runId) return;
   state.currentReport = report;
+  renderRunStory(report, standing);
   const pack = report.evidencePack;
   const card = el('div', `trust-card ${pack ? '' : 'degraded'}`);
   card.id = 'evidence-pack-card';

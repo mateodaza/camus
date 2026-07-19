@@ -2054,4 +2054,142 @@ Members asked for practical milestones [H1].
   for (const dir of [home, store, cwd]) rmSync(dir, { recursive: true, force: true });
 }
 
+// --- run story: derived from the receipt, fails closed, never inflates -------
+// The story card is the most persuasive surface in the app, so its rules are
+// pinned here the same way the done banner's are.
+{
+  const { runStory, STORY_BEATS } = await import('./public/story.mjs');
+
+  const base = {
+    goal: 'Decide the quarter.',
+    ground: true,
+    statuses: { schemaVersion: 1, execution: 'completed', verification: 'passed_with_caveats', audit: 'independent_findings', publication: 'not_published' },
+    evidencePack: {
+      receipt_id: 'sha256:' + 'a'.repeat(64),
+      statuses: { schemaVersion: 1, execution: 'completed', verification: 'passed_with_caveats', audit: 'independent_findings', publication: 'not_published' },
+      pairing: { executor: { actual: 'anthropic:claude-sonnet-4-6' }, auditor: { actual: 'openai:gpt-5.6-sol' } },
+    },
+    evidence: {
+      grounding: { mode: 'hivemind_claude', queried: true, frozen: true, results: [{}, {}, {}] },
+      revisions: [{ rev: 1 }, { rev: 2 }],
+      // The SAME finding re-raised across rounds is one issue, not three.
+      rounds: [
+        { round: 1, verdict: 'REVISE', findings: [{ severity: 'high', title: 'Citations are misbound' }, { severity: 'medium', title: 'Recommendation outruns evidence' }] },
+        { round: 2, verdict: 'REVISE', findings: [{ severity: 'high', title: 'Citations Are Misbound!' }] },
+        { round: 3, verdict: 'APPROVED', findings: [{ severity: 'low', title: 'A nit' }] },
+      ],
+      verify: [{ pass: true }],
+      humanDecisions: [{ kind: 'stuck', answer: 'One more round' }, { kind: 'stuck', answer: 'Accept and ship (with findings on record)' }],
+    },
+  };
+
+  const told = runStory(base, 'verified_with_findings');
+  const prose = told.sentences.join(' ');
+  assert.equal(told.degraded, false, 'a corroborated receipt tells its story');
+  assert.equal(told.headline, 'Verified with findings');
+  assert.match(prose, /three Hivemind items were captured and frozen before drafting/i, 'the frozen evidence count comes from captured results');
+  assert.match(prose, /two distinct blocking findings/i, 'repeats of one finding are counted once, never inflated to three');
+  assert.match(prose, /re-raising what was not fixed/i, 'a genuinely repeated title may be described as re-raised');
+  assert.match(prose, /from a different vendor/, 'independent audit standing is stated');
+  assert.match(prose, /authorised one further round/i, 'the human decision is reported from the recorded answer');
+  assert.match(prose, /accepted findings on the record/i, 'acceptance is reported without inventing that every remaining finding was accepted');
+  assert.match(prose, /Nothing was published\./, 'publication standing is stated');
+  assert.ok(told.sentences.every((s) => /^[A-Z]/.test(s)), 'every sentence is capitalised, including ones that open with a number word');
+  assert.deepEqual(told.timeline.map((b) => b.beat), STORY_BEATS, 'all seven beats are present in order');
+  assert.ok(told.timeline.every((b) => b.state === 'done'), 'a complete run lights every beat');
+
+  // Fail closed: no dimensions means the receipt cannot corroborate any claim.
+  const noDims = runStory({ goal: 'g', evidence: {} }, 'verified');
+  assert.equal(noDims.degraded, true, 'a receipt without dimensions cannot tell its story');
+  assert.match(noDims.sentences[0], /no status dimensions/i, 'it names why, instead of going quiet');
+  assert.deepEqual(noDims.timeline.map((b) => b.beat), STORY_BEATS, 'the timeline still renders, as unknowns');
+
+  // An unrecognised standing must not be narrated as if it were understood.
+  const strange = runStory(base, 'gold_star');
+  assert.equal(strange.degraded, true, 'an unknown standing degrades');
+  assert.match(strange.sentences.at(-1), /does not recognise/i, 'and says so');
+
+  // Same-vendor review may never read as independent.
+  const advisory = {
+    ...base,
+    statuses: { ...base.statuses, audit: 'advisory_findings' },
+    evidencePack: { ...base.evidencePack, statuses: { ...base.statuses, audit: 'advisory_findings' }, pairing: { executor: { actual: 'anthropic:claude-sonnet-4-6' }, auditor: { actual: 'anthropic:claude-opus-4-6' } } },
+  };
+  const advisoryProse = runStory(advisory, 'same_vendor_reviewed').sentences.join(' ');
+  assert.ok(!/from a different vendor/.test(advisoryProse), 'a same-vendor audit never claims independence');
+  assert.match(advisoryProse, /shared the maker’s vendor/, 'it names the limitation explicitly');
+  assert.equal(runStory(advisory, 'same_vendor_reviewed').timeline.find((b) => b.beat === 'Independent challenge').state, 'skipped', 'same-vendor review never lights the independent-challenge beat');
+
+  // Multiple rounds alone do not prove that a finding was re-raised.
+  const freshEachRound = {
+    ...base,
+    evidence: {
+      ...base.evidence,
+      rounds: [
+        { round: 1, verdict: 'REVISE', findings: [{ severity: 'high', title: 'First issue' }] },
+        { round: 2, verdict: 'REVISE', findings: [{ severity: 'medium', title: 'Different issue' }] },
+      ],
+    },
+  };
+  assert.ok(!/re-raising/.test(runStory(freshEachRound, 'verified_with_findings').sentences.join(' ')), 'different findings across rounds are not called repeats');
+
+  // Audit-only replay must narrate the replay, not inherited maker work and
+  // deterministic checks as if they ran again.
+  const replay = {
+    ...base,
+    lane: 'audit_replay',
+    sourceRunId: 'source-run',
+    ground: false,
+    evidence: {
+      grounding: null,
+      revisions: [{ rev: 2 }], // copied sealed artifact, not a replay draft
+      rounds: [{ round: 'audit replay', verdict: 'APPROVED', findings: [] }],
+      verify: [],
+      humanDecisions: [],
+    },
+    evidencePack: {
+      ...base.evidencePack,
+      statuses: { ...base.statuses, audit: 'independent_clean' },
+    },
+  };
+  const replayStory = runStory(replay, 'verified_with_findings');
+  const replayProse = replayStory.sentences.join(' ');
+  assert.match(replayProse, /replay ran no retrieval or drafting/i, 'replay names the work it deliberately did not repeat');
+  assert.ok(!/Claude drafted/.test(replayProse), 'copied revisions never masquerade as replay maker work');
+  assert.match(replayProse, /source artifact carried deterministic checks that passed with caveats; this replay did not rerun them/i, 'inherited verification is attributed to the source artifact');
+  assert.equal(replayStory.timeline.find((b) => b.beat === 'Evidence frozen').state, 'skipped');
+  assert.equal(replayStory.timeline.find((b) => b.beat === 'Draft').state, 'skipped');
+  assert.equal(replayStory.timeline.find((b) => b.beat === 'Verification').state, 'skipped');
+  assert.equal(replayStory.timeline.find((b) => b.beat === 'Independent challenge').state, 'done');
+
+  // A failed verification is never softened into a pass.
+  const failed = runStory({ ...base, statuses: { ...base.statuses, verification: 'failed' }, evidencePack: { ...base.evidencePack, statuses: { ...base.statuses, verification: 'failed' } } }, 'unverified');
+  assert.match(failed.sentences.join(' '), /did not pass, so nothing here is verified/, 'a red verification is stated plainly');
+  assert.equal(failed.timeline.find((b) => b.beat === 'Verification').state, 'failed', 'the beat shows failed, not done');
+
+  // An ungrounded run says so rather than implying private evidence.
+  const ungrounded = runStory({ ...base, ground: false, evidence: { ...base.evidence, grounding: null } }, 'verified_with_findings');
+  assert.match(ungrounded.sentences.join(' '), /did not retrieve a private knowledge snapshot/, 'an ungrounded run is explicit without inventing open-web use');
+  assert.equal(ungrounded.timeline.find((b) => b.beat === 'Evidence frozen').state, 'skipped', 'the beat is skipped, not falsely done');
+
+  // Rehearsal is a first-class non-trust standing, never an unknown headline
+  // and never an independent audit just because scripted rounds exist.
+  const rehearsal = {
+    ...base,
+    engine: 'mock',
+    simulated: true,
+    statuses: { ...base.statuses, audit: 'not_run' },
+    evidencePack: {
+      ...base.evidencePack,
+      statuses: { ...base.statuses, audit: 'not_run' },
+      pairing: { executor: { actual: 'simulation:scripted-maker' }, auditor: { actual: 'simulation:scripted-reviewer' } },
+    },
+  };
+  const rehearsalStory = runStory(rehearsal, 'rehearsal');
+  assert.equal(rehearsalStory.degraded, false, 'rehearsal is recognised without promoting it');
+  assert.equal(rehearsalStory.headline, 'Rehearsal');
+  assert.match(rehearsalStory.sentences.join(' '), /no real model audit ran and it cannot earn verified standing/i);
+  assert.equal(rehearsalStory.timeline.find((b) => b.beat === 'Independent challenge').state, 'skipped');
+}
+
 console.log('verify.test: all assertions passed');
