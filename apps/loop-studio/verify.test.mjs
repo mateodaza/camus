@@ -2098,6 +2098,14 @@ Members asked for practical milestones [H1].
   assert.equal(told.degraded, false, 'a corroborated receipt tells its story');
   assert.equal(told.headline, 'Verified with findings');
   assert.match(prose, /three Hivemind items were captured and frozen before drafting/i, 'the frozen evidence count comes from captured results');
+  const oneCaptured = runStory({
+    ...base,
+    evidence: {
+      ...base.evidence,
+      grounding: { ...base.evidence.grounding, results: [{}] },
+    },
+  }, 'verified_with_findings');
+  assert.match(oneCaptured.sentences.join(' '), /one Hivemind item was captured and frozen before drafting/i, 'a single frozen item uses singular grammar');
   assert.match(prose, /two distinct blocking findings/i, 'repeats of one finding are counted once, never inflated to three');
   assert.match(prose, /re-raising what was not fixed/i, 'a genuinely repeated title may be described as re-raised');
   assert.match(prose, /from a different vendor/, 'independent audit standing is stated');

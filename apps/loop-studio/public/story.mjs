@@ -254,7 +254,7 @@ export function runStory(report, headline) {
     sentences.push('The artifact and its original evidence were already sealed; this replay ran no retrieval or drafting.');
   } else if (states['Evidence frozen'] === 'done' && captured) {
     const source = evidence.grounding?.mode === 'hivemind_claude' ? 'Hivemind' : 'evidence';
-    sentences.push(`${plural(captured, `${source} item`)} were captured and frozen before drafting, so later steps judged the same snapshot.`);
+    sentences.push(`${plural(captured, `${source} item`)} ${captured === 1 ? 'was' : 'were'} captured and frozen before drafting, so later steps judged the same snapshot.`);
   } else if (states['Evidence frozen'] === 'skipped') {
     sentences.push('This run did not retrieve a private knowledge snapshot.');
   }
