@@ -170,3 +170,49 @@ Do not describe the run's `$0.29` UI counter as cost. Its sealed economics remai
 - Shane's follow-up: “Show rather than tell. More concrete examples the better.”
 - **Meeting: Wednesday 2026-07-22** — the recorded session promised for the week of 07-20. Audience is mostly marketers, not engineers: prefer plain language, and let the receipts carry the rigour.
 - The earlier July 17–18 presentation target passed; this brief supersedes it.
+
+## Publishing the deck
+
+The presentation is served at **`camus.sh/myosin/`** from a single committed file,
+`apps/web/public/myosin/index.html`. That file is a **build output**, not the source.
+
+**The source is `~/Documents/camus-demo-slides-2026-07-19/deck.html`**, outside this
+repo, together with its `fonts/` and `brand/` folders. It carries speaker notes; the
+published copy does not.
+
+To regenerate after editing the deck:
+
+```
+node ~/Documents/camus-demo-slides-2026-07-19/build.mjs
+cd apps/web && npm run build
+```
+
+`build.mjs` lives beside the deck. It inlines every font and brand SVG as a data
+URI, strips all twelve `data-notes` blocks and the notes UI, removes authoring
+comments, swaps the notes toggle for visible previous/next buttons, and adds the
+page meta (`noindex`, canonical, Open Graph).
+
+Two properties make it safe to rely on. Every structural edit must match the deck
+exactly once and names itself when it does not, so an edit that shifts an anchor
+fails the build rather than silently skipping a transform. And nothing is written
+until both outputs are built and validated against the presenter-token and
+required-element lists, so a late assertion cannot throw over a good published file
+that has already been replaced. Writes go to a temp file and rename, so an
+interrupted run cannot leave a truncated page at the published path.
+
+It writes
+`apps/web/public/myosin/index.html` by default, resolved relative to its own
+location; pass `--site <path>` to write elsewhere, or `--fragment <path>` to also
+emit a head-and-body-less copy for a host that supplies its own shell.
+
+Two consequences worth remembering:
+
+- Editing `apps/web/public/myosin/index.html` directly is lost on the next
+  regeneration. Edit the deck source and rebuild.
+- The second command is not optional: `npm run build` is what copies `public/` into
+  `out/`, and `out/` is what deploys.
+
+Once the session is recorded and the deck stops changing, collapse this: either move
+the deck source into the repo, or declare the published file authoritative and retire
+the external folder. Two sources of truth are acceptable while it is still in flight,
+not afterwards.
