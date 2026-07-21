@@ -37,9 +37,9 @@
   body{background:var(--paper);color:var(--ink);font:400 18px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
   .deck{height:100%;display:flex;flex-direction:column}
 
-  .slide{display:none;flex:1;padding:6vh 7vw 4vh}
-  .slide.on{display:grid;grid-template-columns:minmax(0,1fr);align-items:center;gap:5vw}
-  .slide.on.with-art{grid-template-columns:minmax(0,1fr) clamp(150px,16vw,230px)}
+  .slide{display:none;flex:1;min-height:0;padding:6vh 7vw 4vh}
+  .slide.on{display:grid;grid-template-columns:minmax(0,1fr);align-items:center;gap:4vw;overflow:auto}
+  .slide.on.with-art{grid-template-columns:minmax(0,1fr) clamp(140px,14vw,210px)}
   .art{width:100%;height:auto;display:block;justify-self:end}
   .climb{width:100%;height:auto;display:block;justify-self:end}
   .climb-scene{animation:climb-scene 4.8s linear infinite;will-change:transform}
@@ -53,7 +53,7 @@
   @media (prefers-reduced-motion:reduce){
     .climb-scene{animation:none}
     .climb-rock{animation:none;transform:translate(80px,-75px)}}
-  @media (max-width:900px){.slide.on.with-art{grid-template-columns:minmax(0,1fr)}.art,.climb{display:none}}
+
   .mark{width:clamp(76px,8vw,120px);height:auto;display:block;margin-bottom:26px}
   .wordmark{font-family:var(--serif);font-weight:500;font-size:clamp(30px,3.2vw,44px);letter-spacing:-.02em;line-height:1}
   .wordmark span{font-family:var(--mono);font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);display:block;margin-top:12px}
@@ -62,8 +62,9 @@
   .eyebrow.alarm{color:var(--red)}
   h1{font-family:var(--serif);font-weight:500;font-size:clamp(38px,5.6vw,70px);line-height:1.02;letter-spacing:-.028em;text-wrap:balance}
   h2{font-family:var(--serif);font-weight:500;font-size:clamp(30px,4.1vw,52px);line-height:1.06;letter-spacing:-.022em;max-width:36ch;text-wrap:balance}
-  .sub{font-family:var(--serif);font-style:italic;font-size:clamp(20px,2.2vw,28px);color:var(--muted);margin-top:16px;max-width:32ch;line-height:1.35;text-wrap:balance}
-  p.lead{font-size:clamp(17px,1.5vw,20px);color:var(--muted);margin-top:18px;max-width:58ch;line-height:1.58;text-wrap:pretty}
+  .sub{font-family:var(--serif);font-style:italic;font-size:clamp(20px,2.2vw,28px);color:var(--muted);margin-top:16px;max-width:48ch;line-height:1.35;text-wrap:pretty}
+  .sub span,.keep{white-space:nowrap}
+  p.lead{font-size:clamp(17px,1.5vw,20px);color:var(--muted);margin-top:18px;max-width:68ch;line-height:1.58;text-wrap:pretty}
   p.lead strong{color:var(--ink);font-weight:600}
   .cite{font-family:var(--mono);font-size:12px;color:var(--faint);margin-top:24px;letter-spacing:.04em}
   .rule{height:1px;background:var(--rule);margin:22px 0}
@@ -116,7 +117,41 @@
     .rule{margin:14px 0}
     ol.steps li{padding:8px 0}
   }
+
+  @media (max-height:680px){
+    .slide.on{align-items:start}
+    .eyebrow{margin-bottom:12px}
+    .mark{width:60px;margin-bottom:12px}
+    .slide.dense h2{font-size:clamp(24px,3.1vw,36px)}
+    .slide.dense .grid{margin-top:12px}
+    .slide.dense .findings p{padding:5px 0;line-height:1.42}
+    .slide.dense ol.steps{margin-top:10px}
+    .slide.dense ol.steps li{padding:5px 0}
+    .slide.dense .rule{margin:10px 0}
+    .slide.dense p.lead{margin-top:10px;line-height:1.45}
+  }
+
+  @media (max-width:1120px){
+    .slide.on.with-art:not(.title-slide){grid-template-columns:minmax(0,1fr)}
+    .slide.on.with-art:not(.title-slide) > .art{display:none}
+    .slide.on.title-slide{grid-template-columns:minmax(0,1fr) clamp(130px,18vw,180px)}
+  }
+
+  @media (max-width:920px){
+    .slide.on.with-art,.slide.on.title-slide{grid-template-columns:minmax(0,1fr)}
+    .art,.climb{display:none}
+    .grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .slide.dense .mark{width:70px;margin-bottom:18px}
+  }
   @media (max-width:560px){
+    .slide{padding:32px 20px 26px}
+    .slide.on{align-items:start}
+    .grid{grid-template-columns:minmax(0,1fr)}
+    .eyebrow{margin-bottom:12px}
+    .mark{width:68px;margin-bottom:18px}
+    .bar{gap:8px;padding:9px 20px;background:var(--paper)}
+    .bar .brandmark,.bar .nav-hint{display:none}
+    .sub span,.keep{white-space:normal}
     ol.steps li{display:grid;grid-template-columns:22px minmax(0,1fr);gap:4px 14px;align-items:start}
     ol.steps li b{min-width:0;grid-column:2}
     ol.steps li span{grid-column:2}
@@ -127,7 +162,7 @@
 <body>
 <div class="deck">
 
-<section class="slide on with-art" aria-roledescription="slide">
+<section class="slide on with-art title-slide" aria-roledescription="slide">
   <div>
     <svg class="mark" viewBox="0 0 32 32" role="img" aria-label="Camus mark: an open loop around a boulder">
       <circle cx="16" cy="16" r="11" fill="none" stroke="#E8584F" stroke-width="3" stroke-dasharray="52 17"/>
@@ -135,7 +170,7 @@
     </svg>
     <div class="wordmark">Camus<span>A looping tool for AI work</span></div>
     <h1 style="margin-top:26px">AI shouldn&rsquo;t grade its own&nbsp;work.</h1>
-    <div class="sub">One model makes it. Another tries to break it. You decide when the evidence is enough.</div>
+    <div class="sub"><span>One model makes it.</span> <span>Another tries to break it.</span> <span>You decide when the evidence is enough.</span></div>
     <div class="cite">Myosin Learns &middot; 22 July 2026</div>
   </div>
   <svg class="climb" viewBox="26 22 134 108" aria-hidden="true">
@@ -153,8 +188,8 @@
   <div>
     <div class="eyebrow">The problem</div>
     <h2>Creating is cheap.<br/>Verifying is not.</h2>
-    <p class="lead">Anyone can put a client-ready paragraph on the page in seconds. The same tool writes a confidently wrong one just as fast, and on the page you cannot tell them apart.</p>
-    <p class="lead">The old way of using AI was to prompt it and read what came back. <strong>Verifying, testing and fact-checking that text is where looping comes in.</strong></p>
+    <p class="lead">Anyone can put a client-ready paragraph on the page in seconds. <span class="keep">The same tool</span> writes <span class="keep">a confidently wrong one</span> just as fast, and on the page you cannot tell them apart.</p>
+    <p class="lead">The old way of using AI was to prompt it and read what came back. <strong><span class="keep">Verifying, testing and fact-checking</span> that text is where looping comes in.</strong></p>
   </div>
   <img class="art" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0MDAgNjAwIiByb2xlPSJpbWciIGFyaWEtbGFiZWw9IlRoZSBib3VsZGVyIG1pZC1hc2NlbnQgb24gdGhlIGdyZWF0IHNsb3BlIHdoaWxlIGhhbGYtc2l6ZSBlY2hvZXMgb2YgdGhlIG1vdW50YWluIGNhc2NhZGUgZG93biB0aGUgc2t5IHRvd2FyZCBpdCI+CjxyZWN0IHg9IjAiIHk9IjAiIHdpZHRoPSI0MDAiIGhlaWdodD0iNjAwIiBmaWxsPSIjRkZGRkZGIi8+Cjxwb2x5Z29uIHBvaW50cz0iMCw2MDAgNDAwLDYwMCA0MDAsMjAwIiBmaWxsPSIjMEEwQTBBIi8+Cjxwb2x5Z29uIHBvaW50cz0iMTYwLDE2MCAxNjAsNjQgNjQsMTYwIiBmaWxsPSIjMEEwQTBBIi8+Cjxwb2x5Z29uIHBvaW50cz0iMjA4LDIwOCAyMDgsMTYwIDE2MCwyMDgiIGZpbGw9IiMwQTBBMEEiLz4KPHBvbHlnb24gcG9pbnRzPSIyMzIsMjMyIDIzMiwyMDggMjA4LDIzMiIgZmlsbD0iIzBBMEEwQSIvPgo8cG9seWdvbiBwb2ludHM9IjI0NCwyNDQgMjQ0LDIzMiAyMzIsMjQ0IiBmaWxsPSIjMEEwQTBBIi8+CjxjaXJjbGUgY3g9IjI2OCIgY3k9IjI4OSIgcj0iMzQiIGZpbGw9IiMwQTBBMEEiLz4KPC9zdmc+Cg==" alt="" />
 </section>
@@ -165,7 +200,7 @@
     <h2>It doesn&rsquo;t stop at the first draft.</h2>
     <div class="findings">
       <p><b>Prompting.</b> You ask, it answers, and checking the answer is your problem.</p>
-      <p><b>Looping.</b> One model writes, another goes at it looking for what is wrong, the first repairs it, and round it goes again.</p>
+      <p><b>Looping.</b> One model writes, another goes at it looking for what is wrong, <span class="keep">the first repairs it,</span> and round it goes again.</p>
     </div>
     <div class="cycle">
       <span>Draft</span><i>&rarr;</i><span>Challenge</span>
@@ -177,7 +212,7 @@
       </svg>
       <span>Repair</span>
     </div>
-    <p class="lead">It stops when the checks come back clean, or when it hits a decision only you can make. <strong>It cannot go round forever.</strong></p>
+    <p class="lead">It stops when the checks come back clean, or <span class="keep">when it hits a decision only you can make.</span> <strong>It cannot go round forever.</strong></p>
   </div>
   <img class="art" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0MDAgNjAwIiByb2xlPSJpbWciIGFyaWEtbGFiZWw9IlRoZSBib3VsZGVyIG1pZC1hc2NlbnQgb24gdGhlIGdyZWF0IHNsb3BlIHdoaWxlIGhhbGYtc2l6ZSBlY2hvZXMgb2YgdGhlIG1vdW50YWluIGNhc2NhZGUgZG93biB0aGUgc2t5IHRvd2FyZCBpdCI+CjxyZWN0IHg9IjAiIHk9IjAiIHdpZHRoPSI0MDAiIGhlaWdodD0iNjAwIiBmaWxsPSIjRkZGRkZGIi8+Cjxwb2x5Z29uIHBvaW50cz0iMCw2MDAgNDAwLDYwMCA0MDAsMjAwIiBmaWxsPSIjMEEwQTBBIi8+Cjxwb2x5Z29uIHBvaW50cz0iMTYwLDE2MCAxNjAsNjQgNjQsMTYwIiBmaWxsPSIjMEEwQTBBIi8+Cjxwb2x5Z29uIHBvaW50cz0iMjA4LDIwOCAyMDgsMTYwIDE2MCwyMDgiIGZpbGw9IiMwQTBBMEEiLz4KPHBvbHlnb24gcG9pbnRzPSIyMzIsMjMyIDIzMiwyMDggMjA4LDIzMiIgZmlsbD0iIzBBMEEwQSIvPgo8cG9seWdvbiBwb2ludHM9IjI0NCwyNDQgMjQ0LDIzMiAyMzIsMjQ0IiBmaWxsPSIjMEEwQTBBIi8+CjxjaXJjbGUgY3g9IjI2OCIgY3k9IjI4OSIgcj0iMzQiIGZpbGw9IiMwQTBBMEEiLz4KPC9zdmc+Cg==" alt="" />
 </section>
@@ -192,7 +227,7 @@
       <div class="card"><h3>Checks</h3><p>Mechanical rules. A citation resolves or it does not. Nothing to argue with.</p></div>
       <div class="card"><h3>You</h3><p>Real disagreements come to you rather than being settled by a model.</p></div>
     </div>
-    <p class="lead">Two models from different companies are less likely to be wrong in the same way. That does not guarantee correctness, and Camus never claims it does.</p>
+    <p class="lead">Two models from different companies are less likely to be <span class="keep">wrong in the same way.</span> <span class="keep">That does not guarantee correctness,</span> and Camus never claims it does.</p>
   </div>
   <img class="art" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0MDAgNjAwIiByb2xlPSJpbWciIGFyaWEtbGFiZWw9IkZvdXIgcm9hZHMgYXQgcmlnaHQgYW5kIGRpYWdvbmFsIGFuZ2xlcyBjb252ZXJnZSBvbiBhIGNsZWFyaW5nIGhvbGRpbmcgYSBzaW5nbGUgYm91bGRlciI+CjxjbGlwUGF0aCBpZD0iYyI+PHJlY3Qgd2lkdGg9IjQwMCIgaGVpZ2h0PSI2MDAiLz48L2NsaXBQYXRoPjxnIGNsaXAtcGF0aD0idXJsKCNjKSI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjQwMCIgaGVpZ2h0PSI2MDAiIGZpbGw9IiNGRkZGRkYiLz4KPHJlY3QgeD0iMCIgeT0iMjA0IiB3aWR0aD0iNDAwIiBoZWlnaHQ9IjEyIiBmaWxsPSIjMEEwQTBBIi8+CjxyZWN0IHg9IjE0MSIgeT0iMCIgd2lkdGg9IjE4IiBoZWlnaHQ9IjYwMCIgZmlsbD0iIzBBMEEwQSIvPgo8cG9seWdvbiBwb2ludHM9Ii03MDAsLTY4NSAxMTAwLDExMTUgMTEwMCwxMjA1IC03MDAsLTU5NSIgZmlsbD0iIzBBMEEwQSIvPgo8cG9seWdvbiBwb2ludHM9Ii03MDAsMTA0OSAxMTAwLC03NTEgMTEwMCwtNzI5IC03MDAsMTA3MSIgZmlsbD0iIzBBMEEwQSIvPgo8Y2lyY2xlIGN4PSIxNTAiIGN5PSIyMTAiIHI9IjQwIiBmaWxsPSIjRkZGRkZGIi8+CjxjaXJjbGUgY3g9IjE1MCIgY3k9IjIxMCIgcj0iMjIiIGZpbGw9IiMwQTBBMEEiLz48L2c+Cjwvc3ZnPgo=" alt="" />
 </section>
@@ -201,8 +236,8 @@
   <div>
     <div class="eyebrow">Your own knowledge</div>
     <h2>Your best strategist is already in the room.</h2>
-    <p class="lead">Hivemind already holds the knowledge this team has captured: the projects, the research, the positioning calls. A model has none of that. Point the loop at Hivemind and it pulls the relevant pieces, freezes them, and argues from them.</p>
-    <p class="lead">The sealed run record names which pieces it used, so a claim traces back to something Myosin actually knows. <strong>And the better those connections get, the more of it the loop can use.</strong></p>
+    <p class="lead">Hivemind already holds the knowledge this team has captured: <span class="keep">the projects, the research, the positioning calls.</span> A model has none of that. <span class="keep">Point the loop at Hivemind and it pulls</span> the relevant pieces, <span class="keep">freezes them, and argues from them.</span></p>
+    <p class="lead">The sealed run record names which pieces it used, so <span class="keep">a claim traces back to something Myosin actually knows.</span> <strong>And the better those connections get, the more of it the loop can use.</strong></p>
   </div>
   <img class="art" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0MDAgNjAwIiByb2xlPSJpbWciIGFyaWEtbGFiZWw9IkEgZGFyayBzdW4gZmxvYXRpbmcgaW4gYSBzaWxlbnQgdm9pZCwgdGhlIGdsYXJlIGJ1aWx0IGZyb20gaGFsZi1zcXVhcmUgdHJpYW5nbGVzIj4KPHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjQwMCIgaGVpZ2h0PSI2MDAiIGZpbGw9IiNGRkZGRkYiLz4KPHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjUwIiBoZWlnaHQ9IjUwIiBmaWxsPSIjMEEwQTBBIiBzdHJva2U9IiMwQTBBMEEiIHN0cm9rZS13aWR0aD0iMC43Ii8+Cjxwb2x5Z29uIHBvaW50cz0iNTAsNTAgMjUsNTAgNTAsMjUiIGZpbGw9IiNGRkZGRkYiLz4KPHJlY3QgeD0iMCIgeT0iNTAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIvPgo8cG9seWdvbiBwb2ludHM9IjUwLDEwMCAyNSwxMDAgNTAsNzUiIGZpbGw9IiNGRkZGRkYiLz4KPHJlY3QgeD0iMCIgeT0iMTAwIiB3aWR0aD0iNTAiIGhlaWdodD0iNTAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciLz4KPHBvbHlnb24gcG9pbnRzPSI1MCwxNTAgMjUsMTUwIDUwLDEyNSIgZmlsbD0iI0ZGRkZGRiIvPgo8cmVjdCB4PSIwIiB5PSIxNTAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIvPgo8cG9seWdvbiBwb2ludHM9IjUwLDIwMCAyNSwyMDAgNTAsMTc1IiBmaWxsPSIjRkZGRkZGIi8+CjxyZWN0IHg9IjAiIHk9IjIwMCIgd2lkdGg9IjUwIiBoZWlnaHQ9IjUwIiBmaWxsPSIjMEEwQTBBIiBzdHJva2U9IiMwQTBBMEEiIHN0cm9rZS13aWR0aD0iMC43Ii8+Cjxwb2x5Z29uIHBvaW50cz0iNTAsMjAwIDI1LDIwMCA1MCwyMjUiIGZpbGw9IiNGRkZGRkYiLz4KPHJlY3QgeD0iMCIgeT0iMjUwIiB3aWR0aD0iNTAiIGhlaWdodD0iNTAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciLz4KPHBvbHlnb24gcG9pbnRzPSI1MCwyNTAgMjUsMjUwIDUwLDI3NSIgZmlsbD0iI0ZGRkZGRiIvPgo8cmVjdCB4PSIwIiB5PSIzMDAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIvPgo8cG9seWdvbiBwb2ludHM9IjUwLDMwMCAyNSwzMDAgNTAsMzI1IiBmaWxsPSIjRkZGRkZGIi8+CjxyZWN0IHg9IjAiIHk9IjM1MCIgd2lkdGg9IjUwIiBoZWlnaHQ9IjUwIiBmaWxsPSIjMEEwQTBBIiBzdHJva2U9IiMwQTBBMEEiIHN0cm9rZS13aWR0aD0iMC43Ii8+Cjxwb2x5Z29uIHBvaW50cz0iNTAsMzUwIDI1LDM1MCA1MCwzNzUiIGZpbGw9IiNGRkZGRkYiLz4KPHJlY3QgeD0iMCIgeT0iNDAwIiB3aWR0aD0iNTAiIGhlaWdodD0iNTAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciLz4KPHBvbHlnb24gcG9pbnRzPSI1MCw0MDAgMjUsNDAwIDUwLDQyNSIgZmlsbD0iI0ZGRkZGRiIvPgo8cmVjdCB4PSIwIiB5PSI0NTAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIvPgo8cmVjdCB4PSIwIiB5PSI1MDAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIvPgo8cmVjdCB4PSIwIiB5PSI1NTAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIvPgo8cmVjdCB4PSI1MCIgeT0iMCIgd2lkdGg9IjUwIiBoZWlnaHQ9IjUwIiBmaWxsPSIjMEEwQTBBIiBzdHJva2U9IiMwQTBBMEEiIHN0cm9rZS13aWR0aD0iMC43Ii8+Cjxwb2x5Z29uIHBvaW50cz0iMTAwLDUwIDc1LDUwIDEwMCwyNSIgZmlsbD0iI0ZGRkZGRiIvPgo8cmVjdCB4PSI1MCIgeT0iNTAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIvPgo8cG9seWdvbiBwb2ludHM9IjEwMCwxMDAgNzUsMTAwIDEwMCw3NSIgZmlsbD0iI0ZGRkZGRiIvPgo8cG9seWdvbiBwb2ludHM9IjUwLDEwMCA1MCwxNTAgMTAwLDEwMCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIvPgo8cG9seWdvbiBwb2ludHM9IjUwLDE1MCA1MCwyMDAgMTAwLDE1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIvPgo8cG9seWdvbiBwb2ludHM9IjUwLDI1MCA1MCwyMDAgMTAwLDI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIvPgo8cG9seWdvbiBwb2ludHM9IjUwLDMwMCA1MCwyNTAgMTAwLDMwMCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIvPgo8cG9seWdvbiBwb2ludHM9IjUwLDM1MCA1MCwzMDAgMTAwLDM1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIvPgo8cmVjdCB4PSI1MCIgeT0iMzUwIiB3aWR0aD0iNTAiIGhlaWdodD0iNTAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciLz4KPHBvbHlnb24gcG9pbnRzPSIxMDAsMzUwIDc1LDM1MCAxMDAsMzc1IiBmaWxsPSIjRkZGRkZGIi8+CjxyZWN0IHg9IjUwIiB5PSI0MDAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIvPgo8cG9seWdvbiBwb2ludHM9IjEwMCw0MDAgNzUsNDAwIDEwMCw0MjUiIGZpbGw9IiNGRkZGRkYiLz4KPHJlY3QgeD0iNTAiIHk9IjQ1MCIgd2lkdGg9IjUwIiBoZWlnaHQ9IjUwIiBmaWxsPSIjMEEwQTBBIiBzdHJva2U9IiMwQTBBMEEiIHN0cm9rZS13aWR0aD0iMC43Ii8+CjxyZWN0IHg9IjUwIiB5PSI1MDAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIvPgo8cmVjdCB4PSI1MCIgeT0iNTUwIiB3aWR0aD0iNTAiIGhlaWdodD0iNTAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciLz4KPHJlY3QgeD0iMTAwIiB5PSIwIiB3aWR0aD0iNTAiIGhlaWdodD0iNTAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciLz4KPHBvbHlnb24gcG9pbnRzPSIxNTAsNTAgMTI1LDUwIDE1MCwyNSIgZmlsbD0iI0ZGRkZGRiIvPgo8cG9seWdvbiBwb2ludHM9IjEwMCw1MCAxMDAsMTAwIDE1MCw1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIvPgo8cG9seWdvbiBwb2ludHM9IjEwMCwxMDAgMTAwLDE1MCAxNTAsMTAwIiBmaWxsPSIjMEEwQTBBIiBzdHJva2U9IiMwQTBBMEEiIHN0cm9rZS13aWR0aD0iMC43IiBzdHJva2UtbGluZWpvaW49Im1pdGVyIi8+Cjxwb2x5Z29uIHBvaW50cz0iMTAwLDE1MCAxMDAsMjAwIDE1MCwxNTAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciIHN0cm9rZS1saW5lam9pbj0ibWl0ZXIiLz4KPHBvbHlnb24gcG9pbnRzPSIxMDAsMzAwIDEwMCwyNTAgMTUwLDMwMCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIvPgo8cG9seWdvbiBwb2ludHM9IjEwMCwzNTAgMTAwLDMwMCAxNTAsMzUwIiBmaWxsPSIjMEEwQTBBIiBzdHJva2U9IiMwQTBBMEEiIHN0cm9rZS13aWR0aD0iMC43IiBzdHJva2UtbGluZWpvaW49Im1pdGVyIi8+Cjxwb2x5Z29uIHBvaW50cz0iMTAwLDQwMCAxMDAsMzUwIDE1MCw0MDAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciIHN0cm9rZS1saW5lam9pbj0ibWl0ZXIiLz4KPHJlY3QgeD0iMTAwIiB5PSI0MDAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIvPgo8cG9seWdvbiBwb2ludHM9IjE1MCw0MDAgMTI1LDQwMCAxNTAsNDI1IiBmaWxsPSIjRkZGRkZGIi8+CjxyZWN0IHg9IjEwMCIgeT0iNDUwIiB3aWR0aD0iNTAiIGhlaWdodD0iNTAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciLz4KPHBvbHlnb24gcG9pbnRzPSIxNTAsNDUwIDEyNSw0NTAgMTUwLDQ3NSIgZmlsbD0iI0ZGRkZGRiIvPgo8cmVjdCB4PSIxMDAiIHk9IjUwMCIgd2lkdGg9IjUwIiBoZWlnaHQ9IjUwIiBmaWxsPSIjMEEwQTBBIiBzdHJva2U9IiMwQTBBMEEiIHN0cm9rZS13aWR0aD0iMC43Ii8+CjxyZWN0IHg9IjEwMCIgeT0iNTUwIiB3aWR0aD0iNTAiIGhlaWdodD0iNTAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciLz4KPHBvbHlnb24gcG9pbnRzPSIxNTAsMCAxNTAsNTAgMjAwLDAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciIHN0cm9rZS1saW5lam9pbj0ibWl0ZXIiLz4KPHBvbHlnb24gcG9pbnRzPSIxNTAsNTAgMTUwLDEwMCAyMDAsNTAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciIHN0cm9rZS1saW5lam9pbj0ibWl0ZXIiLz4KPHBvbHlnb24gcG9pbnRzPSIxNTAsNDAwIDE1MCwzNTAgMjAwLDQwMCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIvPgo8cmVjdCB4PSIxNTAiIHk9IjQwMCIgd2lkdGg9IjUwIiBoZWlnaHQ9IjUwIiBmaWxsPSIjMEEwQTBBIiBzdHJva2U9IiMwQTBBMEEiIHN0cm9rZS13aWR0aD0iMC43Ii8+Cjxwb2x5Z29uIHBvaW50cz0iMjAwLDQwMCAxNzUsNDAwIDIwMCw0MjUiIGZpbGw9IiNGRkZGRkYiLz4KPHJlY3QgeD0iMTUwIiB5PSI0NTAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIvPgo8cG9seWdvbiBwb2ludHM9IjIwMCw0NTAgMTc1LDQ1MCAyMDAsNDc1IiBmaWxsPSIjRkZGRkZGIi8+CjxyZWN0IHg9IjE1MCIgeT0iNTAwIiB3aWR0aD0iNTAiIGhlaWdodD0iNTAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciLz4KPHJlY3QgeD0iMTUwIiB5PSI1NTAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIvPgo8cG9seWdvbiBwb2ludHM9IjIwMCwwIDIwMCw1MCAyNTAsMCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIvPgo8cG9seWdvbiBwb2ludHM9IjIwMCw1MCAyMDAsMTAwIDI1MCw1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIvPgo8cG9seWdvbiBwb2ludHM9IjIwMCw0MDAgMjAwLDM1MCAyNTAsNDAwIiBmaWxsPSIjMEEwQTBBIiBzdHJva2U9IiMwQTBBMEEiIHN0cm9rZS13aWR0aD0iMC43IiBzdHJva2UtbGluZWpvaW49Im1pdGVyIi8+Cjxwb2x5Z29uIHBvaW50cz0iMjAwLDQ1MCAyMDAsNDAwIDI1MCw0NTAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciIHN0cm9rZS1saW5lam9pbj0ibWl0ZXIiLz4KPHJlY3QgeD0iMjAwIiB5PSI0NTAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIvPgo8cG9seWdvbiBwb2ludHM9IjI1MCw0NTAgMjI1LDQ1MCAyNTAsNDc1IiBmaWxsPSIjRkZGRkZGIi8+CjxyZWN0IHg9IjIwMCIgeT0iNTAwIiB3aWR0aD0iNTAiIGhlaWdodD0iNTAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciLz4KPHBvbHlnb24gcG9pbnRzPSIyNTAsNTAwIDIyNSw1MDAgMjUwLDUyNSIgZmlsbD0iI0ZGRkZGRiIvPgo8cmVjdCB4PSIyMDAiIHk9IjU1MCIgd2lkdGg9IjUwIiBoZWlnaHQ9IjUwIiBmaWxsPSIjMEEwQTBBIiBzdHJva2U9IiMwQTBBMEEiIHN0cm9rZS13aWR0aD0iMC43Ii8+Cjxwb2x5Z29uIHBvaW50cz0iMzAwLDAgMzAwLDUwIDI1MCwwIiBmaWxsPSIjMEEwQTBBIiBzdHJva2U9IiMwQTBBMEEiIHN0cm9rZS13aWR0aD0iMC43IiBzdHJva2UtbGluZWpvaW49Im1pdGVyIi8+Cjxwb2x5Z29uIHBvaW50cz0iMzAwLDUwIDMwMCwxMDAgMjUwLDUwIiBmaWxsPSIjMEEwQTBBIiBzdHJva2U9IiMwQTBBMEEiIHN0cm9rZS13aWR0aD0iMC43IiBzdHJva2UtbGluZWpvaW49Im1pdGVyIi8+Cjxwb2x5Z29uIHBvaW50cz0iMzAwLDQwMCAzMDAsMzUwIDI1MCw0MDAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciIHN0cm9rZS1saW5lam9pbj0ibWl0ZXIiLz4KPHBvbHlnb24gcG9pbnRzPSIzMDAsNDUwIDMwMCw0MDAgMjUwLDQ1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIvPgo8cmVjdCB4PSIyNTAiIHk9IjQ1MCIgd2lkdGg9IjUwIiBoZWlnaHQ9IjUwIiBmaWxsPSIjMEEwQTBBIiBzdHJva2U9IiMwQTBBMEEiIHN0cm9rZS13aWR0aD0iMC43Ii8+Cjxwb2x5Z29uIHBvaW50cz0iMjUwLDQ1MCAyNzUsNDUwIDI1MCw0NzUiIGZpbGw9IiNGRkZGRkYiLz4KPHJlY3QgeD0iMjUwIiB5PSI1MDAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIvPgo8cG9seWdvbiBwb2ludHM9IjI1MCw1MDAgMjc1LDUwMCAyNTAsNTI1IiBmaWxsPSIjRkZGRkZGIi8+CjxyZWN0IHg9IjI1MCIgeT0iNTUwIiB3aWR0aD0iNTAiIGhlaWdodD0iNTAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciLz4KPHBvbHlnb24gcG9pbnRzPSIzNTAsMCAzNTAsNTAgMzAwLDAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciIHN0cm9rZS1saW5lam9pbj0ibWl0ZXIiLz4KPHBvbHlnb24gcG9pbnRzPSIzNTAsNTAgMzUwLDEwMCAzMDAsNTAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciIHN0cm9rZS1saW5lam9pbj0ibWl0ZXIiLz4KPHBvbHlnb24gcG9pbnRzPSIzNTAsNDAwIDM1MCwzNTAgMzAwLDQwMCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIvPgo8cmVjdCB4PSIzMDAiIHk9IjQwMCIgd2lkdGg9IjUwIiBoZWlnaHQ9IjUwIiBmaWxsPSIjMEEwQTBBIiBzdHJva2U9IiMwQTBBMEEiIHN0cm9rZS13aWR0aD0iMC43Ii8+Cjxwb2x5Z29uIHBvaW50cz0iMzAwLDQwMCAzMjUsNDAwIDMwMCw0MjUiIGZpbGw9IiNGRkZGRkYiLz4KPHJlY3QgeD0iMzAwIiB5PSI0NTAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIvPgo8cG9seWdvbiBwb2ludHM9IjMwMCw0NTAgMzI1LDQ1MCAzMDAsNDc1IiBmaWxsPSIjRkZGRkZGIi8+CjxyZWN0IHg9IjMwMCIgeT0iNTAwIiB3aWR0aD0iNTAiIGhlaWdodD0iNTAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciLz4KPHJlY3QgeD0iMzAwIiB5PSI1NTAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIvPgo8cmVjdCB4PSIzNTAiIHk9IjAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIvPgo8cG9seWdvbiBwb2ludHM9IjM1MCw1MCAzNzUsNTAgMzUwLDI1IiBmaWxsPSIjRkZGRkZGIi8+Cjxwb2x5Z29uIHBvaW50cz0iNDAwLDUwIDQwMCwxMDAgMzUwLDUwIiBmaWxsPSIjMEEwQTBBIiBzdHJva2U9IiMwQTBBMEEiIHN0cm9rZS13aWR0aD0iMC43IiBzdHJva2UtbGluZWpvaW49Im1pdGVyIi8+Cjxwb2x5Z29uIHBvaW50cz0iNDAwLDEwMCA0MDAsMTUwIDM1MCwxMDAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciIHN0cm9rZS1saW5lam9pbj0ibWl0ZXIiLz4KPHBvbHlnb24gcG9pbnRzPSI0MDAsMTUwIDQwMCwyMDAgMzUwLDE1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIvPgo8cG9seWdvbiBwb2ludHM9IjQwMCwzMDAgNDAwLDI1MCAzNTAsMzAwIiBmaWxsPSIjMEEwQTBBIiBzdHJva2U9IiMwQTBBMEEiIHN0cm9rZS13aWR0aD0iMC43IiBzdHJva2UtbGluZWpvaW49Im1pdGVyIi8+Cjxwb2x5Z29uIHBvaW50cz0iNDAwLDM1MCA0MDAsMzAwIDM1MCwzNTAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciIHN0cm9rZS1saW5lam9pbj0ibWl0ZXIiLz4KPHBvbHlnb24gcG9pbnRzPSI0MDAsNDAwIDQwMCwzNTAgMzUwLDQwMCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIvPgo8cmVjdCB4PSIzNTAiIHk9IjQwMCIgd2lkdGg9IjUwIiBoZWlnaHQ9IjUwIiBmaWxsPSIjMEEwQTBBIiBzdHJva2U9IiMwQTBBMEEiIHN0cm9rZS13aWR0aD0iMC43Ii8+Cjxwb2x5Z29uIHBvaW50cz0iMzUwLDQwMCAzNzUsNDAwIDM1MCw0MjUiIGZpbGw9IiNGRkZGRkYiLz4KPHJlY3QgeD0iMzUwIiB5PSI0NTAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIvPgo8cG9seWdvbiBwb2ludHM9IjM1MCw0NTAgMzc1LDQ1MCAzNTAsNDc1IiBmaWxsPSIjRkZGRkZGIi8+CjxyZWN0IHg9IjM1MCIgeT0iNTAwIiB3aWR0aD0iNTAiIGhlaWdodD0iNTAiIGZpbGw9IiMwQTBBMEEiIHN0cm9rZT0iIzBBMEEwQSIgc3Ryb2tlLXdpZHRoPSIwLjciLz4KPHJlY3QgeD0iMzUwIiB5PSI1NTAiIHdpZHRoPSI1MCIgaGVpZ2h0PSI1MCIgZmlsbD0iIzBBMEEwQSIgc3Ryb2tlPSIjMEEwQTBBIiBzdHJva2Utd2lkdGg9IjAuNyIvPgo8Y2lyY2xlIGN4PSIyNTIiIGN5PSIyMjIiIHI9IjI4IiBmaWxsPSIjMEEwQTBBIi8+Cjwvc3ZnPgo=" alt="" />
 </section>
@@ -212,10 +247,10 @@
     <div class="eyebrow">What you point it at</div>
     <h2>Four kinds of job.</h2>
     <div class="grid">
-      <div class="card"><h3>Research memo</h3><p>An answer you can defend, every number traced to a source.</p><p class="eg">&ldquo;Should we lead Q4 with founder content or client case studies?&rdquo;</p></div>
-      <div class="card"><h3>Competitor teardown</h3><p>Positioning, channels, and what we take from it.</p><p class="eg">&ldquo;How is that competitor actually winning on LinkedIn?&rdquo;</p></div>
+      <div class="card"><h3>Research memo</h3><p>An answer you can defend, <span class="keep">every number traced to a source.</span></p><p class="eg">&ldquo;Should we lead Q4 with founder content or client case studies?&rdquo;</p></div>
+      <div class="card"><h3>Competitor teardown</h3><p>Positioning, channels, <span class="keep">and what we take from it.</span></p><p class="eg">&ldquo;How is that competitor actually winning on LinkedIn?&rdquo;</p></div>
       <div class="card"><h3>Freeform</h3><p>Anything written. Ground it in Hivemind or not, as the job needs.</p><p class="eg">&ldquo;Turn these notes into a launch announcement.&rdquo;</p></div>
-      <div class="card"><h3>Build: code</h3><p>A repository instead of a document. Independent review plus your own tests.</p><p class="eg">&ldquo;Point it at the repo and harden this function.&rdquo;</p></div>
+      <div class="card"><h3>Build: code</h3><p><span class="keep">A repository instead of a document.</span> Independent review plus your own tests.</p><p class="eg">&ldquo;Point it at the repo and harden this function.&rdquo;</p></div>
     </div>
   </div>
 </section>
@@ -229,8 +264,8 @@
       <li><b>Set the standard</b> <span>What has to be true for you to trust the result.</span></li>
       <li><b>Choose the models</b> <span>Who writes, who checks. Then press Run.</span></li>
     </ol>
-    <p class="lead">From there it plans and runs the loop, stopping to ask you when the answer is genuinely yours to give. Watch it work in the browser, or start it from the command line and come back to the same sealed run record.</p>
-    <p class="lead"><strong>It runs on your machine, signed in with your own model accounts.</strong> The work is coordinated on your machine and the records stay there. Drafts go to the same providers you already use, through your own login, so nothing routes through us.</p>
+    <p class="lead">From there it plans and runs the loop, <span class="keep">stopping to ask you when the answer is genuinely yours to give.</span> <span class="keep">Watch it work in the browser,</span> or start it from the command line and <span class="keep">come back to the same sealed run record.</span></p>
+    <p class="lead"><strong>It runs on your machine, signed in with your own model accounts.</strong> <span class="keep">The work is coordinated on your machine,</span> and the records stay there. <span class="keep">Drafts go to the same providers you already use,</span> through your own login, so <span class="keep">nothing routes through us.</span></p>
   </div>
   <img class="art" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0MDAgNjAwIiByb2xlPSJpbWciIGFyaWEtbGFiZWw9IlRoZSBib3VsZGVyIGJlZGRlZCBvbiBhIGxvbmcgNDUtZGVncmVlIHNsb3BlIHJpc2luZyBjb3JuZXIgdG8gY29ybmVyLCBhIHNhZGRsZSBiZWxvdyB0aGUgc3VtbWl0Ij4KPGNsaXBQYXRoIGlkPSJjIj48cmVjdCB3aWR0aD0iNDAwIiBoZWlnaHQ9IjYwMCIvPjwvY2xpcFBhdGg+PGcgY2xpcC1wYXRoPSJ1cmwoI2MpIj48cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iNDAwIiBoZWlnaHQ9IjYwMCIgZmlsbD0iI0ZGRkZGRiIvPgo8cG9seWdvbiBwb2ludHM9Ii0yNCw0NTYgNDAsNTIwIDM2MCwyMDAgNDE2LDI1NiA0MTYsNjAwIC0yNCw2MDAiIGZpbGw9IiMwQTBBMEEiLz4KPGNpcmNsZSBjeD0iMTkwIiBjeT0iMzA3IiByPSI1MCIgZmlsbD0iIzBBMEEwQSIvPjwvZz4KPC9zdmc+Cg==" alt="" />
 </section>
@@ -239,14 +274,14 @@
   <div>
     <div class="eyebrow">The receipt</div>
     <h2>Don&rsquo;t take its word for it.</h2>
-    <p class="lead"><strong>A receipt is the run&rsquo;s record, sealed when it finishes and readable afterwards by anyone.</strong> It records what happened: the models that actually ran, the evidence retrieved, each finding, each decision you made, and the standard the work was held to.</p>
+    <p class="lead"><strong>A receipt is the run&rsquo;s record, <span class="keep">sealed when it finishes</span> and <span class="keep">readable afterwards by anyone.</span></strong> It records what happened: the models that actually ran, the evidence retrieved, each finding, each decision you made, and <span class="keep">the standard the work was held to.</span></p>
     <div class="rule"></div>
     <div class="eyebrow alarm">When the loop and the receipt disagree</div>
     <div class="grid">
       <div class="card"><h3>The loop said</h3><p><span class="faint" style="font-family:var(--mono);font-size:14px">done with findings</span></p></div>
       <div class="card alarm"><h3>The receipt derived</h3><p><span class="standing bad">Not verified</span></p><p style="margin-top:9px">The run was interrupted. The mechanical checks never ran.</p></div>
     </div>
-    <p class="lead warn">Camus reports the standing the evidence supports. The receipt overrules the claim, and it says so on screen.</p>
+    <p class="lead warn">Camus reports the standing the evidence supports. <span class="keep">The receipt overrules the claim, and it says so on screen.</span></p>
   </div>
   <img class="art" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0MDAgNjAwIiByb2xlPSJpbWciIGFyaWEtbGFiZWw9IkEgZmllbGQgb2Ygc3RyaXBlcyBpbnZlcnRlZCB3aGVyZXZlciB0d28gZGlhZ29uYWwgYmFuZHMgY3Jvc3MgaXQ7IHdoZXJlIHRoZSBiYW5kcyBtZWV0LCB0aGUgcGF0dGVybiBob2xkcyI+CjxjbGlwUGF0aCBpZD0iYyI+PHJlY3Qgd2lkdGg9IjQwMCIgaGVpZ2h0PSI2MDAiLz48L2NsaXBQYXRoPjxnIGNsaXAtcGF0aD0idXJsKCNjKSI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjQwMCIgaGVpZ2h0PSI2MDAiIGZpbGw9IiNGRkZGRkYiLz4KPHJlY3QgeD0iMCIgeT0iMjAiIHdpZHRoPSI0MDAiIGhlaWdodD0iNDAiIGZpbGw9IiMwQTBBMEEiLz4KPHJlY3QgeD0iMCIgeT0iMTAwIiB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwIiBmaWxsPSIjMEEwQTBBIi8+CjxyZWN0IHg9IjAiIHk9IjE4MCIgd2lkdGg9IjQwMCIgaGVpZ2h0PSI0MCIgZmlsbD0iIzBBMEEwQSIvPgo8cmVjdCB4PSIwIiB5PSIyNjAiIHdpZHRoPSI0MDAiIGhlaWdodD0iNDAiIGZpbGw9IiMwQTBBMEEiLz4KPHJlY3QgeD0iMCIgeT0iMzQwIiB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwIiBmaWxsPSIjMEEwQTBBIi8+CjxyZWN0IHg9IjAiIHk9IjQyMCIgd2lkdGg9IjQwMCIgaGVpZ2h0PSI0MCIgZmlsbD0iIzBBMEEwQSIvPgo8cmVjdCB4PSIwIiB5PSI1MDAiIHdpZHRoPSI0MDAiIGhlaWdodD0iNDAiIGZpbGw9IiMwQTBBMEEiLz4KPHJlY3QgeD0iMCIgeT0iNTgwIiB3aWR0aD0iNDAwIiBoZWlnaHQ9IjIwIiBmaWxsPSIjMEEwQTBBIi8+CjxjbGlwUGF0aCBpZD0iYkEiPjxwb2x5Z29uIHBvaW50cz0iLTcwMCwtNjg1IDExMDAsMTExNSAxMTAwLDEyMDUgLTcwMCwtNTk1Ii8+PC9jbGlwUGF0aD4KPGNsaXBQYXRoIGlkPSJiQiI+PHBvbHlnb24gcG9pbnRzPSItNzAwLDExNzUgMTEwMCwtNjI1IDExMDAsLTUzNSAtNzAwLDEyNjUiLz48L2NsaXBQYXRoPgo8ZyBjbGlwLXBhdGg9InVybCgjYkEpIj48cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iNDAwIiBoZWlnaHQ9IjYwMCIgZmlsbD0iI0ZGRkZGRiIvPjxyZWN0IHg9IjAiIHk9IjAiIHdpZHRoPSI0MDAiIGhlaWdodD0iMjAiIGZpbGw9IiMwQTBBMEEiLz4KPHJlY3QgeD0iMCIgeT0iNjAiIHdpZHRoPSI0MDAiIGhlaWdodD0iNDAiIGZpbGw9IiMwQTBBMEEiLz4KPHJlY3QgeD0iMCIgeT0iMTQwIiB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwIiBmaWxsPSIjMEEwQTBBIi8+CjxyZWN0IHg9IjAiIHk9IjIyMCIgd2lkdGg9IjQwMCIgaGVpZ2h0PSI0MCIgZmlsbD0iIzBBMEEwQSIvPgo8cmVjdCB4PSIwIiB5PSIzMDAiIHdpZHRoPSI0MDAiIGhlaWdodD0iNDAiIGZpbGw9IiMwQTBBMEEiLz4KPHJlY3QgeD0iMCIgeT0iMzgwIiB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwIiBmaWxsPSIjMEEwQTBBIi8+CjxyZWN0IHg9IjAiIHk9IjQ2MCIgd2lkdGg9IjQwMCIgaGVpZ2h0PSI0MCIgZmlsbD0iIzBBMEEwQSIvPgo8cmVjdCB4PSIwIiB5PSI1NDAiIHdpZHRoPSI0MDAiIGhlaWdodD0iNDAiIGZpbGw9IiMwQTBBMEEiLz4KPHJlY3QgeD0iMCIgeT0iNjIwIiB3aWR0aD0iNDAwIiBoZWlnaHQ9Ii0yMCIgZmlsbD0iIzBBMEEwQSIvPjwvZz4KPGcgY2xpcC1wYXRoPSJ1cmwoI2JCKSI+PHJlY3QgeD0iMCIgeT0iMCIgd2lkdGg9IjQwMCIgaGVpZ2h0PSI2MDAiIGZpbGw9IiNGRkZGRkYiLz48cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iNDAwIiBoZWlnaHQ9IjIwIiBmaWxsPSIjMEEwQTBBIi8+CjxyZWN0IHg9IjAiIHk9IjYwIiB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwIiBmaWxsPSIjMEEwQTBBIi8+CjxyZWN0IHg9IjAiIHk9IjE0MCIgd2lkdGg9IjQwMCIgaGVpZ2h0PSI0MCIgZmlsbD0iIzBBMEEwQSIvPgo8cmVjdCB4PSIwIiB5PSIyMjAiIHdpZHRoPSI0MDAiIGhlaWdodD0iNDAiIGZpbGw9IiMwQTBBMEEiLz4KPHJlY3QgeD0iMCIgeT0iMzAwIiB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwIiBmaWxsPSIjMEEwQTBBIi8+CjxyZWN0IHg9IjAiIHk9IjM4MCIgd2lkdGg9IjQwMCIgaGVpZ2h0PSI0MCIgZmlsbD0iIzBBMEEwQSIvPgo8cmVjdCB4PSIwIiB5PSI0NjAiIHdpZHRoPSI0MDAiIGhlaWdodD0iNDAiIGZpbGw9IiMwQTBBMEEiLz4KPHJlY3QgeD0iMCIgeT0iNTQwIiB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwIiBmaWxsPSIjMEEwQTBBIi8+CjxyZWN0IHg9IjAiIHk9IjYyMCIgd2lkdGg9IjQwMCIgaGVpZ2h0PSItMjAiIGZpbGw9IiMwQTBBMEEiLz48L2c+CjxnIGNsaXAtcGF0aD0idXJsKCNiQSkiPjxnIGNsaXAtcGF0aD0idXJsKCNiQikiPjxyZWN0IHg9IjAiIHk9IjAiIHdpZHRoPSI0MDAiIGhlaWdodD0iNjAwIiBmaWxsPSIjRkZGRkZGIi8+PHJlY3QgeD0iMCIgeT0iMjAiIHdpZHRoPSI0MDAiIGhlaWdodD0iNDAiIGZpbGw9IiMwQTBBMEEiLz4KPHJlY3QgeD0iMCIgeT0iMTAwIiB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwIiBmaWxsPSIjMEEwQTBBIi8+CjxyZWN0IHg9IjAiIHk9IjE4MCIgd2lkdGg9IjQwMCIgaGVpZ2h0PSI0MCIgZmlsbD0iIzBBMEEwQSIvPgo8cmVjdCB4PSIwIiB5PSIyNjAiIHdpZHRoPSI0MDAiIGhlaWdodD0iNDAiIGZpbGw9IiMwQTBBMEEiLz4KPHJlY3QgeD0iMCIgeT0iMzQwIiB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwIiBmaWxsPSIjMEEwQTBBIi8+CjxyZWN0IHg9IjAiIHk9IjQyMCIgd2lkdGg9IjQwMCIgaGVpZ2h0PSI0MCIgZmlsbD0iIzBBMEEwQSIvPgo8cmVjdCB4PSIwIiB5PSI1MDAiIHdpZHRoPSI0MDAiIGhlaWdodD0iNDAiIGZpbGw9IiMwQTBBMEEiLz4KPHJlY3QgeD0iMCIgeT0iNTgwIiB3aWR0aD0iNDAwIiBoZWlnaHQ9IjIwIiBmaWxsPSIjMEEwQTBBIi8+PC9nPjwvZz48L2c+Cjwvc3ZnPgo=" alt="" />
 </section>
@@ -256,11 +291,11 @@
     <div class="eyebrow">Fair questions</div>
     <h2>The ones you&rsquo;d ask anyway.</h2>
     <div class="findings">
-      <p><b>Why not just one LLM?</b> A model checking its own work can carry the writer&rsquo;s blind spots. A second company is less likely to miss the same things.</p>
+      <p><b>Why not just one LLM?</b> A model checking its own work can carry the <span class="keep">writer&rsquo;s blind spots.</span> A second company is less likely to miss the same things.</p>
       <p><b>What does Hivemind bring?</b> The knowledge the team has captured in Hivemind. The model brings horsepower, Hivemind brings Myosin&rsquo;s judgement, and the draft argues from that rather than the open internet.</p>
-      <p><b>How do you pick the two models?</b> The writer for fit with the job, the checker for independence. Swapping either is a setting, and the receipt shows who really ran. As better models ship, you point it at those.</p>
+      <p><b>How do you pick the two models?</b> The writer for fit with the job, <span class="keep">the checker for independence.</span> Swapping either is a setting, and the receipt shows who really ran. As better models ship, you point it at those.</p>
       <p><b>Should I ask for a harder check?</b> In two comparisons, higher requested effort used up to 2.7&times; the output tokens without changing either verdict. Start low, then escalate where a mistake would be costly.</p>
-      <p><b>Where does this go next?</b> Better connections into Hivemind are being built. As those land, the loop reaches more of what Myosin already has, and the same checking applies to all of it.</p>
+      <p><b>Where does this go next?</b> Better connections into Hivemind are being built. <span class="keep">As those land,</span> the loop reaches more of what Myosin already has, <span class="keep">and the same checking applies to all of it.</span></p>
     </div>
   </div>
   <img class="art" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0MDAgNjAwIiByb2xlPSJpbWciIGFyaWEtbGFiZWw9Ik5lc3RlZCBzcXVhcmVzIGFuZCBkaWFtb25kcyBmYWxsaW5nIGlud2FyZCBieSBoYWxmLCBkb3duIHRvIGEgc2luZ2xlIGJvdWxkZXIiPgo8Y2xpcFBhdGggaWQ9ImMiPjxyZWN0IHdpZHRoPSI0MDAiIGhlaWdodD0iNjAwIi8+PC9jbGlwUGF0aD48ZyBjbGlwLXBhdGg9InVybCgjYykiPjxyZWN0IHg9IjAiIHk9IjAiIHdpZHRoPSI0MDAiIGhlaWdodD0iNjAwIiBmaWxsPSIjMEEwQTBBIi8+Cjxwb2x5Z29uIHBvaW50cz0iMjE0LDEyIDU3NCwzNzIgMjE0LDczMiAtMTQ2LDM3MiIgZmlsbD0iI0ZGRkZGRiIvPgo8cG9seWdvbiBwb2ludHM9IjUwLDIxMiAzOTAsMjEyIDM5MCw1NTIgNTAsNTUyIiBmaWxsPSIjMEEwQTBBIi8+Cjxwb2x5Z29uIHBvaW50cz0iMjI2LDIzNCAzODQsMzkyIDIyNiw1NTAgNjgsMzkyIiBmaWxsPSIjRkZGRkZGIi8+Cjxwb2x5Z29uIHBvaW50cz0iMTYyLDMzMiAzMDIsMzMyIDMwMiw0NzIgMTYyLDQ3MiIgZmlsbD0iIzBBMEEwQSIvPgo8cG9seWdvbiBwb2ludHM9IjIzOCwzNTQgMjk2LDQxMiAyMzgsNDcwIDE4MCw0MTIiIGZpbGw9IiNGRkZGRkYiLz4KPGNpcmNsZSBjeD0iMjQ0IiBjeT0iNDIyIiByPSIyNiIgZmlsbD0iIzBBMEEwQSIvPjwvZz4KPC9zdmc+Cg==" alt="" />
@@ -281,8 +316,8 @@
       <li><b>Reaction</b> <span>&ldquo;Draft our take on this week&rsquo;s platform change, every claim sourced.&rdquo;</span></li>
     </ol>
     <div class="rule"></div>
-    <p class="lead">These are ideas for a first pilot rather than promises. Today you&rsquo;ll watch one job run end to end, and everything else comes from a real run that replays from its sealed receipt.</p>
-    <p class="lead"><strong>One model makes it. Another tries to break it. You decide when the evidence is enough.</strong></p>
+    <p class="lead">These are ideas for a first pilot rather than promises. <span class="keep">Today you&rsquo;ll watch one job run end to end,</span> and everything else comes from <span class="keep">a real run that replays from its sealed receipt.</span></p>
+    <p class="lead"><strong><span class="keep">One model makes it.</span> <span class="keep">Another tries to break it.</span> <span class="keep">You decide when the evidence is enough.</span></strong></p>
   </div>
   <img class="art" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0MDAgNjAwIiByb2xlPSJpbWciIGFyaWEtbGFiZWw9IlRoZSBib3VsZGVyIGJlZGRlZCBvbiBhIGxvbmcgNDUtZGVncmVlIHNsb3BlIHJpc2luZyBjb3JuZXIgdG8gY29ybmVyLCBhIHNhZGRsZSBiZWxvdyB0aGUgc3VtbWl0Ij4KPGNsaXBQYXRoIGlkPSJjIj48cmVjdCB3aWR0aD0iNDAwIiBoZWlnaHQ9IjYwMCIvPjwvY2xpcFBhdGg+PGcgY2xpcC1wYXRoPSJ1cmwoI2MpIj48cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iNDAwIiBoZWlnaHQ9IjYwMCIgZmlsbD0iI0ZGRkZGRiIvPgo8cG9seWdvbiBwb2ludHM9Ii0yNCw0NTYgNDAsNTIwIDM2MCwyMDAgNDE2LDI1NiA0MTYsNjAwIC0yNCw2MDAiIGZpbGw9IiMwQTBBMEEiLz4KPGNpcmNsZSBjeD0iMTkwIiBjeT0iMzA3IiByPSI1MCIgZmlsbD0iIzBBMEEwQSIvPjwvZz4KPC9zdmc+Cg==" alt="" />
 </section><div class="sr-only" id="live" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -290,7 +325,7 @@
   <span id="counter">1 / 10</span>
   <span class="brandmark">Camus</span>
   <span class="spacer"></span>
-  <span>arrow keys, or</span>
+  <span class="nav-hint">arrow keys, or</span>
   <button id="prev" type="button" aria-label="Previous slide">&larr;</button>
   <button id="next" type="button" aria-label="Next slide">&rarr;</button>
 </div>
@@ -316,7 +351,12 @@
     document.getElementById('live').textContent =
       'Slide ' + (i+1) + ' of ' + slides.length + (title ? ': ' + title : '');
   }
-  function go(n){ i = Math.max(0, Math.min(slides.length-1, n)); render(); }
+  function go(n){
+    i = Math.max(0, Math.min(slides.length-1, n));
+    render();
+    slides[i].scrollTop = 0;
+    (document.scrollingElement || document.documentElement).scrollTop = 0;
+  }
   document.addEventListener('keydown', function(e){
     if (e.key === ' ' && e.target && e.target.tagName === 'BUTTON') return;
     if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); go(i+1); }
