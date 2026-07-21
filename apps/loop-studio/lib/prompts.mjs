@@ -90,6 +90,8 @@ ${contractBlock(acceptanceContract)}
 
 Deliverable type: ${LANES[lane]?.label ?? 'Freeform'}. ${depthBrief(depth)}
 
+Do NOT ask questions. Planning does not pause the run, so a question here appears only as planner text and cannot be answered. If an input is missing, name it as a risk; Camus raises human questions later through explicit checkpoints.
+
 Reply with 4-6 terse bullet points: the angles you will investigate, the 2-3 source types you will lean on, and the single biggest risk of getting this wrong. Plain text bullets, nothing else.`;
 }
 

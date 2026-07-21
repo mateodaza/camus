@@ -322,7 +322,9 @@ export async function runVerify(markdown, lane = 'freeform', { onCheck, skipNetw
       status: hasOnlyBoundInternalEvidence ? 'pass' : lane === 'freeform' ? 'warn' : 'fail',
       detail: hasOnlyBoundInternalEvidence
         ? `No public URL was returned; ${hReceiptBound.length} Hivemind citation(s) are bound to connector results captured in this receipt.`
-        : 'No URLs found. A researched deliverable must cite live sources or receipt-bound internal evidence.',
+        : lane === 'freeform'
+          ? 'No external links were supplied; external source checking did not apply to this freeform run.'
+          : 'No URLs found. A researched deliverable must cite live sources or receipt-bound internal evidence.',
       evidence: hasOnlyBoundInternalEvidence ? hReceiptBound.map((n) => `[H${n}]`) : [],
     });
   } else if (skipNetwork) {

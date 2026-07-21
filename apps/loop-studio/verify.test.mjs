@@ -2347,4 +2347,29 @@ Members asked for practical milestones [H1].
   assert.match(comparisonNote([{ effortRequested: 'low' }, { effortRequested: 'high' }]), /not proven to be an effort-only comparison/i, 'missing auditor identity fails closed');
 }
 
+// A source-free freeform deliverable warns rather than fails, and says why in
+// terms of what freeform actually promises. The wrong explanation told an
+// announcement that "a researched deliverable must cite live sources", and the
+// tempting wrong fix is to promote the warn to a pass so the demo looks tidier.
+// Both halves are asserted: the status AND the sentence.
+{
+  const NO_LINKS = `## Summary
+Myosin Learns is a live session. A person decides when the evidence is enough.
+`;
+
+  const freeform = await runVerify(NO_LINKS, 'freeform', { skipNetwork: true });
+  const ffLinks = freeform.checks.find((c) => c.id === 'links');
+  assert.equal(ffLinks.status, 'warn', 'freeform with no URLs warns, and is never promoted to pass');
+  assert.match(ffLinks.detail, /external source checking did not apply/i,
+    'the freeform warning explains itself as a freeform run, not as a researched deliverable');
+  assert.doesNotMatch(ffLinks.detail, /researched deliverable must cite/i,
+    'freeform is not told the research lane\'s rule');
+
+  const memo = await runVerify(NO_LINKS, 'research_memo', { skipNetwork: true });
+  const memoLinks = memo.checks.find((c) => c.id === 'links');
+  assert.equal(memoLinks.status, 'fail', 'a research memo with no sources still fails');
+  assert.match(memoLinks.detail, /researched deliverable must cite/i,
+    'the research lane keeps its own explanation');
+}
+
 console.log('verify.test: all assertions passed');
