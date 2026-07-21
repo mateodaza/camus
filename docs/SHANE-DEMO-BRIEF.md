@@ -185,9 +185,45 @@ capability, Hivemind supplies Myosin's context and provenance.
 
 ### Prepared proof, in a second tab
 
-1. `9fuc` — the full accountability story.
-2. The low/high comparison card — same artifact, different requested effort.
-3. The brand-voice refusal, **only if asked** about that use case.
+Both demo tasks were rehearsed live on 2026-07-21 and their receipts lead Recents.
+
+1. `20260721-143543-p1cl` — **the announcement task, verified with findings.**
+   Artifact `47a00fde7011`, receipt `284c8de8378e`. Three rounds, 155 words, and a
+   recorded human decision on the call to action.
+2. `20260721-143123-yvii` — **the Hivemind memo, verified.** Artifact
+   `ce551be5dbc7`, receipt `da1b94903ea6`. Grounded, two rounds; the reviewer
+   caught an omitted captured raw score and an inexact section structure, and
+   said plainly that deterministic verification could not pass until both were
+   fixed. Round two came back clean.
+3. `9fuc` — the older accountability story, still the deepest walk-through.
+4. The low/high comparison card — same artifact, different requested effort.
+5. The brand-voice refusal, **only if asked** about that use case.
+
+### ⚠️ How to narrate the planted claims
+
+**The reviewer never caught the 40% claim or the guarantee, because no draft ever
+contained them.** Both are in the acceptance contract, and every revision of
+`p1cl` excluded them from the first draft onward. If the room is told to watch
+the reviewer reject them, they will look at the findings and not find them.
+
+Say it the way it happened, which is a better story anyway. The contract stopped
+the two obvious claims before anything was written. What the reviewer then caught
+was the subtler layer a person skims past:
+
+- **high** — Invented registration and response commitments
+- **medium** — Invented session and product details
+- **medium** — Unsupported workflow generalization
+- **high**, round two — Required length is not met
+
+And the contract's last clause fired for real. Rather than guessing, the loop
+asked which call to action to use, and the answer is sealed in the receipt:
+
+> **Q.** What single call to action should the published post use: invite readers to attend, ask them to follow Myosin, or ask them to comment? Only the first is supported without adding operational details.
+>
+> **A.** Invite readers to attend the Myosin Learns session. Do not add a registration link, time, venue, follow, comment, or notification mechanism.
+
+That exchange is the demo. It is the loop declining to invent something and a
+person deciding instead, recorded where anyone can check it afterwards.
 
 ### Choreography
 
@@ -214,7 +250,7 @@ Do not predict which outcome will occur. The providers and loop are nondetermini
 
 ### Observed rehearsal — 2026-07-19 (of the SUPERSEDED task)
 
-⚠️ This rehearsal ran the **earlier** announcement task, before the 2026-07-21 rewrite, and at a three-round cap rather than the two-round cap now specified. Its timings are indicative, not a forecast for the current task. **The current live task has not been rehearsed yet; do it twice before the session.**
+⚠️ This rehearsal ran the **earlier** announcement task, before the 2026-07-21 rewrite. It is kept for the human-checkpoint timing only. **The current tasks were rehearsed on 2026-07-21. Both produced sealed receipts — one verified and one verified with findings. See the prepared-proof list above.** Note the announcement ran to three rounds, not the two originally specified.
 
 Run `20260719-125205-zb99` It reached its first human checkpoint after **2m15s**. The goal owner chose **one more round**, then **stop** when the remaining high finding still described invented mechanics and the draft carried multiple calls to action. It completed three draft revisions and three independent review rounds; verification never ran.
 
