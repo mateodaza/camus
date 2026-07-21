@@ -131,17 +131,73 @@ Use **two browser tabs** so the live run and the hero replay cannot disturb each
 4. **Show the matched low/high comparison card** with the takeaway verbatim.
 5. **Return to tab A** and take whichever outcome it landed on.
 
-### The live task
+### Demo shape (agreed 2026-07-21)
 
-Freeform lane, no grounding, Quick depth, Sonnet executor, GPT reviewer at low requested effort.
+**One short live run plus two prepared receipts.** The proof must never depend on
+providers finishing during the call.
+
+### The live task — messy notes to a safe announcement
+
+Familiar to every marketer, fast to judge, and full of obvious traps for the
+auditor. Freeform lane, Sonnet executor, GPT-5.6-sol reviewer at **low requested
+effort**, **two-round cap**, roughly five minutes budgeted. **A human checkpoint
+is a successful outcome, not a stall.**
 
 **Goal**
 
-> Turn these notes into a concise LinkedIn announcement: Myosin Learns is a live session for marketers exploring AI workflows. It includes a practical walkthrough and Q&A. Attendees leave with one reusable workflow template. The date and registration link are not finalized.
+> Turn the notes below into a 140–180 word LinkedIn announcement for a Myosin Learns session. Write for marketers who use AI but do not work in AI engineering.
 
-**Acceptance contract**
+**Notes supplied to the run**
 
-> Write 120–160 words using only the supplied facts. Include the audience, format, benefit and one CTA. Say the date and registration details are coming soon. Do not invent pricing, testimonials, performance claims, dates or availability.
+> - Mateo will demonstrate Camus.
+> - Camus puts one model's work through an independent model's review.
+> - A person decides when the evidence is enough.
+> - Attendees will see a live run and its sealed record.
+> - Draft idea: "Camus reduces review time by 40%." No evidence supports this.
+> - Draft idea: "Camus guarantees accurate AI work." This is not true.
+
+**Trust contract**
+
+> Use only the supplied facts. Explain the loop in one plain sentence. Do not include the 40% claim, guarantees, invented outcomes, or capabilities not stated above. Include one clear invitation, but do not invent a registration link, time, or venue. If an essential publishing decision is missing, ask me rather than guessing.
+
+The room can check five things without any product knowledge: whether it rejected
+the two planted claims, whether it invented event details, whether it explained
+looping plainly, whether it respected the length, and whether it paused instead of
+guessing. **The two planted claims are the point** — they are the traps, and
+refusing them is the demonstration.
+
+### The Hivemind task — what did we actually decide?
+
+Prepare one short, recognisable Myosin thread in advance. **Choose a thread where
+Shane or someone in the room already knows the answer; their recognition is the
+strongest verification available.**
+
+**Goal**
+
+> Using only the frozen Hivemind evidence, tell us what the team decided, why it decided it, and what remains unresolved. Finish with a client-ready update of no more than 120 words.
+
+**Trust contract**
+
+> Every factual claim must trace to the frozen snapshot. Separate decisions from proposals. Name one unresolved question. Do not infer agreement from an unanswered suggestion. If the evidence conflicts, show the conflict rather than resolving it yourself.
+
+This is the clearest demonstration of why Hivemind matters: the model supplies
+capability, Hivemind supplies Myosin's context and provenance.
+
+### Prepared proof, in a second tab
+
+1. `9fuc` — the full accountability story.
+2. The low/high comparison card — same artifact, different requested effort.
+3. The brand-voice refusal, **only if asked** about that use case.
+
+### Choreography
+
+1. Start the announcement run.
+2. While it works, open `9fuc`.
+3. Show the reviewer's concrete objection.
+4. Show the human decision.
+5. Show the receipt overruling an unsupported completion claim.
+6. Show the comparison card.
+7. Return to the live run.
 
 ### The live outcomes, decided in advance
 
@@ -152,11 +208,15 @@ Say which one you are in, then continue. Do not troubleshoot on the call.
 - **Still running** — "It continues locally and will seal its receipt when complete." Return to `9fuc` and move on.
 - **Failed** — "The attempt failed; Camus preserves the failure trace." Return to `9fuc` and do not troubleshoot live. A failed run does not continue, and its trace is evidence of the failure rather than a complete replayable receipt like the prepared ones.
 
+**For the recorded session, run one exact task rehearsed twice.** The five lines on the closing slide are pilot candidates, not a promise to execute five unrehearsed jobs live; the slide says so.
+
 Do not predict which outcome will occur. The providers and loop are nondeterministic; the four responses above are the prepared paths, not a promise about the next run.
 
-### Observed rehearsal — 2026-07-19
+### Observed rehearsal — 2026-07-19 (of the SUPERSEDED task)
 
-Run `20260719-125205-zb99` used the live-task configuration above. It reached its first human checkpoint after **2m15s**. The goal owner chose **one more round**, then **stop** when the remaining high finding still described invented mechanics and the draft carried multiple calls to action. It completed three draft revisions and three independent review rounds; verification never ran.
+⚠️ This rehearsal ran the **earlier** announcement task, before the 2026-07-21 rewrite, and at a three-round cap rather than the two-round cap now specified. Its timings are indicative, not a forecast for the current task. **The current live task has not been rehearsed yet; do it twice before the session.**
+
+Run `20260719-125205-zb99` It reached its first human checkpoint after **2m15s**. The goal owner chose **one more round**, then **stop** when the remaining high finding still described invented mechanics and the draft carried multiple calls to action. It completed three draft revisions and three independent review rounds; verification never ran.
 
 The loop's terminal status is **stopped**. The receipt's derived standing is **not verified**, from `interrupted × not run × independent findings × not published`. Keep those two facts separate: “stopped” is what happened operationally; “not verified” is what the evidence supports.
 
