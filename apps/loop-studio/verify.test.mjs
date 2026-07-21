@@ -548,8 +548,11 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
     ['fix', fixPrompt({ goal: 'g', acceptanceContract: contract, lane: 'research_memo', draft: 'd', findings: [], answers: [], viaClaude: false })],
   ]) assert.ok(prompt.includes(contract), `${name} is constrained by the binding acceptance contract`);
 
-  const { groundingPrompt } = await import('./lib/prompts.mjs');
+  const { groundingPrompt, groundingRetryPrompt } = await import('./lib/prompts.mjs');
   assert.ok(groundingPrompt({ goal: 'g', acceptanceContract: contract }).includes('select:mcp__claude_ai_Hivemind_Staging__knowledge_search'), 'the frozen retriever loads the deferred managed tool before searching');
+  const retryPrompt = groundingRetryPrompt({ goal: 'g', acceptanceContract: contract });
+  assert.match(retryPrompt, /previous retrieval attempt returned text without calling knowledge_search/, 'the bounded retry names the observed failure');
+  assert.match(retryPrompt, /A text-only answer is a failed retry/, 'the bounded retry cannot be satisfied by another acknowledgement');
 
   delete process.env.HIVEMIND_VIA_CLAUDE;
 }
@@ -563,14 +566,15 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   assert.equal(normalizeDeliverable('---\ntitle: Memo\n---\n## Summary'), '---\ntitle: Memo\n---\n## Summary', 'frontmatter is preserved');
   const previousOffline = process.env.MOCK_OFFLINE;
   process.env.MOCK_OFFLINE = '1';
-  for (const [queried, expected] of [[false, false], [true, true]]) {
+  for (const [mode, expected] of [['never', false], ['first', true], ['retry', true]]) {
     const events = [];
     const reviewerPrompts = [];
     const claudeCalls = [];
     const groundingQuestions = [];
     let persistedSnapshot = null;
+    let groundAttempts = 0;
     const run = {
-      id: `ground-${queried}`, goal: 'g', acceptanceContract: 'State evidence honestly.',
+      id: `ground-${mode}`, goal: 'g', acceptanceContract: 'State evidence honestly.',
       lane: 'freeform', depth: 'quick', ground: true,
       models: { maker: { model: 'maker' }, reviewer: { model: 'reviewer', effort: 'low' }, loop: { roundCap: 1 } },
     };
@@ -584,13 +588,17 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
         claude: async ({ stage, prompt, toolPolicy }) => {
           claudeCalls.push({ stage, prompt, toolPolicy });
           if (stage === 'plan') return { ok: true, text: '- plan', costUsd: 0 };
-          if (stage === 'ground') return {
+          if (stage === 'ground') {
+            groundAttempts += 1;
+            const queried = mode === 'first' || (mode === 'retry' && groundAttempts === 2);
+            return {
             ok: true, text: 'Snapshot ready.', costUsd: 0,
             modelActual: 'anthropic:multiple[retrieval-helper+maker]',
             hivemindQueried: queried, hivemindQueries: queried ? 2 : 0,
             hivemindQueryTexts: queried ? ['cohort evidence', 'launch gaps'] : [],
             hivemindResults: queried ? [{ query: 'cohort evidence', title: 'Cohort playbook', author: 'A. Expert', ref: 'chunk-1', score: 0.8, excerpt: 'Programs should sell progress, not content.' }] : [],
-          };
+            };
+          }
           return { ok: true, text: '## Notes\n\nA plain note.\n', costUsd: 0, modelActual: 'anthropic:maker' };
         },
         codex: async ({ prompt }) => { reviewerPrompts.push(prompt); return { ran: true, verdict: 'APPROVED', findings: [], blocking: [], nonblocking: [], questions: [] }; },
@@ -605,17 +613,19 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
     });
     const groundDone = events.findLast((event) => event.type === 'stage' && event.name === 'ground' && event.status === 'done');
     assert.ok(result.status === 'done' || result.status === 'done_with_findings', 'the grounding probe completes the full loop');
-    assert.equal(groundDone?.queried, expected, `grounding records actual connector use (${queried})`);
+    assert.equal(groundDone?.queried, expected, `grounding records actual connector use (${mode})`);
     assert.equal(groundDone?.connected, expected, 'configured-but-unused never wears a connected/grounded badge');
-    assert.equal(groundDone?.itemCount, queried ? 1 : 0, 'the frozen stage reports the captured item count used by the UI');
-    assert.equal(groundingQuestions.filter((question) => question.kind === 'grounding').length, queried ? 0 : 1, 'zero captured excerpts require an explicit human downgrade');
-    if (!queried) assert.match(groundingQuestions.find((question) => question.kind === 'grounding')?.text ?? '', /without calling knowledge_search/, 'the checkpoint distinguishes no tool call from a queried empty result');
+    assert.equal(groundDone?.itemCount, expected ? 1 : 0, 'the frozen stage reports the captured item count used by the UI');
+    assert.equal(groundingQuestions.filter((question) => question.kind === 'grounding').length, expected ? 0 : 1, 'a successful bounded retry avoids the human; two misses require an explicit downgrade');
+    assert.equal(groundAttempts, mode === 'first' ? 1 : 2, 'missing required tool use gets exactly one bounded retry');
+    if (!expected) assert.match(groundingQuestions.find((question) => question.kind === 'grounding')?.text ?? '', /without calling knowledge_search/, 'the checkpoint distinguishes no tool call from a queried empty result');
+    if (mode === 'retry') assert.match(claudeCalls.filter((call) => call.stage === 'ground')[1]?.prompt ?? '', /A text-only answer is a failed retry/, 'the second call receives the strict tool-use retry prompt');
     assert.ok(persistedSnapshot?.snapshot_id, 'the single-run knowledge snapshot is sealed before drafting');
     assert.equal(claudeCalls.find((call) => call.stage === 'ground')?.toolPolicy, 'hivemind_only', 'retrieval can use Hivemind but not the web');
     assert.equal(claudeCalls.find((call) => call.stage === 'make')?.toolPolicy, 'web_only', 'drafting cannot re-query the frozen internal corpus');
     assert.deepEqual(result.makerActualModels, ['anthropic:maker'], 'retriever helpers stay in stage usage and never become the artifact executor actual');
-    assert.ok(reviewerPrompts[0].includes(`Hivemind queried: ${queried ? 'yes' : 'no'}`), 'auditor receives adapter evidence, not maker self-attestation');
-    if (queried) {
+    assert.ok(reviewerPrompts[0].includes(`Hivemind queried: ${expected ? 'yes' : 'no'}`), 'auditor receives adapter evidence, not maker self-attestation');
+    if (expected) {
       assert.ok(claudeCalls.find((call) => call.stage === 'make')?.prompt.includes('[H1] Cohort playbook — A. Expert'), 'Camus, not the maker, assigns the stable artifact marker');
       assert.ok(reviewerPrompts[0].includes('"cohort evidence"'), 'auditor receives the observed query trail');
       assert.ok(reviewerPrompts[0].includes('Programs should sell progress, not content.'), 'auditor receives the bounded tool-result excerpt');

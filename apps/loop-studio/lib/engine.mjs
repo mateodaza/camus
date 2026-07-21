@@ -4,7 +4,7 @@
 // halt instead of re-litigating, oscillating findings halt, infra failures are
 // never a pass, and every pause routes a plain-English question to the human.
 
-import { planPrompt, groundingPrompt, makePrompt, reviewPrompt, fixPrompt } from './prompts.mjs';
+import { planPrompt, groundingPrompt, groundingRetryPrompt, makePrompt, reviewPrompt, fixPrompt } from './prompts.mjs';
 import { runVerify, extractThresholdLines, bindThresholdAssessments } from './verify.mjs';
 import { getModels } from './models.mjs';
 import { extractClaimCandidates } from './claims.mjs';
@@ -164,11 +164,11 @@ export async function runLoop(run, ctx) {
       useFrozenKnowledge(run.frozenKnowledge);
     } else if (run.ground && hivemind.hivemindStatus().mode === 'claude') {
       stage('ground', 'active');
-      const retrieval = await withRetries('grounding', () =>
+      const retrieve = (prompt) => withRetries('grounding', () =>
         adapters.claude({
           model: makerModel,
           stage: 'ground',
-          prompt: groundingPrompt(run),
+          prompt,
           cwd: ctx.scratchDir,
           signal,
           onTick: log,
@@ -176,8 +176,15 @@ export async function runLoop(run, ctx) {
           toolPolicy: 'hivemind_only',
         }),
       );
+      let retrieval = await retrieve(groundingPrompt(run));
       recordMakerCall('ground', retrieval, { executor: false });
       costUsd += retrieval.costUsd || 0;
+      if (!(retrieval.hivemindResults ?? []).length && !(retrieval.hivemindQueries > 0)) {
+        log('The retriever returned without calling knowledge_search. Retrying the required tool call once before asking you.');
+        retrieval = await retrieve(groundingRetryPrompt(run));
+        recordMakerCall('ground_retry', retrieval, { executor: false });
+        costUsd += retrieval.costUsd || 0;
+      }
       emit('cost', { costUsd });
       hivemindQueries = retrieval.hivemindQueries || 0;
       for (const query of retrieval.hivemindQueryTexts ?? []) if (!hivemindQueryTexts.includes(query)) hivemindQueryTexts.push(query);

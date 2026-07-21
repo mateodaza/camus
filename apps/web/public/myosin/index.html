@@ -28,6 +28,8 @@
     color-scheme:light;
     --ink:#0A0A0A; --paper:#FFFFFF; --red:#E8584F; --muted:#464646; --faint:#7d7d7d;
     --rule:#ECEAE4; --wash:#F6F5F1;
+
+    --red-ink:#C0362D;
     --serif:'EB Garamond',Garamond,Georgia,serif;
     --sans:Archivo,'Helvetica Neue',Helvetica,Arial,sans-serif;
     --mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,monospace;
@@ -56,17 +58,17 @@
 
   .mark{width:clamp(76px,8vw,120px);height:auto;display:block;margin-bottom:26px}
   .wordmark{font-family:var(--serif);font-weight:500;font-size:clamp(30px,3.2vw,44px);letter-spacing:-.02em;line-height:1}
-  .wordmark span{font-family:var(--mono);font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);display:block;margin-top:12px}
+  .wordmark span{font-family:var(--mono);font-weight:500;font-size:13.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);display:block;margin-top:12px}
 
-  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin-bottom:20px}
-  .eyebrow.alarm{color:var(--red)}
+  .eyebrow{font-family:var(--mono);font-weight:500;font-size:13px;letter-spacing:.13em;text-transform:uppercase;color:var(--muted);margin-bottom:20px}
+  .eyebrow.alarm{color:var(--red-ink)}
   h1{font-family:var(--serif);font-weight:500;font-size:clamp(38px,5.6vw,70px);line-height:1.02;letter-spacing:-.028em;text-wrap:balance}
   h2{font-family:var(--serif);font-weight:500;font-size:clamp(30px,4.1vw,52px);line-height:1.06;letter-spacing:-.022em;max-width:36ch;text-wrap:balance}
   .sub{font-family:var(--serif);font-style:italic;font-size:clamp(20px,2.2vw,28px);color:var(--muted);margin-top:16px;max-width:48ch;line-height:1.35;text-wrap:pretty}
   .sub span,.keep{white-space:nowrap}
   p.lead{font-size:clamp(17px,1.5vw,20px);color:var(--muted);margin-top:18px;max-width:68ch;line-height:1.58;text-wrap:pretty}
   p.lead strong{color:var(--ink);font-weight:600}
-  .cite{font-family:var(--mono);font-size:12px;color:var(--faint);margin-top:24px;letter-spacing:.04em}
+  .cite{font-family:var(--mono);font-size:12.5px;color:var(--muted);margin-top:24px;letter-spacing:.04em}
   .rule{height:1px;background:var(--rule);margin:22px 0}
 
   .quote{font-family:var(--serif);font-size:clamp(17px,1.85vw,21px);line-height:1.36;max-width:66ch;padding:16px 22px;background:var(--wash)}
@@ -90,7 +92,7 @@
   .findings p b{font-family:var(--serif);font-weight:600;font-size:1.08em;color:var(--ink)}
   .cycle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;width:fit-content;margin-top:22px;padding:13px 20px;background:var(--wash)}
   .cycle span{font-family:var(--mono);font-size:13px;letter-spacing:.07em;text-transform:uppercase;color:var(--ink)}
-  .cycle i{font-style:normal;color:var(--faint)}
+  .cycle i{font-style:normal;color:var(--muted)}
   .cycle .loopmark{width:30px;height:24px;flex:none}
 
   .faint{color:var(--faint)} .warn{color:var(--red)}

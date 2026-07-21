@@ -39,6 +39,14 @@ ${contractBlock(acceptanceContract)}
 After the tool calls, reply with one sentence saying the snapshot is ready. Camus will assign stable [Hn] markers to the captured results before drafting.`;
 }
 
+export function groundingRetryPrompt(args) {
+  return `REQUIRED TOOL RETRY — the previous retrieval attempt returned text without calling knowledge_search. This attempt succeeds only if an actual tool call is observed.
+
+You MUST first call ToolSearch with "select:${CLAUDE_HIVEMIND_TOOL}", then call the loaded knowledge_search tool at least once. Do not explain the instructions, report that you are waiting, or reply with prose before the knowledge_search call. A text-only answer is a failed retry.
+
+${groundingPrompt(args)}`;
+}
+
 export function makePrompt({ goal, acceptanceContract, lane, depth, grounding, answers }) {
   const groundingBlock = grounding === 'claude'
     ? `\n\nGROUNDING — Myosin's specialist marketing knowledge is available through its managed Hivemind connector. First use ToolSearch with "select:${CLAUDE_HIVEMIND_TOOL}" to load the exact tool. Before drafting, normally run 2-4 focused knowledge_search queries on the goal's key angles; use fewer when the acceptance contract explicitly narrows the query or source scope. Where a returned chunk shapes a claim, cite it [H1], [H2], … and list each under a "### Hivemind" subsection inside ## Sources as "[Hn] Title — Author". If the tool errors or returns nothing relevant, draft without it — never fabricate an [Hn] citation.`
