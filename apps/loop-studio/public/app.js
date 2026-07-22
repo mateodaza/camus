@@ -97,6 +97,39 @@ function renderMd(md) {
 // State
 // ---------------------------------------------------------------------------
 
+// The goal can be a paragraph. Show two lines, mark it clickable only when
+// there is genuinely more to see, and let click or Enter open the rest.
+function markGoalClamp() {
+  const el = $('rungoal');
+  if (!el.clientHeight) return;           // still hidden: nothing to measure yet
+  if (el.classList.contains('open')) return;
+  const truncated = el.scrollHeight - el.clientHeight > 1;
+  el.classList.toggle('clamped', truncated);
+  el.title = truncated ? 'Show the whole goal' : '';
+}
+
+// The run view is hidden when the goal is written, so measuring there reports
+// zero for both heights and the affordance never appears. Observe instead: the
+// callback fires when the element is actually laid out, and again on resize.
+new ResizeObserver(markGoalClamp).observe($('rungoal'));
+
+function setRunGoal(text) {
+  const el = $('rungoal');
+  el.textContent = text;
+  el.dataset.goal = text;
+  el.classList.remove('open');
+  el.setAttribute('aria-expanded', 'false');
+  markGoalClamp();
+}
+
+function toggleRunGoal() {
+  const el = $('rungoal');
+  if (!el.classList.contains('clamped')) return;
+  const open = el.classList.toggle('open');
+  el.setAttribute('aria-expanded', String(open));
+  el.title = open ? 'Collapse the goal' : 'Show the whole goal';
+}
+
 const state = {
   lane: 'research_memo',
   // Depth is a run preference, set from Settings and remembered locally. It is
@@ -600,7 +633,16 @@ $('lanes').addEventListener('click', (e) => {
   state.lane = btn.dataset.lane;
   document.querySelectorAll('.lane').forEach((l) => l.classList.toggle('selected', l === btn));
   $('target-wrap').classList.toggle('hidden', state.lane !== 'build');
+  // Build runs the gate inside the target repo and never runs a grounding
+  // stage, so offering Hivemind there would promise something that cannot
+  // happen. The request below sends false for the same reason.
+  $('ground-field').classList.toggle('hidden', state.lane === 'build');
   if (state.lane === 'build') $('compare-panel').classList.add('hidden');
+});
+
+$('rungoal').addEventListener('click', toggleRunGoal);
+$('rungoal').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleRunGoal(); }
 });
 
 $('open-compare').addEventListener('click', async () => {
@@ -711,7 +753,7 @@ $('start').addEventListener('click', async () => {
     const res = await fetch(`${API}/api/runs`, {
       method: 'POST',
       headers: postHeaders(),
-      body: JSON.stringify({ goal, acceptanceContract, lane: state.lane, depth: state.depth, ground: $('ground').checked, targetPath: state.lane === 'build' ? $('target-path').value : undefined }),
+      body: JSON.stringify({ goal, acceptanceContract, lane: state.lane, depth: state.depth, ground: state.lane !== 'build' && $('ground').checked, targetPath: state.lane === 'build' ? $('target-path').value : undefined }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
@@ -739,7 +781,7 @@ function attach(id, goal) {
   state.reviewRounds = 0;
   $('launch').classList.add('hidden');
   $('runview').classList.remove('hidden');
-  $('rungoal').textContent = goal || id;
+  setRunGoal(goal || id);
   $('run-cost').textContent = ''; // don't carry the previous run's spend
   $('run-timer').textContent = '0:00';
   $('stop').classList.remove('hidden');
@@ -1213,7 +1255,7 @@ function feed(node) {
 function handle(ev) {
   switch (ev.type) {
     case 'run':
-      if (ev.run?.goal) $('rungoal').textContent = ev.run.goal;
+      if (ev.run?.goal) setRunGoal(ev.run.goal);
       if (ev.at) { state.runStartAt = ev.at; startTimer(ev.at); }
       state.runLane = ev.run?.lane;
       state.runTargetPath = ev.run?.targetPath ?? null;
@@ -1526,7 +1568,7 @@ function handle(ev) {
             const res = await fetch(`${API}/api/runs/${state.runId}/resume`, { method: 'POST', headers: postHeaders() });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || res.statusText);
-            attach(data.id, $('rungoal').textContent);
+            attach(data.id, $('rungoal').dataset.goal || $('rungoal').textContent);
           } catch (err) {
             resume.textContent = `couldn't resume: ${String(err.message).slice(0, 60)}`;
           }

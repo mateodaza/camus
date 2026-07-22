@@ -141,7 +141,7 @@
       <!-- Depth moved into Settings: it is a run preference, not a briefing
            decision, and the form stays focused on goal, contract, and lane. -->
       <div class="row">
-        <div>
+        <div id="ground-field">
           <label class="lbl">Grounding</label>
           <label class="toggle" id="ground-wrap">
             <input type="checkbox" id="ground" />
@@ -187,7 +187,7 @@
   <main id="runview" class="runview hidden">
     <header class="runbar">
       <button id="back" class="ghost" title="Back to launch" aria-label="Back to launch">←</button>
-      <div class="rungoal" id="rungoal"></div>
+      <div class="rungoal" id="rungoal" tabindex="0" role="button" aria-expanded="false"></div>
       <div class="runmeta">
         <span id="run-status" class="pill status running" aria-live="polite">running</span>
         <span id="run-timer" class="mono">0:00</span>

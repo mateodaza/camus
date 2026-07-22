@@ -156,7 +156,14 @@ textarea:focus { outline: none; border-color: var(--ink); }
   display: flex; align-items: center; gap: 14px; padding: 11px 16px;
   border-bottom: 1px solid var(--rule); background: rgba(255, 255, 255, .85);
 }
-.rungoal { flex: 1; font-family: var(--serif); font-size: 17px; letter-spacing: -.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The goal is the question the run answered, so a finished run must be able to
+   show all of it. Two lines while it runs keeps the bar tight; click or press
+   Enter to open the rest. */
+.rungoal { flex: 1; font-family: var(--serif); font-size: 17px; letter-spacing: -.01em; line-height: 1.35;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.rungoal.clamped { cursor: pointer; }
+.rungoal.clamped:hover, .rungoal:focus-visible { color: var(--red); }
+.rungoal.open { -webkit-line-clamp: unset; max-height: 42vh; overflow: auto; }
 .runmeta { display: flex; align-items: center; gap: 12px; }
 .ghost { font-family: var(--mono); font-size: 12.5px; color: var(--muted); border: 1px solid var(--rule); border-radius: 2px; padding: 6px 12px; }
 .ghost:hover { color: var(--ink); border-color: var(--ink); }
