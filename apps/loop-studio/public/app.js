@@ -786,6 +786,9 @@ function attach(id, goal) {
   $('run-timer').textContent = '0:00';
   $('stop').classList.remove('hidden');
   $('audit-replay').classList.add('hidden');
+  $('toggle-run-story').classList.add('hidden');
+  $('toggle-run-story').setAttribute('aria-expanded', 'false');
+  $('toggle-run-story').textContent = 'Run summary';
   $('download-report').textContent = 'Evidence pack';
   state.runStartAt = null;
   $('feed').innerHTML = '';
@@ -972,14 +975,15 @@ Every arm received the same sealed goal, acceptance contract, model-catalog deci
 This slice records execution evidence only. It does **not** declare a winner. Blinded cross-arm judging and human disagreement handling are the next protocol step.`);
 }
 
-// Layer 1 of the disclosure stack: the story, above the deliverable, for someone
-// who will never open a receipt. Layers 2 and 3 (evidence card, raw trail) stay
-// exactly where they are. Every sentence is derived by story.mjs from the sealed
-// receipt — nothing here is written for the demo.
+// Layer 1 of the disclosure stack: a completed-run story for someone who will
+// never open a receipt. It starts collapsed so the deliverable remains the focus;
+// the toolbar reveals it on demand. Layers 2 and 3 (evidence card, raw trail)
+// stay exactly where they are. Every sentence is derived by story.mjs from the
+// sealed receipt — nothing here is written for the demo.
 function renderRunStory(report, standing) {
   document.getElementById('run-story-card')?.remove();
   const story = runStory(report, standing);
-  const card = el('div', `story-card ${story.degraded ? 'degraded' : ''}`);
+  const card = el('div', `story-card hidden ${story.degraded ? 'degraded' : ''}`);
   card.id = 'run-story-card';
   card.appendChild(el('div', 'story-headline', story.headline));
   const body = el('div', 'story-body');
@@ -1019,6 +1023,16 @@ function renderRunStory(report, standing) {
   card.appendChild(rail);
   const doc = document.querySelector('.doc-wrap');
   doc?.insertBefore(card, doc.firstChild);
+
+  const storyToggle = $('toggle-run-story');
+  storyToggle.classList.remove('hidden');
+  storyToggle.setAttribute('aria-expanded', 'false');
+  storyToggle.textContent = 'Run summary';
+  storyToggle.onclick = () => {
+    const hidden = card.classList.toggle('hidden');
+    storyToggle.setAttribute('aria-expanded', String(!hidden));
+    storyToggle.textContent = hidden ? 'Run summary' : 'Hide summary';
+  };
 }
 
 async function renderEvidenceReceipt(standing) {
