@@ -1,16 +1,18 @@
 {
-  "description": "The run decision record. Every model here is passed explicitly on every call (claude --model, codex -m) — account and CLI defaults are never reachable. Change a decision here, in the studio's settings panel (which writes this file), or per-session via env (CLAUDE_MODEL / CODEX_MODEL / CODEX_EFFORT / ROUND_CAP).",
+  "description": "The run decision record. Every seat is a backend+model pair passed explicitly on every call (claude --model, codex -m, or the named openai_compat endpoint) — account and CLI defaults are never reachable. Change a decision here, in the studio's settings panel (which writes this file), per run from the launch form, or per-session via env (CLAUDE_MODEL / CODEX_MODEL / CODEX_EFFORT / ROUND_CAP, honored only when the seat runs the matching CLI backend). Opt-in open-weight backends are declared under `backends` (docs/MULTI-MODEL-SEATS.md has the shape); none exist until someone writes one down.",
   "maker": {
-    "model": "sonnet",
-    "why": "Claude Code alias, stable across CLI versions; drafts and fixes are research+writing work where Sonnet's speed/cost fits a live demo. Decided 2026-07-12."
+    "backend": "claude",
+    "model": "opus",
+    "why": "set from the studio settings panel, 2026-08-06"
   },
   "reviewer": {
+    "backend": "codex",
     "model": "gpt-5.6-sol",
-    "effort": "low",
-    "why": "Revisited deliberately 2026-07-19, as the previous pin's note required. Two conditions changed: codex-cli is now 0.144.1 (was 0.137.0), so this line is reachable; and codex demoted gpt-5.4 to hidden in its own catalog, so the old pin was no longer selectable in Settings. Verified by live fire 2026-07-19: answered the review schema, normalized to a real REVISE with 3 findings, and classified a proposed-threshold ledger entry as policy with cited reasoning (18.2k in / 654 out, 32s at low effort). Effort stays low to keep demo rounds fast — the low-vs-high difference is shown as its own comparison rather than assumed."
+    "effort": "high",
+    "why": "set from the studio settings panel, 2026-08-06"
   },
   "loop": {
-    "roundCap": 3,
-    "why": "set from the studio settings panel, 2026-07-12"
+    "roundCap": 2,
+    "why": "set from the studio settings panel, 2026-08-06"
   }
 }
