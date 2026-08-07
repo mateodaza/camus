@@ -39,10 +39,17 @@ node server.mjs
 ```
 
 Open <http://localhost:1913> and use **Settings** to select both seats, their models,
-reviewer effort, and the round cap. Studio's **Build** lane still uses the direct trusted
-code gate—Claude Code makes the change and Codex CLI reviews it—although their models and
-reviewer effort are configurable. Reversing the provider roles applies to Studio's written
-and research lanes, not to Build in 0.3.2.
+reviewer effort, and the round cap. A fresh checkout uses pragmatic public defaults
+(Sonnet maker, `gpt-5.4-mini` reviewer at low effort, two rounds); Settings saves Carlos's
+standing choices under `~/.camus/studio/models.json` and does not rewrite the tracked
+defaults. Studio's **Build** lane still uses the direct trusted code gate—Claude Code makes
+the change and Codex CLI reviews it—although their models and reviewer effort are
+configurable. Reversing the provider roles applies to Studio's written and research lanes,
+not to Build in 0.3.2.
+
+For written and research lanes, completed artifacts stay local unless **Publish the
+completed artifact to Hivemind** is checked before launch. Accepting review findings does
+not grant publication consent, and Build never uses this artifact-publication path.
 
 ## 2. Prepare CodenameWukong
 
@@ -123,7 +130,8 @@ The operating sequence is:
 5. **Protect the solution path.** Stop immediately for a custody breach, false receipt,
    orphaned process, scope drift, ignored round cap, or bypassed verification. Record UI/UX
    friction, latency, token waste, and non-blocking ideas for the end instead of repeatedly
-   interrupting a healthy run.
+   interrupting a healthy run. Keep diagnostics targeted: never dump the broad environment
+   or process table, and redact credential-shaped values before recording output.
 6. **Hand back two outputs.** First, the game result: terminal state, commit, test evidence,
    review standing, and any deferred findings. Second, a short Camus report: material bugs,
    UX friction, and pragmatic improvements observed during the run.
@@ -160,11 +168,21 @@ camus retro
   implementation manually.
 - `verify_failed`: the candidate is not shippable.
 
+In 0.3.2, terminals reached after an accepted review receipt report that receipt's reviewer
+backend, model (or explicit `not_recorded`), effort, and round. Preserve those fields at
+handoff; never substitute the maker model when a reviewer model was not recorded.
+
 Camus never pushes or opens a PR. Carlos or his agent reviews the resulting commit and
 handles GitHub.
 
-## Current Enemies PR
+## Current CodenameWukong state
 
-The current Enemies PR does not need another Camus run—it is already the WP1–WP10
-output. Health, damage, invulnerability, knockback, defeat, drops, and quest credit
-should be the next separately specified feature.
+[CodenameWukong PR #2](https://github.com/CarlosQ96/CodenameWukong/pull/2) merged on
+August 7, 2026 (merge commit `7842a6b`). It carries the complete WP1–WP10 Enemies output
+and does not need another Camus run.
+
+Wait for Carlos's next real feature/spec; do not invent game work to exercise Camus. When
+the spec arrives, fetch Carlos's current `main`, confirm a clean committed baseline, and
+start a new persisted run from that state. Do not reuse the old WP worktrees blindly.
+Health, damage, invulnerability, knockback, defeat, drops, and quest credit remain examples
+of deliberately excluded follow-up scope—not an assumed next feature without Carlos's spec.
