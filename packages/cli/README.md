@@ -13,6 +13,11 @@ ships an ordered task list as one feature branch with a report. Formerly Nightcr
 v2; v1 remains archived at [mateodaza/nightcrawler](https://github.com/mateodaza/nightcrawler).
 Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMUS-SPEC.md).
 
+> **Public alpha (0.3.1).** This build was proven through the complete WP1–WP10
+> CodenameWukong Enemies feature. Use it on real work and keep the acceptance contract
+> explicit. A material custody or receipt defect should stop the run; ordinary UX and
+> efficiency observations belong in `camus retro`, not in repeated harness expansion.
+
 ```
 plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep → verify
        full posture: loops while P0/P1/P2 findings remain, round cap 3
@@ -247,6 +252,27 @@ rejected loudly, never silently downgraded.
   the whole table does not — codex config tables merge. Details in the levers
   table below.
 
+## Operate for the solution
+
+Camus is custody around capable agents, not a reason to micromanage them. Give the maker
+freedom over implementation details inside the acceptance contract, then let the host-owned
+signals—processes, worktree state, receipts, and deterministic verification—decide whether
+the run remains trustworthy.
+
+- Use the direct skill for terminal-native work; use Studio when visual supervision,
+  human questions, comparison, or verification-only recovery materially helps.
+- Preserve the complete contract. Studio may progressively disclose fields, but it must
+  not narrow what the gate can express.
+- Interrupt immediately for a false receipt, custody breach, orphaned process, ignored
+  round cap, or work outside the declared scope.
+- Do not interrupt merely because a model chose a different sound implementation, a phase
+  is taking an honest amount of time, or a non-blocking UX improvement became visible.
+- Prefer the bounded result. `done_with_findings` means the final repair passed deterministic
+  verification but was not re-reviewed; inspect the preserved findings and claimed
+  resolutions instead of sending it through an unbounded loop.
+- After the run, use `camus retro` to collect recurring friction. Recommendations remain
+  read-only; the next real feature—not an invented benchmark feature—proves the improvement.
+
 ## Environment levers
 
 One reference for every knob. Each defaults off or safe, so with none set the gate
@@ -286,7 +312,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli
+npm i -g camus-cli@0.3.1
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)
@@ -318,7 +344,7 @@ trusted-context line changed for the new worktree home, and apply migrates the o
 `npx camus-cli` can resolve a cached older version of the CLI — we have observed 0.2.0
 and 0.2.2 answering alternate invocations mid-feat. This is display-only: the gate in
 `~/.claude` is a frozen copy, so what your runs execute is unaffected. For a pinned CLI,
-use `npx camus-cli@latest` or install globally (`npm i -g camus-cli`).
+use `npx camus-cli@latest` or install globally (`npm i -g camus-cli@latest`).
 
 ## Run
 

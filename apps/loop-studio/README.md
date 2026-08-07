@@ -1,6 +1,7 @@
 # Camus Loop Studio
 
-A local web UI that runs the Camus loop on words instead of code — research and analysis on any topic — so non-technical people can watch it work:
+A local web UI for operating Camus across written work and code, with the complete
+acceptance contract visible and every human handoff attached to the run:
 
 **plan → draft (Claude) → adversarial review (Codex, a different vendor) → fix → deterministic verify → done — or a plain-English question routed to the human.**
 
@@ -12,7 +13,7 @@ The studio is the loop's visual front door. What it does today:
 
 - **Words, any topic** — research memos, teardowns, freeform analysis.
 - **Marketing, the tuned vertical** — the compliance wordlist ships regulated-claims defaults and grounding rides Myosin's Hivemind (staging today), because that is where the studio has real internal knowledge to stand on (and the two products co-market).
-- **Code** — the Build lane points the camus gate at a git repo on this machine: isolated worktree, cross-model review, the repo's own tests as the verdict, needs_human pauses answered from the same question card. In beta, newer than the words lanes.
+- **Code** — the Build lane points the Camus gate at a git repo on this machine: isolated worktree, cross-model review, the repo's own tests as the verdict, and `needs_human` pauses answered from the same question card. An eligible parked candidate resumes through verification only—no repeated Plan, Implement, or Review—and an unsafe or contradictory candidate fails closed. This lane is public-alpha software, proven through the WP1–WP10 CodenameWukong Enemies feature.
 
 The trust-protocol integration now ships in Studio: every new run starts with an explicit acceptance contract; seals raw execution × verification × audit × publication dimensions; records requested/resolved/actual executor and auditor identities plus actual reviewer effort; and mints separate artifact and receipt hashes in a downloadable evidence pack. Research packs include two structured ledgers. Citation markers become claim candidates labeled `supported`, `unsupported`, or `unchecked`; a live URL alone never becomes support. The acceptance contract is deterministically split into stable criteria labeled `met`, `unmet`, or `unclear`, so comparison arms are judged against identical requirements. If deterministic repair changes the final revision, Studio runs a fresh closure audit before that revision can inherit standing. Evidence-pack v2 preserves the identity split: criteria and claim meaning bind the artifact, while their auditor decisions bind the receipt. The one-word standing remains derived presentation and never enters the permanent pack.
 

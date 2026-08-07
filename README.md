@@ -28,7 +28,7 @@ You need [Claude Code](https://code.claude.com) and the [Codex CLI](https://gith
 (`codex login`) — the cross-vendor pairing is the product, so both halves are required.
 
 ```bash
-npm i -g camus-cli
+npm i -g camus-cli@0.3.1
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 cd your-repo && claude
@@ -40,6 +40,16 @@ The run ends in a report, never a shrug: `done` is earned by a clean review plus
 own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
+
+### Public alpha: 0.3.1
+
+Camus 0.3.1 is the first public-alpha build proven through a complete ten-package game
+feature. The final run produced the solution without mid-run harness surgery; the earlier
+runs supplied the custody, recovery, receipt, and UX defects that this release closes.
+It is ready for friends and collaborators to use on real work, while remaining a 0.x tool:
+material trust failures should stop a run, and ordinary UX or efficiency findings should
+go to `camus retro` instead of derailing the solution. See the
+[0.3.1 release notes](docs/RELEASE-0.3.1.md).
 
 ## Makes it work
 
@@ -72,6 +82,9 @@ own tests; anything less arrives as a named halt with the remedy in the note
   `done_with_findings` with the findings carried verbatim, never "review clean".
 - **A stalled review becomes a decision on your desk** (`needs_decision`); accepting is
   one flag and the proven worktree lands itself, nothing re-implemented.
+- **A final bounded repair never impersonates a clean review.** It finishes as
+  `done_with_findings` / `fixed_unreviewed`, preserving the findings and the maker's
+  claimed resolutions for the human handoff.
 - **Budgets halt as questions.** `budgetTokens` caps a feat at task boundaries against
   totals that survive resumes — an estimate, never an invoice.
 - **Preflight refuses bad ground with the remedy attached**: no repo, zero commits,
@@ -80,7 +93,8 @@ own tests; anything less arrives as a named halt with the remedy in the note
   a genuine ambiguity halts with a question, and every pause hint names its exact
   resume shape.
 - **Kill it anywhere; resume finishes only what is left.** Finished tasks skip, and
-  proven work lands mechanically.
+  proven work lands mechanically. Studio can also resume an eligible parked candidate
+  with verification only—no repeated planning, implementation, or review phases.
 - **You can watch it.** `camus watch` is a live board with a heartbeat ("last
   heartbeat Xs ago", a loud warning when a "running" feat goes quiet) and honest token
   totals. Landed a task by hand? `camus reconcile` records it, with git evidence
@@ -106,6 +120,7 @@ packages/cli/             # the npm package "camus-cli"
   merge_settings.py       # permission-profile merger (preserves your settings)
   workflows/              # camus-loop + camus-feat + camus-plan (the engine)
   skills/camus/           # SKILL.md, review prompt, schema, gate scripts (unit-tested)
+apps/loop-studio/         # local visual operator: words lanes + Build recovery
 apps/web/                 # the marketing site (Next.js, static export)
 brand/                    # logo SVGs + BRAND.md
 docs/                     # design notes and generation recipes
@@ -115,7 +130,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli
+npm i -g camus-cli@0.3.1
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```
