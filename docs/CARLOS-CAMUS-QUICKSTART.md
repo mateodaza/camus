@@ -1,8 +1,10 @@
 # Camus quickstart for CodenameWukong
 
-Camus 0.3.1 uses Claude Code as the maker and Codex CLI as the independent reviewer.
-The direct workflow currently runs inside Claude Code; another agent may supervise it,
-but should not implement alongside Camus.
+Camus 0.3.1 supports configurable maker and reviewer seats in Loop Studio for written
+and research work, including reversed Claude/Codex pairings and declared OpenAI-compatible
+backends. The direct code workflow—and Studio's Build lane—currently keep the trusted gate's
+Claude Code maker plus Codex CLI reviewer pairing. Another agent may supervise that code
+workflow, but should not implement alongside Camus.
 
 ## 1. Install once
 
@@ -21,6 +23,26 @@ Optional for unattended runs:
 ```bash
 camus auto-setup
 ```
+
+### Configurable seats in Loop Studio
+
+Loop Studio lets you choose the maker and reviewer independently for written and research
+work. It supports Claude and Codex in either seat, plus explicitly declared
+OpenAI-compatible backends. The receipt records the providers and models that actually ran;
+a same-vendor pairing remains usable but is labeled advisory rather than independent.
+
+```bash
+git clone https://github.com/mateodaza/camus.git
+cd camus/apps/loop-studio
+node server.mjs --doctor
+node server.mjs
+```
+
+Open <http://localhost:1913> and use **Settings** to select both seats, their models,
+reviewer effort, and the round cap. Studio's **Build** lane still uses the direct trusted
+code gate—Claude Code makes the change and Codex CLI reviews it—although their models and
+reviewer effort are configurable. Reversing the provider roles applies to Studio's written
+and research lanes, not to Build in 0.3.1.
 
 ## 2. Prepare CodenameWukong
 
@@ -76,16 +98,47 @@ Use:
   re-reviewed, so it reports `done_with_findings`.
 - `roundCap: 2` by default; increase it only when the feature genuinely warrants it.
 
-## 4. What the supervising agent should do
+## 4. Run it as an agent-guided loop
+
+Carlos can give the feature to a supervising agent and ask that agent to operate Camus
+from beginning to handoff. This is more than passively watching a terminal: the agent
+chooses the smallest Camus surface, turns the request into a complete contract, selects
+the posture and review budget, monitors the run, routes genuine questions to Carlos, and
+returns the finished candidate plus feedback about Camus itself.
+
+The operating sequence is:
+
+1. **Ground in the source of truth.** Read the live repository, pinned spec or issue, and
+   current baseline. Define required behavior, deterministic tests, exclusions, and the
+   handoff condition.
+2. **Choose the route.** Use `/camus-loop` for one bounded task, `/camus-plan` followed by
+   `/camus-feat` for a real multi-package feature, or Studio when visible controls,
+   configurable seats, stop/resume, and receipt inspection are useful.
+3. **Start Camus, then stay outside the implementation.** Camus owns planning,
+   implementation, review rounds, fixes, worktrees, verification, and receipts. The outer
+   agent must not quietly implement missing work beside it.
+4. **Monitor the evidence Camus owns.** Watch phases, processes, worktree state,
+   verification, receipts, `camus watch`, or Studio. Route a `needs_human` question to
+   Carlos verbatim and resume with his answer.
+5. **Protect the solution path.** Stop immediately for a custody breach, false receipt,
+   orphaned process, scope drift, ignored round cap, or bypassed verification. Record UI/UX
+   friction, latency, token waste, and non-blocking ideas for the end instead of repeatedly
+   interrupting a healthy run.
+6. **Hand back two outputs.** First, the game result: terminal state, commit, test evidence,
+   review standing, and any deferred findings. Second, a short Camus report: material bugs,
+   UX friction, and pragmatic improvements observed during the run.
 
 Give the agent this instruction:
 
-> Operate Camus; do not implement the feature outside it. Supply the complete acceptance
-> contract, then let the run work. Monitor with `camus watch` or `camus status`. Interrupt
-> only for a custody breach, false receipt, orphaned process, scope drift, ignored round
-> cap, or bypassed verification. Treat ordinary UX friction or latency as retrospective
-> feedback. On `needs_human`, ask me the exact question. Close only from the terminal
-> report, clean worktree, commit SHA, and head-bound verification.
+> You are the Camus operator for this feature, not a parallel implementer. Ground in the
+> live spec and repository, supply the complete acceptance contract, choose the smallest
+> useful Camus workflow, and let the run solve the task. Monitor with `camus watch`,
+> `camus status`, or Studio. Interrupt only for a custody breach, false receipt, orphaned
+> process, scope drift, ignored round cap, or bypassed verification. Route genuine human
+> questions to me verbatim. Record ordinary UX friction, latency, token waste, and ideas
+> without derailing a healthy run. At handoff, report both the game result—terminal state,
+> commit, tests, review standing, and deferred findings—and a short prioritized Camus
+> bugs/UX/efficiency review. Never implement alongside Camus or claim more than its receipt.
 
 Useful commands from another terminal:
 

@@ -16,6 +16,9 @@ It runs as three Claude Code workflows plus a skill: `/camus-plan` turns a raw
 request into a quality-gated task list, `/camus-loop` takes one task, and `/camus-feat`
 ships an ordered task list as one feature branch with a report.
 
+**New here? Start with the [five-minute quickstart](QUICKSTART.md)** for code, Loop
+Studio, or agent-supervised operation.
+
 ```
 plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep → verify
        full posture: loops while P0/P1/P2 findings remain, round cap 3
