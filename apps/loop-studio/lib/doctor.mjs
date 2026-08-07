@@ -212,7 +212,7 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
       );
     }
   } catch (err) {
-    add('backends', 'Configured backends', false, err.message, 'fix the backends entry in checks/models.json');
+    add('backends', 'Configured backends', false, err.message, 'fix the active local model decision file (or the tracked defaults if no local file exists)');
   }
   add(
     'git', 'git', !!gitV,
@@ -267,7 +267,7 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
       `maker: ${summarize(seats.maker)}; reviewer: ${summarize(seats.reviewer)} — reviewer list ${seats.reviewerSource === 'codex_cache' ? 'CLI-verified from the codex cache' : 'a conservative fallback'}`,
       null, { advisory: true, seats });
   } catch (err) {
-    add('catalog', 'Seat catalog', false, err.message, 'fix the backends entry in checks/models.json', { advisory: true });
+    add('catalog', 'Seat catalog', false, err.message, 'fix the active local model decision file (or the tracked defaults if no local file exists)', { advisory: true });
   }
   if (hm.mode === 'claude' && deep) {
     // Probe ONLY the managed connector. `mcp list` health-checks every local

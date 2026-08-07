@@ -1,18 +1,18 @@
 {
-  "description": "The run decision record. Every seat is a backend+model pair passed explicitly on every call (claude --model, codex -m, or the named openai_compat endpoint) — account and CLI defaults are never reachable. Change a decision here, in the studio's settings panel (which writes this file), per run from the launch form, or per-session via env (CLAUDE_MODEL / CODEX_MODEL / CODEX_EFFORT / ROUND_CAP, honored only when the seat runs the matching CLI backend). Opt-in open-weight backends are declared under `backends` (docs/MULTI-MODEL-SEATS.md has the shape); none exist until someone writes one down.",
+  "description": "Tracked public defaults for Loop Studio. Every seat is passed explicitly on every call; account and CLI defaults are never reachable. The Settings panel writes local operator state to ~/.camus/studio/models.json instead of mutating this file. Per-run choices and CLAUDE_MODEL / CODEX_MODEL / CODEX_EFFORT / ROUND_CAP still override the standing decision. Opt-in open-weight backends belong in the local operator file (docs/MULTI-MODEL-SEATS.md has the shape).",
   "maker": {
     "backend": "claude",
-    "model": "opus",
-    "why": "set from the studio settings panel, 2026-08-06"
+    "model": "sonnet",
+    "why": "pragmatic public default: capable words maker without Opus-by-default spend"
   },
   "reviewer": {
     "backend": "codex",
-    "model": "gpt-5.6-sol",
-    "effort": "high",
-    "why": "set from the studio settings panel, 2026-08-06"
+    "model": "gpt-5.4-mini",
+    "effort": "low",
+    "why": "pragmatic public default: bounded independent review; raise explicitly for high-stakes work"
   },
   "loop": {
     "roundCap": 2,
-    "why": "set from the studio settings panel, 2026-08-06"
+    "why": "pragmatic public default from QUICKSTART; increase only when the work benefits"
   }
 }

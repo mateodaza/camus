@@ -163,6 +163,23 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('S1 clear→done', res.status === 'done', res.status)
     ok('S1 decisions surfaced', Array.isArray(res.decisions) && res.decisions.length === 1)
     ok('S1 implement ran', calls.includes('implement'))
+    ok('S1 terminal surfaces receipt-bound reviewer backend/effort',
+      res.reviewerBackend === 'codex' && res.reviewerEffort === 'medium' && res.reviewerRound === 1,
+      `${res.reviewerBackend}/${res.reviewerEffort}/r${res.reviewerRound}`)
+    ok('S1 terminal says an unrecorded reviewer model is unrecorded (never inferred from maker)',
+      res.reviewerModel === null && res.reviewerModelStatus === 'not_recorded'
+        && /Reviewer receipt: backend codex; model not recorded; effort medium; round 1\./.test(res.note),
+      `${JSON.stringify(res.reviewerModel)}/${res.reviewerModelStatus}/${res.note}`)
+  }
+  {
+    const { res } = await runLoop(
+      { task: 't', reviewerBackend: 'codex', reviewerModel: 'gpt-5.4', reviewerEffort: 'low' },
+      { ...cls, ...planOf('clear', ''), ...happyTail },
+    )
+    ok('S1 pinned reviewer identity is copied from the accepted binding into the terminal result',
+      res.reviewerBackend === 'codex' && res.reviewerModel === 'gpt-5.4'
+        && res.reviewerEffort === 'low' && res.reviewerModelStatus === 'recorded',
+      `${res.reviewerBackend}/${res.reviewerModel}/${res.reviewerEffort}/${res.reviewerModelStatus}`)
   }
   {
     const { res, calls } = await runLoop({ task: 't' }, { ...clsStd, ...planOf('ambiguous', 'Which X?', ['a', 'b']) })
@@ -864,20 +881,34 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('S25b note names the leaked paths + recovery', /packages\/x\.ts/.test(leaky.res.note) && /diff them against the task worktree/.test(leaky.res.note))
   }
   {
-    // fix-phase leak: clean after implement, dirty after the fix ran (full posture, cap 2).
+    // fix-phase containment: both breach and inconclusive terminals happen AFTER
+    // accepted reviewer receipts, so both must preserve the latest bound identity.
     const salt = 'feat123'
-    let c25 = 0
-    const stubs = {
-      ...clsStd, ...planOf('clear', ''),
-      implement: { worktree_path: wtPath('t', salt), branch: 'b', summary: 's', decisions: [] },
-      review: (() => { let r = 0; return () => { r++; return J({ ran: true, clean: false, blocking: [{ priority: 1, title: 't' + r, code_location: 'f.ts:' + r }], nonblocking: [] }) } })(),
-      // calls in order: baseline (clean) → implement-check (clean) → fix-check (dirty). The added
-      // loop-start baseline shifts the count by one, so the first TWO calls read clean.
-      fix: '', containment: () => (++c25 <= 2 ? J({ ran: true, dirty: false, paths: '' }) : J({ ran: true, dirty: true, paths: ' M lib/leaked.ts' })),
-      prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [] }),
+    const runFixContainment = (finalReceipt) => {
+      let calls = 0
+      return runLoop({ task: 't', idSalt: salt, roundCap: 2 }, {
+        ...clsStd, ...planOf('clear', ''),
+        implement: { worktree_path: wtPath('t', salt), branch: 'b', summary: 's', decisions: [] },
+        review: (() => { let r = 0; return () => { r++; return J({ ran: true, clean: false, blocking: [{ priority: 1, title: 't' + r, code_location: 'f.ts:' + r }], nonblocking: [] }) } })(),
+        // calls: baseline (clean) → implement-check (clean) → fix-check (the control).
+        fix: '', containment: () => (++calls <= 2 ? J({ ran: true, dirty: false, paths: '' }) : J(finalReceipt)),
+        prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [] }),
+      })
     }
-    const { res } = await runLoop({ task: 't', idSalt: salt, roundCap: 2 }, stubs)
-    ok('S25c fix leak caught post-loop, named as the fix phase', res.status === 'infra_error' && res.containment === 'fix', res.status + '/' + res.containment)
+    const breach = (await runFixContainment({ ran: true, dirty: true, paths: ' M lib/leaked.ts' })).res
+    ok('S25c fix leak caught post-loop, named as the fix phase', breach.status === 'infra_error' && breach.containment === 'fix', breach.status + '/' + breach.containment)
+    ok('S25c fix leak terminal preserves the latest receipt-bound reviewer identity',
+      breach.reviewerBackend === 'codex' && breach.reviewerModel === null && breach.reviewerModelStatus === 'not_recorded'
+        && breach.reviewerEffort === 'high' && breach.reviewerRound === 2,
+      `${breach.reviewerBackend}/${JSON.stringify(breach.reviewerModel)}/${breach.reviewerEffort}/r${breach.reviewerRound}`)
+    const inconclusive = (await runFixContainment({ ran: false, error: 'containment probe unavailable' })).res
+    ok('S25c inconclusive fix containment is distinct from a breach',
+      inconclusive.status === 'infra_error' && inconclusive.containment === 'fix_inconclusive',
+      inconclusive.status + '/' + inconclusive.containment)
+    ok('S25c inconclusive fix containment preserves the same reviewer provenance',
+      inconclusive.reviewerBackend === 'codex' && inconclusive.reviewerModel === null
+        && inconclusive.reviewerModelStatus === 'not_recorded' && inconclusive.reviewerEffort === 'high' && inconclusive.reviewerRound === 2,
+      `${inconclusive.reviewerBackend}/${JSON.stringify(inconclusive.reviewerModel)}/${inconclusive.reviewerEffort}/r${inconclusive.reviewerRound}`)
   }
   {
     // standalone (no idSalt): even a would-be-dirty tree is never checked — not a breach.

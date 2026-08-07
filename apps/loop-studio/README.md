@@ -35,12 +35,13 @@ npm test                   # deterministic-verifier self-test
 The setup is guided from inside the page. One command starts the studio (`node server.mjs`, or `npx camus-loop-studio` once published) — that first command is still a terminal step until a packaged launcher ships; everything after it happens in the browser:
 
 - The **setup** panel runs the same checks as `--doctor`, row by row, and every missing piece comes with the exact command to paste — install Claude Code, install Codex, sign in once each. "Check again" re-verifies without restarting anything.
-- The **settings** panel edits the run decisions (maker model, reviewer model, effort, review rounds) and writes them back to [checks/models.json](checks/models.json) with a stamped why — the decision record stays the source of truth, no file editing required.
+- The **settings** panel edits the run decisions (maker model, reviewer model, effort, review rounds) and writes local operator state to `~/.camus/studio/models.json` with a stamped why. The tracked [checks/models.json](checks/models.json) remains a cheap public fallback, so dogfood choices do not dirty the repo or become somebody else's default.
 - **Show the session** (in a running view) opens the raw feed underneath the loop: the maker's live searches, the reviewer's reasoning, token counts — the "what is it actually doing right now" view.
+- **Publish the completed artifact to Hivemind** is an explicit words-lane opt-in on the launch form. It is off by default; accepting review findings never implies permission to publish.
 
 ## Models are decisions
 
-Every model is named explicitly on every call (`claude --model`, `codex -m`, or the configured endpoint) — **account and CLI defaults are never reachable.** [checks/models.json](checks/models.json) is the decision record, with the why and the date on every entry. Change a decision there, in Settings, or per run from the launch form; `--doctor` and the UI status pill always show what's pinned.
+Every model is named explicitly on every call (`claude --model`, `codex -m`, or the configured endpoint) — **account and CLI defaults are never reachable.** [checks/models.json](checks/models.json) supplies tracked public defaults; `~/.camus/studio/models.json` is the mutable standing decision record once Settings has saved a choice. Per-run launch choices and environment overrides remain more explicit and win; `--doctor` and the UI status pill always show what's pinned.
 
 ### Any model in either seat
 
@@ -71,7 +72,7 @@ Useful env:
 | `MOCK_SPEED=2` | Slow the rehearsal beats down (e.g. while narrating) |
 | `MOCK_OFFLINE=1` | Skip network link-checks (venue with no wifi) |
 | `ROUND_CAP=3` | Review round budget (1–6) |
-| `CLAUDE_MODEL`, `CODEX_MODEL`, `CODEX_EFFORT` | Override the models.json decisions for one session (honored only when the seat runs the matching CLI backend) |
+| `CLAUDE_MODEL`, `CODEX_MODEL`, `CODEX_EFFORT` | Override the standing model decisions for one session (honored only when the seat runs the matching CLI backend) |
 | `OPENAI_COMPAT_IDLE_MS` | Idle watchdog for `openai_compat` streams (default 120000) |
 | `CAMUS_CODEX_TIER`, `CAMUS_CODEX_DISABLE_MCP` | Passed through to `codex exec` exactly as camus does |
 | `HIVEMIND_VIA_CLAUDE=1` | Use the connected Hivemind Staging entry in Claude (preferred; no Studio key) |

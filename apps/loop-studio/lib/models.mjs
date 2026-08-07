@@ -1,4 +1,5 @@
-// Resolved run decisions. Precedence: run request > env override > checks/models.json.
+// Resolved run decisions. Precedence: run request > env override > local
+// operator state > tracked checks/models.json defaults.
 // There is deliberately NO fallback to account/CLI defaults — a model that
 // isn't named here is a model nobody decided on. Resolved per call (not at
 // import) so the studio's settings panel can change a decision between runs
@@ -10,17 +11,33 @@
 // `backends` in the file. A seat without a backend field means the legacy
 // pairing, so pre-seats files keep working unchanged.
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-// STUDIO_MODELS_FILE points the decision record at a throwaway file so tests
-// (and any embedding) never mutate the product's real checks/models.json — the
-// same isolation promise STUDIO_RUNS_DIR makes for receipts. Resolved per
-// call, like every other decision here, so a test can scope it.
-const filePath = () => process.env.STUDIO_MODELS_FILE || join(__dirname, '..', 'checks', 'models.json');
+// The tracked file is a PUBLIC FALLBACK, not mutable operator state. Settings
+// persist under ~/.camus so choosing a live dogfood pairing cannot dirty the
+// repository or publish one person's expensive choice as the apparent default.
+// STUDIO_MODELS_FILE remains the explicit embedding/test override and receives
+// the same read/write semantics as the local operator file.
+const defaultsPath = () => join(__dirname, '..', 'checks', 'models.json');
+const operatorPath = () => join(homedir(), '.camus', 'studio', 'models.json');
+const filePath = () => process.env.STUDIO_MODELS_FILE || operatorPath();
+
+function readDecision() {
+  const path = filePath();
+  try {
+    return {
+      file: JSON.parse(readFileSync(path, 'utf8')),
+      source: process.env.STUDIO_MODELS_FILE ? 'STUDIO_MODELS_FILE' : 'local operator state',
+    };
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
+    return { file: JSON.parse(readFileSync(defaultsPath(), 'utf8')), source: 'checks/models.json defaults' };
+  }
+}
 
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh'];
 
@@ -69,7 +86,7 @@ function validateCompatEntry(name, entry) {
 }
 
 function readFile() {
-  return JSON.parse(readFileSync(filePath(), 'utf8'));
+  return readDecision().file;
 }
 
 // Every backend a seat may name: built-ins plus the file's opt-in entries.
@@ -89,7 +106,9 @@ function backendOf(name, backends, seatName) {
 }
 
 export function getModels() {
-  const file = readFile();
+  const decision = readDecision();
+  const file = decision.file;
+  const decisionSource = decision.source;
   const backends = listBackends(file);
   const rawCap = Number(process.env.ROUND_CAP ?? file.loop?.roundCap);
 
@@ -124,7 +143,7 @@ export function getModels() {
       backend: makerBackend.name,
       provider: makerBackend.provider,
       model: makerEnv || required(file.maker?.model, 'maker.model'),
-      source: makerEnv ? 'env:CLAUDE_MODEL' : 'checks/models.json',
+      source: makerEnv ? 'env:CLAUDE_MODEL' : decisionSource,
     },
     reviewer: {
       backend: reviewerBackend.name,
@@ -136,13 +155,13 @@ export function getModels() {
       // Model and effort are two decisions and can come from different places
       // (CODEX_MODEL env but effort from the file, or vice versa), so each names
       // its own provenance — a single conflated `source` would misattribute one.
-      modelSource: reviewerEnv ? 'env:CODEX_MODEL' : 'checks/models.json',
-      effortSource: reviewerBackend.effort ? (effortEnv ? 'env:CODEX_EFFORT' : 'checks/models.json') : 'not honored by this backend',
+      modelSource: reviewerEnv ? 'env:CODEX_MODEL' : decisionSource,
+      effortSource: reviewerBackend.effort ? (effortEnv ? 'env:CODEX_EFFORT' : decisionSource) : 'not honored by this backend',
     },
     loop: {
       // NaN-proof: a typo'd cap must never skip the review loop.
       roundCap: Number.isFinite(rawCap) ? Math.min(6, Math.max(1, rawCap)) : 3,
-      source: process.env.ROUND_CAP !== undefined ? 'env:ROUND_CAP' : 'checks/models.json',
+      source: process.env.ROUND_CAP !== undefined ? 'env:ROUND_CAP' : decisionSource,
     },
   };
 }
@@ -153,9 +172,10 @@ export function getModels() {
 export const seatIdentity = (seat, legacyProvider) =>
   `${seat?.provider || legacyProvider}:${seat?.model || 'not-recorded'}`;
 
-// The settings panel writes THROUGH this — the file stays the decision
-// record, and each change stamps its why. maker/reviewer accept either the
-// legacy string (a model on the seat's current backend) or { backend, model }.
+// The settings panel writes THROUGH this to local operator state (or the
+// explicit STUDIO_MODELS_FILE override). The tracked defaults remain immutable.
+// maker/reviewer accept either the legacy string (a model on the seat's current
+// backend) or { backend, model }.
 export function updateModels({ maker, reviewer, effort, roundCap }) {
   const file = readFile();
   const backends = listBackends(file);
@@ -186,6 +206,7 @@ export function updateModels({ maker, reviewer, effort, roundCap }) {
   if (roundCap && roundCap !== file.loop?.roundCap) {
     file.loop = { roundCap, why: stamp };
   }
+  mkdirSync(dirname(filePath()), { recursive: true });
   writeFileSync(filePath(), JSON.stringify(file, null, 2) + '\n');
   return getModels();
 }
@@ -269,7 +290,8 @@ export function modelCatalog() {
 // form, and the run-request validator consume — the picker and the engine
 // read the same truth, so the UI cannot express a state the engine refuses.
 export function seatCatalog() {
-  const file = readFile();
+  const decision = readDecision();
+  const file = decision.file;
   const backends = listBackends(file);
   const codex = codexModels();
   const makerAliases = ['haiku', 'sonnet', 'opus'];
@@ -283,7 +305,7 @@ export function seatCatalog() {
           : backend.models;
       const source = backend.name === 'claude' ? 'builtin_alias'
         : backend.name === 'codex' ? codex.source
-          : 'checks/models.json';
+          : decision.source;
       for (const model of models) {
         out.push({ backend: backend.name, provider: backend.provider, model, source, effort: backend.effort });
       }

@@ -13,10 +13,10 @@ ships an ordered task list as one feature branch with a report. Formerly Nightcr
 v2; v1 remains archived at [mateodaza/nightcrawler](https://github.com/mateodaza/nightcrawler).
 Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMUS-SPEC.md).
 
-> **Public alpha (0.3.1).** This build was proven through the complete WP1–WP10
-> CodenameWukong Enemies feature. Use it on real work and keep the acceptance contract
-> explicit. A material custody or receipt defect should stop the run; ordinary UX and
-> efficiency observations belong in `camus retro`, not in repeated harness expansion.
+> **Public alpha (0.3.2).** This patch carries receipt-bound reviewer identity through
+> every post-review terminal, including containment failures. Use it on real work and
+> keep the acceptance contract explicit. A material custody or receipt defect should stop
+> the run; ordinary UX and efficiency observations belong in `camus retro`.
 
 ```
 plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep → verify
@@ -312,7 +312,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.3.1
+npm i -g camus-cli@0.3.2
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)

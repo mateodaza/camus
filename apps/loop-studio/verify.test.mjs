@@ -3,29 +3,90 @@
 // Network-free (skipNetwork) so it runs anywhere, fast.
 
 // DETERMINISM: this suite asserts loop behaviour at a KNOWN round cap, but
-// checks/models.json is the machine's live decision record — Studio's settings endpoint
-// rewrites it, so an operator changing the cap mid-session silently broke the suite
+// the active model decision is mutable — Studio's settings endpoint writes local
+// operator state, so changing the cap mid-session once silently broke the suite
 // (a real WP8 run set roundCap 3 → 2 and "review ran exactly ROUND_CAP times" failed
-// with nothing wrong in the code). Pin the committed record for the run instead of
-// reading whatever the machine currently holds.
+// with nothing wrong in the code). Seed a throwaway record from the committed shape,
+// then pin the cap this scenario exercises instead of inheriting a product choice.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync as _wfs } from 'node:fs';
+import { mkdtempSync, readFileSync as _rfs, rmSync as _rmfs, writeFileSync as _wfs } from 'node:fs';
 import { tmpdir as _tmpdir } from 'node:os';
 import { join as _join, dirname as _dirname } from 'node:path';
 import { fileURLToPath as _fup } from 'node:url';
 if (!process.env.STUDIO_MODELS_FILE) {
+  const _here = _dirname(_fup(import.meta.url));
+  let _source;
   try {
-    const _here = _dirname(_fup(import.meta.url));
-    const _committed = execFileSync('git', ['show', 'HEAD:apps/loop-studio/checks/models.json'], { cwd: _join(_here, '..', '..'), encoding: 'utf8' });
-    const _pin = _join(mkdtempSync(_join(_tmpdir(), 'cls-models-')), 'models.json');
-    _wfs(_pin, _committed);
-    process.env.STUDIO_MODELS_FILE = _pin;
-  } catch { /* no git or no committed copy: fall back to the live record */ }
+    _source = execFileSync('git', ['show', 'HEAD:apps/loop-studio/checks/models.json'], { cwd: _join(_here, '..', '..'), encoding: 'utf8' });
+  } catch {
+    _source = _rfs(_join(_here, 'checks', 'models.json'), 'utf8');
+  }
+  const _fixture = JSON.parse(_source);
+  _fixture.loop = { roundCap: 3, why: 'fixed verify.test.mjs fixture' };
+  const _pin = _join(mkdtempSync(_join(_tmpdir(), 'cls-models-')), 'models.json');
+  _wfs(_pin, JSON.stringify(_fixture, null, 2) + '\n');
+  process.env.STUDIO_MODELS_FILE = _pin;
 }
 
 import assert from 'node:assert/strict';
 import { runVerify, findUnsourcedStats, findComplianceHits, extractUrls, extractThresholdLines } from './lib/verify.mjs';
 import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateReportJson, replayRecoveryKind, terminalFailureBanner } from './public/run-ui-policy.mjs';
+
+// Workspace launch actions are user-facing controls too: the declared port
+// must be the port the command actually binds, or the action opens the wrong
+// server while claiming success on another endpoint.
+{
+  const here = _dirname(_fup(import.meta.url));
+  const launch = JSON.parse(_rfs(_join(here, '..', '..', '.claude', 'launch.json'), 'utf8'));
+  const verifyLaunch = launch.configurations.find((entry) => entry.name === 'loop-studio-verify');
+  assert.ok(verifyLaunch, 'the isolated Studio verification launcher is present');
+  assert.match(
+    verifyLaunch.runtimeArgs.at(-1),
+    new RegExp(`(?:^|\\s)PORT=${verifyLaunch.port}(?:\\s|$)`),
+    'the Studio verification launcher binds the same port it advertises',
+  );
+  const launchHtml = _rfs(_join(here, 'public', 'index.html'), 'utf8');
+  const launchJs = _rfs(_join(here, 'public', 'app.js'), 'utf8');
+  assert.match(launchHtml, /id="publish-artifact"/, 'the launch form exposes external publication as a named control');
+  assert.doesNotMatch(launchHtml.match(/<input[^>]+id="publish-artifact"[^>]*>/)?.[0] ?? '', /\bchecked\b/, 'publication opt-in is unchecked in the shipped UI');
+  assert.match(launchJs, /publish:\s*state\.lane !== 'build' && \$\('publish-artifact'\)\.checked/, 'the UI sends exactly the explicit checkbox decision');
+}
+
+// A fresh machine reads the tracked cheap defaults, but the first Settings
+// save creates operator state under ~/.camus and leaves the repository file
+// untouched. Run this in a child so HOME and module state are genuinely fresh.
+{
+  const here = _dirname(_fup(import.meta.url));
+  const modelHome = mkdtempSync(_join(_tmpdir(), 'cls-model-home-'));
+  const moduleUrl = new URL('./lib/models.mjs', import.meta.url).href;
+  const child = `
+    import { getModels, updateModels } from ${JSON.stringify(moduleUrl)};
+    const before = getModels();
+    const after = updateModels({ maker: { backend: 'claude', model: 'opus' }, reviewer: { backend: 'codex', model: 'gpt-5.4', }, effort: 'high', roundCap: 3 });
+    console.log(JSON.stringify({ before, after }));
+  `;
+  const env = { ...process.env, HOME: modelHome };
+  delete env.STUDIO_MODELS_FILE;
+  delete env.CLAUDE_MODEL;
+  delete env.CODEX_MODEL;
+  delete env.CODEX_EFFORT;
+  delete env.ROUND_CAP;
+  try {
+    const result = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', child], { env, encoding: 'utf8' }));
+    assert.equal(result.before.maker.model, 'sonnet', 'fresh Studio starts from the pragmatic tracked maker default');
+    assert.equal(result.before.reviewer.model, 'gpt-5.4-mini', 'fresh Studio starts from the pragmatic tracked reviewer default');
+    assert.equal(result.before.reviewer.effort, 'low', 'fresh Studio does not silently choose expensive review effort');
+    assert.equal(result.before.loop.roundCap, 2, 'fresh Studio starts with the bounded two-round default');
+    assert.equal(result.before.maker.source, 'checks/models.json defaults', 'the fresh decision names the tracked fallback honestly');
+    assert.equal(result.after.maker.source, 'local operator state', 'a Settings save switches provenance to local operator state');
+    const local = JSON.parse(_rfs(_join(modelHome, '.camus', 'studio', 'models.json'), 'utf8'));
+    assert.equal(local.maker.model, 'opus', 'the operator choice was written under ~/.camus');
+    const tracked = JSON.parse(_rfs(_join(here, 'checks', 'models.json'), 'utf8'));
+    assert.equal(tracked.maker.model, 'sonnet', 'the Settings write did not mutate tracked defaults');
+  } finally {
+    _rmfs(modelHome, { recursive: true, force: true });
+  }
+}
 
 const BAD = `## Summary
 Community programs produce guaranteed returns for every launch. Apps with active communities retain 61% more of their monthly actives.
@@ -893,7 +954,7 @@ Members value practical progress over content volume [H1].
   const CLEAN_DRAFT = 'Notes.\n\nCommunity first, paid second.\n';
   const BAD_DRAFT = 'Notes.\n\nRetention rose 61% across cohorts.\n'; // uncited stat → deterministic fail
 
-  function harness({ claudeQueue, codexQueue, answerQueue, abortOnAsk = false }) {
+  function harness({ claudeQueue, codexQueue, answerQueue, abortOnAsk = false, publish }) {
     const events = [];
     const prompts = { claude: [], codex: [] };
     const published = [];
@@ -941,6 +1002,7 @@ Members value practical progress over content volume [H1].
       receiptsDir: 'runs/_engine-test',
     };
     const run = { id: 'engine-test', goal: 'test goal', lane: 'freeform', depth: 'quick', ground: false };
+    if (publish !== undefined) run.publish = publish;
     return { run: () => runLoop(run, ctx), events, prompts, published, review, abort };
   }
 
@@ -970,6 +1032,7 @@ Members value practical progress over content volume [H1].
       claudeQueue: ['- plan', BAD_DRAFT, CLEAN_DRAFT],
       codexQueue: [review('APPROVED'), review('APPROVED')],
       answerQueue: [],
+      publish: true,
     });
     const res = await h5.run();
     // Freeform drafts with no URLs verify green WITH caveats (links warn,
@@ -990,6 +1053,7 @@ Members value practical progress over content volume [H1].
       answerQueue: [],
     });
     assert.equal((await h6.run()).status, 'done_with_findings', 'approved-with-lows is not a plain done');
+    assert.equal(h6.published.length, 0, 'publication defaults OFF when no explicit opt-in was recorded');
 
     // C2: stuck (same title twice) → accept → done_with_findings
     const h7 = harness({
@@ -998,7 +1062,7 @@ Members value practical progress over content volume [H1].
         review('REVISE', [f('high', 'Retention figure has no source.')]),
         review('REVISE', [f('high', 'retention figure has NO source')]), // case/punct differ — same key
       ],
-      answerQueue: ['Accept and ship (with findings on record)'],
+      answerQueue: ['Accept result (with findings on record)'],
     });
     const res7 = await h7.run();
     assert.equal(res7.status, 'done_with_findings', 'stuck-accept is done_with_findings');
@@ -1013,7 +1077,7 @@ Members value practical progress over content volume [H1].
         review('REVISE', [f('high', 'B')]),
         review('REVISE', [f('high', 'C')]),
       ],
-      answerQueue: ['Accept and ship (with findings on record)'],
+      answerQueue: ['Accept result (with findings on record)'],
     });
     const res8 = await h8.run();
     assert.equal(res8.status, 'done_with_findings', 'cap-accept is done_with_findings');
@@ -1110,16 +1174,16 @@ Members value practical progress over content volume [H1].
   // reviewer model and effort are independent decisions: their provenance must
   // not be conflated (an env model with a file effort, or the reverse).
   const base = getModels().reviewer;
-  assert.equal(base.modelSource, 'checks/models.json', 'default reviewer model provenance is the file');
-  assert.equal(base.effortSource, 'checks/models.json', 'default reviewer effort provenance is the file');
+  assert.equal(base.modelSource, 'STUDIO_MODELS_FILE', 'the isolated decision file names its provenance');
+  assert.equal(base.effortSource, 'STUDIO_MODELS_FILE', 'the isolated effort names the same decision source');
   process.env.CODEX_MODEL = 'probe-reviewer';
   let split = getModels().reviewer;
   assert.equal(split.modelSource, 'env:CODEX_MODEL', 'an env model names the env as the model source');
-  assert.equal(split.effortSource, 'checks/models.json', 'effort still traces to the file when only the model is overridden');
+  assert.equal(split.effortSource, 'STUDIO_MODELS_FILE', 'effort still traces to the isolated file when only the model is overridden');
   delete process.env.CODEX_MODEL;
   process.env.CODEX_EFFORT = 'high';
   split = getModels().reviewer;
-  assert.equal(split.modelSource, 'checks/models.json', 'model still traces to the file when only the effort is overridden');
+  assert.equal(split.modelSource, 'STUDIO_MODELS_FILE', 'model still traces to the isolated file when only the effort is overridden');
   assert.equal(split.effortSource, 'env:CODEX_EFFORT', 'an env effort names the env as the effort source');
   delete process.env.CODEX_EFFORT;
 }
@@ -2331,7 +2395,7 @@ Members asked for practical milestones [H1].
         { round: 3, verdict: 'APPROVED', findings: [{ severity: 'low', title: 'A nit' }] },
       ],
       verify: [{ pass: true }],
-      humanDecisions: [{ kind: 'stuck', answer: 'One more round' }, { kind: 'stuck', answer: 'Accept and ship (with findings on record)' }],
+      humanDecisions: [{ kind: 'stuck', answer: 'One more round' }, { kind: 'stuck', answer: 'Accept result (with findings on record)' }],
     },
   };
 

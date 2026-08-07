@@ -1,6 +1,6 @@
 // openai_compat backend — any OpenAI-compatible chat-completions endpoint
 // (Kimi/Moonshot, a local vLLM, etc.) in either seat. Opt-in only: an
-// instance exists exactly when checks/models.json declares one under
+// instance exists exactly when the active model decision file declares one under
 // `backends` (docs/MULTI-MODEL-SEATS.md).
 //
 // Contract notes:

@@ -182,7 +182,7 @@ async function startRun({
   modelsSnapshot = null,
   frozenKnowledge = null,
   toolPolicy = null,
-  publish = true,
+  publish = false,
   displayGoal = null,
   experimentContext = null,
   questionBroker = null,
@@ -210,9 +210,10 @@ async function startRun({
   const models = recovery
     ? { maker: null, reviewer: null, loop: { roundCap: 0 }, recovery: true }
     : modelsSnapshot ? JSON.parse(JSON.stringify(modelsSnapshot)) : getModels();
-  const run = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, frozenKnowledge, toolPolicy, publish, experimentContext };
+  const publishRequested = publish === true;
+  const run = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, frozenKnowledge, toolPolicy, publish: publishRequested, experimentContext };
   // The run exists on disk from second zero — a crash must not orphan it.
-  const runMetadata = () => ({ id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: run.idSalt, engine: ENGINE, models, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, experimentContext, startedAt: run.startedAt });
+  const runMetadata = () => ({ id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: run.idSalt, engine: ENGINE, models, publishRequested, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, experimentContext, startedAt: run.startedAt });
   await writeFile(join(dir, 'run.json'), JSON.stringify(runMetadata(), null, 2))
     .catch((err) => console.error(`[receipts] failed to write run.json for ${id}: ${err.message}`));
   const state = { run, events: [], subscribers: new Set(), answer: null, abort: new AbortController(), writeChain: Promise.resolve() };
@@ -310,7 +311,7 @@ async function startRun({
     : ENGINE === 'mock' ? (() => { const m = createMockAdapters(); return { maker: m.maker, reviewer: m.reviewer }; })()
       : resolveSeatAdapters(models);
 
-  emit('run', { run: { id, goal: displayGoal ?? goal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, recoveryOf: recovery?.sourceRunId ?? null, recovery: recovery ? { sourceRunId: recovery.sourceRunId ?? null, sourceReceiptId: recovery.sourceReceiptId ?? null, parkedSha: recovery.parkedSha ?? null, shaProvenance: recovery.shaProvenance ?? null } : null, engine: ENGINE, roundCap: models.loop.roundCap, experimentContext } });
+  emit('run', { run: { id, goal: displayGoal ?? goal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, recoveryOf: recovery?.sourceRunId ?? null, recovery: recovery ? { sourceRunId: recovery.sourceRunId ?? null, sourceReceiptId: recovery.sourceReceiptId ?? null, parkedSha: recovery.parkedSha ?? null, shaProvenance: recovery.shaProvenance ?? null } : null, engine: ENGINE, roundCap: models.loop.roundCap, experimentContext } });
   if (!gitOk) emit('log', { line: '⚠ git unavailable; codex reviews will run outside a git repo (different conditions than camus)' });
 
   // A recovery runs the host verifier and NOTHING else — including under the mock
@@ -380,7 +381,7 @@ async function startRun({
     // so a future result field named `models` can never overwrite the sealed pairing
     // (the same reason draft/deliverable are pinned after the spread). simulated is
     // pinned there too: a rehearsal receipt must SAY it is one, permanently.
-    const reportObject = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', experimentContext, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, draft: undefined, deliverable: run.lastMarkdown, evidence, evidencePack, evidencePackError, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt };
+    const reportObject = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', experimentContext, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, draft: undefined, deliverable: run.lastMarkdown, evidence, evidencePack, evidencePackError, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt };
     const report = JSON.stringify(reportObject, null, 2);
     try {
       await writeFile(join(dir, 'report.json'), report);
@@ -1200,7 +1201,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: `reviewer "${reviewer.seat.backend}:${reviewer.seat.model}" is not an available seat option (the backend does not list it)` });
       }
       const m = updateModels({ maker: maker.seat, reviewer: reviewer.seat, effort, roundCap });
-      return json(res, 200, { maker: m.maker, reviewer: m.reviewer, loop: m.loop, note: 'applies from the next run' });
+      return json(res, 200, { maker: m.maker, reviewer: m.reviewer, loop: m.loop, note: 'saved to local operator state; applies from the next run' });
     }
 
     if (path === '/api/status' && req.method === 'GET') {
@@ -1266,7 +1267,13 @@ const server = http.createServer(async (req, res) => {
       if (goal.length < 12) return json(res, 400, { error: 'Write the goal like you would brief a strategist: a sentence or two.' });
       if (goal.length > MAX_GOAL_CHARS) return json(res, 400, { error: `That goal is ${goal.length} characters — keep it under ${MAX_GOAL_CHARS}; a brief is not a corpus.` });
       if (acceptanceContract.length < 12) return json(res, 400, { error: 'Say what must be true for you to trust the result. This is the audit contract, not a copy of the goal.' });
+      if (body.publish !== undefined && typeof body.publish !== 'boolean') {
+        return json(res, 400, { error: 'publish must be true or false; external publication is never inferred' });
+      }
       const lane = body.lane === 'build' ? 'build' : LANES[body.lane] ? body.lane : 'freeform';
+      if (lane === 'build' && body.publish === true) {
+        return json(res, 400, { error: 'Build produces a local branch; Hivemind artifact publication applies only to words lanes' });
+      }
 
       // Per-run pairing (docs/MULTI-MODEL-SEATS.md): explicit seat choices for
       // THIS run, validated against the same catalog the picker reads, with
@@ -1354,7 +1361,7 @@ const server = http.createServer(async (req, res) => {
       if (!admission.ok) return json(res, 429, { error: `${admission.used} runs are already active or starting — the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}.` });
       try {
         if (targetToplevel) activeBuilds.add(targetToplevel);
-        const id = await startRun({ goal, acceptanceContract, lane, depth: body.depth === 'standard' ? 'standard' : 'quick', ground: !!body.ground, targetPath, targetToplevel, modelsSnapshot, verifyCmd });
+        const id = await startRun({ goal, acceptanceContract, lane, depth: body.depth === 'standard' ? 'standard' : 'quick', ground: !!body.ground, targetPath, targetToplevel, modelsSnapshot, verifyCmd, publish: body.publish === true });
         return json(res, 201, { id });
       } catch (err) {
         if (targetToplevel) activeBuilds.delete(targetToplevel);

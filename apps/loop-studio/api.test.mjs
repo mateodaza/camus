@@ -18,15 +18,16 @@ const tmp = mkdtempSync(join(tmpdir(), 'cls-api-'));
 const ACCEPTANCE = 'Every material claim is traceable and the deterministic checks are recorded.';
 
 // The config-POST test writes the decision record; STUDIO_MODELS_FILE points it
-// at a throwaway copy so the product's real checks/models.json is never mutated.
+// at a throwaway copy so neither local operator state nor tracked defaults move.
 // The copy gains an opt-in openai_compat backend so seat selection is testable
 // without any real endpoint (mock engine: nothing ever contacts it), and the
 // codex cache is PINNED to a fixture — the machine's real cache is rewritten
 // live by every codex app-server and its hidden flags flap between writes.
 const modelsFile = join(tmp, 'models.json');
-// The COMMITTED decision record, not the machine's live one: Studio's settings endpoint
-// rewrites checks/models.json, so an operator changing the round cap mid-session broke this
-// suite with nothing wrong in the code (a real WP8 run set roundCap 3 → 2).
+// Seed from the committed default shape, not the machine's local operator state.
+// The scripted rehearsal itself
+// needs three rounds, so its fixture pins that cap independently of the product
+// default (a real WP8 settings change from 3 → 2 exposed this coupling).
 const baseModels = JSON.parse((() => {
   try {
     return execFileSync('git', ['show', 'HEAD:apps/loop-studio/checks/models.json'],
@@ -35,6 +36,7 @@ const baseModels = JSON.parse((() => {
     return readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'checks', 'models.json'), 'utf8');
   }
 })());
+baseModels.loop = { roundCap: 3, why: 'fixed api.test.mjs rehearsal fixture' };
 baseModels.backends = {
   kimi: { kind: 'openai_compat', provider: 'moonshot', baseUrl: 'http://127.0.0.1:9/v1', apiKeyEnv: 'CLS_TEST_KIMI_KEY', models: ['kimi-k2'], why: 'api-test fixture backend' },
 };
@@ -1093,7 +1095,11 @@ try {
     assert.equal(report.experiment.mode, 'parallel_execution');
     assert.equal(report.experiment.manifest.fallback_policy, 'none');
     assert.equal(report.experiment.outcome.arms.length, 2, 'both arms remain in the terminal experiment');
-    assert.equal(report.experiment.outcome.arms.every((arm) => arm.status === 'quality_floor_failed'), true, 'scripted arms finish but cannot pass the evidence floor');
+    assert.equal(
+      report.experiment.outcome.arms.every((arm) => arm.status === 'quality_floor_failed'),
+      true,
+      `scripted arms finish but cannot pass the evidence floor: ${JSON.stringify(report.experiment.outcome.arms.map((arm) => ({ arm: arm.arm_id, status: arm.status, failure: arm.failure })))}`,
+    );
     assert.equal(report.experiment.outcome.arms.every((arm) => arm.executor_actual === 'simulation:scripted-maker'), true, 'rehearsal never records a real executor actual');
     assert.equal(report.childRunIds.length, 2, 'both child receipts are addressable');
     const snapshots = report.childRunIds.map((runId) => JSON.parse(readFileSync(join(tmp, runId, 'report.json'), 'utf8')));
@@ -1215,6 +1221,28 @@ try {
     assert.equal(r.status, 201);
     runId = (await r.json()).id;
     assert.ok(runId);
+  });
+
+  await check('publication is opt-in, recorded, typed, and unavailable to Build', async () => {
+    const defaultMeta = JSON.parse(readFileSync(join(tmp, runId, 'run.json'), 'utf8'));
+    assert.equal(defaultMeta.publishRequested, false, 'omitting publish records an explicit local-only decision');
+
+    const post = (body) => fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify(body),
+    });
+    const invalid = await post({ goal: 'publication consent must be a boolean decision', acceptanceContract: ACCEPTANCE, lane: 'freeform', publish: 'yes' });
+    assert.equal(invalid.status, 400, 'truthy strings cannot become publication consent');
+    const build = await post({ goal: 'a build branch cannot become a Hivemind artifact', acceptanceContract: ACCEPTANCE, lane: 'build', targetPath: '~/demo-repo', publish: true });
+    assert.equal(build.status, 400, 'Build refuses the words-artifact publication option');
+
+    const opted = await post({ goal: 'an explicitly approved external artifact publication', acceptanceContract: ACCEPTANCE, lane: 'freeform', publish: true });
+    assert.equal(opted.status, 201, 'an explicit words-lane opt-in starts');
+    const optedId = (await opted.json()).id;
+    const optedMeta = JSON.parse(readFileSync(join(tmp, optedId, 'run.json'), 'utf8'));
+    assert.equal(optedMeta.publishRequested, true, 'run.json records the consent before any model work');
+    await fetch(`${base}/api/runs/${optedId}/stop`, { method: 'POST', headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN } });
   });
 
   await check('goal over the size cap is refused (400)', async () => {

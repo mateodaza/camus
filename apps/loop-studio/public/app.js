@@ -623,7 +623,7 @@ async function openSettings() {
     $('set-reviewer').onchange = () => reflectEffortField(state.seats);
     $('set-roundcap').value = c.loop.roundCap;
     $('set-depth').value = state.depth;
-    const notes = [];
+    const notes = ['Settings save to local operator state under ~/.camus; tracked public defaults stay unchanged.'];
     if (c.envOverrides.length) notes.push(`${c.envOverrides.join(', ')} set in the environment. Env wins over these fields this session.`);
     if (!makerOffered) notes.push(`current maker "${c.maker.backend}:${c.maker.model}" is not offered on this machine — pick a listed option to save.`);
     if (!reviewerOffered) notes.push(`current reviewer "${c.reviewer.backend}:${c.reviewer.model}" is not offered on this machine — pick a listed option to save.`);
@@ -731,7 +731,7 @@ $('save-settings').addEventListener('click', async () => {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
-    $('settings-note').textContent = 'saved. Applies from the next run.';
+    $('settings-note').textContent = data.note || 'saved locally. Applies from the next run.';
     boot(); // pills reflect the new decisions
     refreshPairing(); // step 3 must not keep showing the superseded pairing
   } catch (err) {
@@ -750,6 +750,8 @@ $('lanes').addEventListener('click', (e) => {
   // happen. The request below sends false for the same reason. The seat
   // pickers hide too: the gate owns its own model decisions.
   $('ground-field').classList.toggle('hidden', state.lane === 'build');
+  $('publish-field').classList.toggle('hidden', state.lane === 'build');
+  if (state.lane === 'build') $('publish-artifact').checked = false;
   $('pairing').classList.toggle('hidden', state.lane === 'build');
   $('pairing-note').classList.toggle('hidden', state.lane === 'build');
   if (state.lane === 'build') $('compare-panel').classList.add('hidden');
@@ -897,7 +899,7 @@ $('start').addEventListener('click', async () => {
     const res = await fetch(`${API}/api/runs`, {
       method: 'POST',
       headers: postHeaders(),
-      body: JSON.stringify({ goal, acceptanceContract, lane: state.lane, depth: state.depth, ground: state.lane !== 'build' && $('ground').checked, targetPath: state.lane === 'build' ? $('target-path').value : undefined,
+      body: JSON.stringify({ goal, acceptanceContract, lane: state.lane, depth: state.depth, ground: state.lane !== 'build' && $('ground').checked, publish: state.lane !== 'build' && $('publish-artifact').checked, targetPath: state.lane === 'build' ? $('target-path').value : undefined,
         // Only the Build lane verifies a repository, so the command only rides
         // that lane's request; empty means "detect the stack".
         verifyCmd: state.lane === 'build' && $('verify-cmd').value.trim() ? $('verify-cmd').value.trim() : undefined,

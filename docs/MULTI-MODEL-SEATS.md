@@ -26,14 +26,16 @@ Three backend kinds exist:
 
 The two CLI backends are built in because their auth, spawn contract, and
 fail-closed normalization are already proven. `openai_compat` entries are
-**opt-in only**: one exists exactly when `checks/models.json` declares it.
+**opt-in only**: one exists exactly when the active decision file declares it.
 No backend is ever enabled silently, probed into existence, or inherited
 from an account default.
 
-## The decision record (`checks/models.json`)
+## Public defaults and local decisions
 
-Every seat decision is explicit and carries provenance. The file is the record;
-the settings panel and the launch form write through it or override per run.
+Every seat decision is explicit and carries provenance. Tracked
+`checks/models.json` supplies pragmatic public defaults. The Settings panel
+writes mutable operator state to `~/.camus/studio/models.json`, leaving the
+repository clean; the launch form can still override a pairing for one run.
 
 ```json
 {
@@ -75,7 +77,8 @@ session log):
 1. `run request` — the launch form or a POST body chose the pairing for this run
 2. `env:CLAUDE_MODEL` / `env:CODEX_MODEL` / `env:CODEX_EFFORT` — a session
    override, honored only when the seat's backend is the matching CLI backend
-3. `checks/models.json` — the standing decision
+3. `~/.camus/studio/models.json` — the standing local decision, when present
+4. `checks/models.json defaults` — the tracked fallback for a fresh machine
 
 Account and CLI defaults remain unreachable: every adapter names its model on
 every call.

@@ -107,7 +107,7 @@ Ctrl-C the server, start it again, reload the page. **Recent runs** lists the fi
 ## 6. Live fire — the real loop (10–20 min; bills your claude auth + codex plan credits)
 
 ```bash
-node server.mjs                       # reviewer effort is pinned low in checks/models.json
+node server.mjs                       # fresh default is low; local Settings decisions under ~/.camus may override it
 # CODEX_EFFORT=medium node server.mjs — raise it for real deliverables
 ```
 

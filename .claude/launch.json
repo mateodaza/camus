@@ -27,7 +27,7 @@
       "runtimeExecutable": "bash",
       "runtimeArgs": [
         "-c",
-        "cd apps/loop-studio && ENGINE=mock OPEN=0 MOCK_SPEED=2 STUDIO_RUNS_DIR=\"${TMPDIR:-/tmp}/cls-verify-runs\" node server.mjs"
+        "cd apps/loop-studio && PORT=1926 ENGINE=mock OPEN=0 MOCK_SPEED=2 STUDIO_RUNS_DIR=\"${TMPDIR:-/tmp}/cls-verify-runs\" node server.mjs"
       ],
       "port": 1926
     },

@@ -410,8 +410,8 @@ export async function runLoop(run, ctx) {
           kind: 'stuck',
           text: `The reviewer keeps raising the same finding${stuckTitles.length > 1 ? 's' : ''}: “${stuckTitles.join('”, “')}”. Camus's rule: never re-litigate. ${lastRound ? `This is the final round (${ROUND_CAP}). Accept` : 'Accept'} the deliverable with this finding on the record${lastRound ? '' : ', push one more round,'} or stop?`,
           options: lastRound
-            ? ['Accept and ship (with findings on record)', 'Stop the run']
-            : ['Accept and ship (with findings on record)', 'One more round', 'Stop the run'],
+            ? ['Accept result (with findings on record)', 'Stop the run']
+            : ['Accept result (with findings on record)', 'One more round', 'Stop the run'],
         });
         if (choice.startsWith('Accept')) {
           doneWithFindings = true;
@@ -432,7 +432,7 @@ export async function runLoop(run, ctx) {
         const choice = await ask({
           kind: 'stuck',
           text: `Round cap (${ROUND_CAP}) reached with ${lastReview.blocking.length} open finding(s). Accept with findings on record, or stop?`,
-          options: ['Accept and ship (with findings on record)', 'Stop the run'],
+          options: ['Accept result (with findings on record)', 'Stop the run'],
         });
         if (!choice.startsWith('Accept')) throw new Error('stopped_by_human');
         doneWithFindings = true;
@@ -557,7 +557,7 @@ export async function runLoop(run, ctx) {
           const choice = await ask({
             kind: 'stuck',
             text: `The closure audit still finds ${lastReview.blocking.length} blocking issue(s) on the exact verified artifact. Accept it with those findings on the record, or stop?`,
-            options: ['Accept and ship (with findings on record)', 'Stop the run'],
+            options: ['Accept result (with findings on record)', 'Stop the run'],
           });
           if (choice.startsWith('Accept')) {
             doneWithFindings = true;
@@ -612,8 +612,8 @@ export async function runLoop(run, ctx) {
     // ---- Publish -----------------------------------------------------------
     // Stop pressed during verify must never end in an external side effect.
     if (signal.aborted) throw new Error('aborted');
-    const artifact = run.publish === false
-      ? (log('Publication disabled for this experiment arm. The human chooses what may leave the machine.'), null)
+    const artifact = run.publish !== true
+      ? (log('Publication was not explicitly enabled. The deliverable stayed local.'), null)
       : await hivemind.publishArtifact(
           { title: run.goal.slice(0, 80), markdown: draft, runId: run.id },
           log,

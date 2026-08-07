@@ -1,6 +1,6 @@
 # Camus quickstart for CodenameWukong
 
-Camus 0.3.1 supports configurable maker and reviewer seats in Loop Studio for written
+Camus 0.3.2 supports configurable maker and reviewer seats in Loop Studio for written
 and research work, including reversed Claude/Codex pairings and declared OpenAI-compatible
 backends. The direct code workflow—and Studio's Build lane—currently keep the trusted gate's
 Claude Code maker plus Codex CLI reviewer pairing. Another agent may supervise that code
@@ -11,7 +11,7 @@ workflow, but should not implement alongside Camus.
 Requirements: Node 18+, Claude Code signed in, Codex CLI signed in, and .NET 10.
 
 ```bash
-npm install -g camus-cli@0.3.1
+npm install -g camus-cli@0.3.2
 codex login
 camus install
 camus check
@@ -42,7 +42,7 @@ Open <http://localhost:1913> and use **Settings** to select both seats, their mo
 reviewer effort, and the round cap. Studio's **Build** lane still uses the direct trusted
 code gate—Claude Code makes the change and Codex CLI reviews it—although their models and
 reviewer effort are configurable. Reversing the provider roles applies to Studio's written
-and research lanes, not to Build in 0.3.1.
+and research lanes, not to Build in 0.3.2.
 
 ## 2. Prepare CodenameWukong
 

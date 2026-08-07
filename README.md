@@ -31,7 +31,7 @@ You need [Claude Code](https://code.claude.com) and the [Codex CLI](https://gith
 (`codex login`) — the cross-vendor pairing is the product, so both halves are required.
 
 ```bash
-npm i -g camus-cli@0.3.1
+npm i -g camus-cli@0.3.2
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 cd your-repo && claude
@@ -44,15 +44,14 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.3.1
+### Public alpha: 0.3.2
 
-Camus 0.3.1 is the first public-alpha build proven through a complete ten-package game
-feature. The final run produced the solution without mid-run harness surgery; the earlier
-runs supplied the custody, recovery, receipt, and UX defects that this release closes.
-It is ready for friends and collaborators to use on real work, while remaining a 0.x tool:
-material trust failures should stop a run, and ordinary UX or efficiency findings should
-go to `camus retro` instead of derailing the solution. See the
-[0.3.1 release notes](docs/RELEASE-0.3.1.md).
+Camus 0.3.2 closes the first public-alpha dogfood follow-up: every post-review terminal now
+reports receipt-bound reviewer provenance, Loop Studio publication requires explicit opt-in,
+and tracked model defaults no longer double as mutable operator state. It remains a 0.x tool:
+material trust failures should stop a run, and ordinary UX or efficiency findings should go
+to `camus retro` instead of derailing the solution. See the
+[0.3.2 release notes](docs/RELEASE-0.3.2.md).
 
 ## Makes it work
 
@@ -133,7 +132,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.3.1
+npm i -g camus-cli@0.3.2
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```

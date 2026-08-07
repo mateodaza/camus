@@ -1061,6 +1061,23 @@ let lastBlocking = []
 // report the truth about mutation instead of claiming preservation it never checked.
 let committedShaObserved = ''
 let infraAbort = null
+// TERMINAL REVIEWER PROVENANCE (dogfood 2026-08-07): `model` below is the
+// maker/fix model. A direct loop run previously omitted the reviewer receipt,
+// which let the outer agent misreport that maker model as the reviewer model.
+// Preserve only what the accepted, binding-checked gate actually recorded. In
+// particular, null means the Codex wrapper did not record a concrete model; it
+// must never be filled from the maker seat or a provider guess.
+let reviewerReceipt = null
+const reviewerReceiptFields = () => ({
+  reviewerBackend: reviewerReceipt ? reviewerReceipt.backend : null,
+  reviewerModel: reviewerReceipt ? reviewerReceipt.model : null,
+  reviewerEffort: reviewerReceipt ? reviewerReceipt.effort : null,
+  reviewerRound: reviewerReceipt ? reviewerReceipt.round : null,
+  reviewerModelStatus: reviewerReceipt ? (reviewerReceipt.model ? 'recorded' : 'not_recorded') : 'not_run',
+})
+const reviewerReceiptNote = () => reviewerReceipt
+  ? ` Reviewer receipt: backend ${reviewerReceipt.backend || 'not recorded'}; model ${reviewerReceipt.model || 'not recorded'}; effort ${reviewerReceipt.effort || 'not recorded'}; round ${reviewerReceipt.round}.`
+  : ' Reviewer receipt: no completed review.'
 // ONESHOT (VELOCITY §1): the single review's blocking findings, preserved VERBATIM for the
 // honest report — they were fixed once and never re-reviewed, and the result must say so.
 // Per-finding CLAIMED resolutions (smoke 2026-06-12, the spec's audit-P2(b) half we first
@@ -1242,6 +1259,14 @@ while (round < ROUND_CAP) {
     break
   }
 
+  const receiptBinding = gate.binding || {}
+  reviewerReceipt = {
+    backend: (typeof receiptBinding.backend === 'string' && receiptBinding.backend) ? receiptBinding.backend : null,
+    model: (typeof receiptBinding.model === 'string' && receiptBinding.model) ? receiptBinding.model : null,
+    effort: (typeof receiptBinding.effort === 'string' && receiptBinding.effort) ? receiptBinding.effort : null,
+    round: Number.isInteger(receiptBinding.round) ? receiptBinding.round : null,
+  }
+
   // 3c: clean → done with review
   if (gate.clean === true) {
     reviewPassed = true
@@ -1374,12 +1399,12 @@ ${softBudget}`,
 if (FEAT_SCOPED && fixesRan) {
   const c = await containmentLeak('fix')
   if (c && c.kind === 'breach') {
-    return { status: 'infra_error', ...unreviewedFixFields(), task: TASK, worktree: WT, branch: BRANCH, rounds: round, containment: 'fix',
+    return { status: 'infra_error', ...unreviewedFixFields(), ...reviewerReceiptFields(), task: TASK, worktree: WT, branch: BRANCH, rounds: round, containment: 'fix',
       error: 'worktree containment breach: the fix agent leaked edits into the MAIN repo tree',
       note: `The fix phase modified the MAIN repo tree — it must only touch its worktree. Leaked paths:\n${c.paths}\nIf these are agent strays, diff them against the task worktree (${WT}) and discard; if they are YOUR mid-run edits, commit or stash them. Then re-run the feat with the SAME args.` }
   }
   if (c && c.kind === 'inconclusive') {
-    return { status: 'infra_error', ...unreviewedFixFields(), task: TASK, worktree: WT, branch: BRANCH, rounds: round, containment: 'fix_inconclusive',
+    return { status: 'infra_error', ...unreviewedFixFields(), ...reviewerReceiptFields(), task: TASK, worktree: WT, branch: BRANCH, rounds: round, containment: 'fix_inconclusive',
       error: 'containment check could not run',
       note: `Camus could not OBTAIN the main-tree containment status after the fix phase (${c.why}). This is NOT a breach and NOT a clean verdict — just an unverifiable check. Nothing merged. Re-run the feat with the SAME args to re-check; the worktree (${WT}) is untouched.` }
   }
@@ -1483,7 +1508,7 @@ ${VERIFY_OATH}`,
 
 if (infraAbort) {
   return {
-    status: 'infra_error', ...unreviewedFixFields(), task: TASK, worktree: WT, branch: BRANCH,
+    status: 'infra_error', ...unreviewedFixFields(), ...reviewerReceiptFields(), task: TASK, worktree: WT, branch: BRANCH,
     rounds: round, error: infraAbort,
     // EMPIRICAL, not asserted. A refused receipt must not have moved anything, and this report
     // must not CLAIM preservation it did not check: it states what actually happened this round
@@ -1550,6 +1575,7 @@ if (!reviewPassed && !oneshotFindings) {
     status: 'review_unresolved', task: TASK, worktree: WT, branch: BRANCH, rounds: round,
     blocking: lastBlocking, stuck: stuckFindings || null,
     ...(oscillating ? { oscillating: true } : {}),
+    ...reviewerReceiptFields(),
     tier, tierSource, classificationSkipped, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
   }
   if (parkFailed) {
@@ -1610,7 +1636,7 @@ if (crc.kind === 'priorHead') {
   const unmerged = /^\d+$/.test(unmergedText) ? parseInt(unmergedText, 10) : null
   if (unmerged === null) {
     return {
-      status: 'infra_error', ...unreviewedFixFields(), task: TASK, worktree: WT, branch: BRANCH, rounds: round, stage: 'noop_audit',
+      status: 'infra_error', ...unreviewedFixFields(), ...reviewerReceiptFields(), task: TASK, worktree: WT, branch: BRANCH, rounds: round, stage: 'noop_audit',
       noopAuditOutput: unmergedText.slice(0, 1000),
       error: `empty stage at HEAD ${crc.head}, and the branch ancestry audit returned no usable count — cannot tell a benign no-op from already-committed work`,
       note: `The commit gate found an empty stage, but Camus could not verify whether ${BRANCH} holds unmerged commits (noop-audit output was not a non-negative integer). Missing ancestry evidence must not become a no-op. Fix the git/audit issue and re-run with the SAME args.`,
@@ -1618,7 +1644,7 @@ if (crc.kind === 'priorHead') {
   }
   if (unmerged === 0) {
     return {
-      status: 'no_changes', task: TASK, worktree: WT, branch: BRANCH, rounds: round, ...unreviewedFixFields(),
+      status: 'no_changes', task: TASK, worktree: WT, branch: BRANCH, rounds: round, ...unreviewedFixFields(), ...reviewerReceiptFields(),
       tier, tierSource, classificationSkipped, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
       note: `${postFixLead() || 'Review passed'} The implement step produced no committable change (empty diff; the branch ancestry audit confirms zero unmerged commits). no_changes, never a false done — nothing to merge${oneshotFindings ? ', and the unreviewed findings below still stand' : ''}.`,
     }
@@ -1633,7 +1659,7 @@ if (crc.kind === 'priorHead') {
 // carries its proven HEAD (crc.head IS the branch tip the ancestry audit certified), so it passes through.
 if (!rescuedPriorCommit && crc.kind !== 'sealed') {
   return {
-    status: 'infra_error', ...unreviewedFixFields(), task: TASK, worktree: WT, branch: BRANCH, rounds: round,
+    status: 'infra_error', ...unreviewedFixFields(), ...reviewerReceiptFields(), task: TASK, worktree: WT, branch: BRANCH, rounds: round,
     error: crc.kind === 'noSha'
       ? `commit gate reported committed:true but named no valid sha (got: ${JSON.stringify(commitResult.sha)})`
       : crc.kind === 'empty'
@@ -1654,7 +1680,7 @@ if (!rescuedPriorCommit) log(`Committed ${oneshotFindings ? 'UNREVIEWED-FIX' : '
 const verdict = await prepAndVerify(WT, COMMIT_SHA)
 if (verdict.ok === 'inconclusive') {
   return {
-    status: 'verify_inconclusive', task: TASK, worktree: WT, branch: BRANCH, rounds: round, ...unreviewedFixFields(),
+    status: 'verify_inconclusive', task: TASK, worktree: WT, branch: BRANCH, rounds: round, ...unreviewedFixFields(), ...reviewerReceiptFields(),
     // The candidate SHA travels with an INCONCLUSIVE verdict too. Without it a
     // recovery re-verify has no commit to bind its green to, and the receipt
     // keeps reading infra_failed however the retry goes (field report 2026-08-05).
@@ -1691,24 +1717,25 @@ if (verdict.ok === 'pass') {
     // untouched — the field is named claimedResolution because nobody verified it).
     const findingsOut = unreviewedFixFields().findings
     return {
-      status: 'done_with_findings', task: TASK, worktree: WT, branch: BRANCH, commit_sha: COMMIT_SHA, ...unreviewedFixFields(),
+      status: 'done_with_findings', task: TASK, worktree: WT, branch: BRANCH, commit_sha: COMMIT_SHA, ...unreviewedFixFields(), ...reviewerReceiptFields(),
       rounds: round, summary: candidateSummary, decisions: candidateDecisions,
       findings: findingsOut, findingsDeferred: findingsOut.length, resolution: 'fixed_unreviewed',
       tier, tierSource, classificationSkipped, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
       note: finalBoundedFix
-        ? `FINAL-ROUND BOUNDED FIX: review round ${round}/${ROUND_CAP} raised ${oneshotFindings.length} NEW blocking finding(s) (not a repeat and not oscillating), and ONE bounded fix pass ran for them with NO further review round. Deterministic verify PASSES on the committed candidate and the work is parked. The fix is UNREVIEWED — this is done_with_findings / fixed_unreviewed, NOT review-clean and NOT independent_clean. Read the findings and the maker's claimed resolutions (verbatim in this result), then audit the parked candidate.`
-        : `Oneshot posture: the single review found ${oneshotFindings.length} blocking finding(s); ONE fix pass ran and was NOT re-reviewed (the posture's contract). Deterministic verify PASSES and the change is committed. NOT review-clean — read the findings (verbatim in this result) before shipping.`,
+        ? `FINAL-ROUND BOUNDED FIX: review round ${round}/${ROUND_CAP} raised ${oneshotFindings.length} NEW blocking finding(s) (not a repeat and not oscillating), and ONE bounded fix pass ran for them with NO further review round. Deterministic verify PASSES on the committed candidate and the work is parked. The fix is UNREVIEWED — this is done_with_findings / fixed_unreviewed, NOT review-clean and NOT independent_clean. Read the findings and the maker's claimed resolutions (verbatim in this result), then audit the parked candidate.${reviewerReceiptNote()}`
+        : `Oneshot posture: the single review found ${oneshotFindings.length} blocking finding(s); ONE fix pass ran and was NOT re-reviewed (the posture's contract). Deterministic verify PASSES and the change is committed. NOT review-clean — read the findings (verbatim in this result) before shipping.${reviewerReceiptNote()}`,
     }
   }
   return {
     status: 'done', task: TASK, worktree: WT, branch: BRANCH, commit_sha: COMMIT_SHA,
     rounds: round, summary: candidateSummary, decisions: candidateDecisions,
+    ...reviewerReceiptFields(),
     tier, tierSource, classificationSkipped, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
-    note: 'Review clean, change committed, and verify passed. Worktree left in place for human merge/inspection (a camus-feat caller removes it after merging the branch).',
+    note: `Review clean, change committed, and verify passed. Worktree left in place for human merge/inspection (a camus-feat caller removes it after merging the branch).${reviewerReceiptNote()}`,
   }
 }
 return {
-  status: 'verify_failed', task: TASK, worktree: WT, branch: BRANCH, ...unreviewedFixFields(),
+  status: 'verify_failed', task: TASK, worktree: WT, branch: BRANCH, ...unreviewedFixFields(), ...reviewerReceiptFields(),
   rounds: round, failures: verdict.failures, tier, tierSource, classificationSkipped, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
   note: `${postFixLead() || 'Review was clean'} Deterministic verify ran and did NOT pass. Code is NOT done${oneshotFindings ? '; the findings and the maker\'s claimed resolutions are recorded below, unreviewed' : ''}.`,
 }

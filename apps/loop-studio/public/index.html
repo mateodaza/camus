@@ -74,7 +74,7 @@
       </div>
       <div class="panel-actions">
         <button id="save-settings" class="primary">Save decisions</button>
-        <span id="settings-env" class="hint"></span>
+        <span id="settings-env" class="hint">Saved locally under ~/.camus; tracked public defaults stay unchanged.</span>
       </div>
     </section>
 
@@ -158,6 +158,14 @@
             <span>Ground in Hivemind</span>
           </label>
           <div class="hint" id="ground-hint">Drafts can lean on Hivemind, Myosin's private research knowledge (on staging today).</div>
+        </div>
+        <div id="publish-field">
+          <label class="lbl">External publication</label>
+          <label class="toggle" id="publish-wrap">
+            <input type="checkbox" id="publish-artifact" />
+            <span>Publish the completed artifact to Hivemind</span>
+          </label>
+          <div class="hint">Off by default. Turning this on is explicit consent for the finished words artifact to leave this machine.</div>
         </div>
         <div>
           <label class="lbl">Depth</label>
