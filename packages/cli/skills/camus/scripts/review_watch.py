@@ -66,6 +66,99 @@ def _alive(pid):
         return False
 
 
+def _proc_start_epoch(pid):
+    """Epoch seconds when `pid` started, or None when it cannot be read."""
+    try:
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if not out:
+        return None
+    for fmt in ("%a %b %d %H:%M:%S %Y", "%a %d %b %H:%M:%S %Y"):
+        try:
+            return time.mktime(time.strptime(out, fmt))
+        except ValueError:
+            continue
+    return None
+
+
+def _is_ours(pid, started_at, skew=15):
+    """Is the LIVE pid still the process this handle recorded?
+
+    `_alive` only proves SOMETHING answers to that number. After our reviewer
+    exits the OS is free to hand the same pid to an unrelated process, and
+    waiting on — or signalling — that stranger is exactly the recycled-pid
+    hazard. handle.json records when we started the process, so a live pid whose
+    real start time does not sit within `skew` seconds of that is NOT ours.
+    Unreadable start time is treated as NOT ours: refusing to act on an
+    unverifiable pid is the safe direction (the caller reports instead).
+    """
+    if not isinstance(pid, int) or pid <= 0 or not _alive(pid):
+        return False
+    if not isinstance(started_at, (int, float)) or started_at <= 0:
+        return False
+    actual = _proc_start_epoch(pid)
+    if actual is None:
+        time.sleep(0.2)               # one retry: a transient ps failure is not identity evidence
+        actual = _proc_start_epoch(pid)
+    if actual is None:
+        return False
+    return abs(actual - float(started_at)) <= skew
+
+
+def _group_members(pgid):
+    """PIDs currently in `pgid` (empty when none / ps unusable)."""
+    try:
+        out = subprocess.run(["ps", "-g", str(pgid), "-o", "pid="],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    pids = []
+    for line in (out or "").split("\n"):
+        line = line.strip()
+        if line.isdigit():
+            pids.append(int(line))
+    return pids
+
+
+def _group_alive(pgid):
+    """Is ANY member of the process group still running?
+
+    The reviewer is started with start_new_session, so its pid IS the group id and
+    codex's own children live in that group. Checking only the leader declared the
+    reviewer dead while its children kept running, so a leader that exits first
+    left the group alive and unkilled (field report 2026-08-05).
+    """
+    if not isinstance(pgid, int) or pgid <= 0:
+        return False
+    if _group_members(pgid):
+        return True
+    return _alive(pgid)  # ps unusable → the leader is all we can see
+
+
+def _group_is_ours(pgid, started_at, skew=15):
+    """Is this group still the reviewer group this handle recorded?
+
+    While the LEADER is alive, its own start time is the ONLY identity
+    authority: a live pid==pgid whose start mismatches the handle is a RECYCLED
+    pid, and every member of its group is the stranger's child — member start
+    times prove nothing there. Members are consulted only once the leader is
+    dead, where POSIX keeps the pid reserved while any member still holds the
+    pgid, so survivors can only be remnants of OUR group (the start-time check
+    on them is a sanity bound, not the discriminator).
+    """
+    if not isinstance(started_at, (int, float)) or started_at <= 0:
+        return False
+    if _alive(pgid):
+        return _is_ours(pgid, started_at, skew)
+    for pid in _group_members(pgid):
+        actual = _proc_start_epoch(pid)
+        if actual is not None and actual >= float(started_at) - skew:
+            return True
+    return False
+
+
 def _read_handle(handle):
     try:
         with open(_paths(handle)["handle"], encoding="utf-8") as fh:
@@ -147,7 +240,9 @@ def _exit_code(handle):
 def _kill_group(pid):
     """SIGTERM the process group, grace, then SIGKILL. Best-effort — the caller re-checks."""
     for sig, grace in ((signal.SIGTERM, 5.0), (signal.SIGKILL, 2.0)):
-        if not _alive(pid):
+        # Gate on the GROUP: a leader that already exited must not stop us from
+        # killing the children still running in its group.
+        if not _group_alive(pid):
             return
         try:
             os.killpg(pid, sig)
@@ -157,7 +252,7 @@ def _kill_group(pid):
             except OSError:
                 return
         deadline = time.time() + grace
-        while time.time() < deadline and _alive(pid):
+        while time.time() < deadline and _group_alive(pid):
             time.sleep(0.1)
 
 
@@ -190,6 +285,11 @@ def cmd_await(args):
     if not rec or not isinstance(rec.get("pid"), int):
         return _emit({"state": "error", "error": "no usable handle.json under %s" % args.handle})
     pid, started_at = rec["pid"], rec.get("started_at", 0)
+    # IDENTITY ONCE, at entry: _alive proves something answers to the number, not
+    # that it is still OUR reviewer (a recycled pid is a stranger we must neither
+    # wait on nor signal). Verified here; the loop then only needs liveness,
+    # because a continuously-alive pid cannot change identity mid-loop.
+    pid_is_ours = _is_ours(pid, started_at)
     deadline = time.time() + max(1, args.chunk)
     while True:
         # COMPLETION FILE FIRST (audit P2 2026-06-11): a written exit code IS done, no matter
@@ -201,9 +301,28 @@ def cmd_await(args):
                           "usage": _usage(args.handle), "last": rec.get("last"),
                           "thread_id": _thread_id(args.handle)})
         if not _alive(pid):
+            # Leader gone without completion evidence. A VERIFIED surviving
+            # group is OURS to terminate before reporting infra — an await that
+            # walks away from live children is how orphans are made (field
+            # report 2026-08-05). An unverifiable group is never signalled and
+            # says so explicitly.
+            if _group_alive(pid):
+                if _group_is_ours(pid, started_at):
+                    _kill_group(pid)
+                    return _emit({"state": "error",
+                                  "error": "reviewer leader exited without a verdict; its surviving process group was terminated",
+                                  "thread_id": _thread_id(args.handle)})
+                return _emit({"state": "error", "unverified_pid": True,
+                              "error": "a process group answers to the recorded pgid but cannot be verified as this review; nothing was signalled"})
             return _emit({"state": "done", "exit": _exit_code(args.handle),
                           "usage": _usage(args.handle), "last": rec.get("last"),
                           "thread_id": _thread_id(args.handle)})
+        if not pid_is_ours:
+            # Alive but not ours: a recycled pid wearing our number. Waiting on
+            # it would hang the round on a stranger; signalling it could kill
+            # one. Explicit unverified infra, nothing touched.
+            return _emit({"state": "error", "unverified_pid": True,
+                          "error": "the recorded pid is alive but is not the process this handle started (recycled pid); nothing was signalled"})
         age = _event_age(args.handle, started_at)
         if age > args.idle:
             _kill_group(pid)
@@ -226,12 +345,22 @@ def cmd_abort(args):
         return _emit({"state": "done", "exit": code,
                       "usage": _usage(args.handle), "last": rec.get("last"),
                       "thread_id": _thread_id(args.handle)})
-    if rec and isinstance(rec.get("pid"), int) and _alive(rec["pid"]):
-        _kill_group(rec["pid"])
+    unverified_survivor = False
+    if rec and isinstance(rec.get("pid"), int) and _group_alive(rec["pid"]):
+        if _group_is_ours(rec["pid"], rec.get("started_at", 0)):
+            _kill_group(rec["pid"])
+        else:
+            # Alive, but not provably the reviewer this handle recorded: a
+            # recycled pid/pgid. Killing it could take down a stranger, so it is
+            # left alone and REPORTED — the caller must not read this as clean.
+            unverified_survivor = True
     # The abort verdict is the one codex_review.sh records as the round's outcome, so it MUST
     # carry the thread_id — that handle is what lets the NEXT round resume this killed thread
     # instead of paying for a fresh review (codex-resume-recovery 2026-06-12).
-    return _emit({"state": "aborted", "thread_id": _thread_id(args.handle)})
+    out = {"state": "aborted", "thread_id": _thread_id(args.handle)}
+    if unverified_survivor:
+        out["unverified_pid"] = True
+    return _emit(out)
 
 
 def main(argv=None):

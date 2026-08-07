@@ -50,16 +50,17 @@
         <!-- Model choices are PICKERS over the machine's real options (the
              server's catalog), never free text: a model nobody can run is not
              a decision anyone made. Options are filled when the panel opens. -->
-        <label>maker (drafts &amp; fixes)
+        <label>maker (words lanes; Build pins Claude)
           <select id="set-maker"></select>
         </label>
-        <label>reviewer (codex)
+        <label>reviewer (words lanes; Build pins Codex)
           <select id="set-reviewer"></select>
         </label>
-        <label>reviewer effort
+        <label>reviewer effort (words lanes; Build pins this every round)
           <select id="set-effort">
             <option>low</option><option>medium</option><option>high</option><option>xhigh</option>
           </select>
+          <span class="hint" id="set-effort-note"></span>
         </label>
         <label>review rounds (1–6)
           <input id="set-roundcap" type="number" min="1" max="6" step="1" />
@@ -84,6 +85,10 @@
       <label class="lbl step" for="acceptance-contract"><span class="step-n">2</span> Define what must be true for you to trust the result</label>
       <textarea id="acceptance-contract" rows="2" placeholder="e.g. Every material claim traces to a live source; the recommendation states assumptions and tradeoffs; no invented Hivemind evidence."></textarea>
       <div class="hint trust-hint">This is what the reviewer holds the work to. Change it and any earlier review of this work no longer counts.</div>
+      <!-- Advisory only. Studio used to REJECT contracts over 2,000 characters,
+           which pushed operators to weaken the very thing the auditor is held to;
+           length is now never blocked or truncated. -->
+      <div class="hint" id="contract-count"></div>
       <!-- The contract is the most important input and the least guessable, so
            offer the standard demands as one-click clauses. They append, so a
            brief can compose several; the text stays fully editable. -->
@@ -95,19 +100,21 @@
         <button type="button" class="preset" data-clause="Plain language: no hype, no unsupported superlatives.">no hype</button>
       </div>
 
-      <label class="lbl step"><span class="step-n">3</span> Choose maker and auditor, then run</label>
-      <!-- The two-model pairing is the whole thesis, so it belongs on the launch
-           screen rather than hidden in Settings. Shown live from /api/config;
-           Settings stays the one place that WRITES it, so there is no second
-           source of truth to drift. Effort and rounds stay there too — they are
-           advanced controls, deliberately secondary to this decision. -->
+      <label class="lbl step" id="step-pairing-label"><span class="step-n">3</span> Choose maker and auditor, then run</label>
+      <!-- The two-model pairing is the whole thesis, so it is DECIDED on the
+           launch screen: these pickers offer the server's seat catalog, default
+           to the standing decision in Settings, and a changed value rides the
+           run request as an explicit per-run pairing with its source recorded.
+           Effort and rounds stay in Settings — advanced controls, deliberately
+           secondary to this decision. -->
       <div class="pairing" id="pairing">
-        <span class="pairing-role"><span class="pairing-lbl">maker</span> <span id="pairing-maker" class="mono">…</span></span>
+        <span class="pairing-role"><span class="pairing-lbl">maker</span> <select id="pair-maker" class="mono" aria-label="Maker for this run"></select></span>
         <span class="pairing-arrow" aria-hidden="true">→</span>
-        <span class="pairing-role"><span class="pairing-lbl">auditor</span> <span id="pairing-auditor" class="mono">…</span></span>
-        <button type="button" id="pairing-change" class="ghost">change</button>
+        <span class="pairing-role"><span class="pairing-lbl">auditor</span> <select id="pair-reviewer" class="mono" aria-label="Auditor for this run"></select></span>
+        <button type="button" id="pairing-change" class="ghost">settings</button>
       </div>
-      <div class="hint">One model makes the work. A different one tries to break it.</div>
+      <div class="hint" id="pairing-note">One model makes the work. A different one tries to break it.</div>
+      <div class="hint hidden" id="build-gate-note"></div>
 
       <label class="lbl sub-lbl">Lane</label>
       <div class="lanes" id="lanes">
@@ -132,10 +139,13 @@
       <div id="target-wrap" class="hidden">
         <label class="lbl" for="target-path">Target repository</label>
         <input id="target-path" class="path-input" placeholder="~/path/to/a/git/repo" autocomplete="off" />
-        <div class="hint">The gate runs in that repo: isolated worktree, cross-model review, your tests as the verdict. Stop is safe: receipts survive and Resume continues.</div>
+        <div class="hint">The gate runs in that repo: isolated worktree, cross-model review, your tests as the verdict. Build pins the saved Claude and Codex model names and the saved review effort, and reviews at that effort every round; the actual value lands in the receipt. Stop is safe: receipts survive and Resume continues.</div>
         <!-- Filled from the doctor's auth preflight when a CLI is proven signed out;
              a warning, not a gate — the probes can be stale in either direction. -->
         <div id="preflight-note" class="hint preflight hidden"></div>
+        <label class="lbl" for="verify-cmd">Verify command (optional)</label>
+        <input id="verify-cmd" class="path-input" placeholder="e.g. dotnet test Tests/App.Tests/App.Tests.csproj -f net10.0" autocomplete="off" />
+        <div class="hint">Leave empty to let Camus detect the stack. Supply one when auto-detection cannot run here: a solution whose mobile heads need workloads this machine lacks, or a monorepo task runner. It is recorded with the run and reused on Resume and on a verification retry. No <code>$</code>, backticks, quotes, backslashes or newlines: put anything that complex in a script and call the script.</div>
       </div>
 
       <!-- Depth moved into Settings: it is a run preference, not a briefing
@@ -179,7 +189,7 @@
     <section id="recents" class="recents" tabindex="-1" aria-label="Recent runs"></section>
 
     <footer class="foot">
-      Claude drafts. Codex, a different vendor, reviews it adversarially. Deterministic checks decide, so every run leaves receipts in <code>./runs/</code>.
+      One model drafts. Another — by default from a different vendor — reviews it adversarially. Deterministic checks decide, so every run leaves receipts in <code>./runs/</code>.
     </footer>
   </main>
 

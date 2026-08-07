@@ -33,7 +33,42 @@ def _int(x):
         return x
 
 
-def build_record(wt, rnd, status, raw, reviewer_model=None, reviewer_effort=None):
+def binding_from_env(env=None):
+    """The resolved review binding codex_review.sh exported (CAMUS_REVIEW_BINDING).
+
+    Lets the RECEIPT prove which invocation produced it: requested versus actual
+    round and effort, the gate nonce, the canonical worktree, and the backend.
+    Before this existed, a receipt's only claim to a round was its filename, so a
+    review that silently ran as r0 could be accepted as r2 (field report
+    2026-08-04). Best-effort by design: a malformed value yields no binding
+    rather than raising into the review path, and a consumer treats a MISSING
+    binding as unbound — never as agreement.
+    """
+    env = env if env is not None else os.environ
+    raw = env.get("CAMUS_REVIEW_BINDING")
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(parsed, dict) or parsed.get("error"):
+        return None
+    requested_round = parsed.get("round")
+    if not isinstance(requested_round, int):
+        return None
+    return {
+        "gate_nonce": parsed.get("nonce") or None,
+        "round_requested": requested_round,
+        "effort_requested": parsed.get("effort") or None,
+        "effort_specified": bool(parsed.get("effort_specified")),
+        "round_sources": parsed.get("round_sources") or None,
+        "effort_sources": parsed.get("effort_sources") or None,
+        "reviewer_backend": env.get("CAMUS_REVIEW_BACKEND") or None,
+    }
+
+
+def build_record(wt, rnd, status, raw, reviewer_model=None, reviewer_effort=None, env=None):
     try:
         parsed = json.loads(raw) if raw.strip() else None
     except (ValueError, TypeError):
@@ -46,10 +81,15 @@ def build_record(wt, rnd, status, raw, reviewer_model=None, reviewer_effort=None
             ran = _adapter.normalize_codex(raw, _int(status)).get("ran") is True
         except Exception:
             ran = False
-    return {
+    binding = binding_from_env(env)
+    actual_round = _int(rnd)
+    record = {
         "ran_at": int(time.time()),
         "worktree": wt,
-        "round": _int(rnd),
+        # The canonical worktree path, so a receipt cannot be matched to a run by
+        # basename alone (two checkouts can share one).
+        "worktree_canonical": os.path.realpath(wt) if isinstance(wt, str) and wt else None,
+        "round": actual_round,
         "codex_exit": _int(status),
         "ran": ran,
         # The reviewer model the caller pinned for this round (identity slice). The
@@ -62,6 +102,21 @@ def build_record(wt, rnd, status, raw, reviewer_model=None, reviewer_effort=None
         "codex_raw": raw,
         "codex_parsed": parsed,
     }
+    if binding is not None:
+        record["binding"] = dict(
+            binding,
+            round_actual=actual_round,
+            # The effort the round ACTUALLY ran at comes from meta.json (the same
+            # authority as the model); requested comes from the binding. A
+            # consumer compares them rather than assuming they agree.
+            effort_actual=reviewer_effort or None,
+            reviewer_model=reviewer_model or None,
+            bound=(
+                binding["round_requested"] == actual_round
+                and (reviewer_effort is None or binding["effort_requested"] == reviewer_effort)
+            ),
+        )
+    return record
 
 
 def main(argv=None):

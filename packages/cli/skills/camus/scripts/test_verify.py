@@ -67,6 +67,90 @@ def test_python_mypy_when_configured():
     assert "py:mypy" in names and "py:pytest" in names
 
 
+# --- .NET (WP6 dogfood 2026-08-05: a real C# repo verified as "no checks") ---
+
+def test_dotnet_slnx_detected():
+    """A .slnx solution at the root is a .NET repo. Before this, verification had
+    NOTHING to run on a committed C# candidate."""
+    repo = _repo({"ActionRpgFramework.slnx": "<Solution/>"})
+    assert _names(verify.detect_checks(repo, {})) == ["dotnet:build"]
+
+
+def test_dotnet_sln_and_csproj_detected():
+    assert "dotnet:build" in _names(verify.detect_checks(_repo({"App.sln": ""}), {}))
+    assert "dotnet:build" in _names(verify.detect_checks(_repo({"App.csproj": "<Project/>"}), {}))
+
+
+def test_dotnet_project_in_subdirectory_detected():
+    """The real WP6 layout: solution at the root, projects one level down."""
+    repo = _repo({"ActionRpgFramework.slnx": "<Solution/>",
+                  "ActionRpgFramework.Core/ActionRpgFramework.Core.csproj": "<Project/>"})
+    assert "dotnet:build" in _names(verify.detect_checks(repo, {}))
+
+
+def test_dotnet_test_project_adds_dotnet_test():
+    """A test project earns `dotnet test`; the WP6 candidate has exactly this shape."""
+    repo = _repo({"ActionRpgFramework.slnx": "<Solution/>",
+                  "tests/ActionRpgFramework.Core.Tests/ActionRpgFramework.Core.Tests.csproj": "<Project/>"})
+    names = _names(verify.detect_checks(repo, {}))
+    assert names == ["dotnet:build", "dotnet:test"], names
+
+
+def test_dotnet_library_only_gets_no_test_check():
+    """No test project → no `dotnet test`, so a library repo cannot verify red for
+    having no tests."""
+    repo = _repo({"App.slnx": "<Solution/>", "src/App/App.csproj": "<Project/>"})
+    assert _names(verify.detect_checks(repo, {})) == ["dotnet:build"]
+
+
+def test_dotnet_single_root_solution_is_named_explicitly():
+    """One root solution → name it, so `dotnet build` is never ambiguous."""
+    repo = _repo({"ActionRpgFramework.slnx": "<Solution/>",
+                  "tests/App.Tests/App.Tests.csproj": "<Project/>"})
+    checks = verify.detect_checks(repo, {})
+    assert checks[0]["cmd"] == ["dotnet", "build", "--nologo", "ActionRpgFramework.slnx"], checks[0]["cmd"]
+    assert checks[1]["cmd"][-1] == "ActionRpgFramework.slnx"
+
+
+def test_dotnet_multi_solution_stays_targetless():
+    """Two root solutions: we cannot pick for the operator, so stay targetless and
+    let the MSB1011 ambiguity classify as INCONCLUSIVE (never a code-red)."""
+    repo = _repo({"A.sln": "", "B.sln": "", "src/App/App.csproj": "<Project/>"})
+    assert verify.detect_checks(repo, {})[0]["cmd"] == ["dotnet", "build", "--nologo"]
+
+
+def test_dotnet_ambiguous_target_is_inconclusive_not_red():
+    """MSB1011 says the harness did not say WHAT to build — an environment
+    statement. A multi-solution repo must never read as broken code."""
+    chk = {"name": "dotnet:build", "cmd": ["dotnet", "build", "--nologo"]}
+    tail = ("MSB1011: Specify which project or solution file to use because this "
+            "folder contains more than one project or solution file.")
+    assert verify._classify_failure(chk, 1, tail) == "missing_tool"
+
+
+def test_dotnet_missing_workload_is_inconclusive_not_red():
+    """A missing MOBILE WORKLOAD means the check could not RUN on this host. It must
+    withhold a verdict, never call the candidate broken (the cardinal rule)."""
+    chk = {"name": "dotnet:build", "cmd": ["dotnet", "build", "--nologo"]}
+    tail = ("error NETSDK1147: To build this project, the following workloads must "
+            "be installed: maui-ios")
+    assert verify._classify_failure(chk, 1, tail) == "missing_tool"
+    assert "missing_tool" in verify.INCONCLUSIVE_KINDS
+
+
+def test_dotnet_missing_sdk_is_inconclusive():
+    chk = {"name": "dotnet:build", "cmd": ["dotnet", "build"]}
+    assert verify._classify_failure(chk, 1, "No .NET SDKs were found.") == "missing_tool"
+
+
+def test_dotnet_real_compile_error_stays_RED():
+    """The control: a genuine compile error is still a code verdict. Without this the
+    inconclusive rule above could swallow every real .NET failure."""
+    chk = {"name": "dotnet:build", "cmd": ["dotnet", "build", "--nologo"]}
+    tail = "EnemyBody.cs(42,13): error CS0103: The name 'foo' does not exist"
+    assert verify._classify_failure(chk, 1, tail) != "missing_tool"
+
+
 def test_rust():
     assert _names(verify.detect_checks(_repo({"Cargo.toml": "[package]"}), {})) \
         == ["rust:check", "rust:test"]
@@ -183,6 +267,51 @@ def test_pytest_exit_5_no_tests_collected_is_inconclusive():
     assert result["pass"] is False
     assert result["inconclusive"] is True
     assert result["failures"][0]["kind"] == "no_tests"
+
+
+def test_dotnet_test_exit_zero_with_no_tests_is_inconclusive():
+    # `dotnet test` can exit 0 after selecting a target that discovers no tests.
+    # That is no verdict on the code, not a green gate.
+    checks = [{"name": "dotnet:test", "cmd": ["dotnet", "test", "tests/X.csproj"]}]
+    result = verify.build_result(
+        checks,
+        lambda cmd, cwd: (0, "No test is available in tests/X.dll. Make sure that test discoverer & executors are registered."),
+        "/tmp")
+    assert result["pass"] is False
+    assert result["inconclusive"] is True
+    assert result["failures"][0]["kind"] == "no_tests"
+
+
+def test_dotnet_test_exit_zero_with_passed_tests_stays_green():
+    checks = [{"name": "dotnet:test", "cmd": ["dotnet", "test", "tests/X.csproj"]}]
+    result = verify.build_result(
+        checks,
+        lambda cmd, cwd: (0, "Passed! - Failed: 0, Passed: 102, Skipped: 0, Total: 102"),
+        "/tmp")
+    assert result["pass"] is True
+    assert result["inconclusive"] is False
+    assert result["failures"] == []
+
+
+def test_dotnet_test_in_explicit_shell_override_detects_no_tests():
+    checks = [{
+        "name": "custom",
+        "cmd": ["bash", "-lc", "dotnet build X.sln && dotnet test X.sln --no-build"],
+    }]
+    result = verify.build_result(
+        checks, lambda cmd, cwd: (0, "No test is available in X.dll."), "/tmp")
+    assert result["pass"] is False
+    assert result["inconclusive"] is True
+    assert result["failures"][0]["kind"] == "no_tests"
+
+
+def test_non_dotnet_success_text_is_not_misclassified_as_no_tests():
+    # Keep the success-output heuristic scoped to the .NET harness.
+    checks = [{"name": "custom", "cmd": ["bash", "-lc", "echo ok"]}]
+    result = verify.build_result(
+        checks, lambda cmd, cwd: (0, "No test is available in this fixture"), "/tmp")
+    assert result["pass"] is True
+    assert result["failures"] == []
 
 
 def test_exit_5_from_non_pytest_stays_red():

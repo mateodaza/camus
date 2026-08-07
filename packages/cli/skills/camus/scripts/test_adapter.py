@@ -235,6 +235,134 @@ def test_verify_both_fail():
 
 # --- stdlib runner (no pytest required) ------------------------------------
 
+# --- the reviewer reviews a working-tree delta, not the pipeline ------------
+# Live run 20260806-164809-hiju, round 2 demanded a commit, a HEAD move and a verification run. All
+# three were P<=2, so they blocked, and a final bounded fix ran against code nothing was wrong with.
+# They must be recorded and must not gate — while a GENUINE off-scope commit still blocks.
+
+def _pf(priority, title, body):
+    return {"priority": priority, "title": title, "body": body,
+            "code_location": "EnemyBody.cs:42", "confidence_score": 0.9}
+
+
+def test_pipeline_stage_findings_do_not_block():
+    n = adapter.normalize_codex(_codex([
+        _pf(1, "Change has not been committed",
+            "The working-tree delta has not yet been committed, so HEAD has not advanced."),
+        _pf(2, "Verification has not run",
+            "The tests have not been run yet, so the change is unverified."),
+    ], "patch is incorrect"), 0)
+    assert n["clean"] is True, n
+    assert n["verdict"] == "APPROVED"
+    # Recorded, not hidden — with the reason they stopped blocking.
+    assert len(n["nonblocking"]) == 2
+    assert all(f["demoted"] == "pipeline_stage_not_a_finding" for f in n["nonblocking"])
+    assert n["nonblocking"][0]["title"] == "Change has not been committed"
+    assert n["blocking"] == []
+
+
+def test_defect_mentioning_tests_still_blocks():
+    """THE FALSE GREEN. The first demotion searched for a pipeline phrase ANYWHERE, so a real crash
+    finding that happened to end with "Tests have not been run yet" was demoted and APPROVED.
+    Reproduced verbatim from the audit."""
+    n = adapter.normalize_codex(_codex([
+        _pf(1, "Null dereference crashes enemy spawning",
+            "The new lookup returns null and is dereferenced, crashing when the key is absent. "
+            "Tests have not been run yet."),
+    ], "patch is incorrect"), 0)
+    assert n["clean"] is False, n
+    assert n["verdict"] == "REVISE"
+    assert len(n["blocking"]) == 1
+    assert n["blocking"][0]["title"] == "Null dereference crashes enemy spawning"
+    assert "demoted" not in n["blocking"][0]
+    assert n["nonblocking"] == []
+
+
+def test_defect_and_pipeline_in_ONE_sentence_still_blocks():
+    """Sentence-splitting alone is not enough: a single clause can carry both."""
+    n = adapter.normalize_codex(_codex([
+        _pf(1, "Spawn lookup", "The lookup returns null and crashes, and it has not been committed yet."),
+    ], "patch is incorrect"), 0)
+    assert n["clean"] is False, n
+    assert len(n["blocking"]) == 1
+
+
+def test_pipeline_plus_an_unrecognised_clause_blocks():
+    """Fail-closed by default: a clause the pipeline pattern does not recognise keeps the finding."""
+    n = adapter.normalize_codex(_codex([
+        _pf(2, "Not committed",
+            "The delta has not been committed. The retry interval should probably be configurable."),
+    ], "patch is incorrect"), 0)
+    assert n["clean"] is False, n
+    assert len(n["blocking"]) == 1
+
+
+def test_defect_vocabulary_survives_pipeline_framing():
+    """Each of these is a real claim about the code, phrased around commits/tests."""
+    for body in (
+        "A race between spawn and despawn corrupts the list; none of this is committed yet.",
+        "The token is logged in plaintext, but verification has not run yet.",
+        "This silently swallows the error. HEAD has not advanced.",
+        "Out of bounds access when the array is empty; tests have not been run.",
+    ):
+        n = adapter.normalize_codex(_codex([_pf(1, "Finding", body)], "patch is incorrect"), 0)
+        assert n["clean"] is False, body
+        assert len(n["blocking"]) == 1, body
+
+
+def test_offscope_commit_still_blocks():
+    n = adapter.normalize_codex(_codex([
+        _pf(1, "Delta includes an unrelated refactor",
+            "Beyond the task, this rewrites Inventory.cs, which the task did not ask for; "
+            "it is not committed yet either."),
+    ], "patch is incorrect"), 0)
+    assert n["clean"] is False, n
+    assert len(n["blocking"]) == 1
+    assert "demoted" not in n["blocking"][0]
+
+
+def test_secret_in_delta_still_blocks():
+    n = adapter.normalize_codex(_codex([
+        _pf(0, "Credential in the delta",
+            "An API token is present in the uncommitted change; it must not be committed."),
+    ], "patch is incorrect"), 0)
+    assert n["clean"] is False, n
+
+
+def test_real_bug_still_blocks():
+    n = adapter.normalize_codex(_codex([
+        _pf(1, "Null dereference on spawn failure",
+            "When Spawn returns null the next line dereferences it before the caller can recover."),
+    ], "patch is incorrect"), 0)
+    assert n["clean"] is False, n
+    assert len(n["blocking"]) == 1
+
+
+def test_mixed_review_blocks_on_the_real_finding():
+    n = adapter.normalize_codex(_codex([
+        _pf(1, "Null dereference on spawn failure",
+            "Spawn can return null and the next line dereferences it."),
+        _pf(1, "Not committed yet",
+            "The delta has not been committed and HEAD has not advanced."),
+    ], "patch is incorrect"), 0)
+    assert n["clean"] is False
+    assert len(n["blocking"]) == 1
+    assert n["blocking"][0]["title"] == "Null dereference on spawn failure"
+    assert len(n["nonblocking"]) == 1
+    assert n["nonblocking"][0]["demoted"] == "pipeline_stage_not_a_finding"
+
+
+def test_pipeline_demotion_keeps_the_consistency_guard_honest():
+    # "patch is incorrect" with ONLY pipeline noise leaves no blocking finding. That must not be
+    # reported as a trustworthy clean review by accident — but it must also not fabricate a fix
+    # round. The adapter's own consistency guard is what decides; pin whichever it is.
+    n = adapter.normalize_codex(_codex([
+        _pf(1, "Not committed", "The delta has not been committed and HEAD has not advanced."),
+    ], "patch is incorrect"), 0)
+    assert n["ran"] is True
+    assert n["clean"] is True and n["verdict"] == "APPROVED", n
+
+
 if __name__ == "__main__":
     import sys
     tests = [v for k, v in sorted(globals().items())

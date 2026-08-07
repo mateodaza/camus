@@ -595,6 +595,68 @@ run_review_round 26 >/dev/null || { echo "FAIL completed-no-env review errored/h
 check "completed prior + no env: the stale recorded model is NOT inherited into the fresh review" \
   "no" "$(grep -qx 'old-completed-reviewer' "$SPY/args" && echo yes || echo no)"
 
+# ── REVIEW BINDING: the invocation that RAN must be the one REQUESTED ──────────────
+# Field report 2026-08-04 (a WP6 game run): the workflow requested review round 2 at
+# high effort, the thin runner's Bash call dropped the trailing `2 high`, the script
+# defaulted to round 0 / medium, and the loop ACCEPTED that r0 receipt as round 2 and
+# advanced to r3. Round is no longer defaulted: it resolves from the mechanical
+# channels (request file, env) or argv, every disagreement is an infra refusal, and
+# the receipt carries requested-vs-actual so a consumer can check the pairing.
+bind_err() { # returns the refusal reason (empty when the binding was accepted)
+  bash "$here/codex_review.sh" "$@" 2>/dev/null | python3 -c 'import json,sys
+try: d = json.load(sys.stdin)
+except Exception: print("unparseable"); raise SystemExit
+e = d.get("error") or ""
+print("refused" if "review binding refused" in e else "")'
+}
+REQ="$CAMUS_REVIEW_DIR/$(basename "$WT")-request.json"
+rm -f "$REQ"
+
+# The exact field failure: the relayed command lost its round and effort.
+check "an unbound review (round dropped from the relay) is refused, never reviewed as r0" \
+  "refused" "$(bind_err "$WT" "task ctx")"
+# The old default wrote <wt>-r0.json, and THAT file is what got accepted as a
+# requested round. No r0 receipt may exist for this worktree at all. (Earlier cases
+# in this suite legitimately leave receipts for real rounds, so this counts r0 only.)
+check "no r0 receipt is written for an unbound invocation (nothing to mistake for a later round)" \
+  "0" "$(ls "$CAMUS_REVIEW_DIR" 2>/dev/null | grep -cE -- "^$(basename "$WT")-r0\.json$")"
+# Round 0 was the old silent default; asking for it explicitly is still not a round.
+check "round 0 is refused explicitly (rounds start at 1)" \
+  "refused" "$(bind_err "$WT" "task ctx" 0 high)"
+check "a non-numeric round is refused" "refused" "$(bind_err "$WT" "task ctx" two high)"
+
+# The mechanical channel: a request file the relay cannot drop.
+python3 -c 'import json,sys; json.dump({"gate_nonce":"nonce-1","worktree":sys.argv[1],"round":2,"effort":"high"}, open(sys.argv[2],"w"))' "$WT" "$REQ"
+check "argv disagreeing with the request file is refused (requested r2, argv r3)" \
+  "refused" "$(bind_err "$WT" "task ctx" 3 high)"
+check "effort disagreeing with the request file is refused (requested high, argv medium)" \
+  "refused" "$(bind_err "$WT" "task ctx" 2 medium)"
+# Env is the other mechanical channel; it must agree too.
+check "env disagreeing with the request file is refused" \
+  "refused" "$(CAMUS_REVIEW_ROUND=5 bind_err "$WT" "task ctx")"
+# A request file belonging to a different worktree must never bind this review.
+python3 -c 'import json; json.dump({"gate_nonce":"n","worktree":"/somewhere/else","round":2,"effort":"high"}, open(__import__("sys").argv[1],"w"))' "$REQ"
+check "a cross-worktree request file is refused" "refused" "$(bind_err "$WT" "task ctx" 2 high)"
+
+# POSITIVE CONTROL — the refusals above must not be a script that simply always
+# refuses. With the request file present, the SAME dropped-argv command that failed
+# above now binds to r2/high, reviews, and seals a receipt whose binding proves it.
+python3 -c 'import json,sys; json.dump({"gate_nonce":"nonce-1","worktree":sys.argv[1],"round":2,"effort":"high"}, open(sys.argv[2],"w"))' "$WT" "$REQ"
+check "the request file binds a dropped-argv invocation instead of refusing it" \
+  "" "$(bind_err "$WT" "task ctx")"
+BOUND_RECEIPT="$CAMUS_REVIEW_DIR/$(basename "$WT")-r2.json"
+check "the receipt lands under the REQUESTED round, not r0" \
+  "yes" "$([ -f "$BOUND_RECEIPT" ] && echo yes || echo no)"
+check "the receipt binds requested/actual round, effort, nonce, worktree and backend" \
+  "2|2|high|high|nonce-1|codex|True|True" \
+  "$(python3 -c 'import json,os,sys
+b = json.load(open(sys.argv[1])).get("binding") or {}
+r = json.load(open(sys.argv[1]))
+print("|".join(str(x) for x in [
+  b.get("round_requested"), b.get("round_actual"), b.get("effort_requested"), b.get("effort_actual"),
+  b.get("gate_nonce"), b.get("reviewer_backend"), b.get("bound"),
+  os.path.realpath(sys.argv[2]) == r.get("worktree_canonical")]))' "$BOUND_RECEIPT" "$WT")"
+
 echo
 echo "$pass passed, $fail failed"
 exit $((fail > 0 ? 1 : 0))

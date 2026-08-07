@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { getModels, modelsSummary } from './models.mjs';
+import { getModels, modelsSummary, seatCatalog, listBackends } from './models.mjs';
 import { CLAUDE_HIVEMIND_DISPLAY, hivemindStatus } from './adapters/hivemind.mjs';
 import { gateInstalled } from './code-lane.mjs';
 
@@ -124,6 +124,20 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
 
   add('node', 'Node.js', true, process.version, null);
 
+  // The seat decisions drive which CLIs a run will actually spawn. A broken
+  // decision record leaves them null; the models check below reports the error
+  // and every CLI stays required (fail closed toward "needed").
+  const hm = hivemindStatus();
+  let seatDecisions = null;
+  try { seatDecisions = getModels(); } catch { /* reported by the models check */ }
+  const claudeUsed = !seatDecisions
+    || seatDecisions.maker.backend === 'claude'
+    || seatDecisions.reviewer.backend === 'claude'
+    || hm.mode === 'claude'; // managed-connector retrieval spawns claude regardless of seats
+  const codexUsed = !seatDecisions
+    || seatDecisions.maker.backend === 'codex'
+    || seatDecisions.reviewer.backend === 'codex';
+
   const [claudeV, codexV, gitV] = await Promise.all([
     probe('claude', ['--version']),
     probe('codex', ['--version']),
@@ -152,24 +166,54 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   // `auth` rides each CLI check structurally (true/false/null) so the launch
   // view's preflight chips consume the doctor's judgement instead of
   // re-parsing detail strings.
+  // A CLI backend no current seat decision uses stays visible but optional:
+  // its absence must not block the runs the decisions actually describe.
+  const unusedNote = ' · not used by the current seat decisions (the Build lane still needs it)';
   add(
-    'claude', 'Claude Code CLI', !!claudeV && claudeAuthed !== false,
-    !claudeV ? 'not found on PATH; the maker cannot run'
+    'claude', 'Claude CLI backend', !!claudeV && claudeAuthed !== false,
+    (!claudeV ? 'not found on PATH; the claude backend cannot run'
       : claudeAuthed === false ? `${claudeV} installed, but not signed in`
-      : `${claudeV}${claudeAuthed ? ' · signed in' : ''}`,
+      : `${claudeV}${claudeAuthed ? ' · signed in' : ''}`) + (claudeUsed ? '' : unusedNote),
     !claudeV ? 'npm install -g @anthropic-ai/claude-code   # then run `claude` once and sign in'
       : claudeAuthed === false ? 'claude   # opens the sign-in flow' : null,
-    { auth: claudeAuthed },
+    { auth: claudeAuthed, ...(claudeUsed ? {} : { optional: true }) },
   );
   add(
-    'codex', 'Codex CLI (the reviewer)', !!codexV && codexAuthed !== false,
-    !codexV ? 'not found on PATH; nothing can review the drafts'
+    'codex', 'Codex CLI backend', !!codexV && codexAuthed !== false,
+    (!codexV ? 'not found on PATH; the codex backend cannot run'
       : codexAuthed === false ? `${codexV} installed, but not signed in`
-      : `${codexV}${codexAuthed ? ' · signed in' : ''}`,
+      : `${codexV}${codexAuthed ? ' · signed in' : ''}`) + (codexUsed ? '' : unusedNote),
     !codexV ? 'npm install -g @openai/codex   # then run `codex` once and sign in'
       : codexAuthed === false ? 'codex login' : null,
-    { auth: codexAuthed },
+    { auth: codexAuthed, ...(codexUsed ? {} : { optional: true }) },
   );
+
+  // Opt-in openai_compat backends: each declared entry gets its own check.
+  // Required exactly when a seat decision names it; the key itself is only
+  // ever read from the environment, never printed.
+  try {
+    for (const backend of Object.values(listBackends())) {
+      if (backend.kind !== 'openai_compat') continue;
+      const used = seatDecisions && (seatDecisions.maker.backend === backend.name || seatDecisions.reviewer.backend === backend.name);
+      const keyPresent = !!process.env[backend.apiKeyEnv];
+      let reach = null; // null = not probed (deep only), true/false = probed
+      if (deep && keyPresent) {
+        reach = await fetch(`${backend.baseUrl}/models`, {
+          headers: { authorization: `Bearer ${process.env[backend.apiKeyEnv]}` },
+          signal: AbortSignal.timeout(5000),
+        }).then((r) => r.ok, () => false);
+      }
+      add(
+        `backend-${backend.name}`, `Backend "${backend.name}" (${backend.provider})`,
+        keyPresent && reach !== false,
+        `${backend.baseUrl} · ${backend.models.length} declared model${backend.models.length === 1 ? '' : 's'} · ${keyPresent ? `${backend.apiKeyEnv} set` : `${backend.apiKeyEnv} NOT set`}${reach === true ? ' · endpoint reachable' : reach === false ? ' · endpoint unreachable' : ''}${used ? '' : ' · not used by the current seat decisions'}`,
+        keyPresent ? null : `export ${backend.apiKeyEnv}=…   # the key never enters config or receipts`,
+        used ? {} : { optional: true },
+      );
+    }
+  } catch (err) {
+    add('backends', 'Configured backends', false, err.message, 'fix the backends entry in checks/models.json');
+  }
   add(
     'git', 'git', !!gitV,
     gitV ?? 'not found; reviews would run outside a git repo (different conditions than camus)',
@@ -184,25 +228,47 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
     { optional: true },
   );
 
-  let models;
   try {
-    models = getModels();
+    const models = seatDecisions ?? getModels();
     let note = modelsSummary();
-    try {
-      const { readFileSync } = await import('node:fs');
-      const { homedir } = await import('node:os');
-      const cache = JSON.parse(readFileSync(`${homedir()}/.codex/models_cache.json`, 'utf8'));
-      const slugs = (cache.models ?? []).map((m) => m.slug).filter(Boolean);
-      if (slugs.length && !slugs.includes(models.reviewer.model)) {
-        note += `. Reviewer "${models.reviewer.model}" is not in codex's model cache (${slugs.slice(0, 3).join(', ')}…); a run may fail at review.`;
-      }
-    } catch { /* cache absent — cannot judge, stay quiet */ }
+    note += `. Sources: maker ${models.maker.source}, reviewer ${models.reviewer.modelSource}.`;
+    if (models.reviewer.backend === 'codex') {
+      try {
+        const { readFileSync } = await import('node:fs');
+        const { homedir } = await import('node:os');
+        const cache = JSON.parse(readFileSync(`${homedir()}/.codex/models_cache.json`, 'utf8'));
+        const slugs = (cache.models ?? []).map((m) => m.slug).filter(Boolean);
+        if (slugs.length && !slugs.includes(models.reviewer.model)) {
+          note += ` Reviewer "${models.reviewer.model}" is not in codex's model cache (${slugs.slice(0, 3).join(', ')}…); a run may fail at review.`;
+        }
+      } catch { /* cache absent — cannot judge, stay quiet */ }
+    }
     add('models', 'Model decisions', true, note, null);
   } catch (err) {
     add('models', 'Model decisions', false, err.message, 'open Settings in the studio and pick the models');
   }
 
-  const hm = hivemindStatus();
+  // The seat catalog, as the pickers and the run-request validator see it —
+  // the doctor states what may sit in each seat so a decision is checkable
+  // before anything runs. Advisory: an empty compat list is a config question,
+  // never a gate on the runs the current decisions describe.
+  try {
+    const seats = seatCatalog();
+    const summarize = (entries) => {
+      const byBackend = new Map();
+      for (const entry of entries) {
+        if (!byBackend.has(entry.backend)) byBackend.set(entry.backend, []);
+        byBackend.get(entry.backend).push(entry.model);
+      }
+      return [...byBackend.entries()].map(([backend, models]) =>
+        `${backend}(${models.length <= 3 ? models.join(', ') : `${models.length} models`})`).join(' · ');
+    };
+    add('catalog', 'Seat catalog', true,
+      `maker: ${summarize(seats.maker)}; reviewer: ${summarize(seats.reviewer)} — reviewer list ${seats.reviewerSource === 'codex_cache' ? 'CLI-verified from the codex cache' : 'a conservative fallback'}`,
+      null, { advisory: true, seats });
+  } catch (err) {
+    add('catalog', 'Seat catalog', false, err.message, 'fix the backends entry in checks/models.json', { advisory: true });
+  }
   if (hm.mode === 'claude' && deep) {
     // Probe ONLY the managed connector. `mcp list` health-checks every local
     // entry and their stderr may contain inline credentials; this targeted
@@ -234,9 +300,11 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
     { skills, advisory: true },
   );
 
-  // hivemind/gate are optional (words lanes run without them); skills is purely
-  // informational and must never gate a run.
-  const required = checks.filter((c) => !['hivemind', 'gate', 'skills'].includes(c.id));
+  // A check is required unless it says otherwise: hivemind/gate are optional
+  // (words lanes run without them), skills and the catalog are informational,
+  // and a CLI or backend no current seat decision uses must not gate the runs
+  // the decisions actually describe.
+  const required = checks.filter((c) => !c.optional && !c.advisory);
   return {
     engine,
     ok: engine === 'mock' || required.every((c) => c.ok),

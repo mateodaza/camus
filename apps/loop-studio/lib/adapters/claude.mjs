@@ -192,6 +192,108 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
   };
 }
 
+// ---- reviewer seat ------------------------------------------------------------
+// Claude in the reviewer seat: one toolless turn over the review prompt, and
+// the SAME fail-closed normalizeReview as codex — unparseable, incomplete, or
+// self-inconsistent output is an infra error, never a clean verdict. No MCP,
+// no web, no repo access: the reviewer judges the draft it was handed.
+export async function runClaudeReview({ prompt, model, cwd, signal, onTick, onSession, receiptDir, claims = [], criteria = [], thresholds = [] }) {
+  const { normalizeReview } = await import('./codex.mjs');
+  const infra = (error) => ({
+    ran: false, error, verdict: 'ERROR', findings: [], questions: [],
+    claimAssessments: [], coverageAssessments: [], thresholdAssessments: [],
+    usage: null, durationMs: Date.now() - startedAt,
+  });
+  const startedAt = Date.now();
+  if (!model) return infra('claude reviewer needs an explicit model — the CLI default is not a decision');
+
+  const args = [
+    '-p', prompt,
+    '--output-format', 'stream-json',
+    '--verbose',
+    '--max-turns', '1',
+    '--model', model,
+    '--tools', '', // the reviewer seat is toolless: judge the draft, touch nothing
+    '--strict-mcp-config',
+  ];
+
+  // Same idle contract as the codex reviewer: stream-json emits events as the
+  // turn progresses, so output-silence beyond the window is a hung call, not a
+  // thinking one — killed, and an infra error, never a wait until the hard cap.
+  const idleKillMs = Number(process.env.REVIEW_IDLE_MS || 300_000);
+  const { exitCode, stdout, stderr, resultEvent } = await new Promise((resolvePromise) => {
+    const child = spawn('claude', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    let lineBuf = '';
+    let result = null;
+    let done = false;
+    const finish = (code) => {
+      if (!done) { done = true; clearTimeout(t); clearTimeout(idleT); clearInterval(tick); resolvePromise({ exitCode: code, stdout: out, stderr: err, resultEvent: result }); }
+    };
+    const t = setTimeout(() => { child.kill('SIGKILL'); finish(-2); }, 480_000);
+    let idleT = setTimeout(() => { child.kill('SIGKILL'); finish(-3); }, idleKillMs);
+    const poke = () => { clearTimeout(idleT); idleT = setTimeout(() => { child.kill('SIGKILL'); finish(-3); }, idleKillMs); };
+    const tick = setInterval(() => onTick?.('reviewer reading and drafting findings…'), 8000);
+    child.stdout.on('data', (b) => {
+      if (done) return;
+      poke();
+      out += b;
+      lineBuf += b;
+      const lines = lineBuf.split('\n');
+      lineBuf = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const ev = JSON.parse(line);
+          if (ev.type === 'result') result = ev;
+          const sess = sessionLineFromEvent(ev);
+          if (sess) onSession?.(sess);
+        } catch { /* partial or non-JSON line */ }
+      }
+    });
+    child.stderr.on('data', (b) => { if (!done) { poke(); err += b; } });
+    signal?.addEventListener('abort', () => { child.kill('SIGKILL'); finish(-4); }, { once: true });
+    child.on('error', (e) => { err += `spawn error: ${e.code || e.message}`; finish(-1); });
+    child.on('close', (code) => finish(code ?? -1));
+  });
+
+  if (exitCode === -1) return infra(`failed to spawn claude (${stderr.trim() || 'unknown'}) — check the Claude Code CLI is installed and on PATH`);
+  if (exitCode === -2) return infra('claude review hit the 8 min hard timeout');
+  if (exitCode === -3) return infra(`claude went silent for ${Math.round(idleKillMs / 60000)} min — killed (idle watchdog)`);
+  if (exitCode === -4) return infra('review aborted by user');
+  if (exitCode !== 0) return infra(`claude exited ${exitCode}: ${(stderr || stdout).slice(0, 300)}`);
+
+  let data = resultEvent;
+  if (!data) {
+    try { data = JSON.parse(stdout); } catch { return infra(`no result event and unparseable claude output: ${stdout.slice(0, 200)}`); }
+  }
+  if (data.is_error) return infra(`claude reported an error: ${String(data.result).slice(0, 300)}`);
+  const text = String(data.result ?? '').trim();
+  onSession?.(`verdict drafted (${text.length} chars)`);
+  // The raw verdict lands beside the run like codex's -o file, so a skeptic
+  // can re-read exactly what the reviewer said before normalization.
+  if (receiptDir) {
+    try {
+      const { mkdir, writeFile } = await import('node:fs/promises');
+      const { resolve: resolvePath, join: joinPath } = await import('node:path');
+      const dir = resolvePath(receiptDir);
+      await mkdir(dir, { recursive: true });
+      await writeFile(joinPath(dir, 'last.json'), text);
+    } catch { /* receipts degrade loudly at the server layer; the verdict still normalizes */ }
+  }
+  const norm = normalizeReview(text, 0, claims, criteria, thresholds);
+  const observed = usageFromClaudeResult(data, model);
+  norm.usage = observed.usage;
+  norm.durationMs = Date.now() - startedAt;
+  if (norm.ran) {
+    norm.reviewerModel = model;
+    norm.reviewerEffort = null; // claude exposes no reasoning-effort request — never a fabricated tier
+    norm.reviewerIdentity = observed.modelActual ?? `anthropic:${model}`;
+  }
+  return norm;
+}
+
 // Claude's result event has changed shape across CLI versions. Keep only
 // non-negative observed counters and the actual model identity when the event
 // names it. A successful explicitly pinned call falls back to that pin; no

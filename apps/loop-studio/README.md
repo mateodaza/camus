@@ -39,7 +39,28 @@ The setup is guided from inside the page. One command starts the studio (`node s
 
 ## Models are decisions
 
-Every model is named explicitly on every call (`claude --model`, `codex -m`) — **account and CLI defaults are never reachable.** [checks/models.json](checks/models.json) is the decision record (current: maker `sonnet`, reviewer `gpt-5.4` at `low` effort, with the why and the date). Change a model there deliberately; `--doctor` and the UI status pill always show what's pinned.
+Every model is named explicitly on every call (`claude --model`, `codex -m`, or the configured endpoint) — **account and CLI defaults are never reachable.** [checks/models.json](checks/models.json) is the decision record, with the why and the date on every entry. Change a decision there, in Settings, or per run from the launch form; `--doctor` and the UI status pill always show what's pinned.
+
+### Any model in either seat
+
+Since the multi-model-seats slice ([docs/MULTI-MODEL-SEATS.md](../../docs/MULTI-MODEL-SEATS.md)) the two seats — **maker** (drafts and fixes) and **reviewer** (tries to break it) — are filled independently from a backend-qualified catalog: the built-in `claude` and `codex` CLI backends in either seat (including reversed: GPT writes, Claude reviews), plus opt-in `openai_compat` entries for open-weight endpoints. Declare one under `backends`:
+
+```json
+"backends": {
+  "kimi": {
+    "kind": "openai_compat",
+    "provider": "moonshot",
+    "baseUrl": "https://api.moonshot.ai/v1",
+    "apiKeyEnv": "MOONSHOT_API_KEY",
+    "models": ["kimi-k2-0905-preview"],
+    "why": "added <date> for <reason>"
+  }
+}
+```
+
+No backend exists until someone writes one down; the key lives only in the named env var. A same-vendor pairing is allowed and recorded honestly: the review seals as **advisory** and the standing reads **same-vendor reviewed**, never independent. Boundaries of the slice: Build keeps the gate's own pairing, Compare & Learn and audit replay keep their frozen claude/codex catalogs, grounded managed-connector runs need a claude-backend maker, and `openai_compat` backends have no tools (no web, no MCP) — a contract demanding live-loaded sources will honestly fail review under such a maker.
+
+Both **codex** seats run a hardened subprocess: shell/exec, web search (which defaults to *on*), browser, apps, and plugins disabled by flag; no user config, rules, or MCP; ephemeral session; a scrubbed environment; and a fail-closed watch that refuses the call if any unexpected tool event appears. See [docs/MULTI-MODEL-SEATS.md](../../docs/MULTI-MODEL-SEATS.md#the-hardened-codex-profile-both-seats) for the flag table and the live controls behind each claim.
 
 Useful env:
 
@@ -49,7 +70,8 @@ Useful env:
 | `MOCK_SPEED=2` | Slow the rehearsal beats down (e.g. while narrating) |
 | `MOCK_OFFLINE=1` | Skip network link-checks (venue with no wifi) |
 | `ROUND_CAP=3` | Review round budget (1–6) |
-| `CLAUDE_MODEL`, `CODEX_MODEL`, `CODEX_EFFORT` | Override the models.json decisions for one session |
+| `CLAUDE_MODEL`, `CODEX_MODEL`, `CODEX_EFFORT` | Override the models.json decisions for one session (honored only when the seat runs the matching CLI backend) |
+| `OPENAI_COMPAT_IDLE_MS` | Idle watchdog for `openai_compat` streams (default 120000) |
 | `CAMUS_CODEX_TIER`, `CAMUS_CODEX_DISABLE_MCP` | Passed through to `codex exec` exactly as camus does |
 | `HIVEMIND_VIA_CLAUDE=1` | Use the connected Hivemind Staging entry in Claude (preferred; no Studio key) |
 | `HIVEMIND_MCP_URL`, `HIVEMIND_API_KEY` | Ground drafts via Studio-side Hivemind MCP (see below) |

@@ -52,6 +52,11 @@ export async function runLoop(run, ctx) {
   const makerModel = snapshot.maker?.model;
   const reviewerModel = snapshot.reviewer?.model;
   const reviewerEffort = snapshot.reviewer?.effort;
+  // A snapshot without providers is a legacy pairing — claude wrote, codex
+  // reviewed — so those defaults ARE what the snapshot meant, not a guess.
+  const makerProvider = snapshot.maker?.provider || 'anthropic';
+  const reviewerProvider = snapshot.reviewer?.provider || 'openai';
+  const providerOf = (identity) => String(identity ?? '').split(':')[0] || null;
   const answers = [];
   let costUsd = 0;
   let doneWithFindings = false;
@@ -63,7 +68,7 @@ export async function runLoop(run, ctx) {
   const sess = (actor) => (line) => emit('session', { actor, line });
   const recordMakerCall = (stageName, result, { executor = true } = {}) => {
     if (!result || result.ok === false) return;
-    const actual = result.modelActual ?? (makerModel ? `anthropic:${makerModel}` : null);
+    const actual = result.modelActual ?? (makerModel ? `${makerProvider}:${makerModel}` : null);
     // Retrieval can legitimately use provider helpers (for example ToolSearch
     // on Haiku before Sonnet). Keep that observed identity in stage usage and
     // the knowledge snapshot, but never promote it into the artifact executor.
@@ -75,6 +80,26 @@ export async function runLoop(run, ctx) {
       model_actual: actual,
     });
     emit('maker_observation', makerUsage.at(-1));
+  };
+
+  // The pairing facts each review round records: the reviewer's provider-
+  // qualified identity and whether the two seats share a provider at that
+  // moment (executor from the last recorded actual, reviewer from the
+  // adapter's observation or the declared pin). A missing or unknown provider
+  // on either side fails closed to the LOWER standing — same_vendor, which
+  // derives advisory — never up to independent.
+  const reviewPairingFacts = (review) => {
+    const reviewerIdentity = review.reviewerIdentity ?? (reviewerModel ? `${reviewerProvider}:${reviewerModel}` : null);
+    const executorIdentity = makerActualModels.at(-1) ?? (makerModel ? `${makerProvider}:${makerModel}` : null);
+    const executorP = providerOf(executorIdentity);
+    const reviewerP = providerOf(reviewerIdentity);
+    return {
+      reviewerBackend: snapshot.reviewer?.backend ?? null,
+      reviewerIdentity,
+      independence: executorP && reviewerP && executorP !== 'unknown' && reviewerP !== 'unknown' && executorP !== reviewerP
+        ? 'cross_vendor'
+        : 'same_vendor',
+    };
   };
 
   // Every human interaction goes through here so it lands in the receipts and
@@ -118,7 +143,7 @@ export async function runLoop(run, ctx) {
     // ---- Plan ------------------------------------------------------------
     stage('plan', 'active');
     const plan = await withRetries('plan', () =>
-      adapters.claude({ model: makerModel, stage: 'plan', prompt: planPrompt(run), cwd: ctx.scratchDir, signal, onTick: log, onSession: sess('maker'), toolPolicy: run.toolPolicy ?? 'research' }),
+      adapters.maker({ model: makerModel, stage: 'plan', prompt: planPrompt(run), cwd: ctx.scratchDir, signal, onTick: log, onSession: sess('maker'), toolPolicy: run.toolPolicy ?? 'research' }),
     );
     recordMakerCall('plan', plan);
     costUsd += plan.costUsd || 0;
@@ -163,9 +188,16 @@ export async function runLoop(run, ctx) {
     if (run.frozenKnowledge) {
       useFrozenKnowledge(run.frozenKnowledge);
     } else if (run.ground && hivemind.hivemindStatus().mode === 'claude') {
+      // Managed-connector retrieval runs INSIDE the maker adapter with
+      // Claude-connector auth, so this path exists only for a claude-backend
+      // maker. The server refuses such runs at POST; this is the fail-closed
+      // backstop for anything that reaches the engine another way.
+      if ((snapshot.maker?.backend ?? 'claude') !== 'claude') {
+        throw new Error('grounded managed-connector runs need the claude backend in the maker seat; run ungrounded or change the pairing');
+      }
       stage('ground', 'active');
       const retrieve = (prompt) => withRetries('grounding', () =>
-        adapters.claude({
+        adapters.maker({
           model: makerModel,
           stage: 'ground',
           prompt,
@@ -272,7 +304,7 @@ export async function runLoop(run, ctx) {
     let draft = null;
     let rev = 0;
     const makeRes = await withRetries('draft', () =>
-      adapters.claude({
+      adapters.maker({
         model: makerModel,
         stage: 'make',
         prompt: makePrompt({ ...run, grounding, answers: contentAnswers() }),
@@ -321,7 +353,7 @@ export async function runLoop(run, ctx) {
       const claims = extractClaimCandidates(draft, { groundingResults: groundingEvidence()?.results ?? [] });
       const thresholds = extractThresholdLines(draft);
       lastReview = await withRetries(`review round ${round}`, () =>
-        adapters.codex({
+        adapters.reviewer({
           model: reviewerModel,
           prompt: reviewPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, round, priorFindings, answers: contentAnswers(), groundingEvidence: groundingEvidence(), claims, criteria, thresholds }),
           claims,
@@ -344,6 +376,7 @@ export async function runLoop(run, ctx) {
         questions: lastReview.questions,
         reviewerModel: lastReview.reviewerModel ?? reviewerModel ?? null,
         reviewerEffort: lastReview.reviewerEffort ?? reviewerEffort ?? null,
+        ...reviewPairingFacts(lastReview),
         claimAssessments: lastReview.claimAssessments ?? [],
         coverageAssessments: lastReview.coverageAssessments ?? [],
         thresholdAssessments: bindThresholdAssessments(thresholds, lastReview.thresholdAssessments),
@@ -408,7 +441,7 @@ export async function runLoop(run, ctx) {
 
       stage('fix', 'active', { round });
       const fixRes = await withRetries('fix', () =>
-        adapters.claude({
+        adapters.maker({
           model: makerModel,
           stage: 'fix',
           prompt: fixPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, findings: lastReview.blocking, answers: contentAnswers(), viaClaude: grounding === 'claude' }),
@@ -456,7 +489,7 @@ export async function runLoop(run, ctx) {
           const closureClaims = extractClaimCandidates(draft, { groundingResults: groundingEvidence()?.results ?? [] });
           const closureThresholds = extractThresholdLines(draft);
           lastReview = await withRetries('closure audit', () =>
-            adapters.codex({
+            adapters.reviewer({
               model: reviewerModel,
               prompt: reviewPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, round: 'closure', priorFindings, answers: contentAnswers(), groundingEvidence: groundingEvidence(), claims: closureClaims, criteria, thresholds: closureThresholds, closure: true }),
               claims: closureClaims,
@@ -479,6 +512,7 @@ export async function runLoop(run, ctx) {
             questions: lastReview.questions,
             reviewerModel: lastReview.reviewerModel ?? reviewerModel ?? null,
             reviewerEffort: lastReview.reviewerEffort ?? reviewerEffort ?? null,
+            ...reviewPairingFacts(lastReview),
             claimAssessments: lastReview.claimAssessments ?? [],
             coverageAssessments: lastReview.coverageAssessments ?? [],
             thresholdAssessments: bindThresholdAssessments(closureThresholds, lastReview.thresholdAssessments),
@@ -498,7 +532,7 @@ export async function runLoop(run, ctx) {
             closureFixBudget -= 1;
             stage('fix', 'active', { closure: true });
             const fixRes = await withRetries('closure-fix', () =>
-              adapters.claude({
+              adapters.maker({
                 model: makerModel,
                 stage: 'fix',
                 prompt: fixPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, findings: lastReview.blocking, answers: contentAnswers(), viaClaude: grounding === 'claude' }),
@@ -540,7 +574,7 @@ export async function runLoop(run, ctx) {
         verifyFixBudget -= 1;
         stage('fix', 'active', { verify: true });
         const fixRes = await withRetries('verify-fix', () =>
-          adapters.claude({
+          adapters.maker({
             model: makerModel,
             stage: 'fix',
             prompt: fixPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, findings: [], verifyFailures: failures, answers: contentAnswers(), viaClaude: grounding === 'claude' }),

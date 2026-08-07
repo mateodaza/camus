@@ -12,6 +12,21 @@ export const meta = {
   ],
 }
 
+// ── ARGUMENT NORMALIZATION — FIRST, BEFORE ANY args-DERIVED CONSTANT ───────────
+// The runtime can hand `args` over as a JSON STRING. This block used to sit ~70 lines below
+// the constants, so every args-derived value above it read a string: `args.roundCap` was
+// undefined and ROUND_CAP silently fell back to 3. Live run 20260806-091643-9nbv passed
+// roundCap: 2 in both Workflow calls and in its persisted state, and the loop still launched
+// r3 (audit 2026-08-06). Nothing that reads `args` may appear above this.
+// args may be a bare string or {task, targetPath}. A STRING that parses as a JSON object is
+// unwrapped first (live dogfood 2026-06-12, the loop-side F33): some callers stringify the
+// object, and without this the ENTIRE JSON became the task text — the branch slug read
+// "posture-full-targetpath-…" and posture/targetPath silently dropped. A bare-string task that
+// merely starts with "{" but isn't valid JSON keeps working unchanged (parse failure → string).
+if (typeof args === 'string' && args.trim().startsWith('{')) {
+  try { args = JSON.parse(args) } catch (_) { /* a bare-string task, not JSON — leave it */ }
+}
+
 // ── Constants ──────────────────────────────────────────────────────────────
 // Review↔fix rounds. Default 3; caller may raise it for a known-large task (run feedback
 // 2026-06-10: a 15-file task converged P1→P1→P2 but ran out of rounds at the cap). Bounded
@@ -79,14 +94,6 @@ const _SHELL_UNSAFE = ['$', '`', '"', '\\', '\n', '\r']
 const shellSafe = (s) => typeof s === 'string' && s.length > 0 && !_SHELL_UNSAFE.some((c) => s.includes(c))
 const shq = (s) => `'${String(s).replace(/'/g, "'\\''")}'`
 
-// args may be a bare string or {task, targetPath}. A STRING that parses as a JSON object is
-// unwrapped first (live dogfood 2026-06-12, the loop-side F33): some callers stringify the
-// object, and without this the ENTIRE JSON became the task text — the branch slug read
-// "posture-full-targetpath-…" and posture/targetPath silently dropped. A bare-string task that
-// merely starts with "{" but isn't valid JSON keeps working unchanged (parse failure → string).
-if (typeof args === 'string' && args.trim().startsWith('{')) {
-  try { args = JSON.parse(args) } catch (_) { /* a bare-string task, not JSON — leave it */ }
-}
 const TASK = typeof args === 'string' ? args : (args && args.task) || ''
 const TARGET = (args && typeof args === 'object' && args.targetPath) || ''
 // targetPath is inlined into REPO_CD's `cd "…"` (verification audit 2026-06-13): a path with
@@ -108,7 +115,13 @@ if (TARGET && !shellSafe(TARGET)) {
 const _VERIFY_CMD_RAW = (args && typeof args === 'object' && typeof args.verifyCmd === 'string' && args.verifyCmd.trim()) ? args.verifyCmd : ''
 const VERIFY_CMD_OVERRIDE = shellSafe(_VERIFY_CMD_RAW) ? _VERIFY_CMD_RAW : ''
 if (_VERIFY_CMD_RAW && !VERIFY_CMD_OVERRIDE) log('⚠ Ignoring args.verifyCmd: it contains shell-unsafe characters ($ ` " \\ or newline). Falling back to auto-detected verify — bake the command into your repo\'s test script instead.')
-const VERIFY_ENV = VERIFY_CMD_OVERRIDE ? `CAMUS_VERIFY_CMD=${JSON.stringify(VERIFY_CMD_OVERRIDE)} ` : ''
+// Passed as a FLAG, not as an environment-assignment prefix. `CAMUS_VERIFY_CMD=... verify.sh <wt>`
+// is not a plain trusted-script call: it matches no allow rule, and a real Haiku runner handed it in
+// auto mode refused outright — it read an env-var assignment in front of a trusted script as an
+// attempt to inject a command into that script (isolated auto-mode preflight, 2026-08-06; the
+// classifier seam the shell test cannot reach). The value is still chosen and quoted here, so what
+// the runner may influence is unchanged.
+const VERIFY_ARG = VERIFY_CMD_OVERRIDE ? ` --verify-cmd ${JSON.stringify(VERIFY_CMD_OVERRIDE)}` : ''
 // REPO_CD (dogfood run-8 + field soak finding "garland", 2026-06-12/13): worktree identity and
 // every repo-reading command must run at the GIT TOPLEVEL, not whatever cwd the runner inherited.
 // A launch from a SUBDIRECTORY computed a different worktree home (the basename was the subdir,
@@ -262,7 +275,49 @@ const WT_DEST = `"${WT_PARENT_EXPR}/${WT_NAME}"`
 // (resume determinism), which is exactly why the stamp is a side effect of the agents' shells.
 // Standalone loops (no salt) skip it: the .hb name is feat identity.
 const HB_TOUCH = IDENTITY_SALT ? `touch "$HOME/.camus/feats/${IDENTITY_SALT}.hb" 2>/dev/null; ` : ''
-const HB_LINE = IDENTITY_SALT ? `\nFirst, run \`touch "$HOME/.camus/feats/${IDENTITY_SALT}.hb"\` (liveness heartbeat — ignore any failure), then proceed.\n` : ''
+
+// ── GATE NONCE + DURABLE STATUS (field report 2026-08-04, a WP6 game run) ────
+// RUN_ID is derived from the identity and the task, never from wall clock, so the
+// nonce is stable across resumes (Date is banned in this script) and is a value
+// this WORKFLOW computes — not one a thin runner can supply, retype, or drop.
+const GATE_NONCE = `${IDENTITY_SALT || 'camus'}:${RUN_ID}`
+// The reviewer identity the CALLER decided (Studio passes its run-start snapshot).
+// This script cannot read the environment, so an identity it must verify has to
+// arrive as an argument. Absent (a direct camus-loop call), the model/backend
+// checks are skipped rather than guessed — round, effort and nonce still bind.
+const REVIEWER_MODEL = (args && typeof args === 'object' && typeof args.reviewerModel === 'string' && shellSafe(args.reviewerModel)) ? args.reviewerModel : ''
+const REVIEWER_BACKEND = (args && typeof args === 'object' && typeof args.reviewerBackend === 'string' && shellSafe(args.reviewerBackend)) ? args.reviewerBackend : 'codex'
+const STATUS_SCRIPT = `python3 ${SKILL_SCRIPTS}/status_record.py`
+const REQUEST_SCRIPT = `python3 ${SKILL_SCRIPTS}/review_request.py`
+// The heartbeat's mtime says "a phase started". It does NOT say which phase, in
+// which worktree, at which requested round/effort — and a phase-entry touch went
+// stale during a long Implement while files were being written, so Studio's
+// watchdog killed live work and its UI showed "Igniting…" for ten minutes. This
+// record is the durable answer, written mechanically as a command PREFIX exactly
+// like HB_TOUCH: the values are inlined here by the orchestrator, so a runner
+// that mangles the command it was given cannot change what gets recorded.
+const statusWrite = (fields) => IDENTITY_SALT
+  ? `${STATUS_SCRIPT} write --salt ${IDENTITY_SALT} --nonce ${JSON.stringify(GATE_NONCE)} ${fields} >/dev/null 2>&1; `
+  : ''
+const statusPhase = (phaseName, extra = '') => statusWrite(`--phase ${JSON.stringify(phaseName)}${extra ? ' ' + extra : ''}`)
+// MID-PHASE LIVENESS IS THE HOST'S JOB, NOT THE MODEL'S. An earlier design asked
+// the think agent to report progress after every file it changed; that
+// instruction was never wired into any prompt, and reinstating it would buy
+// continuous liveness with model-mediated bookkeeping — the same mistake as the
+// per-phase status agents. Studio already derives liveness from signals it owns:
+// the igniter's own event stream, worktree file mtimes, and growing review-watch
+// events (see newestActivity in code-lane.mjs). If mid-phase liveness ever needs
+// to be sharper, it gets sharper THERE, in the host, not by spending model turns.
+//
+// PHASE STAMPS RIDE EXISTING WORK — they never buy their own agent turn. The
+// first cut spawned a dedicated runner per think phase, and a live WP6 run spent
+// ~40k tokens on three of them before any review happened (2026-08-05): an agent
+// turn costs its whole context, so a "thin" stamp is not thin. Now the stamp is
+// one line inside a prompt an agent was already going to run, or is chained onto
+// a phase's own shell command. Same best-effort observability, no extra turns.
+const hbLine = (phaseName) => IDENTITY_SALT
+  ? `\nFirst, run \`touch "$HOME/.camus/feats/${IDENTITY_SALT}.hb" 2>/dev/null; ${STATUS_SCRIPT} write --salt ${IDENTITY_SALT} --nonce ${JSON.stringify(GATE_NONCE)} --phase ${JSON.stringify(phaseName)} >/dev/null 2>&1\` (liveness heartbeat and phase marker — ignore any failure), then proceed.\n`
+  : ''
 
 // ── Schemas (only where the script needs structured fields) ──────────────────
 const CLASSIFY_SCHEMA = {
@@ -339,21 +394,96 @@ function extractJsonObject(raw) {
 // Map any reviewer output to the gate contract. Anything we can't parse, or that
 // lacks a boolean `ran`, is treated as an INFRA failure (ran:false) — same
 // philosophy as adapter.py: never silently clean, never a rejection.
-function asGate(raw) {
+function asGate(raw, expected) {
+  const infra = (error) => ({ ran: false, error, clean: false, blocking: [], nonblocking: [] })
   const g = extractJsonObject(raw)
+  // A PENDING HANDLE IS NOT A RECEIPT. The review is still running; it carries no verdict, no
+  // findings and no binding. Treating it as a completed review would let an empty `blocking`
+  // read as CLEAN and send the loop straight to commit/verify (live run 20260806-110809-2r9j).
+  // It is named separately from unparseable output so the caller can tell "still running" from
+  // "broken runner", and so it can never satisfy the verdict path.
+  if (g && g.pending === true) {
+    return { ran: false, pending: true, handle: typeof g.handle === 'string' ? g.handle : null,
+      error: 'the reviewer returned a PENDING handle, not a verdict — a pending review is never a receipt', clean: false, blocking: [], nonblocking: [] }
+  }
   if (!g || typeof g.ran !== 'boolean') {
-    return { ran: false, error: 'reviewer output not parseable as gate JSON', clean: false, blocking: [], nonblocking: [] }
+    return infra('reviewer output not parseable as gate JSON')
   }
   if (g.ran && g.clean !== true && !Array.isArray(g.blocking)) {
-    return { ran: false, error: 'gate JSON missing blocking[] on non-clean verdict', clean: false, blocking: [], nonblocking: [] }
+    return infra('gate JSON missing blocking[] on non-clean verdict')
+  }
+  if (!g.ran || !expected) return g
+
+  // ── BINDING CHECK (field report 2026-08-04, a WP6 game run) ────────────────
+  // The loop used to accept any parseable {ran, clean, blocking}. It asked for
+  // round 2 at high effort; the thin runner's Bash call dropped `2 high`; the
+  // reviewer defaulted to round 0 / medium; and this function said yes, because
+  // nothing it checked disagreed with anything else it could see. A receipt can
+  // only be trusted against values known INDEPENDENTLY of the receipt — which is
+  // what `expected` is: computed by this workflow, inlined into the command, and
+  // never round-tripped through an agent.
+  const b = g.binding
+  if (!b || typeof b !== 'object' || Array.isArray(b)) {
+    return infra('reviewer output carries no binding block, so the round/effort/model it actually ran cannot be confirmed. '
+      + 'Reinstall the gate (camus install) — an unbindable review is infrastructure, not a verdict.')
+  }
+  const mismatches = []
+  const want = (label, actual, wanted) => {
+    if (wanted === null || wanted === undefined || wanted === '') return
+    if (actual !== wanted) mismatches.push(`${label}: ran ${JSON.stringify(actual)}, requested ${JSON.stringify(wanted)}`)
+  }
+  want('round', b.round, expected.round)
+  want('effort', b.effort, expected.effort)
+  want('reviewer model', b.model, expected.reviewerModel)
+  want('reviewer backend', b.backend, expected.backend)
+  // Compare the worktree by BASENAME: the name carries the task slug and this
+  // run's id, so it identifies the checkout, while full-path equality would
+  // false-refuse wherever the path is reached through a symlink (/tmp on macOS).
+  if (expected.worktreeName) {
+    const ranName = typeof b.worktree === 'string' ? b.worktree.replace(/\/+$/, '').split('/').pop() : null
+    want('worktree', ranName, expected.worktreeName)
+  }
+  // A missing nonce is a REFUSAL, not a pass: it means the review ran without
+  // this gate run's identity, so nothing ties it to the work in front of us.
+  if (!b.nonce) mismatches.push('gate nonce: the review recorded none, so it cannot be tied to this run')
+  else want('gate nonce', b.nonce, expected.nonce)
+  if (mismatches.length) {
+    return infra(`reviewer ran a different review than the one requested — ${mismatches.join('; ')}. `
+      + 'Treated as reviewer infrastructure failure; the round is retried and the loop does not advance.')
   }
   return g
 }
 
+// A runner that never executed the command still SAID something, and its words are the only
+// evidence of what actually happened. Live run 20260806-145411-hy1w: auto mode denied the verify
+// command, the thin runner replied in prose, asVerify threw that prose away for a generic
+// "not parseable", and the loop reported a missing .NET toolchain in a worktree whose toolchain
+// was fine — sending the operator after dependencies that were never involved. So: keep a BOUNDED
+// verbatim tail, and distinguish "refused to run it" from "ran it and I couldn't read the output".
+const RUNNER_TAIL_MAX = 1200
+const runnerTail = (raw) => {
+  const s = (typeof raw === 'string' ? raw : raw == null ? '' : JSON.stringify(raw)).trim()
+  return s.length > RUNNER_TAIL_MAX ? `…${s.slice(-RUNNER_TAIL_MAX)}` : s
+}
+// The runner is INSTRUCTED to prefix a refusal with RUNNER_COULD_NOT_EXECUTE. That marker is the
+// reliable signal; the phrase list is the fallback for a runner that improvised instead (thin
+// models do), matched only in the absence of parseable JSON, so it can never reclassify a real
+// verdict. Either way this only picks the KIND — the tail travels verbatim regardless.
+const RUNNER_REFUSAL_RE = /RUNNER_COULD_NOT_EXECUTE|\b(?:permission denied|not permitted|denied|blocked|refus\w+|rejected|requires approval|needs approval|not (?:allowed|approved|authorized)|(?:can ?not|cannot|couldn'?t|unable to|won'?t) (?:run|execute)|do(?:es)? not have (?:permission|access))\b/i
 function asVerify(raw) {
   const v = extractJsonObject(raw)
   if (!v || typeof v.pass !== 'boolean') {
-    return { pass: false, failures: [{ stage: 'verify', exit: -1, log_tail: 'verify output not parseable as {pass, failures}' }], inconclusive: true }
+    const tail = runnerTail(raw)
+    const refused = RUNNER_REFUSAL_RE.test(tail)
+    return { pass: false, inconclusive: true,
+      failures: [{ stage: 'verify', exit: -1,
+        kind: refused ? 'runner_refused' : 'runner_unparseable',
+        log_tail: tail
+          ? `${refused
+              ? 'the verification command was NOT executed — the runner was refused or denied'
+              : 'the runner returned something other than verify JSON'}; its reply verbatim (tail): ${tail}`
+          : (refused ? 'the runner refused the verification command and said nothing else'
+                     : 'the runner returned NOTHING where verify JSON was expected') }] }
   }
   return v
 }
@@ -445,6 +575,7 @@ if (LAND) {
   const v = await prepAndVerify(wt, landSha || landExpectSha || liveTip)
   if (v.ok === 'inconclusive') {
     return { status: 'verify_inconclusive', task: TASK, worktree: wt, branch: BRANCH, rounds: 0, landed: true, failures: v.failures,
+      commit_sha: (landSha || landExpectSha || liveTip), parkedSha: (landSha || landExpectSha || liveTip),
       note: 'Land mode committed, but deterministic verify could not RUN (env not ready — see failures). Fix the environment and re-run with land:true.' }
   }
   if (v.ok === 'pass') {
@@ -525,8 +656,40 @@ if (FEAT_SCOPED) {
 }
 
 // ── Phase 0: CLASSIFY complexity → route the think-model ─────────────────────
+// Override reads are hoisted above the classifier because they decide whether it
+// is worth running at all (see CLASSIFY_MOOT).
+const MODEL_OVERRIDE = (args && typeof args === 'object' && typeof args.model === 'string' && args.model) || ''
+const TIER_OVERRIDE = (args && typeof args === 'object' && TIER_MODEL[args.modelTier]) ? args.modelTier : ''
+// Opt-in (default OFF). Only honored under policy:autonomous (see skip-plan block) so it can never
+// silently disable ambiguity detection / the needs_human ask-gate on an asking policy.
+const SKIP_PLAN_REQ = !!(args && typeof args === 'object' && args.skipPlan === true)
+// Read from args directly: PINNED_EFFORT itself is declared later (beside
+// pickReviewEffort, where it is used), so referencing it here would be a TDZ error.
+const EFFORT_PINNED = !!(args && typeof args === 'object' && typeof args.reviewerEffort === 'string'
+  && ['low', 'medium', 'high', 'xhigh'].includes(args.reviewerEffort.trim()))
+
+// COST: the classifier is not free — a live WP6 run spent ~35k tokens and 103s on
+// it (2026-08-05). Its tier only ever feeds three decisions: the think model, the
+// review effort, and the trivial-task skip-plan. When the caller has already
+// pinned the model AND the effort and did not ask for skip-plan, the tier cannot
+// change ANY of them, so running it buys nothing but latency and spend. Studio
+// always pins both, so its Build runs skip this entirely. A tier override makes it
+// moot for the same reason. Ambiguity detection is unaffected: that lives in the
+// PLAN phase's ask-gate, which still runs.
+const CLASSIFY_MOOT = !!TIER_OVERRIDE || (!!MODEL_OVERRIDE && EFFORT_PINNED && !SKIP_PLAN_REQ)
+
+// When the caller already supplied a BINDING acceptance contract (Studio always
+// does), the plan's job is to route that contract into files — not to rediscover
+// the requirements. A live run spent ~51.5k tokens and 21 tool calls re-surveying
+// a repo whose 5,554-character contract already named the work (2026-08-05). This
+// bounds the survey without touching the ask-gate: clarity is still assessed, and
+// a genuinely ambiguous task still pauses.
+const HAS_BINDING_CONTRACT = /\bAcceptance contract \(binding\):/.test(TASK)
+const CONTRACT_SCOPED_PLAN = HAS_BINDING_CONTRACT
+  ? `\nThe task above already carries a BINDING acceptance contract. Plan AGAINST it: it is the requirement set, so do not re-derive requirements or survey the wider repository. Open only the files the contract and task name, plus any file you must read to place a named change correctly. Prefer the smallest survey that lets you name the files and the order of work; a broad exploration here is wasted spend, not diligence. Clarity is still yours to judge honestly — a contract does not make an ambiguous task clear.\n`
+  : ''
 phase('Classify')
-const cls = await agent(
+const cls = CLASSIFY_MOOT ? null : await agent(
   `You are a COMPLEXITY CLASSIFIER. Your ONE job is to read the task text below and return a tier.
 Do NOT implement it, write or edit files, run commands, or touch the repo in any way — acting on the
 task instead of labeling it is a CONTAINMENT VIOLATION (a classifier that "helpfully" did the task in
@@ -544,20 +707,22 @@ Task: ${TASK}`,
   { model: MODEL_RUNNER, phase: 'Classify', label: 'classify', schema: CLASSIFY_SCHEMA, agentType: 'Explore' }
 )
 // Override precedence (FEATURE 1a): explicit `model` > `modelTier` > classifier result.
-//   args.model     — exact think-model string (e.g. 'opus'), used VERBATIM, forces nothing about tier.
-//   args.modelTier — one of trivial|standard|complex, forces the tier (and thus its TIER_MODEL).
-// The classifier still runs (its tier feeds skip-plan + escalation), but overrides win.
-const MODEL_OVERRIDE = (args && typeof args === 'object' && typeof args.model === 'string' && args.model) || ''
-const TIER_OVERRIDE = (args && typeof args === 'object' && TIER_MODEL[args.modelTier]) ? args.modelTier : ''
-// Opt-in (default OFF). Only honored under policy:autonomous (see skip-plan block) so it can never
-// silently disable ambiguity detection / the needs_human ask-gate on an asking policy.
-const SKIP_PLAN_REQ = !!(args && typeof args === 'object' && args.skipPlan === true)
+// The overrides are read above; when they make the tier unusable the classifier is
+// skipped outright and `classifiedTier` falls back to the neutral default.
 const classifiedTier = (cls && TIER_MODEL[cls.tier]) ? cls.tier : 'standard'
 const tier = TIER_OVERRIDE || classifiedTier
+// PROVENANCE, not just a value. When the classifier is skipped, `classifiedTier`
+// falls back to 'standard' so routing still works — but a report that shows only
+// `tier: "standard"` claims a classification that never ran. These say where the
+// routing tier actually came from, so a skipped run is legible as skipped.
+const classificationSkipped = CLASSIFY_MOOT
+const tierSource = TIER_OVERRIDE ? 'args.modelTier' : (CLASSIFY_MOOT ? 'neutral_default' : 'classifier')
 const thinkModel = MODEL_OVERRIDE || TIER_MODEL[tier]
 const modelSource = MODEL_OVERRIDE ? `args.model override ("${MODEL_OVERRIDE}")`
   : (TIER_OVERRIDE ? `args.modelTier override ("${TIER_OVERRIDE}")` : `classifier ("${classifiedTier}")`)
-log(`Tier=${tier}, think model: ${thinkModel} via ${modelSource} (classifier said "${classifiedTier}"; runners: ${MODEL_RUNNER}).`)
+log(CLASSIFY_MOOT
+  ? `Tier=${tier}, think model: ${thinkModel} via ${modelSource}. Classifier SKIPPED: the model${EFFORT_PINNED ? ' and review effort are' : ' is'} pinned by the caller, so a tier could not change any decision (runners: ${MODEL_RUNNER}).`
+  : `Tier=${tier}, think model: ${thinkModel} via ${modelSource} (classifier said "${classifiedTier}"; runners: ${MODEL_RUNNER}).`)
 
 // ── Phase 1: PLAN (think model) ──────────────────────────────────────────────
 // FEATURE 2 — INSTRUMENTED SKIP-PLAN (opt-in, default OFF). Skips the expensive PLAN AGENT to save
@@ -586,12 +751,13 @@ if (planSkipped) {
   log('Plan ran.')
   plan = await agent(
     `You are planning ONE Camus task. Do NOT write code in this phase.
-${HB_LINE}
+${hbLine('Plan')}
 Task: ${TASK}
 ${targetLine}${envFactsBlock}${HUMAN_ANSWER ? `\n\nA human has ALREADY answered the open question for this task — treat it as DECIDED, do not re-raise it:\n${HUMAN_ANSWER}` : ''}
 
 Read only the files needed to understand the change. Produce a short, ordered plan
 (what to change, in which files, and why) plus the list of files the change will touch.
+${CONTRACT_SCOPED_PLAN}
 
 Then assess CLARITY honestly:
 - "clear": exactly one obvious correct implementation.
@@ -641,7 +807,7 @@ phase('Implement')
 const WT_CREATE_MODE = STANDALONE_ID_SALT ? 'ensure' : 'create'
 const impl = await agent(
   `Implement ONE Camus task in an ISOLATED git worktree so review/verify can run against it cleanly.
-${HB_LINE}
+${hbLine('Implement')}
 Task: ${TASK}
 ${decisionGuidance}${envFactsBlock}
 Approved plan:
@@ -652,7 +818,7 @@ Files in scope: ${plan.relevant_files.join(', ') || (planSkipped ? 'discover the
 Steps:
 1. From the repo root, run EXACTLY this one command and NOTHING ELSE (it creates the branch/worktree
    once${STANDALONE_ID_SALT ? ', or returns the same custody-bound worktree on resume,' : ''} and prints ONE JSON object):
-     ${REPO_CD}${WT_CMD} ${WT_CREATE_MODE} ${JSON.stringify(BRANCH)} ${WT_DEST}
+     ${REPO_CD}${WT_CMD} ${WT_CREATE_MODE} ${JSON.stringify(BRANCH)} ${WT_DEST} && ${statusWrite(`--phase Implement --branch ${JSON.stringify(BRANCH)} --worktree ${WT_DEST}`).replace(/; $/, '')}
    If the JSON says "ok": false, STOP IMMEDIATELY — do NOT improvise any git commands (no
    \`worktree add\`, no checkout: attaching a previous attempt's branch silently reuses its
    commits and corrupts the run — live smoke 2026-06-12). Return worktree_path "FAILED" with
@@ -707,6 +873,13 @@ if (!claimed || !claimed.endsWith(WT_NAME) || !shellSafe(claimed)) {   // shellS
     note: `Implement agent returned ${claimed ? `an unexpected worktree path (${claimed})` : 'no worktree path'}; expected an absolute path ending in "${WT_NAME}". Refusing to cd/exec into it.` }
 }
 const WT = claimed
+// The terminal report describes the candidate that actually survived review and verification,
+// not merely the first implementation attempt. A bounded fix can invalidate both the initial
+// summary and its design decisions (WP10: the first candidate duplicated helpers; the reviewed
+// candidate moved them into production). Each fix rewrites this complete narrative in the same
+// model turn that edits the worktree, so honesty costs no extra agent call.
+let candidateSummary = typeof impl.summary === 'string' ? impl.summary : ''
+let candidateDecisions = Array.isArray(impl.decisions) ? impl.decisions : []
 log(`Implemented in worktree ${WT} (branch ${BRANCH})${tokSuffix()}.`)
 
 // WORKTREE CONTAINMENT GUARD (smoke 2026-06-12): BOTH think-agents leaked draft edits into the
@@ -766,7 +939,20 @@ if (FEAT_SCOPED) {
 // did NOT clear), and to `xhigh` when it's CRITICAL (a P0 surfaced). Mirrors the model-escalation
 // signals below; deterministic (round + finding-priority, no Date/random). The user can still
 // force a constant effort via CAMUS_CODEX_ARGS (it wins inside codex_review.sh).
+// A caller may PIN the review effort (Studio forwards its run-start snapshot as
+// args.reviewerEffort). When pinned, every round runs at exactly that effort, so
+// the effort Studio SHOWS is the effort that RUNS — adaptive escalation must not
+// silently raise a run the operator chose to keep low. Unpinned, the adaptive
+// medium→high→xhigh schedule stands for direct callers who did not choose.
+const _EFFORTS = ['low', 'medium', 'high', 'xhigh']
+const PINNED_EFFORT = (args && typeof args === 'object' && typeof args.reviewerEffort === 'string' && _EFFORTS.includes(args.reviewerEffort.trim()))
+  ? args.reviewerEffort.trim()
+  : ''
+if (args && typeof args === 'object' && typeof args.reviewerEffort === 'string' && !PINNED_EFFORT) {
+  log(`⚠ Ignoring args.reviewerEffort ${JSON.stringify(args.reviewerEffort)}: not one of ${_EFFORTS.join('|')}. Using the adaptive schedule.`)
+}
 function pickReviewEffort(rnd, priorBlocking) {
+  if (PINNED_EFFORT) return PINNED_EFFORT                                // caller pinned → fixed every round
   if (priorBlocking.some((b) => b && b.priority === 0)) return 'xhigh'   // critical → maximum scrutiny
   if (tier === 'complex' || rnd >= 2) return 'high'                      // hard / persistent → deeper
   return 'medium'                                                         // default → fast
@@ -780,7 +966,7 @@ let currentEffort = 'medium'   // set per round below; read by reviewerPrompt
 // instructed on the FIRST call; shell `timeout` wrappers are forbidden in the prompt. 600000 is
 // the tool's default ceiling (BASH_MAX_TIMEOUT_MS raises it); reviews that need MORE than that
 // are the watchdog-reviewer design's job (docs/HARNESS-DIRECTION.md), not a bigger constant.
-const REVIEW_TIMEOUT_MS = { medium: 360000, high: 600000, xhigh: 600000 }
+const REVIEW_TIMEOUT_MS = { low: 240000, medium: 360000, high: 600000, xhigh: 600000 }
 
 // A human answer IS task contract — plan/implement already treat it as DECIDED. The reviewer
 // must judge the diff against the same contract, or a human-overridden finding gets re-flagged
@@ -798,7 +984,21 @@ function reviewerPrompt(attempt) {
 the worktree and return its stdout. Do NOT interpret, summarize, re-judge, or reformat.
 
 ${backoff}Run EXACTLY this one command (the worktree path is the argument — do NOT cd, do NOT add anything else):
-  ${HB_TOUCH}${REVIEW_CMD} ${JSON.stringify(WT)} ${shq(REVIEW_TASK_CTX)} ${round} ${currentEffort}${POSTURE === 'oneshot' ? ' light' : ''}
+  ${HB_TOUCH}${statusPhase('Review', `--round ${round} --effort ${currentEffort} --model ${JSON.stringify(REVIEWER_MODEL)} --backend ${JSON.stringify(REVIEWER_BACKEND)} --worktree ${JSON.stringify(WT)}`)}${REQUEST_SCRIPT} write --worktree ${JSON.stringify(WT)} --round ${round} --effort ${currentEffort} --nonce ${JSON.stringify(GATE_NONCE)} --model ${JSON.stringify(REVIEWER_MODEL)} --backend ${JSON.stringify(REVIEWER_BACKEND)} >/dev/null && CAMUS_GATE_NONCE=${JSON.stringify(GATE_NONCE)} CAMUS_REVIEW_ROUND=${round} CAMUS_REVIEW_EFFORT=${currentEffort} ${REVIEW_CMD} ${JSON.stringify(WT)} ${shq(REVIEW_TASK_CTX)} ${round} ${currentEffort}${POSTURE === 'oneshot' ? ' light' : ''}
+
+The round and effort appear THREE times in that command on purpose: in a request file, in
+environment variables, and as arguments. The reviewer refuses if they disagree, so retyping,
+shortening, or "cleaning up" the command produces an infrastructure failure and a retry — not a
+review. Copy it exactly.
+
+STOP AFTER THAT ONE COMMAND. If its stdout is \`{"pending": true, "handle": "…"}\`, that IS your
+answer: return it verbatim and finish. Do NOT look inside the handle directory, do NOT \`cat\`,
+\`ls\`, \`head\` or parse any file in it (it is a directory of live artifacts, not JSON), do NOT
+poll, sleep or loop waiting for it, do NOT run \`await\`, and do NOT run a second command of any
+kind. THIS WORKFLOW owns re-attachment and will call you again with the await command when it is
+time. (Live run 20260806-091643-9nbv: a runner improvised a six-minute Python poll that tried to
+parse the .watch DIRECTORY as JSON, and other rounds read stale artifacts — every one of those
+turned a healthy pending handle into an infra retry.)
 
 Set the Bash tool's timeout PARAMETER to ${REVIEW_TIMEOUT_MS[currentEffort] || 600000} for this
 call — the review legitimately runs for minutes and the 2-minute default kills it mid-flight.
@@ -823,15 +1023,23 @@ fences, no commentary. It is already JSON.`
 // silently broke re-attach/abort for every custom CAMUS_REVIEW_DIR run.
 const okHandle = (h, rnd) => typeof h === 'string' && /^[A-Za-z0-9._\/-]+$/.test(h)
   && h.startsWith('/') && !h.includes('..') && h.endsWith(`-r${rnd}.watch`)
-function awaitPrompt(handle) {
+// The await carries the SAME identity as the start (nonce, round, effort). Without it a
+// reattach could not prove the watch was its own, so the adoption gate declined and the
+// normal fresh path overwrote a completed round (production run 20260806-063400-vzqs).
+function awaitPrompt(handle, round, currentEffort) {
   return `You are a THIN reviewer attendant. A Codex review is still RUNNING detached; your ONLY
 job is to re-attach and return the script's stdout. Do NOT interpret, summarize, or reformat.
 
 Run EXACTLY this one command:
-  ${HB_TOUCH}${REVIEW_CMD} await ${JSON.stringify(handle)}
+  ${HB_TOUCH}CAMUS_GATE_NONCE=${JSON.stringify(GATE_NONCE)} CAMUS_REVIEW_ROUND=${round} CAMUS_REVIEW_EFFORT=${currentEffort} ${REVIEW_CMD} await ${JSON.stringify(handle)}
 
 Set the Bash tool's timeout PARAMETER to 600000 for this call. Do NOT wrap the command in
 \`timeout\`/\`gtimeout\`.
+
+STOP AFTER THAT ONE COMMAND. If its stdout is another \`{"pending": true, "handle": "…"}\`, return
+it verbatim and finish — the review is still running and this workflow will call you again. Do
+NOT inspect the handle directory, \`cat\`/parse its files, poll, sleep, loop, or run any second
+command.
 
 Output the command's stdout VERBATIM as your entire reply — nothing before or after, no code
 fences, no commentary. It is already JSON.`
@@ -849,15 +1057,41 @@ const usageSuffix = (g) => (g && g.usage && typeof g.usage === 'object')
 let round = 0
 let reviewPassed = false
 let lastBlocking = []
+// OBSERVED, not asserted: set only where a commit actually lands, so a pre-commit terminal can
+// report the truth about mutation instead of claiming preservation it never checked.
+let committedShaObserved = ''
 let infraAbort = null
 // ONESHOT (VELOCITY §1): the single review's blocking findings, preserved VERBATIM for the
 // honest report — they were fixed once and never re-reviewed, and the result must say so.
 // Per-finding CLAIMED resolutions (smoke 2026-06-12, the spec's audit-P2(b) half we first
 // shipped without): the fix agent reports what it did for each finding, so a report reader can
 // tell "addressed-unreviewed" from "untouched" — claims, clearly labeled, never verdicts.
+const FIX_NARRATIVE_PROPERTIES = {
+  summary: {
+    type: 'string',
+    description: 'One-paragraph summary of the COMPLETE current candidate after this fix, replacing the pre-fix summary.',
+  },
+  decisions: {
+    type: 'array',
+    description: 'The COMPLETE set of notable decisions that still apply after this fix. Remove superseded decisions; empty if wholly mechanical.',
+    items: {
+      type: 'object', additionalProperties: false, required: ['what', 'why'],
+      properties: {
+        what: { type: 'string' },
+        why: { type: 'string' },
+        alternative: { type: 'string' },
+      },
+    },
+  },
+}
+const FIX_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['summary', 'decisions'],
+  properties: FIX_NARRATIVE_PROPERTIES,
+}
 const FIX_RESOLUTIONS_SCHEMA = {
-  type: 'object', additionalProperties: false, required: ['resolutions'],
+  type: 'object', additionalProperties: false, required: ['summary', 'decisions', 'resolutions'],
   properties: {
+    ...FIX_NARRATIVE_PROPERTIES,
     resolutions: {
       type: 'array',
       items: {
@@ -871,6 +1105,28 @@ const FIX_RESOLUTIONS_SCHEMA = {
   },
 }
 let oneshotFindings = null
+// ONE SHARED RESULT-FIELD HELPER (audit 2026-08-06b). Once an UNREVIEWED bounded fix has run,
+// its findings, the maker's claimed resolutions and `resolution: fixed_unreviewed` must survive
+// into EVERY terminal outcome — a red verify stays red and an inconclusive stays inconclusive,
+// but neither may drop the findings or read as review-clean. Divergent per-branch spreads are
+// how one of those branches silently loses them, so every terminal reads this one function.
+// Post-fix COPY must match the post-fix facts: after an unreviewed bounded fix there is no
+// clean review to point at, so "Review passed" / "Review was clean" / "Committed reviewed work"
+// are all false. One prefix, used by every terminal that can follow the fix.
+const postFixLead = () => oneshotFindings
+  ? `The final review round raised ${oneshotFindings.length} blocking finding(s) and ONE bounded fix ran for them WITHOUT re-review (NOT review-clean).`
+  : null
+const unreviewedFixFields = () => {
+  if (!oneshotFindings) return {}
+  const findings = oneshotFindings.map((f) => {
+    const m = (oneshotResolutions || []).find((r) => r && r.title === (f && f.title))
+    return m ? { ...f, claimedResolution: m.resolution } : f
+  })
+  return { findings, resolution: 'fixed_unreviewed', reviewedAfterFix: false }
+}
+// Set when the FINAL round's new findings get the one bounded fix (distinguishes that case
+// from the oneshot posture in the sealed note; both share the fixed_unreviewed provenance).
+let finalBoundedFix = false
 let oneshotResolutions = null
 let fixesRan = false
 if (POSTURE === 'oneshot') {
@@ -952,7 +1208,7 @@ while (round < ROUND_CAP) {
       if (!okHandle(pend.handle, round)) { raw = null; pend = null; break }
       awaits++
       log(`Round ${round}/${ROUND_CAP}: review still running (event ${pend.last_event_age != null ? pend.last_event_age + 's' : '?'} ago) — re-attaching (${awaits}/${AWAIT_CAP}).`)
-      raw = await agent(awaitPrompt(pend.handle), {
+      raw = await agent(awaitPrompt(pend.handle, round, currentEffort), {
         model: MODEL_RUNNER, phase: 'Review',
         label: `review:r${round} codex·${currentEffort} await${awaits}`,
       })
@@ -966,7 +1222,16 @@ while (round < ROUND_CAP) {
         ? await agent(abortPrompt(pend.handle), { model: MODEL_RUNNER, phase: 'Review', label: `review-abort:r${round}` })
         : null
     }
-    gate = asGate(raw)
+    // The expectation is this workflow's own: computed here, inlined into the
+    // command, never round-tripped through the runner that executed it.
+    gate = asGate(raw, {
+      round,
+      effort: currentEffort,
+      reviewerModel: REVIEWER_MODEL,
+      backend: REVIEWER_BACKEND,
+      worktreeName: WT_NAME,
+      nonce: GATE_NONCE,
+    })
     if (gate.ran) break
     log(`Round ${round}/${ROUND_CAP}: reviewer infra failure (${gate.error}) — attempt ${attempt}/${INFRA_RETRIES + 1}.`)
   }
@@ -1027,12 +1292,23 @@ while (round < ROUND_CAP) {
     oneshotFindings = lastBlocking
     log(`Oneshot: ${lastBlocking.length} blocking finding(s)${usageSuffix(gate)} — ONE fix pass, NO re-review (result will read fixed_unreviewed; deterministic verify still gates).`)
   } else if (round >= ROUND_CAP) {
-    // NO FIX WITHOUT A CONFIRMATION ROUND (fixlet 2026-06-11): the loop once dispatched a fix on
-    // its FINAL round; it landed with no round left to re-review it, so the halt report described
-    // an already-fixed worktree and forced a full relaunch. If no round remains to confirm a fix,
-    // don't spend it — halt with the findings and let the decision (or a higher roundCap) own it.
-    log(`Round ${round}/${ROUND_CAP}: ${lastBlocking.length} blocking finding(s) on the FINAL round — NOT dispatching a fix the loop cannot re-review; halting for the decision.`)
-    break
+    // ONE FINAL BOUNDED SOLUTION PASS (north-star contract change, 2026-08-06). The old rule
+    // refused to fix anything it could not re-review, so a final round that surfaced a NEW,
+    // concrete, actionable finding halted with the defect intact — the live WP8 run ended at
+    // 2/2 holding one specific P1 (the coherent test never advanced through cooldown expiry to
+    // count the second hit) that nobody attempted. Not attempting a known, fixable defect is
+    // not caution; it just hands the work back.
+    //
+    // Bounded and honest by construction: exactly ONE fix, no extra reviewer round, roundCap
+    // untouched, and the result rides the SAME audited provenance as oneshot —
+    // done_with_findings / fixed_unreviewed, never independent_clean and never review-clean.
+    // Containment, commit/park and deterministic verification all still run afterwards, and a
+    // red or inconclusive verify keeps its existing meaning. The stuck and oscillating cases
+    // above have already broken out, so the findings reaching here are new by construction —
+    // this never re-litigates a dispute, and no human pause precedes it (the human audits after).
+    oneshotFindings = lastBlocking
+    finalBoundedFix = true
+    log(`Round ${round}/${ROUND_CAP}: ${lastBlocking.length} NEW blocking finding(s) on the FINAL round — running ONE bounded fix (no further review round; result will read fixed_unreviewed and deterministic verify still gates).`)
   }
   if (POSTURE !== 'oneshot') log(`Round ${round}/${ROUND_CAP} (review effort: ${currentEffort}): ${lastBlocking.length} blocking finding(s)${usageSuffix(gate)} — dispatching fix.`)
   // Escalate the FIX model if the cheap model is failing: round>=2 (first fix didn't clear review)
@@ -1054,23 +1330,41 @@ while (round < ROUND_CAP) {
   const fixOut = await agent(
     `Fix the BLOCKING review findings below, in the EXISTING worktree. Do not refactor
 beyond what each finding requires. Do not touch P3 nits.
-${HB_LINE}
+${hbLine('Fix')}
 Worktree: ${WT}
   cd ${JSON.stringify(WT)}
 ${envFactsBlock}${siblingsBlock}
 Blocking findings (Codex, priority ≤ 2):
 ${JSON.stringify(lastBlocking, null, 2)}
 
-Apply the minimal correct fix for each. Do not run review or verify — the loop owns that.${POSTURE === 'oneshot' ? `
+Pre-fix candidate summary:
+${candidateSummary || '(none recorded)'}
+Pre-fix decisions:
+${JSON.stringify(candidateDecisions, null, 2)}
+
+Apply the minimal correct fix for each. Do not run review or verify — the loop owns that.
+Return a one-paragraph summary of the COMPLETE current candidate after the fix, plus the COMPLETE
+decisions[] that still apply. Replace or remove any pre-fix statement/decision this fix made false;
+do not merely append a fix note.${oneshotFindings ? `
 Then return resolutions[]: for EACH finding (title VERBATIM), one sentence on what you changed
-— or why no change was needed. Nobody re-reviews this fix (oneshot posture), so your claims
+— or why no change was needed. Nobody re-reviews this fix, so your claims
 ship next to the findings in the report, clearly labeled as claims.` : ''}
 ${softBudget}`,
-    { model: fixModel, phase: 'Fix', label: `fix:r${round}`, ...(POSTURE === 'oneshot' ? { schema: FIX_RESOLUTIONS_SCHEMA } : {}) }
+    { model: fixModel, phase: 'Fix', label: `fix:r${round}`, schema: oneshotFindings ? FIX_RESOLUTIONS_SCHEMA : FIX_SCHEMA }
   )
-  if (POSTURE === 'oneshot') {
+  // Fail closed on narrative replacement: production schema validation requires both fields,
+  // while this defensive check keeps legacy/direct runtimes from erasing a truthful prior value
+  // if they return an unexpected shape.
+  if (fixOut && typeof fixOut.summary === 'string' && fixOut.summary.trim()) {
+    candidateSummary = fixOut.summary.trim()
+  }
+  if (fixOut && Array.isArray(fixOut.decisions)) candidateDecisions = fixOut.decisions
+  // ONE repair, no re-review: the oneshot posture's whole contract, and the same shape for the
+  // final-round bounded fix. Both record the maker's CLAIMED resolutions beside the findings
+  // so a reader can tell addressed-unreviewed from untouched.
+  if (oneshotFindings) {
     oneshotResolutions = (fixOut && Array.isArray(fixOut.resolutions)) ? fixOut.resolutions : null
-    break   // one repair, no re-review — the posture's whole contract
+    break
   }
 }
 
@@ -1080,12 +1374,12 @@ ${softBudget}`,
 if (FEAT_SCOPED && fixesRan) {
   const c = await containmentLeak('fix')
   if (c && c.kind === 'breach') {
-    return { status: 'infra_error', task: TASK, worktree: WT, branch: BRANCH, rounds: round, containment: 'fix',
+    return { status: 'infra_error', ...unreviewedFixFields(), task: TASK, worktree: WT, branch: BRANCH, rounds: round, containment: 'fix',
       error: 'worktree containment breach: the fix agent leaked edits into the MAIN repo tree',
       note: `The fix phase modified the MAIN repo tree — it must only touch its worktree. Leaked paths:\n${c.paths}\nIf these are agent strays, diff them against the task worktree (${WT}) and discard; if they are YOUR mid-run edits, commit or stash them. Then re-run the feat with the SAME args.` }
   }
   if (c && c.kind === 'inconclusive') {
-    return { status: 'infra_error', task: TASK, worktree: WT, branch: BRANCH, rounds: round, containment: 'fix_inconclusive',
+    return { status: 'infra_error', ...unreviewedFixFields(), task: TASK, worktree: WT, branch: BRANCH, rounds: round, containment: 'fix_inconclusive',
       error: 'containment check could not run',
       note: `Camus could not OBTAIN the main-tree containment status after the fix phase (${c.why}). This is NOT a breach and NOT a clean verdict — just an unverifiable check. Nothing merged. Re-run the feat with the SAME args to re-check; the worktree (${WT}) is untouched.` }
   }
@@ -1099,16 +1393,50 @@ if (FEAT_SCOPED && fixesRan) {
 // land path — where WT is never initialized — can pass its own resolved path without TDZ).
 async function prepAndVerify(wt = WT, expectedHead = null) {
   phase('Prep')
+  // NO `cd` PREFIX HERE — deliberately, and this is the second half of a two-step history.
+  // A fresh runner process is not guaranteed to start inside the target repository, and
+  // `_guard.sh` anchors on $PWD when CAMUS_REPO_ROOT is unset, so these two calls once
+  // refused a perfectly valid same-repo worktree (`target rejected by camus_guard`, WP7 run
+  // 20260805-181917-f4b1). The first fix prefixed both with REPO_CD — and that made things
+  // worse: inside a LINKED worktree `git rev-parse --show-toplevel` is the worktree itself,
+  // so a run whose targetPath was the WP8 worktree emitted `cd <wp8> && verify.sh <wp9>`,
+  // auto mode denied the cross-worktree compound command, and the runner's prose refusal was
+  // mistaken for a missing toolchain (run 20260806-145411-hy1w). The command the allow-list
+  // and the classifier are meant to see is a PLAIN trusted-script call, so the anchoring moved
+  // where it belongs: `camus_anchor` inside the scripts, off the process-level CAMUS_REPO_ROOT.
+  // The same-repository / branch / worktree guard is unchanged and still runs after it.
   const prepRaw = await agent(
-    `THIN prep runner. Run EXACTLY this one command and output its stdout VERBATIM as your entire reply
-(JSON {prepped, ran, ...}); no fences, no commentary:
-  ${HB_TOUCH}${PREP_CMD} ${JSON.stringify(wt)}`,
+    `THIN prep runner. Run EXACTLY this one command — verbatim, adding nothing and removing nothing;
+the script finds the trusted repository root by itself — and output its stdout VERBATIM as your
+entire reply (JSON {prepped, ran, ...}); no fences, no commentary:
+  ${HB_TOUCH}${PREP_CMD} ${JSON.stringify(wt)}
+
+If the command cannot be run at all (permission denied, not approved, blocked), do NOT paraphrase or
+diagnose: reply with the single line  RUNNER_COULD_NOT_EXECUTE: <the refusal, verbatim>`,
     { model: MODEL_RUNNER, phase: 'Prep', label: 'prep' }
   )
   const prepResult = extractJsonObject(prepRaw)
   if (!prepResult || prepResult.prepped !== true) {
+    // PRESERVE THE ACTUAL DIAGNOSIS. prep.sh reports WHY it refused, and a guard
+    // refusal is not a dependency problem — flattening every prep failure to
+    // `missing_tool` produced "dependency install failed; check the package manager"
+    // for a target the guard rejected, sending the operator after a lockfile that was
+    // never involved (real WP7 run, 2026-08-05).
+    const reason = (prepResult && typeof prepResult.reason === 'string' && prepResult.reason) || null
+    // A prep runner that never executed the command is the same class of failure as the verify
+    // side, and deserves the same honest kind rather than `missing_tool` (run 20260806-145411-hy1w).
+    if (!prepResult) {
+      const tail = runnerTail(prepRaw)
+      const refused = RUNNER_REFUSAL_RE.test(tail)
+      return { ok: 'inconclusive', stage: 'prep',
+        failures: [{ stage: 'prep', kind: refused ? 'runner_refused' : 'runner_unparseable',
+          log_tail: tail
+            ? `${refused ? 'the prep command was NOT executed — the runner was refused or denied' : 'the runner returned something other than prep JSON'}; its reply verbatim (tail): ${tail}`
+            : 'the runner returned NOTHING where prep JSON was expected' }] }
+    }
     return { ok: 'inconclusive', stage: 'prep',
-      failures: [{ stage: 'prep', kind: 'missing_tool',
+      failures: [{ stage: 'prep', kind: (reason === 'guard_refused' || reason === 'anchor_refused') ? 'guard_refused' : 'missing_tool',
+        reason,
         log_tail: (prepResult && (prepResult.log_tail || prepResult.error)) || 'worktree dependency install failed or unparseable' }] }
   }
   log(prepResult.ran ? `Prep: installed worktree deps (${prepResult.ran.join(' ')}).` : 'Prep: no dep install needed.')
@@ -1116,11 +1444,17 @@ async function prepAndVerify(wt = WT, expectedHead = null) {
   const verifyRaw = await agent(
     `Run the Camus verification on the worktree and return its stdout JSON verbatim.
 
-Run EXACTLY this one command (the worktree path is the argument — do NOT cd, do NOT add anything else):
-  ${HB_TOUCH}${VERIFY_ENV}${VERIFY_CMD} ${JSON.stringify(wt)}
+Run EXACTLY this one command, verbatim. The worktree path is the argument, and any verifier
+override is already on the line. Add NOTHING and remove nothing — the script finds the trusted
+repository root by itself, so a \`cd\` of your own would only change what gets measured:
+  ${HB_TOUCH}${statusPhase('Verify')}${VERIFY_CMD} ${JSON.stringify(wt)}${VERIFY_ARG}
 
 Output the command's stdout VERBATIM as your entire reply (it is JSON {pass, failures}).
 No fences, no commentary.
+
+If the command cannot be run at all (permission denied, not approved, blocked), do NOT paraphrase it
+and do NOT diagnose the repository: reply with the single line
+  RUNNER_COULD_NOT_EXECUTE: <the refusal, verbatim>
 ${VERIFY_OATH}`,
     { model: MODEL_RUNNER, phase: 'Verify', label: 'verify' }
   )
@@ -1149,9 +1483,20 @@ ${VERIFY_OATH}`,
 
 if (infraAbort) {
   return {
-    status: 'infra_error', task: TASK, worktree: WT, branch: BRANCH,
+    status: 'infra_error', ...unreviewedFixFields(), task: TASK, worktree: WT, branch: BRANCH,
     rounds: round, error: infraAbort,
-    note: 'Codex reviewer never produced a usable verdict. Not a rejection and not clean — needs a human / infra check. Known causes of an EMPTY verdict with exit 0: codex blocking on an open stdin (fixed in codex_review.sh via </dev/null — re-run install.sh if your gate predates it) and a heavy ambient reasoning effort exhausting the output budget on a large diff (pin via CAMUS_CODEX_ARGS="-c model_reasoning_effort=medium"). Inspect ~/.camus/reviews/<wt>-r<round>.json and /tmp/camus_codex_err.log. AFTER fixing, retry by re-invoking the feat FRESH with the SAME args (deterministic featId resumes from state) — do NOT resume the workflow journal (resumeFromRunId): it replays this cached infra_error without re-running the reviewer.',
+    // EMPIRICAL, not asserted. A refused receipt must not have moved anything, and this report
+    // must not CLAIM preservation it did not check: it states what actually happened this round
+    // (whether a fix was dispatched, whether the work was committed) so a reader can tell a
+    // genuinely untouched worktree from one a refused verdict already influenced. Live run
+    // 20260806-110809-2r9j ended on an infra refusal whose report said the state was preserved
+    // while HEAD had in fact moved to a fresh commit.
+    roundAdvanced: false,
+    fixDispatchedThisRound: fixesRan === true,
+    committed: committedShaObserved.length > 0,
+    ...(committedShaObserved ? { commit_sha: committedShaObserved } : {}),
+    note: 'Codex reviewer never produced a usable verdict. Not a rejection and not clean — needs a human / infra check. Known causes of an EMPTY verdict with exit 0: codex blocking on an open stdin (fixed in codex_review.sh via </dev/null — re-run install.sh if your gate predates it) and a heavy ambient reasoning effort exhausting the output budget on a large diff (pin via CAMUS_CODEX_ARGS="-c model_reasoning_effort=medium"). Inspect ~/.camus/reviews/<wt>-r<round>.json and /tmp/camus_codex_err.log. AFTER fixing, retry by re-invoking the feat FRESH with the SAME args (deterministic featId resumes from state) — do NOT resume the workflow journal (resumeFromRunId): it replays this cached infra_error without re-running the reviewer.'
+      + ` OBSERVED THIS ROUND: fix dispatched=${fixesRan === true}; committed=${committedShaObserved.length > 0}${committedShaObserved ? ` (${committedShaObserved})` : ''}. The refused verdict never advanced the round.`,
   }
 }
 
@@ -1159,10 +1504,10 @@ if (infraAbort) {
 // and the honest status for them is done_with_findings (set at the verify-pass return below),
 // never review_unresolved (which is full posture's impasse machinery).
 if (!reviewPassed && !oneshotFindings) {
-  // The review did not converge (hit ROUND_CAP, or a finding survived a fix). Per camus's OWN rule
-  // — "deterministic ground truth wins" — consult VERIFY before reporting (Fix 2026-06-11: a
-  // probabilistic review was halting verify-clean, shippable code on a stale re-flag). A verify-clean
-  // halt is a DECISION POINT, never a plain failure.
+  // The review did not converge (hit ROUND_CAP, or a finding survived a fix). Consult VERIFY before
+  // reporting so the human receives both independent axes: deterministic checks and unresolved
+  // review. A green test suite is necessary evidence, not proof that an untested contract finding is
+  // stale or that the work is shippable. A verify-clean halt remains a DECISION POINT, never a pass.
   //
   // PARK FIRST, verify the park (run-6 integrity follow-through, 2026-06-12): verify now refuses
   // uncommitted state — a green over dirt certifies nothing — so the park (protection since the
@@ -1205,7 +1550,7 @@ if (!reviewPassed && !oneshotFindings) {
     status: 'review_unresolved', task: TASK, worktree: WT, branch: BRANCH, rounds: round,
     blocking: lastBlocking, stuck: stuckFindings || null,
     ...(oscillating ? { oscillating: true } : {}),
-    tier, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
+    tier, tierSource, classificationSkipped, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
   }
   if (parkFailed) {
     // No seal → no certifiable state: verify would (rightly) refuse the uncommitted tree, and a
@@ -1221,7 +1566,7 @@ if (!reviewPassed && !oneshotFindings) {
       ? ` The work is PARKED as commit ${parkedSha} on ${BRANCH} (review-flagged, verify-green) — it survives even if the worktree is lost.`
       : ` The work was already committed on ${BRANCH} — nothing to park.`
     return { ...base, verifyClean: true, ...(parkedSha ? { parkedSha } : {}),
-      note: `Review did not converge (${why}) — BUT deterministic verify (type-check / lint / tests) PASSES on this worktree. This is likely a STALE RE-FLAG or a judgment impasse, NOT broken code. The deterministic gate says the work is shippable.${parkLine} DECIDE: accept (commit + merge the worktree as-is) or refine (address the finding below).${confHint}` }
+      note: `Review did not converge (${why}) — deterministic verify (type-check / lint / tests) PASSES on this worktree, but those checks do not clear the unresolved finding or prove untested contract behavior.${parkLine} DECIDE: refine the finding, or explicitly accept the reviewed risk and land the parked commit.${confHint}` }
   }
   if (v.ok === 'inconclusive') {
     return { ...base, verifyClean: null, failures: v.failures, ...(parkedSha ? { parkedSha } : {}),
@@ -1265,7 +1610,7 @@ if (crc.kind === 'priorHead') {
   const unmerged = /^\d+$/.test(unmergedText) ? parseInt(unmergedText, 10) : null
   if (unmerged === null) {
     return {
-      status: 'infra_error', task: TASK, worktree: WT, branch: BRANCH, rounds: round, stage: 'noop_audit',
+      status: 'infra_error', ...unreviewedFixFields(), task: TASK, worktree: WT, branch: BRANCH, rounds: round, stage: 'noop_audit',
       noopAuditOutput: unmergedText.slice(0, 1000),
       error: `empty stage at HEAD ${crc.head}, and the branch ancestry audit returned no usable count — cannot tell a benign no-op from already-committed work`,
       note: `The commit gate found an empty stage, but Camus could not verify whether ${BRANCH} holds unmerged commits (noop-audit output was not a non-negative integer). Missing ancestry evidence must not become a no-op. Fix the git/audit issue and re-run with the SAME args.`,
@@ -1273,13 +1618,13 @@ if (crc.kind === 'priorHead') {
   }
   if (unmerged === 0) {
     return {
-      status: 'no_changes', task: TASK, worktree: WT, branch: BRANCH, rounds: round,
-      tier, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
-      note: 'Review passed but the implement step produced no committable change (empty diff; the branch ancestry audit confirms zero unmerged commits). no_changes, never a false done — nothing to merge.',
+      status: 'no_changes', task: TASK, worktree: WT, branch: BRANCH, rounds: round, ...unreviewedFixFields(),
+      tier, tierSource, classificationSkipped, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
+      note: `${postFixLead() || 'Review passed'} The implement step produced no committable change (empty diff; the branch ancestry audit confirms zero unmerged commits). no_changes, never a false done — nothing to merge${oneshotFindings ? ', and the unreviewed findings below still stand' : ''}.`,
     }
   }
   rescuedPriorCommit = true
-  log(`Empty stage BUT ${BRANCH} holds ${unmerged} unmerged commit(s) — the reviewed work was already committed (at implement time). Proceeding as committed at ${crc.head}; verify binds to that tip.`)
+  log(`Empty stage BUT ${BRANCH} holds ${unmerged} unmerged commit(s) — the ${oneshotFindings ? 'work (including the unreviewed fix)' : 'reviewed work'} was already committed (at implement time). Proceeding as committed at ${crc.head}; verify binds to that tip.`)
 }
 // A committed:true MUST name a real git sha (commit.sh always emits one) — else the receipt is garbled/
 // hallucinated and expectedHead would be null, silently disabling head-binding on the terminal success path
@@ -1288,7 +1633,7 @@ if (crc.kind === 'priorHead') {
 // carries its proven HEAD (crc.head IS the branch tip the ancestry audit certified), so it passes through.
 if (!rescuedPriorCommit && crc.kind !== 'sealed') {
   return {
-    status: 'infra_error', task: TASK, worktree: WT, branch: BRANCH, rounds: round,
+    status: 'infra_error', ...unreviewedFixFields(), task: TASK, worktree: WT, branch: BRANCH, rounds: round,
     error: crc.kind === 'noSha'
       ? `commit gate reported committed:true but named no valid sha (got: ${JSON.stringify(commitResult.sha)})`
       : crc.kind === 'empty'
@@ -1298,7 +1643,8 @@ if (!rescuedPriorCommit && crc.kind !== 'sealed') {
   }
 }
 const COMMIT_SHA = crc.head
-if (!rescuedPriorCommit) log(`Committed reviewed work (${COMMIT_SHA}) to ${BRANCH}${tokSuffix()}.`)
+committedShaObserved = typeof COMMIT_SHA === 'string' ? COMMIT_SHA : ''
+if (!rescuedPriorCommit) log(`Committed ${oneshotFindings ? 'UNREVIEWED-FIX' : 'reviewed'} work (${COMMIT_SHA}) to ${BRANCH}${tokSuffix()}.`)
 
 // ── Phase 3.5 + 4: PREP + VERIFY (deterministic ground truth — final, non-negotiable gate) ─
 // Runs after review passes + commit (review/fix don't need deps). A clean review does NOT override
@@ -1308,11 +1654,31 @@ if (!rescuedPriorCommit) log(`Committed reviewed work (${COMMIT_SHA}) to ${BRANC
 const verdict = await prepAndVerify(WT, COMMIT_SHA)
 if (verdict.ok === 'inconclusive') {
   return {
-    status: 'verify_inconclusive', task: TASK, worktree: WT, branch: BRANCH, rounds: round,
-    failures: verdict.failures, tier, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
-    note: verdict.stage === 'prep'
-      ? 'Could not prepare the worktree to run (dependency install failed) — env not ready, NOT a code failure. Check the package manager / lockfile and re-run.'
-      : 'Verification could not RUN (toolchain/deps missing in the worktree, or no verifier detected) — NOT a code failure. Fix the environment (install deps / correct node; see env_check) and re-run.',
+    status: 'verify_inconclusive', task: TASK, worktree: WT, branch: BRANCH, rounds: round, ...unreviewedFixFields(),
+    // The candidate SHA travels with an INCONCLUSIVE verdict too. Without it a
+    // recovery re-verify has no commit to bind its green to, and the receipt
+    // keeps reading infra_failed however the retry goes (field report 2026-08-05).
+    commit_sha: COMMIT_SHA, parkedSha: COMMIT_SHA,
+    failures: verdict.failures, tier, tierSource, classificationSkipped, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
+    // The note follows the REPORTED kind, never a guess about it. A guard refusal and a
+    // failed dependency install need completely different human actions.
+    note: (() => {
+      const fs = verdict.failures || []
+      const of = (...kinds) => fs.find((f) => kinds.includes(f?.kind))
+      const guard = of('guard_refused')
+      if (guard) return `Refused before anything ran: the target guard rejected the worktree, so NO dependency install and NO verification were attempted — this is not a code failure and not a dependency problem. The guard requires the target to be a camus-wt-* worktree of the SAME repository as the trusted working directory, with a name coherent with its camus/* branch. Verbatim: ${guard.log_tail || 'no detail reported'}`
+      // The runner never ran the command. Naming the environment here would be a fabrication:
+      // nothing in the worktree has been measured (run 20260806-145411-hy1w).
+      const runner = of('runner_refused', 'runner_unparseable')
+      // "Exactly as the gate would" has to be TRUE. A run carrying args.verifyCmd verifies through
+      // that command, so handing over a bare verify.sh would auto-detect a different verifier and
+      // silently answer a different question. The override rides along, in the same env-prefix form
+      // the gate itself emits.
+      if (runner) return `The verification command was never carried out, so NOTHING about this worktree's toolchain, dependencies or code has been measured — do not read this as an environment problem. ${runner.kind === 'runner_refused' ? 'The runner reports it was refused or denied permission to execute the command' : 'The runner replied with something other than the verifier\'s JSON'}. Re-run it yourself to get a real verdict, exactly as the gate would: bash "$HOME/.claude/skills/camus/scripts/verify.sh" ${JSON.stringify(WT)}${VERIFY_ARG}. Runner reply, verbatim: ${runner.log_tail || 'none captured'}`
+      return verdict.stage === 'prep'
+        ? 'Could not prepare the worktree to run (dependency install failed) — env not ready, NOT a code failure. Check the package manager / lockfile and re-run.'
+        : 'Verification RAN but could not reach a verdict (toolchain/deps missing in the worktree, or no verifier detected) — NOT a code failure. Fix the environment (install deps / correct node; see env_check) and re-run.'
+    })(),
   }
 }
 if (verdict.ok === 'pass') {
@@ -1323,27 +1689,26 @@ if (verdict.ok === 'pass') {
     // Findings ride verbatim + each carries the fix agent's CLAIMED resolution when one matched
     // by title (smoke 2026-06-12: without these, a reader can't tell addressed-unreviewed from
     // untouched — the field is named claimedResolution because nobody verified it).
-    const findingsOut = oneshotFindings.map((f) => {
-      const m = (oneshotResolutions || []).find((r) => r && r.title === (f && f.title))
-      return m ? { ...f, claimedResolution: m.resolution } : f
-    })
+    const findingsOut = unreviewedFixFields().findings
     return {
-      status: 'done_with_findings', task: TASK, worktree: WT, branch: BRANCH, commit_sha: COMMIT_SHA,
-      rounds: round, summary: impl.summary, decisions: Array.isArray(impl.decisions) ? impl.decisions : [],
+      status: 'done_with_findings', task: TASK, worktree: WT, branch: BRANCH, commit_sha: COMMIT_SHA, ...unreviewedFixFields(),
+      rounds: round, summary: candidateSummary, decisions: candidateDecisions,
       findings: findingsOut, findingsDeferred: findingsOut.length, resolution: 'fixed_unreviewed',
-      tier, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
-      note: `Oneshot posture: the single review found ${oneshotFindings.length} blocking finding(s); ONE fix pass ran and was NOT re-reviewed (the posture's contract). Deterministic verify PASSES and the change is committed. NOT review-clean — read the findings (verbatim in this result) before shipping.`,
+      tier, tierSource, classificationSkipped, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
+      note: finalBoundedFix
+        ? `FINAL-ROUND BOUNDED FIX: review round ${round}/${ROUND_CAP} raised ${oneshotFindings.length} NEW blocking finding(s) (not a repeat and not oscillating), and ONE bounded fix pass ran for them with NO further review round. Deterministic verify PASSES on the committed candidate and the work is parked. The fix is UNREVIEWED — this is done_with_findings / fixed_unreviewed, NOT review-clean and NOT independent_clean. Read the findings and the maker's claimed resolutions (verbatim in this result), then audit the parked candidate.`
+        : `Oneshot posture: the single review found ${oneshotFindings.length} blocking finding(s); ONE fix pass ran and was NOT re-reviewed (the posture's contract). Deterministic verify PASSES and the change is committed. NOT review-clean — read the findings (verbatim in this result) before shipping.`,
     }
   }
   return {
     status: 'done', task: TASK, worktree: WT, branch: BRANCH, commit_sha: COMMIT_SHA,
-    rounds: round, summary: impl.summary, decisions: Array.isArray(impl.decisions) ? impl.decisions : [],
-    tier, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
+    rounds: round, summary: candidateSummary, decisions: candidateDecisions,
+    tier, tierSource, classificationSkipped, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
     note: 'Review clean, change committed, and verify passed. Worktree left in place for human merge/inspection (a camus-feat caller removes it after merging the branch).',
   }
 }
 return {
-  status: 'verify_failed', task: TASK, worktree: WT, branch: BRANCH,
-  rounds: round, failures: verdict.failures, tier, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
-  note: 'Review was clean but deterministic verify ran and did not pass. Code is NOT done.',
+  status: 'verify_failed', task: TASK, worktree: WT, branch: BRANCH, ...unreviewedFixFields(),
+  rounds: round, failures: verdict.failures, tier, tierSource, classificationSkipped, model: fixModel, initialModel: thinkModel, finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
+  note: `${postFixLead() || 'Review was clean'} Deterministic verify ran and did NOT pass. Code is NOT done${oneshotFindings ? '; the findings and the maker\'s claimed resolutions are recorded below, unreviewed' : ''}.`,
 }

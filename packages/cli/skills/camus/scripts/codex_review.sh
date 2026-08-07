@@ -69,14 +69,37 @@ print(v if isinstance(v, str) and v else "")' "$watch_dir/meta.json" 2>/dev/null
       raw="$(cat "$watch_dir/last.txt" 2>/dev/null)"
       mkdir -p "$review_dir" 2>/dev/null && \
         printf '%s' "$raw" | python3 "$here/_review_audit.py" "$audit_file" "$target_dir" "$round" "$exit_code" "$reviewer_model" "$reviewer_effort" 2>/dev/null || true
-      # Gate JSON + the honest codex-side usage from turn.completed (estimate source, never a bill).
+      # Gate JSON + the honest codex-side usage from turn.completed (estimate source, never a bill)
+      # + the BINDING: what this invocation ACTUALLY ran (round, effort, model, backend, canonical
+      # worktree, gate nonce). The audit file already recorded it, but the audit file is not what
+      # the loop reads — stdout is. Without it, camus-loop could only compare the reviewer's output
+      # against ITSELF, so a self-consistent receipt for the wrong round/effort passed (field report
+      # 2026-08-04). asGate now compares these actuals against values it knows independently.
       printf '%s' "$raw" | python3 "$here/adapter.py" from-codex --exit "$exit_code" \
-        | python3 -c 'import json,sys
+        | python3 -c 'import json,os,sys
 g = json.load(sys.stdin)
 try: u = json.loads(sys.argv[1]).get("usage")
 except Exception: u = None
 if isinstance(u, dict): g["usage"] = u
-print(json.dumps(g))' "$envelope"
+def _int(v):
+    try: return int(str(v).strip())
+    except (TypeError, ValueError): return None
+requested = {}
+try:
+    parsed = json.loads(os.environ.get("CAMUS_REVIEW_BINDING") or "{}")
+    if isinstance(parsed, dict) and not parsed.get("error"): requested = parsed
+except ValueError: pass
+g["binding"] = {
+    "round": _int(sys.argv[2]),
+    "effort": (sys.argv[3] or None),
+    "model": (sys.argv[4] or None),
+    "backend": (os.environ.get("CAMUS_REVIEW_BACKEND") or None),
+    "worktree": os.path.realpath(sys.argv[5]) if sys.argv[5] else None,
+    "nonce": (requested.get("nonce") or os.environ.get("CAMUS_GATE_NONCE") or None),
+    "round_requested": requested.get("round"),
+    "effort_requested": requested.get("effort"),
+}
+print(json.dumps(g))' "$envelope" "$round" "$reviewer_effort" "$reviewer_model" "$target_dir"
       ;;
     pending)
       printf '%s' "$envelope" | python3 -c 'import json,sys
@@ -145,6 +168,62 @@ if [[ "${1:-}" == "await" || "${1:-}" == "abort" ]]; then
     case "$effort" in medium) chunk=300 ;; *) chunk=480 ;; esac
     envelope="$(python3 "$here/review_watch.py" await --handle "$watch_dir" --chunk "$chunk" --idle "$idle_s" 2>/dev/null)"
   fi
+  # BINDING SURVIVES THE REATTACH BOUNDARY. A separate await process has no CAMUS_REVIEW_BINDING
+  # and may have no CAMUS_GATE_NONCE, so the emitted binding lost its nonce and the mixed
+  # bound/unbound guard refused a review that had completed correctly (live run
+  # 20260806-110809-2r9j). meta.json is this script's own start-time record — the same file the
+  # adoption gate authenticates against — so the identity is RECONSTRUCTED from it, never invented.
+  # An env nonce, when present, still wins: a mismatch must remain visible to asGate.
+  # The FULL binding, not just the nonce. `_review_audit.py` builds the per-round JSON that
+  # STUDIO watches, and it reads binding EXCLUSIVELY from CAMUS_REVIEW_BINDING — so exporting
+  # only the nonce fixed the wrapper's stdout while still publishing an UNBOUND
+  # ~/.camus/reviews/<wt>-r<n>.json. Reconstruct the whole envelope from meta.json (this
+  # script's own authenticated start-time record) so the artifact Studio consumes is bound too.
+  # An explicit env nonce is NEVER overwritten: a mismatch must stay visible to asGate and be
+  # refused, which is the whole point of the binding check.
+  _await_binding="$(python3 - "$meta" "${CAMUS_GATE_NONCE:-}" <<'PYB'
+import json, sys
+try:
+    m = json.load(open(sys.argv[1]))
+except Exception:
+    m = {}
+env_nonce = sys.argv[2] if len(sys.argv) > 2 else ""
+rnd = m.get("round")
+try:
+    rnd = int(str(rnd).strip())
+except (TypeError, ValueError):
+    rnd = None
+if rnd is None:
+    print("")
+    raise SystemExit(0)
+eff = m.get("effort") if isinstance(m.get("effort"), str) else None
+# An env nonce WINS so a mismatching one stays visible; meta.json only fills an absent one.
+nonce = env_nonce or (m.get("gate_nonce") if isinstance(m.get("gate_nonce"), str) else None)
+print(json.dumps({
+    "round": rnd,
+    "effort": eff,
+    "effort_specified": bool(eff),
+    "nonce": nonce or None,
+    # Provenance: this envelope was rebuilt on reattach, not read from a live request file.
+    "round_sources": {"meta.json (await reattach)": str(rnd)},
+    "effort_sources": ({"meta.json (await reattach)": eff} if eff else {}),
+}))
+PYB
+)"
+  if [[ -n "$_await_binding" ]]; then
+    export CAMUS_REVIEW_BINDING="$_await_binding"
+    # asGate compares the nonce from this envelope; keep the env copy consistent with it.
+    if [[ -z "${CAMUS_GATE_NONCE:-}" ]]; then
+      _meta_nonce="$(python3 -c 'import json,sys
+try: v = json.load(open(sys.argv[1])).get("gate_nonce")
+except Exception: v = None
+print(v if isinstance(v, str) and v else "")' "$meta" 2>/dev/null)"
+      [[ -n "$_meta_nonce" ]] && export CAMUS_GATE_NONCE="$_meta_nonce"
+    fi
+    # The reviewer backend is codex for every watch this script owns; restore it so the audit
+    # record names it instead of leaving reviewer_backend null on a reattach.
+    [[ -z "${CAMUS_REVIEW_BACKEND:-}" ]] && export CAMUS_REVIEW_BACKEND="codex"
+  fi
   # Persist the codex thread_id into the round's meta.json ONLY for a terminal abandoned shape
   # (idle_killed / aborted) — that handle is what lets the NEXT round's fresh-review path RESUME this
   # killed thread instead of paying again (codex-resume-recovery 2026-06-12). A `pending` envelope
@@ -174,7 +253,14 @@ if ! camus_guard worktree "$target_dir"; then
   exit 0
 fi
 task_ctx="${2:-}"          # the task this change must accomplish (single quoted arg from the loop)
-round="${3:-0}"            # review round, for the per-round audit filename
+# ROUND IS NOT DEFAULTED. It used to be `${3:-0}`, and that default was a
+# false-pass generator: a thin runner relaying this command dropped the trailing
+# `<round> <effort>` args, the script silently reviewed as r0/medium, and the
+# orchestrator accepted that r0 receipt as the round it had requested (field
+# report 2026-08-04, a WP6 game run: requested r2/high, got r0/medium, loop
+# advanced to r3). Round and effort now resolve from the MECHANICAL channels
+# below and a missing or conflicting value is an infra refusal, never a verdict.
+round_argv="${3:-}"
 if ! cd "$target_dir" 2>/dev/null; then
   # Can't enter the target -> infra failure, never a verdict (adapter emits ran:false).
   printf '' | python3 "$here/adapter.py" from-codex --exit 1
@@ -186,7 +272,9 @@ fi
 # reviewer). Intent-to-add records the paths so they appear in the diff as full new-file
 # content; it does NOT stage content (commit.sh owns staging, and its `git add -A` +
 # empty-diff check are unaffected). Respects .gitignore. Best-effort, never fatal.
-git add -N . 2>/dev/null || true
+ita_fail=""
+git add -N . 2>/dev/null || ita_fail="git add -N failed, so new files may be invisible to both the review and its fingerprint"
+
 
 prompt="$(cat "$prompt_file")"
 if [ -n "$task_ctx" ]; then
@@ -219,6 +307,48 @@ depends on it — do not audit the wider file or repository. Same severity bar (
 to a deliberately narrower field of view."
 fi
 
+# INPUT FINGERPRINT (audit 2026-08-06, tightened 2026-08-06b). meta.json recorded WHO reviewed
+# and at what effort, but nothing about WHAT — so a stopped gate could change the worktree,
+# restart with the same custody identity, and have a completed verdict for the OLD content
+# replayed as current. Taken HERE, after the prompt is fully assembled, so the digest binds
+# every input that changes the question: HEAD, the binary diff (intent-to-add already ran, so
+# new files are included exactly as the reviewer sees them), and the final prompt bytes —
+# which carry the task context and the normalized scope.
+#
+# VERSIONED (fp1:) so a future encoding change is a visible mismatch rather than a silent
+# false match. FAIL CLOSED: if HEAD, the diff, or the hash cannot be produced we do not know
+# what would be reviewed, so we neither replay nor start. "unavailable" is never stored or
+# compared — a sentinel that compares equal to itself is exactly the false match this exists
+# to prevent.
+fp_fail="$ita_fail"
+_fp_head="$(git rev-parse HEAD 2>/dev/null)" || _fp_head=""
+[ -n "$_fp_head" ] || fp_fail="cannot resolve HEAD in the worktree"
+_fp_diff_file="$(mktemp 2>/dev/null)" || fp_fail="${fp_fail:-cannot create a temp file for the diff}"
+if [ -z "$fp_fail" ]; then
+  if ! git -c diff.noprefix=false diff --binary --no-renames HEAD -- . > "$_fp_diff_file" 2>/dev/null; then
+    fp_fail="git diff failed, so the reviewed content cannot be identified"
+  fi
+fi
+input_fp=""
+if [ -z "$fp_fail" ]; then
+  input_fp="$( { printf 'fp1\nhead:%s\nprompt-bytes:%s\n' "$_fp_head" "${#prompt}"
+                printf '%s' "$prompt"
+                printf '\ndiff:\n'
+                cat "$_fp_diff_file"; } | shasum -a 256 2>/dev/null | cut -d' ' -f1 )"
+  # EXACT shape or nothing: a truncated or malformed hasher output must refuse rather than be
+  # stored as a fingerprint that can never legitimately match.
+  input_fp="fp1:$input_fp"
+  case "$input_fp" in
+    fp1:[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) fp_fail="the hasher produced no usable digest (${#input_fp} chars)" ; input_fp="" ;;
+  esac
+fi
+rm -f "$_fp_diff_file" 2>/dev/null || true
+if [ -n "$fp_fail" ]; then
+  printf '{"ran": false, "infra_error": "fingerprint-unavailable", "log_tail": "cannot fingerprint the review input (%s), so this invocation can neither prove a completed verdict describes the current content nor safely start a new review. Nothing was replayed and nothing was started."}\n' "$fp_fail"
+  exit 0
+fi
+
 # Fresh session each call (no resume) for reviewer independence.
 # stdin is /dev/null via review_watch (with an open non-TTY stdin codex prints "Reading
 # additional input from stdin..." and blocks on it, returning an empty verdict).
@@ -234,7 +364,137 @@ fi
 # lower OR raise it, e.g. force xhigh) — the user's interactive codex config is untouched.
 #   export CAMUS_CODEX_ARGS="-c model_reasoning_effort=xhigh"    # force a constant effort
 # (word-splitting is intentional: the var carries whole extra CLI args.)
-effort="${4:-medium}"
+effort_argv="${4:-}"
+
+# ── BINDING: cross-check three channels, refuse on ANY disagreement ────────────
+# The workflow composes the round/effort into THREE places for the same review:
+#   1. request file  $review_dir/<wt>-request.json  — written just before invoking.
+#   2. env  CAMUS_REVIEW_ROUND / CAMUS_REVIEW_EFFORT / CAMUS_GATE_NONCE.
+#   3. argv.
+# NONE of these is relay-independent: the SAME thin agent executes both the
+# request-file writer and this review command, so it can alter or drop any of
+# them. What the three channels buy is a CONSISTENCY CHECK — a partial mangling
+# (some channels changed, others not) becomes a loud refusal here instead of a
+# silent mislabel, and nothing supplying a round at all is refused too (the old
+# default-to-0 hole). Every refusal is `ran:false` + exit 0, so the caller
+# retries rather than treating it as a verdict. This is DEFENSE IN DEPTH, not the
+# load-bearing guarantee: that is asGate in the workflow, which compares the
+# reviewer's ACTUAL binding against expectations the workflow itself computed and
+# fails closed on any mismatch, independent of what this script accepted.
+request_file="$review_dir/$(basename "$target_dir")-request.json"
+binding="$(python3 - "$request_file" "$target_dir" "$round_argv" "$effort_argv" <<'PY'
+import json, os, sys
+request_path, target_dir, round_argv, effort_argv = sys.argv[1:5]
+VALID_EFFORT = ("low", "medium", "high", "xhigh")
+
+req = {}
+if os.path.exists(request_path):
+    try:
+        with open(request_path, encoding="utf-8") as fh:
+            loaded = json.load(fh)
+        if isinstance(loaded, dict):
+            req = loaded
+    except (OSError, ValueError) as exc:
+        print(json.dumps({"error": "review request file is unreadable (%s); refusing rather than "
+                                   "guessing the round" % exc.__class__.__name__}))
+        raise SystemExit(0)
+
+# A request file belongs to ONE worktree. A stale file from another worktree must
+# never bind this review.
+req_wt = req.get("worktree")
+if req_wt and os.path.realpath(str(req_wt)) != os.path.realpath(target_dir):
+    print(json.dumps({"error": "review request file names worktree %r but this invocation targets %r; "
+                               "refusing a cross-worktree binding" % (req_wt, target_dir)}))
+    raise SystemExit(0)
+
+def as_round(value):
+    try:
+        n = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 1 else None
+
+sources = {}
+if req.get("round") is not None:
+    sources["request file"] = as_round(req.get("round"))
+if os.environ.get("CAMUS_REVIEW_ROUND"):
+    sources["env CAMUS_REVIEW_ROUND"] = as_round(os.environ["CAMUS_REVIEW_ROUND"])
+if round_argv.strip():
+    sources["argv"] = as_round(round_argv)
+
+bad = [name for name, value in sources.items() if value is None]
+if bad:
+    print(json.dumps({"error": "review round from %s is not a positive integer; rounds start at 1 "
+                               "and are never defaulted" % ", ".join(sorted(bad))}))
+    raise SystemExit(0)
+if not sources:
+    print(json.dumps({"error": "no review round was supplied by the request file, the environment, or "
+                               "argv. This invocation is unbound: it used to default to r0 and be "
+                               "accepted as whichever round the orchestrator wanted. Refusing."}))
+    raise SystemExit(0)
+distinct = sorted(set(sources.values()))
+if len(distinct) > 1:
+    print(json.dumps({"error": "review round disagrees across channels (%s); the requested invocation "
+                               "and the actual one must match" %
+                               "; ".join("%s=%s" % (k, sources[k]) for k in sorted(sources))}))
+    raise SystemExit(0)
+round_value = distinct[0]
+
+# Effort: same rule, but a genuinely unspecified effort keeps the documented
+# medium default — an unstated effort cannot silently promote a round the way an
+# unstated ROUND silently mislabels a receipt. A CONFLICT still refuses.
+effort_sources = {}
+if req.get("effort"):
+    effort_sources["request file"] = str(req["effort"]).strip()
+if os.environ.get("CAMUS_REVIEW_EFFORT"):
+    effort_sources["env CAMUS_REVIEW_EFFORT"] = os.environ["CAMUS_REVIEW_EFFORT"].strip()
+if effort_argv.strip():
+    effort_sources["argv"] = effort_argv.strip()
+invalid = {k: v for k, v in effort_sources.items() if v not in VALID_EFFORT}
+if invalid:
+    print(json.dumps({"error": "review effort %s is not one of %s" %
+                               ("; ".join("%s=%r" % kv for kv in sorted(invalid.items())), "|".join(VALID_EFFORT))}))
+    raise SystemExit(0)
+distinct_effort = sorted(set(effort_sources.values()))
+if len(distinct_effort) > 1:
+    print(json.dumps({"error": "review effort disagrees across channels (%s)" %
+                               "; ".join("%s=%s" % (k, effort_sources[k]) for k in sorted(effort_sources))}))
+    raise SystemExit(0)
+effort_value = distinct_effort[0] if distinct_effort else "medium"
+
+print(json.dumps({
+    "round": round_value,
+    "effort": effort_value,
+    "effort_specified": bool(distinct_effort),
+    "nonce": str(req.get("gate_nonce") or os.environ.get("CAMUS_GATE_NONCE") or ""),
+    "round_sources": ",".join(sorted(sources)),
+    "effort_sources": ",".join(sorted(effort_sources)) or "default",
+}))
+PY
+)"
+binding_error="$(printf '%s' "$binding" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("error") or "")
+except Exception: print("review binding could not be resolved")' 2>/dev/null)"
+if [[ -n "$binding_error" ]]; then
+  # ran:false — an unbound or mismatched review is INFRA, never a verdict. The
+  # orchestrator retries the round; it must not advance the review loop.
+  python3 - "$binding_error" <<'PY'
+import json, sys
+print(json.dumps({"ran": False, "error": "review binding refused: %s" % sys.argv[1],
+                  "clean": False, "blocking": [], "nonblocking": []}))
+PY
+  exit 0
+fi
+read -r round effort effort_specified gate_nonce round_sources effort_sources <<<"$(printf '%s' "$binding" | python3 -c 'import json,sys
+b = json.load(sys.stdin)
+print(b["round"], b["effort"], str(b["effort_specified"]).lower(),
+      b["nonce"] or "-", b["round_sources"], b["effort_sources"])')"
+# The resolved binding rides into the audit record so the RECEIPT itself proves
+# which invocation produced it — a consumer can compare requested against actual
+# instead of trusting a filename. Read from the environment by _review_audit.py,
+# so no positional-argument contract has to grow.
+export CAMUS_REVIEW_BINDING="$binding"
+export CAMUS_REVIEW_BACKEND="${CAMUS_REVIEWER:-codex}"
 
 # ── Resume determination + reviewer identity, BOTH resolved before the model args ──
 # Two questions must be answered before codex_review_args is assembled, because the
@@ -244,6 +504,176 @@ effort="${4:-medium}"
 # disagree. watch_dir is derived here for the same reason (the fresh-vs-preserve file
 # handling below still owns the round dir's lifecycle).
 watch_dir="$review_dir/$(basename "$target_dir")-r${round}.watch"
+
+# ── ADOPT A LIVE REVIEW INSTEAD OF RESTARTING IT ──────────────────────────────
+# The outer Workflow can go asynchronous, and Studio then reattaches by resuming
+# the igniter session. That re-dispatches the workflow's PENDING review agent —
+# which re-runs this script with the SAME arguments. Before this block that
+# started a SECOND codex for a review already running: live run
+# 20260805-072933-jezu started r1 twice and r2 twice, and the round-2 event
+# stream reset from 30 events back to 7. A long review could therefore never
+# finish, because every reattach restarted its clock.
+#
+# So: if this round's watch is ALIVE (handle pid answering, no exit_code yet) and
+# its recorded identity matches what is being asked for now, adopt it — await the
+# existing process instead of spawning. The events, the PID and the thread are
+# left exactly as they are; nothing is truncated and no second charge is paid.
+# A mismatch (different effort/model/nonce) is NOT adopted: that is a genuinely
+# different review, and the normal fresh/resume path below owns it.
+if [[ -f "$watch_dir/handle.json" ]]; then
+  adopt_reason="$(python3 - "$watch_dir" "$round" "$effort" "${CAMUS_CODEX_MODEL:-}" "${CAMUS_GATE_NONCE:-}" "${input_fp:-}" <<'PY'
+import json, os, subprocess, sys, time
+watch, want_round, want_effort, want_model, want_nonce = sys.argv[1:6]
+want_fp = sys.argv[6] if len(sys.argv) > 6 else ""
+def jload(p):
+    try:
+        with open(p, encoding="utf-8") as fh:
+            v = json.load(fh)
+        return v if isinstance(v, dict) else {}
+    except Exception:
+        return {}
+handle, meta = jload(os.path.join(watch, "handle.json")), jload(os.path.join(watch, "meta.json"))
+pid = handle.get("pid")
+if not isinstance(pid, int):
+    print("no-pid"); raise SystemExit(0)
+finished = os.path.exists(os.path.join(watch, "exit_code"))
+try:
+    os.kill(pid, 0)
+    alive = True
+except Exception:
+    alive = False
+# A live pid is not yet OURS: after our reviewer exits the OS may reuse the
+# number for an unrelated process, and adopting that stranger would wait on —
+# and eventually signal — something we never started. handle.json records our
+# spawn time; a live pid whose real start does not match it is a STALE handle,
+# and the fresh path below owns the round (it archives the stale files and
+# never signals the stranger). Unreadable start time counts as unproven.
+def proc_start_epoch(p):
+    try:
+        out = subprocess.run(["ps", "-p", str(p), "-o", "lstart="],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        return None
+    if not out:
+        return None
+    for fmt in ("%a %b %d %H:%M:%S %Y", "%a %d %b %H:%M:%S %Y"):
+        try:
+            return time.mktime(time.strptime(out, fmt))
+        except ValueError:
+            continue
+    return None
+if alive:
+    started_at = handle.get("started_at")
+    actual = proc_start_epoch(pid)
+    if actual is None:
+        time.sleep(0.2)
+        actual = proc_start_epoch(pid)
+    ours = (isinstance(started_at, (int, float)) and started_at > 0
+            and actual is not None and abs(actual - float(started_at)) <= 15)
+    if not ours:
+        alive = False               # a stranger wearing our pid is not a live review
+        if not finished:
+            print("stale-handle"); raise SystemExit(0)
+# THE INPUT MUST MATCH, not just the identity. meta.json records the fingerprint of the
+# exact content that was reviewed; a watch for DIFFERENT content answers a different
+# question. A LIVE reviewer working on stale content is fail-closed (adopting it would
+# return a verdict about code that no longer exists; starting a second would compete with
+# it), and a COMPLETED verdict for stale content is never consumed.
+meta_fp = meta.get("input_fingerprint")
+fp_current = bool(want_fp) and bool(meta_fp) and str(meta_fp) == str(want_fp)
+if alive and not fp_current:
+    print("live-stale-input"); raise SystemExit(0)
+if not alive and not finished:
+    print("dead"); raise SystemExit(0)   # died without a verdict → normal fresh/resume path
+# A COMPLETED WATCH IS TERMINAL AND IMMUTABLE, whatever else is true. Its verdict is
+# evidence: a fresh start must never delete or overwrite it, and must never spawn a
+# second reviewer for a question already answered. Before this, an unproven identity
+# fell through to the normal fresh path, which rewrote handle.json/meta.json over a
+# finished round and paid for a duplicate Codex review — with Stop later killing the
+# duplicate (production run 20260806-063400-vzqs, r1 already had three findings).
+# Identity still decides what may be CONSUMED: proven → replay it below; unproven →
+# refuse loudly rather than either overwriting the evidence or handing over a verdict
+# this invocation cannot prove is its own.
+_finished_with_verdict = False
+if finished:
+    try:
+        _finished_with_verdict = os.path.getsize(os.path.join(watch, "last.txt")) > 0
+    except OSError:
+        _finished_with_verdict = False
+# Identity must match, or this is a different review that merely shares a round dir.
+def same(field, want):
+    got = meta.get(field)
+    return (not want) or (not got) or str(got) == str(want)
+if str(meta.get("round", want_round)) != str(want_round): print("round-mismatch"); raise SystemExit(0)
+if not same("effort", want_effort): print("effort-mismatch"); raise SystemExit(0)
+if not same("reviewer_model", want_model): print("model-mismatch"); raise SystemExit(0)
+# The gate nonce is REQUIRED, not merely compared. Adoption skips a fresh review,
+# so it must rest on POSITIVE run identity: if either side lacks a nonce we cannot
+# prove this watch belongs to the invocation now asking, and the normal
+# fresh/resume path owns it. (Studio always sets CAMUS_GATE_NONCE; a direct CLI
+# call without one simply never adopts, which is the safe direction.)
+meta_nonce = meta.get("gate_nonce")
+if not want_nonce or not meta_nonce or str(meta_nonce) != str(want_nonce):
+    # Unproven identity NEVER consumes a verdict — but when one exists it also never
+    # gets overwritten. Say so, so the caller fails closed instead of restarting.
+    foreign = bool(want_nonce) and bool(meta_nonce) and str(meta_nonce) != str(want_nonce)
+    print("completed-foreign" if (foreign and _finished_with_verdict) else "nonce-unproven"); raise SystemExit(0)
+# A finished round is REPLAYED, never re-run: the re-dispatched agent asked for
+# the verdict for this round and it already exists, so paying for a second review would
+# be duplicate spend for an answered question.
+if finished:
+    try:
+        has_verdict = os.path.getsize(os.path.join(watch, "last.txt")) > 0
+    except OSError:
+        has_verdict = False
+    if has_verdict and not fp_current:
+        # Stale (or, for a legacy watch, unknowable) input: the verdict describes other
+        # content. Preserve the attempt and review the CURRENT content exactly once.
+        print("stale-input"); raise SystemExit(0)
+    print("replay" if has_verdict else "no-verdict"); raise SystemExit(0)
+print("adopt")
+PY
+)"
+  if [[ "$adopt_reason" == "replay" ]]; then
+    # Re-emit the verdict this round already produced. No codex runs.
+    replay_exit="$(cat "$watch_dir/exit_code" 2>/dev/null || echo 0)"
+    emit_outcome "{\"state\":\"done\",\"exit\":${replay_exit:-0}}" "$watch_dir" "$target_dir" "$round"
+    exit 0
+  fi
+  # A FINISHED ROUND WE CANNOT PROVE OURS IS A REFUSAL, not a restart. Falling through
+  # here would rewrite handle.json/meta.json over a completed watch and pay for a second
+  # reviewer; the verdict stays on disk for a human (or a correctly-identified retry).
+  # LIVE reviewer on stale content: neither adopt (its verdict would describe code that no
+  # longer exists) nor start a competitor. Fail closed and let a human decide.
+  if [[ "$adopt_reason" == "live-stale-input" ]]; then
+    printf '{"ran": false, "infra_error": "live-stale-input", "handle": "%s", "log_tail": "a reviewer is RUNNING on this round for different worktree content than is present now. Its verdict would not describe the current code, and starting a second reviewer would compete with it. Abort it (review.sh abort %s) or restore the content it is reviewing."}\n' \
+      "$watch_dir" "$watch_dir"
+    exit 0
+  fi
+  # COMPLETED verdict for content that has since changed (or a legacy watch with no
+  # fingerprint, where sameness is unknowable): never consumed. The attempt is PRESERVED
+  # under aN/ and exactly one fresh review runs for the current content.
+  if [[ "$adopt_reason" == "stale-input" ]]; then
+    # Flag only. The fresh-start path below owns the aN/ move (the resume path's proven
+    # mechanism); doing it here was undone by that path's rm -rf of the watch dir.
+    preserve_attempt=1
+    printf 'camus: worktree content changed since this round was reviewed; preserving the prior attempt and reviewing the current content\n' >&2
+  fi
+  if [[ "$adopt_reason" == "completed-foreign" ]]; then
+    printf '{"ran": false, "infra_error": "%s", "handle": "%s", "log_tail": "this round already has a COMPLETED review on disk, and this invocation cannot prove the watch belongs to it (%s). Refusing to overwrite a finished round or start a second reviewer. The verdict is preserved at %s/last.txt; re-run with the same gate nonce, round, effort and reviewer model to consume it."}\n' \
+      "$adopt_reason" "$watch_dir" "$adopt_reason" "$watch_dir"
+    exit 0
+  fi
+  if [[ "$adopt_reason" == "adopt" ]]; then
+    # Await the LIVE process on the same bounded chunk the await form uses. This
+    # returns its finished verdict, or a pending handle for the next await — never
+    # a new process, and never a reset event stream.
+    case "$effort" in medium) adopt_chunk=300 ;; *) adopt_chunk=480 ;; esac
+    adopt_env="$(python3 "$here/review_watch.py" await --handle "$watch_dir" --chunk "$adopt_chunk" --idle "$idle_s" 2>/dev/null)"
+    emit_outcome "$adopt_env" "$watch_dir" "$target_dir" "$round"
+    exit 0
+  fi
+fi
 
 # The prior attempt's thread_id + recorded reviewer, if any. meta.json is the ONLY
 # resume source (THREAD-ONLY recovery, zero local-process awareness): it carries a
@@ -406,10 +836,16 @@ fi
 # A resume must not clobber the aborted attempt's events.jsonl (the thread_id source + audit):
 # preserve it under a1/ instead of deleting the round dir. No resume (no prior thread, or completion
 # evidence present) → the original rm-and-recreate, so the fresh path is byte-identical.
-if [[ -n "$will_resume" ]]; then
-  mkdir -p "$watch_dir/a1" 2>/dev/null || true
-  for _f in events.jsonl err.log exit_code handle.json last.txt; do
-    [[ -e "$watch_dir/$_f" ]] && mv -f "$watch_dir/$_f" "$watch_dir/a1/" 2>/dev/null || true
+# PRESERVE, never destroy, a prior attempt's evidence — for a resume, and for a completed
+# round whose reviewed content has since changed (audit 2026-08-06). The index is the next
+# free one so a second occurrence cannot clobber the first, and meta.json travels with it so
+# each attempt keeps the identity AND the input fingerprint it was judged under.
+if [[ -n "$will_resume" || -n "${preserve_attempt:-}" ]]; then
+  _an=1
+  while [[ -e "$watch_dir/a$_an" ]]; do _an=$((_an+1)); done
+  mkdir -p "$watch_dir/a$_an" 2>/dev/null || true
+  for _f in events.jsonl err.log exit_code handle.json last.txt meta.json; do
+    [[ -e "$watch_dir/$_f" ]] && mv -f "$watch_dir/$_f" "$watch_dir/a$_an/" 2>/dev/null || true
   done
 else
   rm -rf "$watch_dir" 2>/dev/null || true
@@ -437,12 +873,26 @@ python3 -c 'import json,sys
 m = {"target_dir": sys.argv[2], "round": sys.argv[3], "effort": sys.argv[4], "scope": sys.argv[5]}
 if len(sys.argv) > 6 and sys.argv[6]:
     m["reviewer_model"] = sys.argv[6]  # persist the pinned reviewer so pending/resumed paths carry it
+# The gate nonce identifies the RUN this watch belongs to, so a reattach can prove
+# a live watch is ours before adopting it rather than starting a second reviewer.
+if len(sys.argv) > 7 and sys.argv[7]:
+    m["gate_nonce"] = sys.argv[7]
+# WHAT was reviewed, not just who by. A replay is only valid for identical input.
+if len(sys.argv) > 8 and sys.argv[8]:
+    m["input_fingerprint"] = sys.argv[8]
 json.dump(m, open(sys.argv[1], "w"), indent=2)' \
-  "$watch_dir/meta.json" "$target_dir" "$round" "$effort" "$scope" "$effective_reviewer_model"
+  "$watch_dir/meta.json" "$target_dir" "$round" "$effort" "$scope" "$effective_reviewer_model" "${CAMUS_GATE_NONCE:-}" "${input_fp:-}"
 
-# Chunk by effort: medium reviews are short (and the orchestrator instructs a 360s tool timeout
-# for them — the chunk must FIT under it); high/xhigh get the full window under 600s.
-case "$effort" in medium) chunk=300 ;; *) chunk=480 ;; esac
+# FAST START, BOUNDED AWAITS. This first chunk used to be the FULL window (300s
+# medium / 480s high), so the thin reviewer agent sat holding an eight-minute
+# shell wait — a deterministic sleep parked inside a model turn. That is what made
+# reattachment so damaging: the outer Workflow going async re-dispatched an agent
+# that was doing nothing but waiting, and the wait restarted (live run
+# 20260805-072933-jezu). The start now returns quickly with a pending handle, and
+# the AWAIT form (which is cheap and re-attachable) owns the long waiting on its
+# own bounded chunks. Total review time is unchanged; the time is simply not held
+# inside a model agent. Override with CAMUS_REVIEW_START_CHUNK_S.
+chunk="${CAMUS_REVIEW_START_CHUNK_S:-120}"
 
 # ── RESUME a prior aborted thread (codex-resume-recovery 2026-06-12) ──────────────────────────
 # When the probe above found a thread_id, try to FINISH the killed codex thread for one short

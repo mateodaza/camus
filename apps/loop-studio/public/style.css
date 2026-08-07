@@ -285,6 +285,9 @@ textarea:focus { outline: none; border-color: var(--ink); }
 .vsummary { font-family: var(--mono); font-size: 13px; padding: 11px 15px; border-radius: 3px; background: var(--ink); }
 .vsummary.pass { color: var(--term-green); }
 .vsummary.fail { color: var(--red); }
+/* Inconclusive is AMBER, deliberately neither green nor red: the checks could not
+   run, so the candidate is neither proven nor rejected. */
+.vsummary.inconclusive { color: var(--amber, #b8860b); }
 
 .banner { border-radius: 3px; padding: 17px 19px; text-align: center; font-family: var(--mono); font-size: 14px; line-height: 1.6; animation: in .3s ease-out; }
 .banner.good { background: var(--ink); color: var(--term-green); }
@@ -295,6 +298,15 @@ textarea:focus { outline: none; border-color: var(--ink); }
 .banner .sub a { color: inherit; text-decoration: underline; }
 .banner .resume-btn { font-family: var(--mono); font-size: 12px; background: var(--red); color: #fff; padding: 6px 14px; margin-right: 8px; }
 .banner .resume-btn:hover { background: #fff; color: var(--ink); }
+/* Recovery can hand the resumed gate a verification command, so the field sits
+   with the Resume button rather than behind a relaunch. */
+.banner .recovery-verify { display: block; font-family: var(--mono); font-size: 11px; letter-spacing: .06em; margin: 8px 0 6px; }
+.banner .recovery-verify-input {
+  display: block; width: 100%; box-sizing: border-box; margin-top: 4px; padding: 6px 8px;
+  font-family: var(--mono); font-size: 12px; color: var(--ink); background: var(--paper);
+  border: 1px solid var(--code-line); border-radius: 2px;
+}
+.banner .recovery-verify-input:focus { outline: none; border-color: var(--ink); }
 
 .trust-card { border: 1px solid var(--ink); background: var(--paper); padding: 14px 16px; font-family: var(--mono); font-size: 12.5px; }
 .trust-card.degraded { border-color: var(--red); }
@@ -410,3 +422,12 @@ textarea:focus { outline: none; border-color: var(--ink); }
 .pairing .mono { font-size: 13px; color: var(--ink); }
 .pairing-arrow { color: var(--faint); }
 .pairing .ghost { font-size: 12px; padding: 2px 8px; }
+
+/* A zero-model run has no model work to reveal; the control states that rather than
+   offering to open an empty panel. */
+#session-toggle.inert { opacity: .55; cursor: default; }
+#session-toggle.inert:hover { background: none; color: inherit; }
+
+/* A question replayed from a dead session cannot be answered; say so where it is. */
+.qstale { font-family: var(--mono); font-size: 11.5px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
+.qopts button.inert, button.send.inert { opacity: .45; cursor: default; }

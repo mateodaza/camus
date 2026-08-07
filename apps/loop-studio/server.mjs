@@ -12,11 +12,13 @@ import { createReadStream, existsSync } from 'node:fs';
 import { join, dirname, extname, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runLoop } from './lib/engine.mjs';
-import { runCodeLoop, validateBuildTarget, gateInstalled } from './lib/code-lane.mjs';
+import { runCodeLoop, runVerificationRecovery, resolveRecoveryTarget, recoveryTarget, reconstructInterruptedParked, readGateStatus, gateStateFromStatus, validateBuildTarget, gateInstalled, gatherContinuationEvidence } from './lib/code-lane.mjs';
+import { deriveContinuation, continuationPresentation } from './lib/continuation.mjs';
 import { runMockCodeLoop } from './lib/adapters/mock.mjs';
 import { runClaude } from './lib/adapters/claude.mjs';
 import { runCodexReview } from './lib/adapters/codex.mjs';
 import { createMockAdapters } from './lib/adapters/mock.mjs';
+import { resolveSeatAdapters } from './lib/adapters/registry.mjs';
 import * as hivemind from './lib/adapters/hivemind.mjs';
 import { LANES, extractThresholdLines, bindThresholdAssessments } from './lib/verify.mjs';
 import { deriveEvidence, receiptCompleteness } from './lib/evidence.mjs';
@@ -25,7 +27,7 @@ import { buildAuditReplayPack, createAuditReplayExperiment, finalizeAuditReplayE
 import { createParallelExperiment, finalizeParallelExperiment, knowledgeSnapshotMatches, markParallelArmRunning, outcomeFromArmReport, sealKnowledgeSnapshot } from './lib/comparison.mjs';
 import { validateExperimentRecord } from '../../packages/trust/lib/validate.mjs';
 import { deriveStatusDimensions, deriveHeadline } from './lib/status-dims.mjs';
-import { getModels, updateModels, modelsSummary, modelCatalog } from './lib/models.mjs';
+import { getModels, updateModels, modelsSummary, modelCatalog, seatCatalog, seatOffered, groundingNeedsClaudeMaker, gateModels, EFFORTS } from './lib/models.mjs';
 import { reviewPrompt } from './lib/prompts.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -127,6 +129,45 @@ const decorateReplayLine = (l, { knowledgeItemCount = null } = {}) => {
   } catch { return l; }
 };
 
+// Per-run verify command. Some repos cannot be verified by auto-detection (a .NET
+// solution whose mobile heads need workloads this host lacks, a monorepo task
+// runner), so the operator supplies the host-scoped command. ONE definition, used
+// by both fresh launches and resumes: a resume that validated more loosely than a
+// launch would be a way in. Shell-unsafe values are REFUSED, never sanitized —
+// those characters reach a shell. The acceptance contract stays uncapped; this is
+// a command, not prose. Returns {ok:true, verifyCmd} | {ok:false, error}.
+function parseVerifyCmd(raw, lane) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return { ok: true, verifyCmd: null };
+  if (typeof raw !== 'string') return { ok: false, error: 'verifyCmd must be a string' };
+  const candidate = raw.trim();
+  if (candidate.length > 2000) return { ok: false, error: `that verify command is ${candidate.length} characters; keep it under 2000` };
+  if (/[$`"\\\n\r]/.test(candidate)) {
+    return { ok: false, error: 'verifyCmd cannot contain $ ` " \\ or newlines — those expand in a shell. Put a complex command in a script and call that.' };
+  }
+  if (lane !== 'build') return { ok: false, error: 'verifyCmd applies to the Build lane; the words lanes verify their deliverable, not a repository' };
+  return { ok: true, verifyCmd: candidate };
+}
+
+// The persisted event trail for a run whose process is gone. Bounded read: only the
+// types the reconstruction needs, so a 200k-line trail costs one pass and no parse of
+// the heavy session lines.
+async function readRunEvents(id) {
+  try {
+    const text = await readFile(join(RUNS_DIR, id, 'events.jsonl'), 'utf8');
+    const out = [];
+    for (const line of text.split('\n')) {
+      if (!line) continue;
+      // Whitespace-TOLERANT: Studio writes these with JSON.stringify (no spaces), but a
+      // trail written by anything else formats them differently, and a prefilter that
+      // silently drops the gate report means an interrupted run quietly falls through to
+      // the gate. Caught by a fixture written with python's json.dumps, 2026-08-05.
+      if (!/"type"\s*:\s*"(status|gate_report|question|answer|question_answered)"/.test(line)) continue;
+      try { out.push(JSON.parse(line)); } catch { /* torn line */ }
+    }
+    return out;
+  } catch { return []; }
+}
+
 async function startRun({
   goal,
   acceptanceContract,
@@ -135,7 +176,9 @@ async function startRun({
   ground,
   targetPath = null,
   targetToplevel = null,
+  verifyCmd = null,
   idSalt = null,
+  recovery = null,
   modelsSnapshot = null,
   frozenKnowledge = null,
   toolPolicy = null,
@@ -161,10 +204,15 @@ async function startRun({
   // Snapshot the model decisions ONCE at run creation — a settings edit mid-run
   // must never rewrite this run's manifest. This snapshot is the identity of
   // record (requested/resolved); the gate reports back the models it actually ran.
-  const models = modelsSnapshot ? JSON.parse(JSON.stringify(modelsSnapshot)) : getModels();
-  const run = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, frozenKnowledge, toolPolicy, publish, experimentContext };
+  // A recovery reads NO model settings: it runs no model, and a seat configuration
+  // that fails to load must not block recovering a parked candidate. The empty
+  // decision record is also the honest one to seal — no seat was chosen.
+  const models = recovery
+    ? { maker: null, reviewer: null, loop: { roundCap: 0 }, recovery: true }
+    : modelsSnapshot ? JSON.parse(JSON.stringify(modelsSnapshot)) : getModels();
+  const run = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, frozenKnowledge, toolPolicy, publish, experimentContext };
   // The run exists on disk from second zero — a crash must not orphan it.
-  const runMetadata = () => ({ id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, models, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, experimentContext, startedAt: run.startedAt });
+  const runMetadata = () => ({ id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: run.idSalt, engine: ENGINE, models, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, experimentContext, startedAt: run.startedAt });
   await writeFile(join(dir, 'run.json'), JSON.stringify(runMetadata(), null, 2))
     .catch((err) => console.error(`[receipts] failed to write run.json for ${id}: ${err.message}`));
   const state = { run, events: [], subscribers: new Set(), answer: null, abort: new AbortController(), writeChain: Promise.resolve() };
@@ -250,14 +298,27 @@ async function startRun({
     });
   };
 
-  const adapters =
-    ENGINE === 'mock' ? (() => { const m = createMockAdapters(); return { claude: m.claude, codex: m.codex }; })()
-      : { claude: runClaude, codex: runCodexReview };
+  // Seat resolution honors THIS run's snapshot (docs/MULTI-MODEL-SEATS.md):
+  // the engine receives maker/reviewer functions for exactly the backends the
+  // snapshot names, never a vendor assumption. Mock stays fully scripted.
+  // A RECOVERY CONSTRUCTS NO ADAPTERS AT ALL. Passing seats it never calls made the
+  // independence claim a promise rather than a property, and it meant a broken or
+  // unavailable seat configuration could stop an operator from recovering a parked
+  // candidate that needs no model (audit 2026-08-05). Recovery must work when the
+  // model lane does not.
+  const adapters = recovery ? null
+    : ENGINE === 'mock' ? (() => { const m = createMockAdapters(); return { maker: m.maker, reviewer: m.reviewer }; })()
+      : resolveSeatAdapters(models);
 
-  emit('run', { run: { id, goal: displayGoal ?? goal, acceptanceContract, lane, depth, ground, targetPath, engine: ENGINE, roundCap: models.loop.roundCap, experimentContext } });
+  emit('run', { run: { id, goal: displayGoal ?? goal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, recoveryOf: recovery?.sourceRunId ?? null, recovery: recovery ? { sourceRunId: recovery.sourceRunId ?? null, sourceReceiptId: recovery.sourceReceiptId ?? null, parkedSha: recovery.parkedSha ?? null, shaProvenance: recovery.shaProvenance ?? null } : null, engine: ENGINE, roundCap: models.loop.roundCap, experimentContext } });
   if (!gitOk) emit('log', { line: '⚠ git unavailable; codex reviews will run outside a git repo (different conditions than camus)' });
 
-  const runner = lane === 'build' ? (ENGINE === 'mock' ? runMockCodeLoop : runCodeLoop) : runLoop;
+  // A recovery runs the host verifier and NOTHING else — including under the mock
+  // engine, because a simulated recovery would fabricate a verdict about a real
+  // parked commit. That is the one place rehearsal must not substitute.
+  const runner = recovery
+    ? runVerificationRecovery
+    : lane === 'build' ? (ENGINE === 'mock' ? runMockCodeLoop : runCodeLoop) : runLoop;
   runner(run, {
     emit,
     waitForAnswer,
@@ -306,6 +367,8 @@ async function startRun({
         models: run.models,
         makerActualModels: result?.makerActualModels ?? [],
         simulated: ENGINE === 'mock',
+        verifyCommand: verifyCmd ?? null,
+        recoveryOf: result?.recoveryOf ?? null,
         createdAt: endedAt,
       });
     } catch (err) {
@@ -317,7 +380,7 @@ async function startRun({
     // so a future result field named `models` can never overwrite the sealed pairing
     // (the same reason draft/deliverable are pinned after the spread). simulated is
     // pinned there too: a rehearsal receipt must SAY it is one, permanently.
-    const reportObject = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', experimentContext, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, draft: undefined, deliverable: run.lastMarkdown, evidence, evidencePack, evidencePackError, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt };
+    const reportObject = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', experimentContext, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, draft: undefined, deliverable: run.lastMarkdown, evidence, evidencePack, evidencePackError, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt };
     const report = JSON.stringify(reportObject, null, 2);
     try {
       await writeFile(join(dir, 'report.json'), report);
@@ -969,7 +1032,13 @@ const BIND = process.env.STUDIO_BIND || '127.0.0.1';
 const SESSION_TOKEN = randomBytes(16).toString('hex');
 const MAX_ACTIVE_RUNS = Number(process.env.STUDIO_MAX_ACTIVE || 3);
 const MAX_GOAL_CHARS = 2000;
-const MAX_ACCEPTANCE_CHARS = 2000;
+// The acceptance contract is deliberately NOT length-capped. A 2,000-char
+// rejection forced operators to compress or weaken the very thing the auditor is
+// held to (field report 2026-08-04, a real game task whose contract was longer
+// than the cap). The request body limit still bounds abuse, and the UI shows a
+// live counter with a non-blocking note; Studio never edits a trust contract on
+// the user's behalf. ADVISORY_ACCEPTANCE_CHARS only drives that soft note.
+const ADVISORY_ACCEPTANCE_CHARS = 2000;
 let pendingAdmissionSlots = 0;
 
 function activeSlotUsage() {
@@ -1081,8 +1150,11 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, {
         maker: m.maker, reviewer: m.reviewer, loop: m.loop,
         // What the settings pickers may offer: the machine's real options,
-        // with the current decision always present.
+        // with the current decision always present. `catalog` is the legacy
+        // claude/codex shape Compare & Learn and audit replay still freeze;
+        // `seats` is the full backend-qualified catalog for seat selection.
         catalog: modelCatalog(),
+        seats: seatCatalog(),
         envOverrides: ['CLAUDE_MODEL', 'CODEX_MODEL', 'CODEX_EFFORT', 'ROUND_CAP'].filter((k) => process.env[k] !== undefined),
       });
     }
@@ -1090,27 +1162,44 @@ const server = http.createServer(async (req, res) => {
     if (path === '/api/config' && req.method === 'POST') {
       const body = await readBody(req);
       const effort = body.effort;
-      if (effort && !['low', 'medium', 'high', 'xhigh'].includes(effort)) {
+      if (effort && !EFFORTS.includes(effort)) {
         return json(res, 400, { error: 'effort must be low, medium, high, or xhigh' });
       }
       const roundCap = body.roundCap === undefined ? undefined : Number(body.roundCap);
       if (roundCap !== undefined && (!Number.isInteger(roundCap) || roundCap < 1 || roundCap > 6)) {
         return json(res, 400, { error: 'roundCap must be an integer from 1 to 6' });
       }
-      const maker = body.maker?.trim() || undefined;
-      const reviewer = body.reviewer?.trim() || undefined;
-      // Validate model choices SERVER-SIDE against the offerable catalog: a value
-      // the picker never offers (a hidden codex model like codex-auto-review, or
-      // anything else off the list) must not be persistable, or it would slip
-      // back into the picker as the current decision on the next load.
-      const cat = modelCatalog();
-      if (maker !== undefined && !cat.maker.includes(maker)) {
-        return json(res, 400, { error: `maker "${maker}" is not an available model` });
+      // A seat choice arrives as { backend, model } (the seat picker) or as a
+      // bare model string, which keeps its legacy meaning: a model on the
+      // seat's CURRENT backend. Validate SERVER-SIDE against the seat catalog:
+      // a value the picker never offers (a hidden codex model like
+      // codex-auto-review, an undeclared backend, anything off the list) must
+      // not be persistable, or it would slip back into the picker as the
+      // current decision on the next load.
+      const seats = seatCatalog();
+      const current = getModels();
+      const normalizeSeat = (value, seatName) => {
+        if (value === undefined) return { seat: undefined };
+        if (typeof value === 'string') {
+          const model = value.trim();
+          return model ? { seat: { backend: current[seatName].backend, model } } : { seat: undefined };
+        }
+        if (!value || typeof value !== 'object' || typeof value.backend !== 'string' || typeof value.model !== 'string') {
+          return { error: `${seatName} must be a model string or { backend, model }` };
+        }
+        return { seat: { backend: value.backend.trim(), model: value.model.trim() } };
+      };
+      const maker = normalizeSeat(body.maker, 'maker');
+      if (maker.error) return json(res, 400, { error: maker.error });
+      const reviewer = normalizeSeat(body.reviewer, 'reviewer');
+      if (reviewer.error) return json(res, 400, { error: reviewer.error });
+      if (maker.seat && !seatOffered(seats.maker, maker.seat.backend, maker.seat.model)) {
+        return json(res, 400, { error: `maker "${maker.seat.backend}:${maker.seat.model}" is not an available seat option` });
       }
-      if (reviewer !== undefined && !cat.reviewer.includes(reviewer)) {
-        return json(res, 400, { error: `reviewer "${reviewer}" is not an available reviewer model (codex does not list it)` });
+      if (reviewer.seat && !seatOffered(seats.reviewer, reviewer.seat.backend, reviewer.seat.model)) {
+        return json(res, 400, { error: `reviewer "${reviewer.seat.backend}:${reviewer.seat.model}" is not an available seat option (the backend does not list it)` });
       }
-      const m = updateModels({ maker, reviewer, effort, roundCap });
+      const m = updateModels({ maker: maker.seat, reviewer: reviewer.seat, effort, roundCap });
       return json(res, 200, { maker: m.maker, reviewer: m.reviewer, loop: m.loop, note: 'applies from the next run' });
     }
 
@@ -1122,6 +1211,9 @@ const server = http.createServer(async (req, res) => {
         hivemind: hivemind.hivemindStatus(),
         gate: { installed: ENGINE === 'mock' ? true : gateInstalled() },
         roundCap: getModels().loop.roundCap,
+        // Advisory only: the UI shows a counter and a soft note past this, and
+        // never blocks or truncates a trust contract.
+        advisoryAcceptanceChars: ADVISORY_ACCEPTANCE_CHARS,
         lanes: Object.fromEntries(Object.entries(LANES).map(([k, v]) => [k, v.label])),
       });
     }
@@ -1133,7 +1225,6 @@ const server = http.createServer(async (req, res) => {
       if (goal.length < 12) return json(res, 400, { error: 'Write the goal like you would brief a strategist: a sentence or two.' });
       if (goal.length > MAX_GOAL_CHARS) return json(res, 400, { error: `That goal is ${goal.length} characters; keep it under ${MAX_GOAL_CHARS}.` });
       if (acceptanceContract.length < 12) return json(res, 400, { error: 'Say what must be true for you to trust the result. This contract is shared by every arm.' });
-      if (acceptanceContract.length > MAX_ACCEPTANCE_CHARS) return json(res, 400, { error: `That trust contract is ${acceptanceContract.length} characters; keep it under ${MAX_ACCEPTANCE_CHARS}.` });
       const lane = LANES[body.lane] ? body.lane : 'freeform';
       if (lane === 'build') return json(res, 400, { error: 'parallel execution currently supports research lanes, not repository mutation' });
       const catalog = modelCatalog();
@@ -1175,8 +1266,65 @@ const server = http.createServer(async (req, res) => {
       if (goal.length < 12) return json(res, 400, { error: 'Write the goal like you would brief a strategist: a sentence or two.' });
       if (goal.length > MAX_GOAL_CHARS) return json(res, 400, { error: `That goal is ${goal.length} characters — keep it under ${MAX_GOAL_CHARS}; a brief is not a corpus.` });
       if (acceptanceContract.length < 12) return json(res, 400, { error: 'Say what must be true for you to trust the result. This is the audit contract, not a copy of the goal.' });
-      if (acceptanceContract.length > MAX_ACCEPTANCE_CHARS) return json(res, 400, { error: `That trust contract is ${acceptanceContract.length} characters — keep it under ${MAX_ACCEPTANCE_CHARS}.` });
       const lane = body.lane === 'build' ? 'build' : LANES[body.lane] ? body.lane : 'freeform';
+
+      // Per-run pairing (docs/MULTI-MODEL-SEATS.md): explicit seat choices for
+      // THIS run, validated against the same catalog the picker reads, with
+      // `run request` recorded as the decision source. Absent → the standing
+      // decision record. Build runs the camus gate's own pairing, so an
+      // override there is refused loudly rather than silently ignored.
+      let modelsSnapshot = null;
+      if (body.pairing !== undefined) {
+        if (lane === 'build') return json(res, 400, { error: 'the Build lane runs the camus gate with its own model decisions; per-run pairing applies to the words lanes' });
+        const p = body.pairing;
+        const seatOf = (raw, seatName) => {
+          if (!raw || typeof raw !== 'object' || typeof raw.backend !== 'string' || typeof raw.model !== 'string' || !raw.backend.trim() || !raw.model.trim()) {
+            return { error: `pairing.${seatName} must be { backend, model }` };
+          }
+          return { backend: raw.backend.trim(), model: raw.model.trim() };
+        };
+        const makerSeat = seatOf(p.maker, 'maker');
+        if (makerSeat.error) return json(res, 400, { error: makerSeat.error });
+        const reviewerSeat = seatOf(p.reviewer, 'reviewer');
+        if (reviewerSeat.error) return json(res, 400, { error: reviewerSeat.error });
+        const seats = seatCatalog();
+        const makerEntry = seats.maker.find((e) => e.backend === makerSeat.backend && e.model === makerSeat.model);
+        if (!makerEntry) return json(res, 400, { error: `maker "${makerSeat.backend}:${makerSeat.model}" is not an offered seat option; no substitution was made` });
+        const reviewerEntry = seats.reviewer.find((e) => e.backend === reviewerSeat.backend && e.model === reviewerSeat.model);
+        if (!reviewerEntry) return json(res, 400, { error: `reviewer "${reviewerSeat.backend}:${reviewerSeat.model}" is not an offered seat option; no substitution was made` });
+        const requestedEffort = p.reviewer?.effort;
+        if (requestedEffort !== undefined && !EFFORTS.includes(requestedEffort)) {
+          return json(res, 400, { error: 'pairing.reviewer.effort must be low, medium, high, or xhigh' });
+        }
+        const standing = getModels();
+        // Effort only exists where the backend honors the knob. Unrequested,
+        // it inherits the standing decision when the backend matches, else the
+        // same recorded default getModels() has always used.
+        const effort = !reviewerEntry.effort ? null
+          : requestedEffort ?? (standing.reviewer.backend === reviewerSeat.backend ? standing.reviewer.effort : 'medium');
+        const effortSource = !reviewerEntry.effort ? 'not honored by this backend'
+          : requestedEffort !== undefined ? 'run request'
+            : standing.reviewer.backend === reviewerSeat.backend ? standing.reviewer.effortSource : 'seat default (medium)';
+        modelsSnapshot = {
+          maker: { backend: makerSeat.backend, provider: makerEntry.provider, model: makerSeat.model, source: 'run request' },
+          reviewer: { backend: reviewerSeat.backend, provider: reviewerEntry.provider, model: reviewerSeat.model, effort, modelSource: 'run request', effortSource },
+          loop: { ...standing.loop },
+        };
+      }
+      // Grounded managed-connector runs retrieve inside the maker adapter, so
+      // the maker seat must run the claude backend — whichever way the pairing
+      // was decided. Refused here, before any spend.
+      if (lane !== 'build' && groundingNeedsClaudeMaker({
+        ground: body.ground === true,
+        hivemindMode: hivemind.hivemindStatus().mode,
+        makerBackend: (modelsSnapshot ?? getModels()).maker.backend,
+      })) {
+        return json(res, 400, { error: 'Grounded runs retrieve through the managed Claude connector, so the maker seat must run the claude backend. Run ungrounded or change the pairing.' });
+      }
+
+      const parsedVerify = parseVerifyCmd(body.verifyCmd, lane);
+      if (!parsedVerify.ok) return json(res, 400, { error: parsedVerify.error });
+      const verifyCmd = parsedVerify.verifyCmd;
 
       let targetPath = null;
       let targetToplevel = null;
@@ -1184,6 +1332,12 @@ const server = http.createServer(async (req, res) => {
         if (ENGINE === 'mock') {
           targetPath = String(body.targetPath || '~/demo-repo').trim();
         } else {
+          // The gate's pairing is fixed; the words-lane seat selection must
+          // never leak into it. Snapshot the gate-compatible decision NOW so a
+          // settings write during target validation cannot swap it either.
+          const gate = gateModels();
+          if (!gate.ok) return json(res, 400, { error: gate.error });
+          modelsSnapshot = gate.models;
           if (!gateInstalled()) {
             return json(res, 400, { error: 'The camus gate is missing or too old for Studio custody. Fix: npm i -g camus-cli && camus install (from this repo: bash packages/cli/install.sh), then check Setup.' });
           }
@@ -1200,7 +1354,7 @@ const server = http.createServer(async (req, res) => {
       if (!admission.ok) return json(res, 429, { error: `${admission.used} runs are already active or starting — the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}.` });
       try {
         if (targetToplevel) activeBuilds.add(targetToplevel);
-        const id = await startRun({ goal, acceptanceContract, lane, depth: body.depth === 'standard' ? 'standard' : 'quick', ground: !!body.ground, targetPath, targetToplevel });
+        const id = await startRun({ goal, acceptanceContract, lane, depth: body.depth === 'standard' ? 'standard' : 'quick', ground: !!body.ground, targetPath, targetToplevel, modelsSnapshot, verifyCmd });
         return json(res, 201, { id });
       } catch (err) {
         if (targetToplevel) activeBuilds.delete(targetToplevel);
@@ -1297,11 +1451,47 @@ const server = http.createServer(async (req, res) => {
         // status (e.g. the server crashed mid-run).
         const file = join(RUNS_DIR, id, 'events.jsonl');
         if (!existsSync(file)) { res.write(`data: ${JSON.stringify({ type: 'replay_end', empty: true })}\n\n`); res.end(); return; }
+        // A DISK REPLAY IS NOT A LIVE RUN. Its question cards belong to a session whose
+        // token died with the old process, so answering them cannot succeed — the client
+        // needs to know before it renders them (field report 2026-08-05: a restart left
+        // live-looking buttons that always failed).
+        // EVERYTHING THE BROWSER NEEDS TO RENDER THE RECOVERY CONTROL IS COMPUTED *BEFORE* THE
+        // FIRST STORED LINE STREAMS, and delivered on replay_start. The stored terminal `status`
+        // event closes the client's EventSource and renders the control right then — replay_end
+        // arrives after the close, so anything riding only on it never reaches the page. And the
+        // first shipped version never delivered it at all: `meta` was declared inside the
+        // parkedReplay try-block and referenced outside it, so the continuation try threw a
+        // ReferenceError, swallowed it, and every live replay ended `continuation: null` while the
+        // regression suite asserted against source regexes instead of the wire (audit 2026-08-07).
+        let meta = null;
+        for (const f of ['report.json', 'run.json']) {
+          try { meta = JSON.parse(await readFile(join(RUNS_DIR, id, f), 'utf8')); break; } catch { /* next */ }
+        }
         let knowledgeItemCount = null;
         try {
           const knowledge = JSON.parse(await readFile(join(RUNS_DIR, id, 'knowledge.json'), 'utf8'));
           if (Array.isArray(knowledge.items)) knowledgeItemCount = knowledge.items.length;
         } catch { /* legacy or ungrounded run */ }
+        // THE RECOVERY KIND IS DECIDED HERE, by the same function the resume path uses.
+        // The browser previously re-derived it from the replayed events with a looser
+        // rule — any historical verify_inconclusive counted — so a run that later went
+        // red, or whose question was answered, could still be offered the
+        // verification-only lane while resume itself (correctly) refused it. One
+        // classifier, one answer (audit 2026-08-05).
+        let parkedReplay = false;
+        try {
+          parkedReplay = Boolean(reconstructInterruptedParked(await readRunEvents(id), meta ?? {}));
+        } catch { parkedReplay = false; }
+        // THE BROWSER IS HANDED THE SAME ANSWER THE RESUME ROUTE WILL ACT ON — the recovery
+        // control used to derive its own mode from the run's terminal status, which is how the UI
+        // could offer "Resume the gate — reruns planning and implementation" over a clean committed
+        // candidate (run 20260807-080214-p27e). Presentation is a projection of the decision.
+        let continuation = null;
+        try {
+          const plan = deriveContinuation(await gatherContinuationEvidence(meta ?? {}));
+          continuation = { ...plan, presentation: continuationPresentation(plan) };
+        } catch { continuation = null; }
+        res.write(`data: ${JSON.stringify({ type: 'replay_start', live: false, continuation })}\n\n`);
         const stream = createReadStream(file, 'utf8');
         let buf = '';
         stream.on('data', (c) => {
@@ -1310,7 +1500,8 @@ const server = http.createServer(async (req, res) => {
           buf = lines.pop();
           for (const l of lines) if (l.trim()) res.write(`data: ${decorateReplayLine(l, { knowledgeItemCount })}\n\n`);
         });
-        const finish = () => { res.write(`data: ${JSON.stringify({ type: 'replay_end' })}\n\n`); res.end(); };
+        // replay_end still carries it as a belt for clients that outlive the stored stream.
+        const finish = () => { res.write(`data: ${JSON.stringify({ type: 'replay_end', parked: parkedReplay, continuation })}\n\n`); res.end(); };
         stream.on('end', finish);
         stream.on('error', finish); // a torn read must not crash the server
         return;
@@ -1376,6 +1567,9 @@ const server = http.createServer(async (req, res) => {
       }
 
       if (action === 'resume' && req.method === 'POST') {
+        let body = {};
+        try { body = await readBody(req); } catch { body = {}; }
+        if (!body || typeof body !== 'object') body = {};
         let meta = state?.run;
         if (!meta) {
           try { meta = JSON.parse(await readFile(join(RUNS_DIR, id, 'report.json'), 'utf8')); }
@@ -1432,11 +1626,145 @@ const server = http.createServer(async (req, res) => {
             admission.release();
           }
         }
-        // Build runs resume by re-invoking the gate with the SAME identity
-        // (idSalt). The gate skips finished work and reruns only unproven work.
+        // Build runs resume by re-invoking the gate with the SAME custody identity
+        // (idSalt), so it reuses the same worktree. It does NOT skip phases: the gate
+        // re-enters Plan and Implement every time, which is precisely why a run that
+        // already parked a candidate takes the recovery path below instead.
         if (meta.lane !== 'build') return json(res, 400, { error: 'only build runs and incomplete comparisons can resume' });
-        if (!meta.idSalt) return json(res, 400, { error: 'this run predates resumable receipts. Start a fresh build run instead; the gate itself still skips finished work.' });
+        if (!meta.idSalt) return json(res, 400, { error: 'this run predates resumable receipts. Start a fresh build run instead.' });
+        // A run that started before verifyCmd existed — or one whose auto-detected
+        // verification turned out to be wrong for this host — must be able to
+        // acquire the command WITHOUT relaunching, since relaunching would redo the
+        // plan and implement work the candidate already holds. An override supplied
+        // here is validated by the same rule as a fresh launch; absent, the saved
+        // value carries forward untouched.
+        const resumeVerify = parseVerifyCmd(body.verifyCmd, 'build');
+        if (!resumeVerify.ok) return json(res, 400, { error: resumeVerify.error });
+        const resumeVerifyCmd = resumeVerify.verifyCmd ?? meta.verifyCmd ?? null;
+
+        // A PARKED CANDIDATE IS NOT RESTARTED. When the source run sealed
+        // needs_decision over a verify_inconclusive gate report, its candidate is
+        // already committed and already reviewed — the only thing missing is a
+        // verdict. Re-entering the gate re-plans and re-implements it (field report
+        // 2026-08-05: `Verify → Plan → Implement` on run 20260805-104802-rv4d), so
+        // this routes to the verification-only recovery lane instead: host verifier,
+        // zero model turns, bound to the sha the original sealed. The source receipt
+        // is untouched; the recovery seals its own that references it.
+        const liveWorktree = gateStateFromStatus(await readGateStatus(meta.idSalt).catch(() => null))?.worktree ?? null;
+        // A run interrupted while awaiting the verification question sealed no terminal
+        // report, so the sealed-report checks find nothing and the old behaviour fell
+        // through to the gate. Rebuild the parked state from the event trail first; the
+        // SAME safety checks then apply to it (worktree identity, branch, clean HEAD,
+        // sha binding) and it claims no source receipt, because none was sealed.
+        let source = meta;
+        if (!recoveryTarget(meta, { worktreeFallback: liveWorktree }).parkedCandidate) {
+          const rebuilt = reconstructInterruptedParked(await readRunEvents(id), meta);
+          if (rebuilt) source = rebuilt;
+        }
+        // ── ONE AUTHORITATIVE CONTINUATION, DERIVED FROM DURABLE EVIDENCE ────────────────
+        // Run 20260807-080214-p27e: the UI said Verify, the durable status said Implement round 2,
+        // the worktree was clean at 5c62c3c with two receipts and three parked commits — and the
+        // resume re-entered the gate, which restarted Plan at round 1 and began reasoning its way
+        // toward undoing an audited fix. Whatever the sealed report does or does not say, a resume
+        // asks THIS first, and the browser is handed the same answer it routes by.
+        const contEvidence = await gatherContinuationEvidence(meta);
+        const continuation = deriveContinuation(contEvidence);
+        if (continuation.action === 'refuse') {
+          // The refusal keeps saying WHY restarting is not the fallback: re-entering the gate would
+          // re-plan and re-implement work that already exists, which is the harm being prevented.
+          return json(res, 409, {
+            error: `This run will not be restarted through the gate — that would re-plan and re-implement work that already exists. ${continuation.reason}.`,
+            continuation: { ...continuation, presentation: continuationPresentation(continuation) },
+          });
+        }
+        // Committed work with review history may never be re-planned, whatever the sealed report
+        // looks like. The verification-only lane runs zero model turns, so the parked candidate
+        // cannot be redesigned by a fresh plan.
+        // Committed work with review history may never be re-planned, whatever the sealed report
+        // looks like. The verification-only lane runs zero model turns, so the parked candidate
+        // cannot be redesigned by a fresh plan.
+        //
+        // When the classifier says continue-in-place but the sealed report never carried the
+        // needs_decision/verify_inconclusive pair the recovery lane keys on, ONLY that precondition
+        // is waived: the request is re-derived with the durable evidence standing in for it, and
+        // resolveRecoveryTarget still applies every one of its own safety checks — worktree
+        // identity, worktree root, clean tree, recorded branch, sha binding. An earlier draft of
+        // this built the target by hand instead and silently skipped the branch check, which
+        // api.test's moved-branch case caught.
+        let target = await resolveRecoveryTarget(source, { worktreeFallback: liveWorktree });
+        if (continuation.action === 'verify_only' && !target.eligible) {
+          const wtPath = contEvidence.worktree?.path ?? liveWorktree;
+          const adoptedSource = {
+            ...source,
+            status: 'needs_decision',
+            // NO SHA IS SUPPLIED. Handing one in makes resolveRecoveryTarget take its
+            // "the receipt sealed this commit" path, which skips the recorded-branch check and
+            // would label the result `sealed_by_source` when nothing sealed anything. Leaving it
+            // absent routes through LEGACY ADOPTION, which checks the branch and labels the sha
+            // `adopted_clean_worktree_head` — honest, and the check api.test's moved-branch case
+            // depends on.
+            report: {
+              ...(source.report ?? {}),
+              status: 'verify_inconclusive',
+              worktree: wtPath,
+              // THE RECORDED BRANCH TRAVELS INTO ADOPTION. Without it, resolveRecoveryTarget's
+              // legacy-adoption path had no branch to hold this worktree against on exactly the
+              // stopped-run shape that reaches this fallback, so its branch check silently never
+              // ran (audit 2026-08-07). The durable status record is the authority; the sealed
+              // report's own branch is the fallback.
+              branch: contEvidence.status?.branch ?? source.report?.branch ?? undefined,
+              parkedSha: undefined,
+              commit_sha: undefined,
+              commit: undefined,
+            },
+          };
+          const adopted = await resolveRecoveryTarget(adoptedSource, { worktreeFallback: liveWorktree });
+          if (adopted.eligible) target = { ...adopted, continuationProvenance: continuation.provenance };
+        }
+        // NEVER FALL THROUGH ON A PARKED CANDIDATE. When the receipt IS an outer
+        // needs_decision over a nested verify_inconclusive but no safe target can be
+        // established, the answer is an explicit refusal naming the obstacle — not a
+        // gate run that re-plans and re-implements the parked work.
+        if (!target.eligible && target.parkedCandidate) {
+          return json(res, 409, { error: `This run parked a candidate, so it will not be restarted through the gate — that would re-plan and re-implement work that already exists. Recovery cannot proceed because ${target.reason}. Fix that and resume again, or inspect the worktree by hand.` });
+        }
+        // A REHEARSAL MUST NOT DO THIS. Recovery deliberately ignores ENGINE so it
+        // can never fabricate a verdict about a real commit — but that means a mock
+        // Studio would run real verification commands inside a real repository while
+        // the UI labels the result a rehearsal. Both halves of that are wrong, so a
+        // rehearsal refuses the recovery outright instead.
+        if (target.eligible && ENGINE === 'mock') {
+          return json(res, 400, { error: 'This Studio is running in rehearsal (mock) mode, and recovering a parked candidate runs real verification commands inside your repository. Restart Studio with the live engine to recover it.' });
+        }
+        if (target.eligible) {
+          const admission = acquireAdmission(1);
+          if (!admission.ok) return json(res, 429, { error: `${admission.used} runs are already active or starting; the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}` });
+          try {
+            const newId = await startRun({
+              goal: meta.goal, acceptanceContract: meta.acceptanceContract, lane: 'build',
+              depth: 'quick', ground: false, targetPath: meta.targetPath, idSalt: meta.idSalt,
+              verifyCmd: resumeVerifyCmd, recovery: { ...target, interruptedRecovery: source.interruptedRecovery === true },
+            });
+            return json(res, 201, { id: newId, mode: 'verification_recovery', parkedSha: target.parkedSha, shaProvenance: target.shaProvenance });
+          } finally {
+            admission.release();
+          }
+        }
         if (ENGINE !== 'mock') {
+          // THE GATE FALL-THROUGH IS NOW GUARDED. It re-plans and re-implements, so it is reachable
+          // only when the continuation classifier said nothing exists yet to regress. Reaching it
+          // with a committed candidate is the exact defect of run 20260807-080214-p27e.
+          if (continuation.action !== 'gate') {
+            return json(res, 409, {
+              error: `This run holds work a fresh gate run would re-plan (${continuation.reason}), so it will not be restarted through the gate.`,
+              continuation: { ...continuation, presentation: continuationPresentation(continuation) },
+            });
+          }
+          // Not recoverable in place (no parked candidate, or it ended some other
+          // way), so this re-enters the fixed gate — same rule as a fresh build.
+          // The gate resumes the same custody identity; it does NOT skip phases.
+          const gate = gateModels();
+          if (!gate.ok) return json(res, 400, { error: gate.error });
           const v = await validateBuildTarget(meta.targetPath);
           if (!v.ok) return json(res, 400, { error: `the original target no longer validates: ${v.error}` });
           if (activeBuilds.size > 0) return json(res, 409, { error: 'a build run is already going; one gate at a time' });
@@ -1444,7 +1772,7 @@ const server = http.createServer(async (req, res) => {
           if (!admission.ok) return json(res, 429, { error: `${admission.used} runs are already active or starting; the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}` });
           try {
             activeBuilds.add(v.toplevel);
-            const newId = await startRun({ goal: meta.goal, acceptanceContract: meta.acceptanceContract, lane: 'build', depth: 'quick', ground: false, targetPath: v.path, targetToplevel: v.toplevel, idSalt: meta.idSalt });
+            const newId = await startRun({ goal: meta.goal, acceptanceContract: meta.acceptanceContract, lane: 'build', depth: 'quick', ground: false, targetPath: v.path, targetToplevel: v.toplevel, idSalt: meta.idSalt, modelsSnapshot: gate.models, verifyCmd: resumeVerifyCmd });
             return json(res, 201, { id: newId });
           } catch (err) {
             activeBuilds.delete(v.toplevel);
@@ -1456,7 +1784,7 @@ const server = http.createServer(async (req, res) => {
         const admission = acquireAdmission(1);
         if (!admission.ok) return json(res, 429, { error: `${admission.used} runs are already active or starting; the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}` });
         try {
-          const newId = await startRun({ goal: meta.goal, acceptanceContract: meta.acceptanceContract, lane: 'build', depth: 'quick', ground: false, targetPath: meta.targetPath, idSalt: meta.idSalt });
+          const newId = await startRun({ goal: meta.goal, acceptanceContract: meta.acceptanceContract, lane: 'build', depth: 'quick', ground: false, targetPath: meta.targetPath, idSalt: meta.idSalt, verifyCmd: resumeVerifyCmd });
           return json(res, 201, { id: newId });
         } finally {
           admission.release();

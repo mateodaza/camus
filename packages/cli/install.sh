@@ -49,8 +49,28 @@ EXCL=(--exclude=__pycache__ --exclude=.pytest_cache --exclude='pytest-cache-file
       # drift DIRECTION in the failure message. (2026-06-11)
       --exclude=VERSION)
 
+# NAME THE SOURCE THE GREEN IS ABOUT. `npx camus-cli check` compares the install against the
+# PUBLISHED package, while `install.sh --check` from a clone compares against that clone. Both
+# print "in sync", so a green read as "matches the fixes we just built" when it actually meant
+# "matches what is published" — a whole WP8 run then executed on a gate that predated twenty
+# rounds of unshipped work, with no nonce binding, no watch adoption, and no status record
+# (production run 20260806-063400-vzqs). A freshness check whose green is ambiguous is the
+# same false-green class this gate exists to eliminate, so it now says WHAT it compared.
+source_identity() {
+  local rev=''
+  if command -v git >/dev/null 2>&1 && git -C "$here" rev-parse --git-dir >/dev/null 2>&1; then
+    rev="$(git -C "$here" rev-parse --short HEAD 2>/dev/null || true)"
+    local dirty=''
+    git -C "$here" diff --quiet 2>/dev/null || dirty=' +uncommitted'
+    printf 'git checkout %s at %s%s' "$(cd "$here" && pwd -P)" "${rev:-unknown}" "$dirty"
+  else
+    printf 'published package %s' "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$here/package.json" 2>/dev/null || echo 'unknown version')"
+  fi
+}
+
 check() {
   local drift=0
+  say "  ${DIM}comparing the installed gate against: $(source_identity)${RST}"
   if diff -rq "${EXCL[@]}" "$SKILL_SRC" "$SKILL_DST" >/dev/null 2>&1; then
     ok "skill in sync"
   else
@@ -110,7 +130,9 @@ if [[ "${1:-}" == "--check" ]]; then
   # auto-mode trust is opt-in; report its status but don't fail the drift check on it
   python3 "$here/merge_settings.py" --check || true
   if [[ $rc -eq 0 ]]; then
-    say "${GRN}${BOLD}installed == source${RST} ${DIM}(frozen, in sync — safe to run)${RST}"
+    say "${GRN}${BOLD}installed == source${RST} ${DIM}(frozen, in sync with $(source_identity))${RST}"
+    say "  ${DIM}"In sync" means identical to THAT source. If your fixes live somewhere else,${RST}"
+    say "  ${DIM}this green does not cover them — run --check from the checkout you edited.${RST}"
   else
     # Direction-aware drift (2026-06-11): an OLDER CLI checking a NEWER installed gate must not
     # say "re-install" — re-installing from this package would DOWNGRADE the gate. Compare the

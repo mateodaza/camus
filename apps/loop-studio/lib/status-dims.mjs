@@ -34,6 +34,12 @@ function auditFromReviews(rounds, { requireGateSource, expectedRev = null }) {
   // on a new receipt fails closed; build has its separate commit-SHA binding.
   if (expectedRev !== null && latest.rev !== expectedRev) return 'not_run';
   const verdict = latest.verdict;
+  // Seat selection made same-vendor pairings expressible: a round whose
+  // recorded independence fact says the seats shared a provider seals an
+  // ADVISORY audit, which the headline derivation reads as
+  // same_vendor_reviewed — advisory never impersonates independent. Rounds
+  // sealed before the fact existed were cross-vendor by construction.
+  const advisory = latest.independence === 'same_vendor';
   // APPROVED means no blocking finding, not necessarily no finding. Low
   // findings and explicit unchecked claim assessments are still caveats on
   // the record and must derive verified_with_findings rather than the plain
@@ -42,9 +48,10 @@ function auditFromReviews(rounds, { requireGateSource, expectedRev = null }) {
     const hasCaveats = (latest.findings ?? []).length > 0
       || (latest.claimAssessments ?? []).some((a) => a.decision !== 'supported')
       || (latest.coverageAssessments ?? []).some((a) => a.decision !== 'met');
+    if (advisory) return hasCaveats ? 'advisory_findings' : 'advisory_clean';
     return hasCaveats ? 'independent_findings' : 'independent_clean';
   }
-  if (verdict === 'REVISE') return 'independent_findings';
+  if (verdict === 'REVISE') return advisory ? 'advisory_findings' : 'independent_findings';
   return 'infra_failed'; // a round ran but its latest verdict is unreadable/invalid
 }
 
@@ -78,7 +85,13 @@ export function verificationAndAudit(lane, evidence) {
     const gr = evidence?.gateReport ?? null;
     const committed = gr && (gr.commit_sha ?? gr.commit);
     const boundSha = typeof committed === 'string' && SHA_RE.test(committed) ? committed : '';
-    const v = (evidence?.verify ?? []).find((x) => x.source === 'gate_report_status') ?? (evidence?.verify ?? []).at(-1) ?? null;
+    // LATEST APPLICABLE, not first-found. A Studio re-verify of the parked
+    // candidate is newer evidence than the gate's original inconclusive event, and
+    // preferring the older one meant the UI could show a retry green while the
+    // sealed receipt still read infra_failed (field report 2026-08-05). Both
+    // sources must still be SHA-BOUND below, so "latest" can never mean "unbound".
+    const applicable = (evidence?.verify ?? []).filter((x) => x.source === 'gate_report_status' || x.source === 'studio_reverify');
+    const v = applicable.at(-1) ?? (evidence?.verify ?? []).at(-1) ?? null;
     return { verification: verificationFrom(v, boundSha), audit: auditFromReviews(evidence?.rounds, { requireGateSource: true }) };
   }
   return {
@@ -95,7 +108,10 @@ export function deriveStatusDimensions({ lane, status, evidence, published = fal
   // that a human aborted or the process died. This is the one dimension the
   // terminal status legitimately reports; verification and audit never are.
   const execution =
-    status === 'stopped' ? 'interrupted'
+    // A run parked for a human decision is INTERRUPTED, not failed: nothing
+    // broke, and the pragmatic posture must never report a usable candidate or
+    // an unavailable ground truth as a failure (north star, 2026-08-04).
+    status === 'stopped' || status === 'needs_decision' ? 'interrupted'
       // no_changes is a run that RAN to its terminal conclusion (the gate proved
       // an empty diff) — completed lifecycle, with verification/audit/publication
       // saying honestly that nothing shipped. It is not a dead process.

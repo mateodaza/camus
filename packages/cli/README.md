@@ -346,7 +346,8 @@ read cleanly.
 
 ## Tests
 
-Pure stdlib, no network, no dependencies. 22 suites:
+Pure stdlib, no network, no dependencies. The deterministic suite covers the CLI,
+gate scripts, workflow handoffs, review custody, resume paths, and receipt integrity:
 
 ```bash
 npm test    # or run the suites individually under skills/camus/scripts/
