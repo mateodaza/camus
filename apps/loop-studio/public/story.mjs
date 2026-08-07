@@ -75,6 +75,37 @@ const OPERATIONAL_STATUSES = new Set(['running', 'needs_human', 'disconnected', 
 // Text and semantic tone travel together. Otherwise a receipt-derived
 // "Not verified" can accidentally inherit the success styling of the loop's
 // underlying `done` claim, which is worse than showing two labels.
+// A VERIFICATION-ONLY RECOVERY needs its own operational pill. Its derived standing
+// is honestly `unverified` — this receipt carries no audit — but rendering that as
+// "Not verified" next to a sealed `verification: passed` told the operator the
+// opposite of what happened (audit 2026-08-05). This changes PRESENTATION only:
+// deriveHeadline's trust semantics are untouched, the pill never claims independent
+// standing, and it says where the audit actually lives.
+const LINKED_AUDITS = ['independent_clean', 'independent_findings', 'advisory_clean', 'advisory_findings'];
+
+export function recoveryPill(dimensions, lineage) {
+  if (!lineage || dimensions?.verification !== 'passed') return null;
+  const candidate = lineage.parkedSha ? ` on candidate ${String(lineage.parkedSha).slice(0, 12)}` : '';
+  const src = lineage.sourceRunId ? ` (run ${lineage.sourceRunId})` : '';
+  const base = `Deterministic verification passed in this recovery${candidate}. This receipt performed NO review, so it earns no independent verified standing on its own.`;
+  // "source review linked" is a CLAIM ABOUT ANOTHER RECEIPT. It needs a validated
+  // source receipt that actually records an audit — a legacy source with no sealed
+  // pack has no review to link, and saying otherwise invents one (audit 2026-08-05).
+  const linked = Boolean(lineage.sourceReceiptId) && LINKED_AUDITS.includes(lineage.sourceAudit);
+  if (linked) {
+    return {
+      label: 'Verification passed · source review linked',
+      className: 'standing advisory', derived: true, claim: false,
+      title: `${base} The review evidence stays in the sealed source receipt${src}, which this receipt links but does not absorb.`,
+    };
+  }
+  return {
+    label: 'Verification passed',
+    className: 'standing advisory', derived: true, claim: false,
+    title: `${base} NO source review is available to link: the source run${src} sealed no validated receipt recording an audit${lineage.sourceReceiptStatus ? ` (${lineage.sourceReceiptStatus})` : ''}. Nothing here has been independently reviewed.`,
+  };
+}
+
 export function standingPill(status, headline) {
   const label = standingLabel(headline);
   if (label) return { label, className: `standing ${STANDING_TONES[headline]}`, derived: true, claim: false };

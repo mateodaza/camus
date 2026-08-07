@@ -3,8 +3,11 @@
    shared file, importable here and by verify.test.mjs alike. */
 
 import { comparisonBanner, doneBanner } from './banner.mjs';
-import { effectiveStanding, runStory, standingPill, standingExplanation } from './story.mjs';
+import { effectiveStanding, runStory, standingPill, standingExplanation, recoveryPill } from './story.mjs';
 import { groupRuns, armFacts, comparisonNote, shortHash } from './grouping.mjs';
+import { gatePhaseStrip, gateRoundFact } from './gate-phase-policy.mjs';
+import { verifySummary } from './run-ui-policy.mjs';
+import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateReportJson, lineageTrust, offersBuildRecovery, recoveryAction, replayRecoveryKind, terminalBannerClass, terminalFailureBanner } from './run-ui-policy.mjs';
 
 // Hosted-UI mode: when this page is served from a public origin, ?api=
 // points it at the local studio server (persisted after the first visit).
@@ -147,6 +150,30 @@ const state = {
   sessionCount: 0,
 };
 
+function reflectEnginePill() {
+  if (!state.serverEngine || !state.serverModels) return;
+  $('pill-engine').textContent = enginePillText({
+    engine: state.serverEngine,
+    lane: state.lane,
+    models: state.serverModels,
+  });
+}
+
+function reflectDocumentActions(lane) {
+  const actions = documentActionsForLane(lane);
+  $('copy').classList.toggle('hidden', !actions.copyMarkdown);
+  $('download').classList.toggle('hidden', !actions.downloadMarkdown);
+}
+
+function reflectLaneControls() {
+  const build = state.lane === 'build';
+  $('step-pairing-label').innerHTML = `<span class="step-n">3</span> ${build ? 'Review the Build gate, then run' : 'Choose maker and auditor, then run'}`;
+  $('build-gate-note').classList.toggle('hidden', !build);
+  if (build && state.serverModels) {
+    $('build-gate-note').textContent = `Build gate: Claude ${state.serverModels.maker} implements → Codex ${state.serverModels.reviewer} reviews at the saved effort${state.serverModels.effort ? ` (${state.serverModels.effort})` : ''} every round — the value pinned in Settings, not adapted per round; the receipt records what actually ran. Change the saved models and effort in Settings.`;
+  }
+}
+
 // Panel race control. panelIntent = the panel the USER last asked for
 // ('setup' | 'settings' | null). userTouchedPanels distinguishes "never
 // interacted" from "explicitly closed" — a null intent alone is ambiguous, and
@@ -178,6 +205,11 @@ const STAGE_DEFS = {
     ['review', 'Review'],
     ['ship', 'Ship'],
   ],
+  // A verification-only recovery runs one phase. Not Gate, not Review, not Ship:
+  // the candidate was already built and already reviewed by the source run.
+  verify_recovery: [
+    ['verify', 'Verify'],
+  ],
   audit: [
     ['review', 'Re-audit'],
     ['ship', 'Receipt'],
@@ -197,11 +229,12 @@ async function boot() {
   try {
     const s = await (await fetch(`${API}/api/status`)).json();
     state.serverEngine = s.engine;
+    state.advisoryAcceptanceChars = s.advisoryAcceptanceChars ?? 2000;
+    state.serverModels = s.models;
     TOKEN = s.token || '';
     const eng = $('pill-engine');
-    eng.textContent = s.engine === 'mock'
-      ? 'engine: rehearsal (mock)'
-      : `engine: live · ${s.models.maker} + ${s.models.reviewer} (${s.models.effort})`;
+    reflectEnginePill();
+    reflectLaneControls();
     eng.classList.add(s.engine === 'mock' ? 'warn' : 'ok');
     const hm = $('pill-hivemind');
     hm.textContent = !s.hivemind.connected
@@ -517,7 +550,8 @@ $('open-setup').addEventListener('click', () => {
 // ---------------------------------------------------------------------------
 
 // A <select> filled from the server's catalog: the machine's real options,
-// with the current decision always selectable.
+// with the current decision always selectable. (Compare & Learn still uses
+// this legacy string shape; seat pickers use fillSeatPicker below.)
 function fillPicker(sel, options, current) {
   sel.innerHTML = '';
   const list = options.includes(current) ? options : [current, ...options];
@@ -530,6 +564,48 @@ function fillPicker(sel, options, current) {
   sel.value = current;
 }
 
+// Seat pickers offer { backend, provider, model } entries from the server's
+// seat catalog, grouped by backend. Option values are JSON so no separator
+// can collide with a model name. Returns whether `current` was offerable —
+// an unoffered current decision is NEVER injected as a selectable option.
+function fillSeatPicker(sel, entries, current) {
+  sel.innerHTML = '';
+  const groups = new Map();
+  for (const e of entries ?? []) {
+    if (!groups.has(e.backend)) {
+      const g = document.createElement('optgroup');
+      g.label = `${e.backend} (${e.provider})`;
+      groups.set(e.backend, g);
+      sel.appendChild(g);
+    }
+    const o = document.createElement('option');
+    o.value = JSON.stringify([e.backend, e.model]);
+    o.textContent = e.model;
+    groups.get(e.backend).appendChild(o);
+  }
+  const wanted = JSON.stringify([current?.backend, current?.model]);
+  const offered = [...sel.options].some((o) => o.value === wanted);
+  sel.value = offered ? wanted : (sel.options[0]?.value ?? '');
+  return offered;
+}
+const seatOf = (sel) => {
+  try {
+    const [backend, model] = JSON.parse(sel.value);
+    return { backend, model };
+  } catch { return null; }
+};
+const seatEntry = (entries, seat) => (entries ?? []).find((e) => e.backend === seat?.backend && e.model === seat?.model) ?? null;
+
+// The effort request only exists where the reviewer backend honors the knob
+// (codex today); elsewhere the field disables and says so, and the receipt
+// records no fabricated tier.
+function reflectEffortField(seats) {
+  const entry = seatEntry(seats?.reviewer, seatOf($('set-reviewer')));
+  const honors = entry?.effort === true;
+  $('set-effort').disabled = !honors;
+  $('set-effort-note').textContent = honors ? '' : 'this backend takes no effort request; the receipt records none';
+}
+
 async function openSettings() {
   const panel = $('settings-panel');
   if (!panel.classList.contains('hidden')) { requestPanel(null); setPanel(null); return; }
@@ -537,18 +613,21 @@ async function openSettings() {
   try {
     const c = await (await fetch(`${API}/api/config`)).json();
     if (gen !== panelGen || panelIntent !== 'settings') return; // switched, closed, or reopened while config loaded
-    fillPicker($('set-maker'), c.catalog?.maker ?? ['haiku', 'sonnet', 'opus'], c.maker.model);
-    // Never make the current reviewer selectable when codex does not list it —
-    // offer only offerable models; an unavailable current is named in the note.
-    const revValue = c.catalog?.reviewerCurrentAvailable === false ? (c.catalog.reviewer[0] ?? c.reviewer.model) : c.reviewer.model;
-    fillPicker($('set-reviewer'), c.catalog?.reviewer ?? ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5'], revValue);
-    $('set-effort').value = c.reviewer.effort;
+    state.seats = c.seats ?? { maker: [], reviewer: [] };
+    const makerOffered = fillSeatPicker($('set-maker'), state.seats.maker, { backend: c.maker.backend, model: c.maker.model });
+    // Never make an unoffered current selectable (a hidden codex model, a
+    // deleted backend): offer only offerable seats; the note names the gap.
+    const reviewerOffered = fillSeatPicker($('set-reviewer'), state.seats.reviewer, { backend: c.reviewer.backend, model: c.reviewer.model });
+    if (c.reviewer.effort) $('set-effort').value = c.reviewer.effort;
+    reflectEffortField(state.seats);
+    $('set-reviewer').onchange = () => reflectEffortField(state.seats);
     $('set-roundcap').value = c.loop.roundCap;
     $('set-depth').value = state.depth;
     const notes = [];
     if (c.envOverrides.length) notes.push(`${c.envOverrides.join(', ')} set in the environment. Env wins over these fields this session.`);
-    if (c.catalog?.reviewerCurrentAvailable === false) notes.push(`current reviewer "${c.catalog.reviewerCurrent}" is not one codex lists on this machine — pick a listed model to save.`);
-    if (c.catalog?.reviewerSource === 'fallback') notes.push('reviewer list is a default: codex has no model cache to read on this machine, so these are not CLI-verified.');
+    if (!makerOffered) notes.push(`current maker "${c.maker.backend}:${c.maker.model}" is not offered on this machine — pick a listed option to save.`);
+    if (!reviewerOffered) notes.push(`current reviewer "${c.reviewer.backend}:${c.reviewer.model}" is not offered on this machine — pick a listed option to save.`);
+    if (c.seats?.reviewerSource === 'fallback') notes.push('the codex list is a default: codex has no model cache to read on this machine, so those entries are not CLI-verified.');
     $('settings-env').textContent = notes.join(' ');
     $('settings-note').textContent = '';
     setPanel('settings');
@@ -559,22 +638,53 @@ async function openSettings() {
 
 $('open-settings').addEventListener('click', openSettings);
 
-// The pairing shown in step 3 READS the decision record; Settings remains the
-// only writer, so there is no second source of truth to drift out of sync.
-// Failure is explicit — a pairing nobody can read must not look like a choice.
+// The step-3 pairing is DECIDED here: pickers default to the standing decision
+// record and refill whenever Settings changes it; a value the user changes
+// rides the run request as an explicit per-run pairing (recorded source
+// "run request"). Untouched pickers send nothing, so the standing record and
+// its provenance stay the decision of record. Failure is explicit — a pairing
+// nobody can read must not look like a choice.
+let pairingDirty = false;
+function reflectPairingNote() {
+  const maker = seatEntry(state.seats?.maker, seatOf($('pair-maker')));
+  const reviewer = seatEntry(state.seats?.reviewer, seatOf($('pair-reviewer')));
+  const note = $('pairing-note');
+  if (!maker || !reviewer) {
+    note.textContent = 'One model makes the work. A different one tries to break it.';
+    return;
+  }
+  note.textContent = maker.provider === reviewer.provider
+    ? `Same provider on both seats (${maker.provider}): allowed, and recorded honestly — the review counts as advisory and the standing reads same-vendor reviewed, never independent.`
+    : `Cross-vendor pairing: ${maker.provider} makes it, ${reviewer.provider} tries to break it.`;
+}
 async function refreshPairing() {
   try {
     const res = await fetch(`${API}/api/config`);
     if (!res.ok) throw new Error(`config returned ${res.status}`);
     const c = await res.json();
-    $('pairing-maker').textContent = c.maker?.model ?? 'not set';
-    $('pairing-auditor').textContent = c.reviewer?.effort
-      ? `${c.reviewer.model} · ${c.reviewer.effort}`
-      : (c.reviewer?.model ?? 'not set');
+    state.seats = c.seats ?? { maker: [], reviewer: [] };
+    const makerOffered = fillSeatPicker($('pair-maker'), state.seats.maker, { backend: c.maker.backend, model: c.maker.model });
+    const reviewerOffered = fillSeatPicker($('pair-reviewer'), state.seats.reviewer, { backend: c.reviewer.backend, model: c.reviewer.model });
+    // When the standing decision is not offerable, the picker shows a real
+    // offerable pairing instead — and that DISPLAYED pairing is what the run
+    // request must carry. Leaving pairingDirty false here made the POST omit
+    // it, so the server executed the hidden stale record while the form
+    // showed something else (audit P1, 2026-08-04).
+    pairingDirty = !makerOffered || !reviewerOffered;
+    reflectPairingNote();
+    if (pairingDirty) {
+      const missing = [
+        !makerOffered && `maker "${c.maker.backend}:${c.maker.model}"`,
+        !reviewerOffered && `reviewer "${c.reviewer.backend}:${c.reviewer.model}"`,
+      ].filter(Boolean).join(' and ');
+      $('pairing-note').textContent = `The saved ${missing} is not offered on this machine, so the run uses exactly the pairing shown here (recorded as a run request). ${$('pairing-note').textContent}`;
+    }
   } catch {
-    $('pairing-maker').textContent = 'unavailable';
-    $('pairing-auditor').textContent = 'unavailable';
+    $('pairing-note').textContent = 'pairing unavailable: the local studio server is unreachable';
   }
+}
+for (const id of ['pair-maker', 'pair-reviewer']) {
+  $(id).addEventListener('change', () => { pairingDirty = true; reflectPairingNote(); });
 }
 $('pairing-change').addEventListener('click', openSettings);
 $('jump-recents').addEventListener('click', () => {
@@ -611,9 +721,11 @@ $('save-settings').addEventListener('click', async () => {
       method: 'POST',
       headers: postHeaders(),
       body: JSON.stringify({
-        maker: $('set-maker').value,
-        reviewer: $('set-reviewer').value,
-        effort: $('set-effort').value,
+        maker: seatOf($('set-maker')),
+        reviewer: seatOf($('set-reviewer')),
+        // A disabled effort field means the chosen backend takes no effort
+        // request — sending one anyway would record a knob nobody can turn.
+        effort: $('set-effort').disabled ? undefined : $('set-effort').value,
         roundCap: Number($('set-roundcap').value),
       }),
     });
@@ -635,9 +747,14 @@ $('lanes').addEventListener('click', (e) => {
   $('target-wrap').classList.toggle('hidden', state.lane !== 'build');
   // Build runs the gate inside the target repo and never runs a grounding
   // stage, so offering Hivemind there would promise something that cannot
-  // happen. The request below sends false for the same reason.
+  // happen. The request below sends false for the same reason. The seat
+  // pickers hide too: the gate owns its own model decisions.
   $('ground-field').classList.toggle('hidden', state.lane === 'build');
+  $('pairing').classList.toggle('hidden', state.lane === 'build');
+  $('pairing-note').classList.toggle('hidden', state.lane === 'build');
   if (state.lane === 'build') $('compare-panel').classList.add('hidden');
+  reflectEnginePill();
+  reflectLaneControls();
 });
 
 $('rungoal').addEventListener('click', toggleRunGoal);
@@ -707,6 +824,22 @@ function syncPresetChips() {
 }
 $('acceptance-contract').addEventListener('input', syncPresetChips);
 
+// A live counter with a soft note past the advisory length. It never blocks, and
+// Studio never compresses a trust contract on the operator's behalf.
+function reflectContractLength() {
+  const box = $('contract-count');
+  if (!box) return;
+  const n = $('acceptance-contract').value.length;
+  const advisory = state.advisoryAcceptanceChars ?? 2000;
+  box.textContent = n === 0
+    ? ''
+    : n > advisory
+      ? `${n.toLocaleString()} characters. Long contracts are accepted in full; a long one takes more reviewer context per round, so keep every clause load-bearing.`
+      : `${n.toLocaleString()} characters.`;
+}
+$('acceptance-contract').addEventListener('input', reflectContractLength);
+reflectContractLength();
+
 $('start-compare').addEventListener('click', async () => {
   const goal = $('goal').value.trim();
   const acceptanceContract = $('acceptance-contract').value.trim();
@@ -750,10 +883,25 @@ $('start').addEventListener('click', async () => {
   $('form-error').textContent = '';
   $('start').disabled = true;
   try {
+    // A pairing rides the request whenever the DISPLAYED pairing differs from
+    // the standing record — the user changed a picker, or the record was not
+    // offerable and the picker substituted a real option. Untouched, offerable
+    // pickers send nothing, leaving the record and its provenance in charge.
+    // Build never sends one — the gate owns its own model decisions and the
+    // server refuses an override.
+    const pairMaker = seatOf($('pair-maker'));
+    const pairReviewer = seatOf($('pair-reviewer'));
+    const pairing = pairingDirty && state.lane !== 'build' && pairMaker && pairReviewer
+      ? { maker: pairMaker, reviewer: pairReviewer }
+      : undefined;
     const res = await fetch(`${API}/api/runs`, {
       method: 'POST',
       headers: postHeaders(),
-      body: JSON.stringify({ goal, acceptanceContract, lane: state.lane, depth: state.depth, ground: state.lane !== 'build' && $('ground').checked, targetPath: state.lane === 'build' ? $('target-path').value : undefined }),
+      body: JSON.stringify({ goal, acceptanceContract, lane: state.lane, depth: state.depth, ground: state.lane !== 'build' && $('ground').checked, targetPath: state.lane === 'build' ? $('target-path').value : undefined,
+        // Only the Build lane verifies a repository, so the command only rides
+        // that lane's request; empty means "detect the stack".
+        verifyCmd: state.lane === 'build' && $('verify-cmd').value.trim() ? $('verify-cmd').value.trim() : undefined,
+        pairing }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
@@ -774,6 +922,18 @@ function attach(id, goal) {
   state.currentReport = null;
   state.revs = [];
   state.sessionCount = 0;
+  // Replay-ness belongs to the stream being opened, not to the page. Without this
+  // reset, opening a finished receipt from disk and then hitting Resume left the NEW
+  // live run's question cards inert and labelled "session has since ended" — the live
+  // loop was waiting on an answer the UI had already disabled (run 20260806-145411-hy1w).
+  // Only a `replay_start` event from THIS stream may turn it back on.
+  state.replaying = false;
+  state.replayPendingQuestion = null;
+  state.continuation = null;   // the server's answer belongs to the stream that sent it
+  // Gate progress belongs to the stream too. It is merged across events, so without this a new
+  // run's first frames rendered the PREVIOUS run's phase until the gate stamped its own
+  // (live run 20260806-164809-hiju).
+  gateProgressState = {};
   $('session-pre').textContent = '';
   $('session-toggle').textContent = 'Show the model’s work';
   state.selectedRev = null;
@@ -860,10 +1020,63 @@ function comparisonRecoveryControl() {
   return sub;
 }
 
+function buildRecoveryControl(status, continuation = state.continuation ?? null) {
+  const sub = el('span', 'sub');
+  // The server's continuation classification wins when it exists: the same answer the resume route
+  // will act on, so the button can never promise a phase the server refuses (run 20260807-080214-p27e).
+  const action = recoveryAction(status, continuation);
+  // A REFUSAL IS NOT A BUTTON. When the server's classification says no continuation is safe
+  // without a human look, rendering a clickable resume would promise an action the route will 409 —
+  // the text carries the reason instead, and nothing is clickable.
+  if (action.canResume === false) {
+    sub.appendChild(el('span', 'recovery-refused', ` ${action.button}.`));
+    sub.appendChild(document.createTextNode(action.note));
+    return sub;
+  }
+  // The command is EDITABLE here because the case that needs it most is a run
+  // whose verification could not run on this host — including runs that started
+  // before this field existed. Relaunching to supply one would redo the plan and
+  // implement work the parked candidate already holds, so recovery takes it
+  // directly. Left empty, the saved command carries forward untouched.
+  const field = el('label', 'recovery-verify');
+  field.appendChild(document.createTextNode('verification command '));
+  const input = el('input', 'recovery-verify-input');
+  input.type = 'text';
+  input.id = 'recovery-verify-cmd';
+  input.placeholder = 'empty = keep the saved command (auto-detect if none)';
+  if (state.runVerifyCmd) input.value = state.runVerifyCmd;
+  field.appendChild(input);
+
+  const resume = el('button', 'resume-btn', action.button);
+  resume.onclick = async () => {
+    resume.disabled = true;
+    resume.textContent = action.mode === 'verify_only' ? 'verifying…' : 'resuming…';
+    try {
+      const override = input.value.trim();
+      const res = await fetch(`${API}/api/runs/${state.runId}/resume`, {
+        method: 'POST',
+        headers: postHeaders(),
+        body: JSON.stringify(override ? { verifyCmd: override } : {}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      attach(data.id, $('rungoal').dataset.goal || $('rungoal').textContent);
+    } catch (err) {
+      resume.disabled = false;
+      resume.textContent = `couldn't ${action.mode === 'verify_only' ? 'verify' : 'resume'}: ${String(err.message).slice(0, 60)}`;
+    }
+  };
+  sub.appendChild(field);
+  sub.appendChild(resume);
+  sub.appendChild(document.createTextNode(action.note));
+  return sub;
+}
+
 $('session-toggle').addEventListener('click', () => {
+  if (state.recoveryOf) return;          // nothing to reveal; the label says why
   const box = $('session');
   const open = box.classList.toggle('hidden');
-  $('session-toggle').textContent = open ? `Show the model’s work (${state.sessionCount})` : 'Hide the model’s work';
+  if (!state.recoveryOf) $('session-toggle').textContent = open ? `Show the model’s work (${state.sessionCount})` : 'Hide the model’s work';
   if (!open) box.scrollTop = box.scrollHeight;
 });
 
@@ -1049,7 +1262,30 @@ async function renderEvidenceReceipt(standing) {
   }
   if (!report || state.runId !== runId) return;
   state.currentReport = report;
+  // SEALED LINEAGE ONLY. Everything recovery-specific below (and the pill/banner
+  // re-render) reads the pack's session_log, never report.recoveryOf — that twin is
+  // editable without changing receipt_id. Disagreement is surfaced, not smoothed.
+  const lineage = lineageTrust(report.evidencePack, report.recoveryOf);
+  state.sealedLineage = lineage.trusted ? lineage.sealed : null;
+  state.lineageMismatch = lineage.mismatched.length ? lineage : null;
+  if (state.sealedLineage) {
+    setStatus(report.status, standing, report.statuses ?? null);
+    // Same for the terminal banner: it was rendered before the seal existed.
+    const tb = document.getElementById('terminal-banner');
+    if (tb && !state.simulated && ['done', 'done_with_findings'].includes(tb.dataset.status)) {
+      const rb = doneBanner(tb.dataset.status, tb.dataset.headline || undefined, report.statuses ?? null, state.sealedLineage);
+      tb.className = `banner ${rb.cls}`;
+      tb.firstChild ? (tb.firstChild.textContent = rb.label) : tb.appendChild(document.createTextNode(rb.label));
+    }
+  }
   renderRunStory(report, standing);
+  if (state.lineageMismatch) {
+    const warn = el('div', 'trust-card degraded');
+    warn.appendChild(el('div', 'trust-title', 'RECOVERY LINEAGE DISAGREES WITH THE SEAL'));
+    warn.appendChild(el('div', 'trust-error',
+      `${state.lineageMismatch.reason}. The sealed receipt is authoritative and is what is shown; the unsealed report fields are NOT displayed. A receipt whose report fields have been edited should be treated as tampered.`));
+    feed(warn);
+  }
   const pack = report.evidencePack;
   const card = el('div', `trust-card ${pack ? '' : 'degraded'}`);
   card.id = 'evidence-pack-card';
@@ -1073,20 +1309,36 @@ async function renderEvidenceReceipt(standing) {
     n[c.decision] = (n[c.decision] || 0) + 1;
     return n;
   }, {});
+  // A zero-model run has no seats and no economics to show. Rendering the seat rows
+  // and a billing line for it implied model spend that never happened.
+  const modelFree = pack.pairing.executor.actual === 'none:no-model-run'
+    && pack.pairing.auditor.actual === 'none:no-model-run';
   const rows = [
     ['standing (derived)', nice(standing)],
     ['artifact', shortId(pack.artifact_id)],
     ['receipt', shortId(pack.receipt_id)],
-    ['executor actual', pack.pairing.executor.actual],
-    ['auditor actual', pack.pairing.auditor.actual],
-    ['auditor effort', auditorEconomics?.effort ?? 'not recorded'],
+    ...(modelFree
+      ? [['models', 'none — no maker or auditor ran, and no model calls were made']]
+      : [
+          ['executor actual', pack.pairing.executor.actual],
+          ['auditor actual', pack.pairing.auditor.actual],
+          ['auditor effort', auditorEconomics?.effort ?? 'not recorded'],
+        ]),
+    ...(state.sealedLineage ? [
+      ['recovered from', state.sealedLineage.sourceRunId ?? 'not recorded'],
+      ['source receipt', state.sealedLineage.sourceReceiptId ? shortId(state.sealedLineage.sourceReceiptId) : `none linked (${state.sealedLineage.sourceReceiptStatus ?? 'not checked'})`],
+      ['source audit', state.sealedLineage.sourceAudit ? nice(state.sealedLineage.sourceAudit) : 'none recorded — nothing here is independently reviewed'],
+      ['candidate sha', state.sealedLineage.parkedSha ? String(state.sealedLineage.parkedSha).slice(0, 12) : 'not recorded'],
+      ['sha provenance', nice(state.sealedLineage.shaProvenance)],
+      ['lineage', 'read from the sealed receipt (session log), not the report fields'],
+    ] : []),
     ...(pack.artifact.kind === 'research'
       ? [['claim ledger', `${claimCounts.supported || 0} supported · ${claimCounts.unsupported || 0} unsupported · ${claimCounts.unchecked || 0} unchecked`]]
       : []),
     ...(Array.isArray(pack.artifact.contract_coverage)
       ? [['contract coverage', `${coverageCounts.met || 0} met · ${coverageCounts.unmet || 0} unmet · ${coverageCounts.unclear || 0} unclear`]]
       : []),
-    ['economics', `billing ${billing} · ${estimated}`],
+    ...(modelFree ? [] : [['economics', `billing ${billing} · ${estimated}`]]),
     ...(report.experiment ? [
       ['experiment', shortId(report.experiment.experiment_id)],
       ['parent receipt', shortId(report.experiment.source.receipt_id)],
@@ -1195,7 +1447,7 @@ function buildStages(lane) {
   const nav = $('stages');
   nav.innerHTML = '';
   state.stageEls.clear();
-  const defs = lane === 'build' ? STAGE_DEFS.build : lane === 'audit_replay' ? STAGE_DEFS.audit : lane === 'comparison' ? STAGE_DEFS.comparison : STAGE_DEFS.words;
+  const defs = STAGE_DEFS[lane] ?? (lane === 'audit_replay' ? STAGE_DEFS.audit : STAGE_DEFS.words);
   for (const [key, label] of defs) {
     const s = el('div', 'stage');
     s.appendChild(el('span', 'dot'));
@@ -1233,16 +1485,62 @@ function setStage(name, status, extra = {}) {
 // "Verified with findings" made the user arbitrate between two vocabularies for
 // the same run. An unrecognised or underivable standing falls back to the flat
 // claim and is MARKED as a claim, never dressed up as a verdict.
-function setStatus(status, headline) {
+// GATE_PHASES + gatePhaseStrip are the pure, single-source phase-strip policy —
+// extracted to ./gate-phase-policy.mjs so the ordering is unit-testable and
+// cannot drift by hand (2026-08-05, WP6 dogfood: a durable "plan" phase, missing
+// from the strip, rendered after the last step). See that module for the audit
+// of which phases Studio actually observes and why Worktree/Commit/Land are not
+// in the strip.
+let gateProgressState = {};
+function renderGateProgress(next) {
+  gateProgressState = { ...gateProgressState, ...next };
+  const s = gateProgressState;
+  let box = $('gate-progress');
+  if (!box) {
+    box = el('div', 'comparison-card');
+    box.id = 'gate-progress';
+    feed(box);
+  }
+  box.innerHTML = '';
+  box.appendChild(el('div', 'trust-title', 'GATE PROGRESS'));
+  const strip = el('div', 'arm-meta');
+  strip.textContent = gatePhaseStrip(s.phase);
+  box.appendChild(strip);
+  const facts = [];
+  { const rf = gateRoundFact(s); if (rf) facts.push(rf); }
+  if (s.makerModel) facts.push(`maker ${s.makerModel}`);
+  if (s.reviewerModel) facts.push(`reviewer ${s.reviewerModel}${s.reviewerEffort ? ` · ${s.reviewerEffort}` : ''}`);
+  if (s.worktree) facts.push(`worktree ${String(s.worktree).split('/').pop()}`);
+  else if (s.worktreePrefix) facts.push(`worktree ${s.worktreePrefix}`);
+  if (facts.length) box.appendChild(el('div', 'arm-meta', facts.join(' · ')));
+  // Liveness, named: WHICH signal is keeping the run alive and how close the
+  // watchdog is. A run killed for idleness should never be a surprise.
+  if (Number.isFinite(s.idleMs)) {
+    const secs = Math.round(s.idleMs / 1000);
+    const budget = Math.round((s.idleKillMs ?? 0) / 60000);
+    box.appendChild(el('div', 'arm-meta', `last activity ${secs}s ago (${s.lastActivitySource ?? 'unknown'}) · watchdog ${budget} min`));
+  }
+  if (s.asyncReattach?.awaiting) {
+    box.appendChild(el('div', 'arm-meta', `re-attaching to the same workflow (${s.asyncReattach.turn}/${s.asyncReattach.of})`));
+  }
+  if (s.unboundRounds) {
+    box.appendChild(el('div', 'arm-meta', `${s.unboundRounds} review round(s) came from a gate that does not bind receipts; reinstall the gate for bound provenance`));
+  }
+}
+
+function setStatus(status, headline, dimensions = null) {
   const p = $('run-status');
-  const presentation = standingPill(status, headline);
+  // A recovery's derived standing stays `unverified` (no audit in THIS receipt), but
+  // the pill is operational text, not a standing claim — so it reports what happened
+  // and points at where the review evidence lives.
+  const presentation = recoveryPill(dimensions, state.sealedLineage) ?? standingPill(status, headline);
   p.className = `pill ${presentation.className}`;
   p.textContent = presentation.label;
-  p.title = presentation.derived
+  p.title = presentation.title ?? (presentation.derived
     ? `Standing derived from the sealed receipt. The loop itself reported “${status.replace(/_/g, ' ')}”.`
     : presentation.claim
       ? 'Reported by the loop; not corroborated by a derived standing.'
-      : 'Current operational state; no terminal standing exists yet.';
+      : 'Current operational state; no terminal standing exists yet.');
 }
 
 function startTimer(t0) {
@@ -1272,7 +1570,27 @@ function handle(ev) {
       if (ev.run?.goal) setRunGoal(ev.run.goal);
       if (ev.at) { state.runStartAt = ev.at; startTimer(ev.at); }
       state.runLane = ev.run?.lane;
+      reflectDocumentActions(state.runLane);
       state.runTargetPath = ev.run?.targetPath ?? null;
+      // Legacy runs predate this field; undefined means "none was in force", which
+      // is what the recovery control should show — never a guessed command.
+      state.runVerifyCmd = ev.run?.verifyCmd ?? null;
+      // A verification-only recovery has exactly ONE phase. Showing the Build
+      // lane's Gate/Review/Ship rail would imply work this run must never do.
+      state.recoveryOf = ev.run?.recoveryOf ?? null;
+      // Deliberately NOT stored: the run event's unsealed `recovery` object. Lineage is
+      // read from the sealed pack only (see lineageTrust), so the mutable twin is never
+      // in client state to be rendered by accident.
+      state.sealedLineage = null;
+      state.lineageMismatch = null;
+      if (state.recoveryOf) {
+        // No maker, no reviewer, no model turn — so there is no model work to show.
+        const toggle = $('session-toggle');
+        toggle.textContent = 'No model calls in this recovery';
+        toggle.disabled = true;
+        toggle.classList.add('inert');
+        $('session').classList.add('hidden');
+      }
       state.simulated = ev.run?.engine === 'mock';
       if (state.simulated) {
         const sb = $('sim-banner');
@@ -1281,7 +1599,7 @@ function handle(ev) {
         sb.classList.remove('hidden');
         $('run-cost').textContent = 'rehearsal · no real spend';
       }
-      buildStages(ev.run?.lane);
+      buildStages(state.recoveryOf ? 'verify_recovery' : ev.run?.lane);
       if (!['build', 'comparison'].includes(ev.run?.lane) && ev.run && !ev.run.ground) state.stageEls.get('ground')?.remove();
       if (ev.run?.lane === 'build') $('doc').innerHTML = '<div class="doc-empty">The gate works inside the target repo. The session below is the live view; its report lands here.</div>';
       if (ev.run?.lane === 'comparison') {
@@ -1292,6 +1610,17 @@ function handle(ev) {
 
     case 'stage':
       setStage(ev.name, ev.status, ev);
+      break;
+
+    // The gate's live state. Studio used to show "Igniting…" for ten minutes
+    // while the gate classified, planned, built a worktree, wrote files and
+    // started reviewing (field report 2026-08-04). This row is replaced in
+    // place, so it reads as status rather than a scrolling log.
+    case 'gate_phase':
+      renderGateProgress({ phase: ev.phase });
+      break;
+    case 'gate_progress':
+      renderGateProgress(ev);
       break;
 
     case 'knowledge_snapshot': {
@@ -1356,7 +1685,7 @@ function handle(ev) {
       while (pre.childNodes.length > 800) pre.removeChild(pre.firstChild);
       const box = $('session');
       if (!box.classList.contains('hidden')) box.scrollTop = box.scrollHeight;
-      if (box.classList.contains('hidden')) $('session-toggle').textContent = `Show the model’s work (${state.sessionCount})`;
+      if (!state.recoveryOf && box.classList.contains('hidden')) $('session-toggle').textContent = `Show the model’s work (${state.sessionCount})`;
       break;
     }
 
@@ -1402,6 +1731,17 @@ function handle(ev) {
       break;
     }
 
+    case 'replay_start':
+      // Everything that follows came off disk from a process that is gone. Its question
+      // cards cannot be answered — the session token died with that process — so they
+      // render disabled rather than inviting a click that always fails.
+      state.replaying = true;
+      // The continuation classification rides HERE, not only on replay_end: the stored terminal
+      // status event closes this EventSource and renders the recovery control immediately, so a
+      // classification arriving after the stored lines never reaches the page (audit 2026-08-07).
+      if (ev.continuation) state.continuation = ev.continuation;
+      break;
+
     case 'question': {
       setStatus('needs_human');
       const c = el('div', 'qcard');
@@ -1412,17 +1752,23 @@ function handle(ev) {
         const opts = el('div', 'qopts');
         for (const o of ev.options) {
           const b = el('button', null, o);
-          b.onclick = () => answer(ev.id, o, c);
+          if (state.replaying) { b.disabled = true; b.classList.add('inert'); }
+          else b.onclick = () => answer(ev.id, o, c);
           opts.appendChild(b);
         }
         c.appendChild(opts);
+        if (state.replaying) {
+          state.replayPendingQuestion = ev.id;
+          c.appendChild(el('div', 'qstale', 'This question was asked by a Studio session that has since ended, so it can no longer be answered here. Recover the parked candidate below instead.'));
+        }
       } else {
         const ta = el('textarea');
         ta.rows = 2;
         ta.placeholder = 'Your call. One or two lines is enough.';
         ta.setAttribute('aria-label', 'Your answer to the loop');
         const send = el('button', 'send', 'Answer');
-        send.onclick = () => ta.value.trim() && answer(ev.id, ta.value.trim(), c);
+        if (state.replaying) { ta.disabled = true; send.disabled = true; send.classList.add('inert'); }
+        else send.onclick = () => ta.value.trim() && answer(ev.id, ta.value.trim(), c);
         c.appendChild(ta);
         c.appendChild(send);
       }
@@ -1472,13 +1818,24 @@ function handle(ev) {
     }
 
     case 'verify_result': {
-      const caveats = (ev.warnings || 0) + (ev.skipped || 0);
-      const label = !ev.pass
-        ? 'DETERMINISTIC GATE: RED. Sending back for a fix.'
-        : caveats
-          ? `DETERMINISTIC GATE: GREEN, with caveats: ${ev.warnings || 0} warning(s), ${ev.skipped || 0} check(s) could not run`
-          : 'DETERMINISTIC GATE: GREEN. Every check passed.';
-      feed(el('div', `vsummary ${ev.pass ? 'pass' : 'fail'}`, label));
+      // Three states, from the shared policy: green / red / amber-inconclusive.
+      const v = verifySummary(ev);
+      feed(el('div', `vsummary ${v.cls}`, v.label));
+      // Beside the source gate report, so the document does not leave a stale
+      // verify_inconclusive standing alone as if it were the current verdict.
+      if (state.recoveryOf && state.sourceGateMd) {
+        const now = [
+          '',
+          '---',
+          '',
+          '## This recovery’s verification',
+          '',
+          `- result: ${ev.pass === true ? 'PASSED' : ev.pass === false ? 'FAILED' : 'inconclusive (no verdict)'}`,
+          ev.commitSha ? `- bound to commit: ${ev.commitSha}` : '- bound to commit: not bound (no verdict recorded)',
+          `- source: ${ev.source ?? 'unknown'} (host verifier; no model ran)`,
+        ].join('\n');
+        $('doc').innerHTML = renderMd(`${state.sourceGateMd}${now}`);
+      }
       break;
     }
 
@@ -1486,12 +1843,22 @@ function handle(ev) {
       const r = ev.report ?? {};
       const sim = state.simulated;
       const commit = r.commit_sha ?? r.commit;
+      // In a recovery this report is the SOURCE run's, restated — it is the state the
+      // candidate was parked in, not the outcome of this run. Left labelled "Gate
+      // report · verify_inconclusive" it looked like the current verdict even after
+      // the recovery had gone green (audit 2026-08-05).
+      // Labelling only — whether this run IS a recovery comes from the run event. Any
+      // IDENTIFIER shown here prefers the sealed lineage; the unsealed twin is never
+      // presented as authoritative provenance.
+      const rec = state.recoveryOf ? { sourceRunId: state.sealedLineage?.sourceRunId ?? state.recoveryOf } : null;
       const md = [
-        sim ? '## Gate report (SIMULATED)' : '## Gate report',
+        sim ? '## Gate report (SIMULATED)' : rec ? '## Source gate report (before this recovery)' : '## Gate report',
         '',
         sim ? '> Rehearsal only. No target repository was touched. Studio saved a local simulation trace; no gate branch, commit, or gate receipt exists.' : null,
         sim ? '' : null,
-        `- status: ${r.status ?? 'unknown'}${sim ? ' (simulated)' : ''}`,
+        rec ? `> This is the state the candidate was PARKED in by run ${rec.sourceRunId ?? 'unknown'} — not the result of this recovery. This run reruns no model or gate phases; it reruns deterministic verification only, against that parked candidate, and its result appears below.` : null,
+        rec ? '' : null,
+        `- status: ${r.status ?? 'unknown'}${sim ? ' (simulated)' : ''}${rec ? ' (as parked, before this recovery)' : ''}`,
         state.runTargetPath ? `- repository: ${state.runTargetPath}${sim ? ' (not modified)' : ''}` : null,
         r.worktree ? `- worktree: ${r.worktree}` : null,
         r.branch ? `- branch: ${r.branch}` : null,
@@ -1501,9 +1868,10 @@ function handle(ev) {
         r.note ? `- note: ${r.note}` : null,
         '',
         '```',
-        JSON.stringify(r, null, 2).slice(0, 4000),
+        gateReportJson(r),
         '```',
       ].filter((l) => l !== null).join('\n');
+      state.sourceGateMd = rec ? md : null;
       $('doc').innerHTML = renderMd(md);
       break;
     }
@@ -1515,6 +1883,7 @@ function handle(ev) {
       break;
 
     case 'replay_end':
+      if (ev.continuation) state.continuation = ev.continuation;
       // Disk replay finished. Without a terminal status the run crashed —
       // close the stream (or it reconnect-loops) and say what this is.
       state.sawTerminal = true;
@@ -1522,10 +1891,21 @@ function handle(ev) {
       stopTimer();
       if (!document.querySelector('.banner')) {
         setStatus('incomplete');
+        // `parked` comes from the SERVER, computed by reconstructInterruptedParked — the
+        // same rule the resume path enforces. The client deliberately does not re-derive
+        // it: two classifiers meant the UI could offer an action resume would refuse.
+        const recovery = replayRecoveryKind({ lane: state.runLane, empty: ev.empty, parked: ev.parked === true });
+        const parkedInterruption = recovery === 'recover_parked_candidate';
         const interrupted = el('div', 'banner meh', ev.empty
           ? 'NO RECEIPTS. This run left no event stream.'
-          : 'REPLAY ENDED WITHOUT A VERDICT. The run was interrupted before it finished; the receipts stop here.');
-        if (!ev.empty && state.runLane === 'comparison') interrupted.appendChild(comparisonRecoveryControl());
+          : parkedInterruption
+            ? 'INTERRUPTED WHILE AWAITING YOUR VERIFICATION DECISION. Studio stopped before the run could seal anything, so NO evidence pack and NO receipt were written for it. The candidate is committed and still parked exactly as it was; nothing was rejected, merged, or published. Its review verdict exists only in this run\u2019s local event trail below \u2014 replayable, but not sealed and not receipt-covered, so no reviewed standing can be claimed from it. Verify the candidate below: no model, planning, implementation, or review work will be rerun.'
+            : 'REPLAY ENDED WITHOUT A VERDICT. The run was interrupted before it finished; the receipts stop here.');
+        if (state.runLane === 'build') setStage('gate', 'idle');
+        if (recovery === 'recover_comparison') interrupted.appendChild(comparisonRecoveryControl());
+        // 'needs_decision' selects the verification-only copy from the shared policy.
+        if (recovery === 'resume_build') interrupted.appendChild(buildRecoveryControl('incomplete'));
+        if (parkedInterruption) interrupted.appendChild(buildRecoveryControl('needs_decision'));
         feed(interrupted);
       }
       break;
@@ -1533,7 +1913,7 @@ function handle(ev) {
     case 'status': {
       state.sawTerminal = true;
       const terminalStanding = effectiveStanding(ev.headline, state.simulated);
-      setStatus(ev.status, terminalStanding);
+      setStatus(ev.status, terminalStanding, ev.dimensions ?? null);
       stopTimer();
       $('stop').classList.add('hidden');
       if (state.runStartAt && ev.at) {
@@ -1541,9 +1921,13 @@ function handle(ev) {
         $('run-timer').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
       }
       state.es?.close(); // terminal — otherwise EventSource reconnects and replays forever
+      if (state.runLane === 'build') {
+        const gateStage = buildGateTerminalStage(ev.status);
+        setStage('gate', gateStage === 'fail' ? 'done' : gateStage, { pass: gateStage !== 'fail' });
+      }
       setStage('ship', ev.status.startsWith('done') ? 'done' : 'idle');
       const good = ev.status === 'done' || ev.status === 'done_with_findings';
-      let cls = state.simulated ? 'meh' : good ? 'good' : ['stopped', 'no_changes'].includes(ev.status) ? 'meh' : 'bad';
+      let cls = terminalBannerClass(ev.status, { simulated: state.simulated, good });
       // done/done_with_findings are ABSENT from this flat map on purpose: for a
       // real run their copy is owned by the headline policy below, and a flat
       // default here would be exactly the false-green a legacy event rides in on.
@@ -1551,12 +1935,9 @@ function handle(ev) {
         ? (ev.status === 'stopped'
             ? 'REHEARSAL STOPPED. A simulation; nothing ran.'
             : 'REHEARSAL COMPLETE. A scripted simulation: no models or target-repository commands ran, and Studio saved only a local simulation trace. Not evidence, and no model spend.')
-        : ({
-            no_changes: 'NO CHANGES. The gate proved an empty diff: nothing shipped, nothing failed.',
-            verify_failed: 'VERIFY FAILED. Shipped by human override, recorded as red.',
-            failed: 'FAILED. The loop refused to fake a green.',
-            stopped: 'STOPPED by human.',
-          }[ev.status] || ev.status);
+        : (ev.status === 'no_changes'
+            ? 'NO CHANGES. The gate proved an empty diff: nothing shipped, nothing failed.'
+            : terminalFailureBanner(ev.status, state.runLane) || ev.status);
       if (state.runLane === 'comparison') {
         const comparison = comparisonBanner(ev.status, state.simulated);
         cls = comparison.cls;
@@ -1568,28 +1949,20 @@ function handle(ev) {
       // evidence fails closed to an uncorroborated gate claim, never to
       // "reviewed and verified". The UI never re-derives audit policy.
       if (state.runLane !== 'comparison' && !state.simulated && good) {
-        const b = doneBanner(ev.status, ev.headline, ev.dimensions);
+        const b = doneBanner(ev.status, ev.headline, ev.dimensions, state.sealedLineage ?? null);
         cls = b.cls;
         label = b.label;
       }
       const b = el('div', `banner ${cls}`, label);
-      if (state.runLane === 'build' && ['stopped', 'failed', 'verify_failed'].includes(ev.status)) {
-        const sub = el('span', 'sub');
-        const resume = el('button', 'resume-btn', 'Resume the gate');
-        resume.onclick = async () => {
-          resume.textContent = 'resuming…';
-          try {
-            const res = await fetch(`${API}/api/runs/${state.runId}/resume`, { method: 'POST', headers: postHeaders() });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || res.statusText);
-            attach(data.id, $('rungoal').dataset.goal || $('rungoal').textContent);
-          } catch (err) {
-            resume.textContent = `couldn't resume: ${String(err.message).slice(0, 60)}`;
-          }
-        };
-        sub.appendChild(resume);
-        sub.appendChild(document.createTextNode(' camus is crash-safe: finished work skips and proven work lands; only unproven work re-runs.'));
-        b.appendChild(sub);
+      // The banner renders on the terminal event, BEFORE the sealed pack is fetched, so
+      // recovery copy cannot be trusted yet (the seal is the only lineage we honour).
+      // Tag it so the report pass below can correct it once the seal is available —
+      // fail closed first, upgrade only on sealed evidence.
+      b.id = 'terminal-banner';
+      b.dataset.status = ev.status;
+      b.dataset.headline = ev.headline ?? '';
+      if (offersBuildRecovery(ev.status, state.runLane)) {
+        b.appendChild(buildRecoveryControl(ev.status));
       }
       if (ev.artifactUrl) {
         const sub = el('span', 'sub');

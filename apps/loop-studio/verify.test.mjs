@@ -2,8 +2,30 @@
 // asserts each check catches it, then asserts a clean document passes.
 // Network-free (skipNetwork) so it runs anywhere, fast.
 
+// DETERMINISM: this suite asserts loop behaviour at a KNOWN round cap, but
+// checks/models.json is the machine's live decision record — Studio's settings endpoint
+// rewrites it, so an operator changing the cap mid-session silently broke the suite
+// (a real WP8 run set roundCap 3 → 2 and "review ran exactly ROUND_CAP times" failed
+// with nothing wrong in the code). Pin the committed record for the run instead of
+// reading whatever the machine currently holds.
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync as _wfs } from 'node:fs';
+import { tmpdir as _tmpdir } from 'node:os';
+import { join as _join, dirname as _dirname } from 'node:path';
+import { fileURLToPath as _fup } from 'node:url';
+if (!process.env.STUDIO_MODELS_FILE) {
+  try {
+    const _here = _dirname(_fup(import.meta.url));
+    const _committed = execFileSync('git', ['show', 'HEAD:apps/loop-studio/checks/models.json'], { cwd: _join(_here, '..', '..'), encoding: 'utf8' });
+    const _pin = _join(mkdtempSync(_join(_tmpdir(), 'cls-models-')), 'models.json');
+    _wfs(_pin, _committed);
+    process.env.STUDIO_MODELS_FILE = _pin;
+  } catch { /* no git or no committed copy: fall back to the live record */ }
+}
+
 import assert from 'node:assert/strict';
 import { runVerify, findUnsourcedStats, findComplianceHits, extractUrls, extractThresholdLines } from './lib/verify.mjs';
+import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateReportJson, replayRecoveryKind, terminalFailureBanner } from './public/run-ui-policy.mjs';
 
 const BAD = `## Summary
 Community programs produce guaranteed returns for every launch. Apps with active communities retain 61% more of their monthly actives.
@@ -26,6 +48,99 @@ Community-led growth compounds where paid cannot. Retention differs by cohort or
 1. State of Crypto — https://a16zcrypto.com
 2. Developer Report — https://www.developerreport.com
 `;
+
+// --- unit: Build launch/recovery UI policy ---------------------------------
+{
+  const models = { maker: 'opus', reviewer: 'gpt-5.6-sol', effort: 'low' };
+  assert.equal(
+    enginePillText({ engine: 'live', lane: 'build', models }),
+    'engine: live · build gate: opus + gpt-5.6-sol (effort low · pinned every round)',
+    'Build displays the saved effort it pins for every round; Studio forwards the run-start snapshot via args.reviewerEffort',
+  );
+  assert.equal(
+    enginePillText({ engine: 'live', lane: 'freeform', models }),
+    'engine: live · opus + gpt-5.6-sol (low)',
+    'words lanes still display their requested reviewer effort',
+  );
+  assert.equal(replayRecoveryKind({ lane: 'build', empty: false }), 'resume_build', 'an interrupted Build replay offers the server-backed resume action');
+  assert.equal(replayRecoveryKind({ lane: 'comparison', empty: false }), 'recover_comparison', 'comparison recovery remains available');
+  assert.equal(replayRecoveryKind({ lane: 'build', empty: true }), null, 'an empty receipt cannot claim a resumable gate identity');
+  assert.deepEqual(documentActionsForLane('build'), { copyMarkdown: false, downloadMarkdown: false }, 'Build hides markdown actions that have no document revision');
+  assert.deepEqual(documentActionsForLane('freeform'), { copyMarkdown: true, downloadMarkdown: true }, 'words-lane document actions remain available');
+  assert.equal(buildGateTerminalStage('done'), 'done', 'a successful Build closes the gate stage green');
+  assert.equal(buildGateTerminalStage('failed'), 'fail', 'a failed Build closes the gate stage red');
+  assert.equal(buildGateTerminalStage('stopped'), 'idle', 'a stopped Build does not leave the gate stage active or paint it failed');
+  assert.equal(buildGateTerminalStage('no_changes'), 'idle', 'a proven no-op is neutral, not a failed gate');
+  assert.match(terminalFailureBanner('verify_failed', 'build'), /BUILD NOT ACCEPTED/, 'a red Build run never claims a human override shipped it');
+  assert.match(terminalFailureBanner('verify_failed', 'build'), /Nothing was merged, published, or released/, 'the red Build banner states the actual local-only boundary');
+  assert.ok(!/shipped by human override/i.test(terminalFailureBanner('verify_failed', 'build')), 'the browser never invents an override');
+  assert.match(terminalFailureBanner('verify_failed', 'research_memo'), /not published/i, 'a red words run does not claim publication');
+  const longGateReport = { note: 'x'.repeat(5000), blocking: [{ title: 'tail sentinel' }] };
+  const renderedGateReport = gateReportJson(longGateReport);
+  assert.ok(renderedGateReport.length > 5000, 'the run view keeps the complete gate report instead of clipping at 4,000 characters');
+  assert.match(renderedGateReport, /tail sentinel/, 'the final report fields remain visible');
+}
+
+// --- static UI: Settings scope labels must not misstate Build effort --------
+// Live Studio dogfood (2026-08-04): the reviewer-effort Settings label read
+// "(words lanes)", implying Build ignored it — but Studio pins the run-start
+// effort snapshot (args.reviewerEffort) and Build reviews at that effort EVERY
+// round. A scope label that names one lane must not understate the other. This
+// reads the shipped index.html so the label cannot silently drift back.
+{
+  const { readFileSync } = await import('node:fs');
+  const html = readFileSync(new URL('./public/index.html', import.meta.url), 'utf8');
+  assert.ok(
+    html.includes('reviewer effort (words lanes; Build pins this every round)'),
+    'the reviewer-effort Settings label states BOTH its words-lane scope and that Build pins the effort every round',
+  );
+  assert.equal(
+    html.includes('reviewer effort (words lanes)'), false,
+    'the bare "(words lanes)" scope — which implied Build ignores effort — must not return',
+  );
+  assert.ok(
+    html.includes('maker (words lanes; Build pins Claude)') && html.includes('reviewer (words lanes; Build pins Codex)'),
+    'the maker and reviewer Settings labels likewise name their Build-pinning behavior, so no scope label understates Build',
+  );
+}
+
+// --- unit: Build gate phase strip (pure policy) -----------------------------
+// WP6 dogfood (2026-08-05): the phase strip omitted the durably-stamped Plan
+// phase, so an active "plan" fell to the unknown-phase fallback and rendered
+// AFTER the last step. The strip is now a pure, single-source policy audited
+// against the workflow's status stamps; this test pins the ORDER, the
+// active-in-position marking, and the unknown-phase fallback so it cannot drift.
+{
+  const { GATE_PHASES, gatePhaseStrip } = await import('./public/gate-phase-policy.mjs');
+  const SEP = '  ·  ';
+  assert.deepEqual(
+    GATE_PHASES.map(([, label]) => label),
+    ['Igniting', 'Classify', 'Plan', 'Implement', 'Review', 'Fix', 'Verify'],
+    'the strip lists exactly the phases Studio observes, in stamp order — Fix added 2026-08-06 '
+    + 'after live run 20260806-164809-hiju rendered it as a raw lowercase key past Verify',
+  );
+  const order = GATE_PHASES.map(([key]) => key);
+  assert.equal(order.indexOf('plan'), order.indexOf('classify') + 1, 'Plan sits immediately after Classify, not at the end');
+  assert.ok(!order.includes('land'), 'no Land step — a Studio Build parks its candidate and never merges');
+  assert.ok(!order.includes('worktree') && !order.includes('commit'), 'no Worktree/Commit steps — neither is a distinct durably-observed phase');
+  assert.equal(order.indexOf('fix'), order.indexOf('review') + 1, 'Fix sits immediately after Review, where the fix agent runs');
+  assert.equal(order.indexOf('verify'), order.indexOf('fix') + 1, 'and Verify still comes last');
+  assert.equal(
+    gatePhaseStrip('plan'),
+    `Igniting${SEP}Classify${SEP}▸ Plan${SEP}Implement${SEP}Review${SEP}Fix${SEP}Verify`,
+    'an active Plan is marked in its real position, not appended after the last step (the exact drift)',
+  );
+  assert.equal(
+    gatePhaseStrip('commit'),
+    `Igniting${SEP}Classify${SEP}Plan${SEP}Implement${SEP}Review${SEP}Fix${SEP}Verify${SEP}▸ Commit`,
+    'a phase the gate reports that is not in the list is appended (and LABELLED), never silently dropped',
+  );
+  assert.equal(
+    gatePhaseStrip(null),
+    `Igniting${SEP}Classify${SEP}Plan${SEP}Implement${SEP}Review${SEP}Fix${SEP}Verify`,
+    'no active phase renders a clean strip with no stray marker',
+  );
+}
 
 // --- unit: unsourced stats -------------------------------------------------
 {
@@ -247,8 +362,8 @@ Observed retention was 61%.
     emit: (type, data) => events.push({ type, ...data }),
     waitForAnswer: async () => 'Stop the run',
     adapters: {
-      claude: async () => (++claudeCall === 1 ? { ok: true, text: '- plan', costUsd: 0 } : { ok: true, text: DRAFT, costUsd: 0 }),
-      codex: async ({ claims, criteria, thresholds }) => {
+      maker: async () => (++claudeCall === 1 ? { ok: true, text: '- plan', costUsd: 0 } : { ok: true, text: DRAFT, costUsd: 0 }),
+      reviewer: async ({ claims, criteria, thresholds }) => {
         sawThresholds = thresholds;
         return normalizeReview(JSON.stringify({
           verdict: 'clean', findings: [], questions_for_human: [],
@@ -585,7 +700,7 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
         return question.kind === 'grounding' ? 'Continue ungrounded' : 'Stop the run';
       },
       adapters: {
-        claude: async ({ stage, prompt, toolPolicy }) => {
+        maker: async ({ stage, prompt, toolPolicy }) => {
           claudeCalls.push({ stage, prompt, toolPolicy });
           if (stage === 'plan') return { ok: true, text: '- plan', costUsd: 0 };
           if (stage === 'ground') {
@@ -601,7 +716,7 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
           }
           return { ok: true, text: '## Notes\n\nA plain note.\n', costUsd: 0, modelActual: 'anthropic:maker' };
         },
-        codex: async ({ prompt }) => { reviewerPrompts.push(prompt); return { ran: true, verdict: 'APPROVED', findings: [], blocking: [], nonblocking: [], questions: [] }; },
+        reviewer: async ({ prompt }) => { reviewerPrompts.push(prompt); return { ran: true, verdict: 'APPROVED', findings: [], blocking: [], nonblocking: [], questions: [] }; },
       },
       hivemind: {
         searchKnowledge: async () => 'claude',
@@ -803,13 +918,13 @@ Members value practical progress over content volume [H1].
         return next;
       },
       adapters: {
-        claude: async ({ prompt }) => {
+        maker: async ({ prompt }) => {
           prompts.claude.push(prompt);
           const next = claudeQueue.shift();
           if (next === undefined) throw new Error('claude called more times than scripted');
           return { ok: true, error: null, text: next, costUsd: 0 };
         },
-        codex: async ({ prompt }) => {
+        reviewer: async ({ prompt }) => {
           prompts.codex.push(prompt);
           const next = codexQueue.shift();
           if (next === undefined) throw new Error('codex called more times than scripted');
@@ -1016,8 +1131,11 @@ Members value practical progress over content volume [H1].
     parseGateReport,
     gateArgsForRun,
     gateIgniterCliArgs,
+    gateIgniterResumeCliArgs,
     gateSupportsStudio,
     claudeAuthFailureNote,
+    claudeSessionIdFromEvent,
+    gateReviewRoundInRange,
     reviewEventFromGateReceipt,
     verifyEventFromGateReport,
   } = await import('./lib/code-lane.mjs');
@@ -1089,8 +1207,21 @@ Members value practical progress over content volume [H1].
   assert.equal(igniterArgs.includes('--tools'), false, 'process-wide tools stay inherited so camus-loop child agents retain Bash/Read/Edit');
   assert.deepEqual(igniterArgs.slice(igniterArgs.indexOf('--allowedTools'), igniterArgs.indexOf('--allowedTools') + 2), ['--allowedTools', 'Workflow'], 'only the outer Workflow call is pre-approved');
   assert.ok(igniterArgs.includes('--append-system-prompt'), 'outer igniter receives the custody contract as system policy');
+  const liveSessionId = '1925308a-a75d-4c9c-86b0-72250c44e94b';
+  assert.equal(claudeSessionIdFromEvent({ type: 'system', subtype: 'init', session_id: liveSessionId }), liveSessionId, 'the streamed Claude session identity is captured for a same-conversation async wait');
+  assert.equal(claudeSessionIdFromEvent({ type: 'result', session_id: liveSessionId }), null, 'only the authenticated init event can name the resumable Claude session');
+  assert.equal(claudeSessionIdFromEvent({ type: 'system', subtype: 'init', session_id: '../bad' }), null, 'an invalid session id never reaches argv');
+  const resumeIgniterArgs = gateIgniterResumeCliArgs(liveSessionId);
+  assert.deepEqual(resumeIgniterArgs.slice(resumeIgniterArgs.indexOf('--resume'), resumeIgniterArgs.indexOf('--resume') + 2), ['--resume', liveSessionId], 'an async gate wait resumes the exact outer Claude conversation');
+  assert.deepEqual(resumeIgniterArgs.slice(resumeIgniterArgs.indexOf('--allowedTools'), resumeIgniterArgs.indexOf('--allowedTools') + 2), ['--allowedTools', 'Workflow'], 'the resumed conversation retains the Workflow-only custody surface');
+  assert.ok(!resumeIgniterArgs[resumeIgniterArgs.indexOf('-p') + 1].includes('/camus-loop'), 'the await turn cannot accidentally start a fresh slash-command workflow');
+  assert.match(resumeIgniterArgs[resumeIgniterArgs.indexOf('-p') + 1], /prior Workflow handle/, 'the await turn tells Claude to resume the prior async handle');
   assert.equal(gateSupportsStudio({ workflow: 'const STANDALONE_ID_SALT = x', worktreeGate: 'create|ensure|attach|resolve' }), true, 'new installed gate advertises both custody capabilities');
   assert.equal(gateSupportsStudio({ workflow: 'const ID_SALT = x', worktreeGate: 'create|attach|resolve' }), false, 'older installed gate is refused instead of silently ignoring identitySalt');
+  assert.equal(gateReviewRoundInRange(1, 3), true, 'the first gate review round is eligible for the Studio timeline');
+  assert.equal(gateReviewRoundInRange(3, 3), true, 'the frozen final gate round is eligible');
+  assert.equal(gateReviewRoundInRange(0, 3), false, 'a direct reviewer invocation that defaulted to r0 cannot contaminate a gate run');
+  assert.equal(gateReviewRoundInRange(4, 3), false, 'a receipt beyond the frozen round cap cannot contaminate a gate run');
 
   // Live-fire regression (2026-07-13): Claude's local auth status said logged
   // in while inference returned 401. Custody correctly refused the absent
@@ -1154,10 +1285,67 @@ Members value practical progress over content volume [H1].
   const expected = { task: 't', targetPath: '/tmp/repo', policy: 'ask_on_ambiguity', roundCap: 3, identitySalt: 'studio-run-1' };
   const tool = (name, input) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', name, input }] } });
 
+  // THE WP6 REATTACH PATH, end to end (dogfood 20260805-062823-zoi8): one fresh
+  // workflow → the resumed session finds Workflow unloaded → ONE bounded
+  // rehydration lookup → resume of the SAME run with byte-equivalent args. This
+  // is the sequence that died mid-implement; it must be accepted whole.
   const good = createGateCustodyGuard(expected);
   assert.equal(good.inspect(tool('Workflow', { name: 'camus-loop', args: JSON.stringify({ identitySalt: 'studio-run-1', roundCap: 3, policy: 'ask_on_ambiguity', targetPath: '/tmp/repo', task: 't' }) })), null, 'one fresh workflow with equivalent JSON args is accepted');
-  assert.equal(good.inspect(tool('Workflow', { scriptPath: '/tmp/camus-loop-wf_abc.js', resumeFromRunId: 'wf_abc', args: JSON.stringify(expected) })), null, 'same async workflow may resume with the same args');
+  assert.equal(good.inspect(tool('ToolSearch', { query: 'select:Workflow', max_results: 1 })), null, 'the resumed session may rehydrate the deferred Workflow tool exactly as GATE_AWAIT_PROMPT pins it');
+  assert.equal(good.inspect(tool('Workflow', { scriptPath: '/tmp/camus-loop-wf_abc.js', resumeFromRunId: 'wf_abc', args: JSON.stringify(expected) })), null, 'and then resumes the SAME run with the same args');
+  assert.equal(good.inspect(tool('Workflow', { scriptPath: '/tmp/camus-loop-wf_abc.js', resumeFromRunId: 'wf_abc', args: JSON.stringify(expected) })), null, 'further await chunks on that same run stay bound');
   assert.equal(good.finish(), null, 'one bound workflow produces a valid custody trail');
+  const goodSnap = good.snapshot();
+  assert.equal(goodSnap.freshCalls, 1, 'exactly ONE original workflow');
+  assert.equal(goodSnap.toolSearchCalls, 1, 'exactly ONE controlled rehydration lookup');
+  assert.equal(goodSnap.workflowRunId, 'wf_abc', 'the bound run identity never changed');
+
+  // The default max_results (5) and a semantic phrasing that still names Workflow
+  // are tolerated, so a minor wording difference cannot kill a live run.
+  assert.equal(createGateCustodyGuard(expected).inspect(tool('ToolSearch', { query: 'select:Workflow', max_results: 5 })), null, 'the ToolSearch schema default result cap is accepted');
+  assert.equal(createGateCustodyGuard(expected).inspect(tool('ToolSearch', { query: 'resume the prior Workflow handle', max_results: 3 })), null, 'Workflow discovery tolerates CLI query phrasing while staying bounded');
+  assert.equal(createGateCustodyGuard(expected).inspect(tool('ToolSearch', { query: 'select:Workflow', max_results: 10 })), null, 'the common 10-result cap is inside the permitted range, not a custody breach');
+
+  // ONE lookup PER IGNITER PROCESS, not one per gate. An async workflow is awaited
+  // across up to six `claude --resume` turns and EACH is a new process that may
+  // again need to rehydrate Workflow. A global cap would kill the second
+  // legitimate reattach — so the budget resets per turn while the same-run and
+  // exact-args constraints stay global.
+  const twice = createGateCustodyGuard(expected);
+  twice.beginTurn();
+  twice.inspect(tool('Workflow', { name: 'camus-loop', args: JSON.stringify(expected) }));
+  assert.equal(twice.inspect(tool('ToolSearch', { query: 'select:Workflow', max_results: 1 })), null, 'the first rehydration is allowed');
+  assert.match(twice.inspect(tool('ToolSearch', { query: 'select:Workflow', max_results: 1 })), /2 ToolSearch calls in one turn; rehydrating Workflow is permitted 1 time per igniter process/, 'a SECOND lookup WITHIN ONE TURN is refused — one rehydration, not a search loop');
+
+  // MULTI-TURN REATTACH: two separate resume processes, each rehydrating once,
+  // each resuming the SAME run. This is the six-turn await path; a per-gate cap
+  // would have killed turn 2 for making "ToolSearch call number two".
+  const multi = createGateCustodyGuard(expected);
+  multi.beginTurn(); // turn 1: the original igniter process
+  assert.equal(multi.inspect(tool('Workflow', { name: 'camus-loop', args: JSON.stringify(expected) })), null, 'turn 1 starts the one fresh workflow');
+  multi.beginTurn(); // turn 2: a NEW claude --resume process, tools unloaded again
+  assert.equal(multi.inspect(tool('ToolSearch', { query: 'select:Workflow', max_results: 1 })), null, 'reattach turn 2 may rehydrate Workflow');
+  assert.equal(multi.inspect(tool('Workflow', { scriptPath: '/tmp/camus-loop-wf_abc.js', resumeFromRunId: 'wf_abc', args: JSON.stringify(expected) })), null, 'and resumes the same run');
+  multi.beginTurn(); // turn 3: another new process, unloaded again
+  assert.equal(multi.inspect(tool('ToolSearch', { query: 'select:Workflow', max_results: 1 })), null, 'reattach turn 3 may ALSO rehydrate — the budget is per process, not per gate');
+  assert.equal(multi.inspect(tool('Workflow', { scriptPath: '/tmp/camus-loop-wf_abc.js', resumeFromRunId: 'wf_abc', args: JSON.stringify(expected) })), null, 'and resumes the same run again');
+  assert.equal(multi.finish(), null, 'a multi-turn reattach is a valid custody trail');
+  const multiSnap = multi.snapshot();
+  assert.equal(multiSnap.freshCalls, 1, 'still exactly ONE original workflow across every turn');
+  assert.equal(multiSnap.toolSearchCalls, 2, 'two rehydrations happened, one per reattach process');
+  assert.equal(multiSnap.workflowRunId, 'wf_abc', 'and the bound run identity never changed');
+
+  // A new turn must NOT relax the global constraints it exists to preserve.
+  const turnAbuse = createGateCustodyGuard(expected);
+  turnAbuse.beginTurn();
+  turnAbuse.inspect(tool('Workflow', { name: 'camus-loop', args: JSON.stringify(expected) }));
+  turnAbuse.beginTurn();
+  assert.match(turnAbuse.inspect(tool('Workflow', { name: 'camus-loop', args: JSON.stringify(expected) })), /second fresh/, 'a new turn cannot buy a second fresh workflow');
+  const argAbuse = createGateCustodyGuard(expected);
+  argAbuse.beginTurn();
+  argAbuse.inspect(tool('Workflow', { name: 'camus-loop', args: JSON.stringify(expected) }));
+  argAbuse.beginTurn();
+  assert.match(argAbuse.inspect(tool('Workflow', { scriptPath: '/tmp/camus-loop-wf_abc.js', resumeFromRunId: 'wf_abc', args: JSON.stringify({ ...expected, task: 'different' }) })), /args changed/, 'a new turn cannot change the args either');
 
   const dropped = createGateCustodyGuard(expected);
   assert.match(dropped.inspect(tool('Workflow', { name: 'camus-loop', args: JSON.stringify({ ...expected, identitySalt: undefined }) })), /args changed/, 'dropping identitySalt is refused before a second worktree can be trusted');
@@ -1178,7 +1366,46 @@ Members value practical progress over content volume [H1].
 
   const escaped = createGateCustodyGuard(expected);
   assert.match(escaped.inspect(tool('Bash', { command: 'git status' })), /non-Workflow/, 'the igniter cannot inspect or repair the repo itself');
+  // Every refusal NAMES ITS REASON. The WP6 receipt said only "ToolSearch outside
+  // bounded Workflow discovery", so the run could not be diagnosed from evidence.
+  // Diagnostics carry schema-level facts only — key names, a length, a number —
+  // never the raw query text or any tool payload, which can hold task content.
+  assert.match(createGateCustodyGuard(expected).inspect(tool('ToolSearch', { query: 'available tools' })), /did not name Workflow/, 'discovery that does not name Workflow is refused, and says so');
+  assert.match(createGateCustodyGuard(expected).inspect(tool('ToolSearch', { query: 'select:Bash', max_results: 5 })), /did not name Workflow/, 'discovery of a non-Workflow tool is refused');
+  assert.match(createGateCustodyGuard(expected).inspect(tool('ToolSearch', { query: 'select:Workflow', max_results: 50 })), /max_results 50; permitted range is 1-10/, 'an out-of-range result cap is refused BY NAME, not with a generic message');
+  assert.match(createGateCustodyGuard(expected).inspect(tool('ToolSearch', { query: '', max_results: 1 })), /had no query/, 'an empty query is refused by name');
+  assert.match(createGateCustodyGuard(expected).inspect(tool('ToolSearch', { query: `select:Workflow ${'x'.repeat(140)}`, max_results: 1 })), /query was \d+ chars \(max 120\)/, 'an oversized query is refused by name, reporting only its length');
+  const extra = createGateCustodyGuard(expected).inspect(tool('ToolSearch', { query: 'select:Workflow', max_results: 1, cwd: '/etc/secrets' }));
+  assert.match(extra, /unexpected field\(s\) cwd/, 'an unexpected field is refused and NAMED');
+  assert.equal(extra.includes('/etc/secrets'), false, 'the refusal records the field NAME, never its value');
+  const longQuery = createGateCustodyGuard(expected).inspect(tool('ToolSearch', { query: `workflow ${'secret-token-abc '.repeat(9)}`, max_results: 1 }));
+  assert.equal(longQuery.includes('secret-token-abc'), false, 'a refused query is never echoed into the receipt');
   assert.match(createGateCustodyGuard(expected).finish(), /without one fresh/, 'prose without a workflow never becomes a gate result');
+
+  // RECOVERY (fix 5): a refusal SIGKILLs the igniter, which ends the inner
+  // Workflow — but the implemented files survive on disk. The WP6 receipt said
+  // only "gate custody refused", so three written files read as total loss and
+  // the UI offered a Resume that would repeat the defect.
+  {
+    const { custodyRefusalReport } = await import('./lib/code-lane.mjs');
+    const full = custodyRefusalReport({
+      custodyError: 'gate custody refused: igniter ToolSearch query did not name Workflow',
+      workflowRunId: 'wf_abc',
+      worktree: '/home/u/.camus/worktrees/repo/camus-wt-task-1xorex',
+      branch: 'camus/task',
+      phase: 'implement',
+    });
+    assert.equal(full.status, 'infra_error', 'a custody refusal is still infrastructure, never a verdict');
+    assert.match(full.note, /did not name Workflow/, 'the specific reason survives into the receipt');
+    assert.match(full.note, /camus-wt-task-1xorex/, 'the note names the surviving worktree, so the work does not read as lost');
+    assert.match(full.note, /branch camus\/task/, 'and the branch it is on');
+    assert.match(full.note, /wf_abc/, 'and the bound run identity that was killed');
+    assert.match(full.note, /nothing there was reverted/, 'it states plainly that the candidate survives');
+    assert.match(full.note, /most likely repeat this refusal/, 'and warns that generic Resume repeats a custody defect');
+    const bare = custodyRefusalReport({ custodyError: 'gate custody refused: x', repeatable: false });
+    assert.match(bare.note, /nothing to resume in place/, 'with no bound run it says so instead of inventing one');
+    assert.match(bare.note, /Resume is safe to retry/, 'a non-contract refusal does not scare the operator off retrying');
+  }
 
   const authBeforeWorkflow = gateProcessClose({
     code: 0,
@@ -1436,8 +1663,8 @@ if (process.env.TEST_NETWORK === '1') {
   process.env.MOCK_OFFLINE = '1'; // verify skips the network in this test
   const calls = [];
   const adapters = {
-    claude: async ({ model }) => { calls.push({ role: 'maker', model }); return { ok: true, error: null, text: '## Notes\n\nA plain note with no claims.\n', costUsd: 0 }; },
-    codex: async ({ model, effort }) => { calls.push({ role: 'reviewer', model, effort }); return { ran: true, error: null, verdict: 'APPROVED', findings: [], blocking: [], nonblocking: [], questions: [] }; },
+    maker: async ({ model }) => { calls.push({ role: 'maker', model }); return { ok: true, error: null, text: '## Notes\n\nA plain note with no claims.\n', costUsd: 0 }; },
+    reviewer: async ({ model, effort }) => { calls.push({ role: 'reviewer', model, effort }); return { ran: true, error: null, verdict: 'APPROVED', findings: [], blocking: [], nonblocking: [], questions: [] }; },
   };
   const run = { goal: 'g', lane: 'freeform', ground: false, models: { maker: { model: 'SNAPSHOT-MAKER' }, reviewer: { model: 'SNAPSHOT-REVIEWER', effort: 'high' }, loop: { roundCap: 1 } } };
   const ctx = {
@@ -1913,17 +2140,32 @@ Members asked for practical milestones [H1].
 
   // The hole the review found: a hidden model set as the CURRENT reviewer (via
   // CODEX_MODEL) was unshifted back into the picker. It must stay unavailable.
-  // Meaningful only when this machine's real cache lists codex-auto-review as
-  // hidden; on a cacheless machine the fallback legitimately allows a current.
+  // Pinned to a cache FIXTURE: the machine's real cache is live-rewritten by
+  // every codex app-server (ChatGPT app, IDE extensions) and the hidden flag
+  // on codex-auto-review flaps between writes, so an assertion against the
+  // real file races those writers.
   const { modelCatalog } = await import('./lib/models.mjs');
+  const { writeFileSync: writeCache, mkdtempSync: mkCacheTmp, rmSync: rmCacheTmp } = await import('node:fs');
+  const { tmpdir: osTmp } = await import('node:os');
+  const { join: joinPath } = await import('node:path');
+  const cacheTmp = mkCacheTmp(joinPath(osTmp(), 'cls-cache-'));
+  const cacheFile = joinPath(cacheTmp, 'models_cache.json');
+  writeCache(cacheFile, JSON.stringify({ models: [
+    { slug: 'gpt-5.4', visibility: 'list' },
+    { slug: 'gpt-5.4-mini', visibility: 'list' },
+    { slug: 'codex-auto-review', visibility: 'hide' },
+  ] }));
   const prevEnv = process.env.CODEX_MODEL;
+  const prevCache = process.env.STUDIO_CODEX_CACHE_FILE;
   process.env.CODEX_MODEL = 'codex-auto-review';
+  process.env.STUDIO_CODEX_CACHE_FILE = cacheFile;
   const cat = modelCatalog();
-  if (cat.reviewerSource === 'codex_cache') {
-    assert.ok(!cat.reviewer.includes('codex-auto-review'), 'a hidden model set as the current reviewer is NOT made selectable');
-    assert.equal(cat.reviewerCurrentAvailable, false, 'the hidden current reviewer is reported unavailable');
-  }
+  assert.equal(cat.reviewerSource, 'codex_cache', 'the pinned fixture cache is in force');
+  assert.ok(!cat.reviewer.includes('codex-auto-review'), 'a hidden model set as the current reviewer is NOT made selectable');
+  assert.equal(cat.reviewerCurrentAvailable, false, 'the hidden current reviewer is reported unavailable');
   if (prevEnv === undefined) delete process.env.CODEX_MODEL; else process.env.CODEX_MODEL = prevEnv;
+  if (prevCache === undefined) delete process.env.STUDIO_CODEX_CACHE_FILE; else process.env.STUDIO_CODEX_CACHE_FILE = prevCache;
+  rmCacheTmp(cacheTmp, { recursive: true, force: true });
 }
 
 // --- the rehearsal's final deliverable must not launder sources --------------
@@ -2370,6 +2612,2396 @@ Myosin Learns is a live session. A person decides when the evidence is enough.
   assert.equal(memoLinks.status, 'fail', 'a research memo with no sources still fails');
   assert.match(memoLinks.detail, /researched deliverable must cite/i,
     'the research lane keeps its own explanation');
+}
+
+// ============================================================================
+// Multi-model seats (docs/MULTI-MODEL-SEATS.md)
+// ============================================================================
+
+// --- models v2: the backend-aware decision record -----------------------------
+{
+  const { writeFileSync, mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { getModels, seatCatalog, seatOffered, listBackends, groundingNeedsClaudeMaker, modelCatalog } = await import('./lib/models.mjs');
+
+  const tmp = mkdtempSync(join(tmpdir(), 'cls-models-'));
+  const file = join(tmp, 'models.json');
+  const prevFile = process.env.STUDIO_MODELS_FILE;
+  const prevClaudeModel = process.env.CLAUDE_MODEL;
+  const prevCodexModel = process.env.CODEX_MODEL;
+  const prevCodexEffort = process.env.CODEX_EFFORT;
+  delete process.env.CLAUDE_MODEL;
+  delete process.env.CODEX_MODEL;
+  delete process.env.CODEX_EFFORT;
+  process.env.STUDIO_MODELS_FILE = file;
+  const writeModels = (obj) => writeFileSync(file, JSON.stringify(obj, null, 2));
+  const KIMI = { kind: 'openai_compat', provider: 'moonshot', baseUrl: 'http://127.0.0.1:9/v1', apiKeyEnv: 'CLS_TEST_KIMI_KEY', models: ['kimi-k2'], why: 'test entry' };
+  try {
+    // A legacy file (no backend fields) still means claude-writes / codex-reviews.
+    writeModels({ maker: { model: 'sonnet' }, reviewer: { model: 'gpt-5.4', effort: 'low' }, loop: { roundCap: 3 } });
+    let m = getModels();
+    assert.equal(m.maker.backend, 'claude', 'legacy maker resolves to the claude backend');
+    assert.equal(m.maker.provider, 'anthropic', 'legacy maker carries its historical provider');
+    assert.equal(m.reviewer.backend, 'codex', 'legacy reviewer resolves to the codex backend');
+    assert.equal(m.reviewer.provider, 'openai');
+    assert.equal(m.reviewer.effort, 'low', 'codex honors the effort request');
+
+    // A v2 file with an opt-in compat backend in the maker seat.
+    writeModels({
+      maker: { backend: 'kimi', model: 'kimi-k2' },
+      reviewer: { backend: 'claude', model: 'sonnet', effort: 'high' },
+      backends: { kimi: KIMI },
+      loop: { roundCap: 2 },
+    });
+    m = getModels();
+    assert.equal(m.maker.provider, 'moonshot', 'compat maker carries its DECLARED provider');
+    assert.equal(m.reviewer.provider, 'anthropic', 'claude reviewer carries anthropic');
+    assert.equal(m.reviewer.effort, null, 'a backend without the effort knob records null, never a fabricated tier');
+    assert.equal(m.reviewer.effortSource, 'not honored by this backend');
+
+    // Env overrides are CLI-shaped: they must NOT redirect a non-matching backend.
+    process.env.CLAUDE_MODEL = 'opus';
+    process.env.CODEX_MODEL = 'gpt-5.5';
+    m = getModels();
+    assert.equal(m.maker.model, 'kimi-k2', 'CLAUDE_MODEL is ignored when the maker seat is not the claude backend');
+    assert.equal(m.reviewer.model, 'sonnet', 'CODEX_MODEL is ignored when the reviewer seat is not the codex backend');
+    writeModels({ maker: { backend: 'claude', model: 'sonnet' }, reviewer: { backend: 'codex', model: 'gpt-5.4', effort: 'low' }, loop: { roundCap: 3 } });
+    m = getModels();
+    assert.equal(m.maker.model, 'opus', 'CLAUDE_MODEL applies to a claude-backend maker');
+    assert.equal(m.maker.source, 'env:CLAUDE_MODEL', 'the override names its provenance');
+    assert.equal(m.reviewer.model, 'gpt-5.5', 'CODEX_MODEL applies to a codex-backend reviewer');
+    delete process.env.CLAUDE_MODEL;
+    delete process.env.CODEX_MODEL;
+
+    // The seat catalog offers every declared backend in its declared seats.
+    writeModels({
+      maker: { backend: 'claude', model: 'sonnet' },
+      reviewer: { backend: 'codex', model: 'gpt-5.4', effort: 'low' },
+      backends: { kimi: { ...KIMI, seats: ['maker'] } },
+      loop: { roundCap: 3 },
+    });
+    const seats = seatCatalog();
+    assert.ok(seatOffered(seats.maker, 'kimi', 'kimi-k2'), 'a declared compat backend is offered in its declared seat');
+    assert.ok(!seatOffered(seats.reviewer, 'kimi', 'kimi-k2'), 'a seat the entry does not declare is never offered');
+    assert.ok(seatOffered(seats.maker, 'claude', 'sonnet') && seatOffered(seats.reviewer, 'claude', 'sonnet'), 'claude offers both seats');
+    assert.ok(seats.reviewer.some((e) => e.backend === 'codex' && e.effort === true), 'codex entries say they honor effort');
+    assert.ok(seats.maker.filter((e) => e.backend === 'kimi').every((e) => e.effort === false), 'compat entries say they take no effort request');
+    assert.ok(!seatOffered(seats.maker, 'kimi', 'undeclared-model'), 'only DECLARED compat models are offered — the list is a statement, never a probe');
+    // The legacy catalog (Compare & Learn / audit replay) stays claude+codex only.
+    const legacy = modelCatalog();
+    assert.ok(!legacy.maker.includes('kimi-k2'), 'the frozen-schema catalog never absorbs compat backends');
+
+    // Malformed entries refuse to load — a half-declared backend is not a decision.
+    const refuses = (backends, why) => {
+      writeModels({ maker: { model: 'sonnet' }, reviewer: { model: 'gpt-5.4', effort: 'low' }, backends, loop: { roundCap: 3 } });
+      assert.throws(() => listBackends(), why);
+    };
+    refuses({ kimi: { ...KIMI, provider: undefined } }, 'missing provider refuses');
+    refuses({ kimi: { ...KIMI, baseUrl: 'ftp://nope' } }, 'non-http baseUrl refuses');
+    refuses({ kimi: { ...KIMI, models: [] } }, 'empty model list refuses');
+    refuses({ kimi: { ...KIMI, kind: 'grpc' } }, 'unknown kind refuses');
+    refuses({ claude: KIMI }, 'a built-in name collision refuses');
+    refuses({ kimi: { ...KIMI, seats: ['maker', 'oracle'] } }, 'an unknown seat name refuses');
+
+    // The grounding guard is a pure judgement shared by server and engine.
+    assert.equal(groundingNeedsClaudeMaker({ ground: true, hivemindMode: 'claude', makerBackend: 'kimi' }), true, 'grounded managed-connector run with a non-claude maker is refused');
+    assert.equal(groundingNeedsClaudeMaker({ ground: true, hivemindMode: 'claude', makerBackend: 'claude' }), false, 'claude maker grounds fine');
+    assert.equal(groundingNeedsClaudeMaker({ ground: false, hivemindMode: 'claude', makerBackend: 'kimi' }), false, 'ungrounded runs are unaffected');
+    assert.equal(groundingNeedsClaudeMaker({ ground: true, hivemindMode: 'mcp', makerBackend: 'kimi' }), false, 'studio-side retrieval modes work with any maker');
+  } finally {
+    if (prevFile === undefined) delete process.env.STUDIO_MODELS_FILE; else process.env.STUDIO_MODELS_FILE = prevFile;
+    if (prevClaudeModel === undefined) delete process.env.CLAUDE_MODEL; else process.env.CLAUDE_MODEL = prevClaudeModel;
+    if (prevCodexModel === undefined) delete process.env.CODEX_MODEL; else process.env.CODEX_MODEL = prevCodexModel;
+    if (prevCodexEffort === undefined) delete process.env.CODEX_EFFORT; else process.env.CODEX_EFFORT = prevCodexEffort;
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+// --- registry: seats resolve to exactly the snapshot's backends ---------------
+{
+  const { writeFileSync, mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { resolveSeatAdapters } = await import('./lib/adapters/registry.mjs');
+  const { runClaude, runClaudeReview } = await import('./lib/adapters/claude.mjs');
+  const { runCodexReview, runCodexMaker } = await import('./lib/adapters/codex.mjs');
+
+  const tmp = mkdtempSync(join(tmpdir(), 'cls-registry-'));
+  const file = join(tmp, 'models.json');
+  const prevFile = process.env.STUDIO_MODELS_FILE;
+  process.env.STUDIO_MODELS_FILE = file;
+  writeFileSync(file, JSON.stringify({
+    maker: { model: 'sonnet' }, reviewer: { model: 'gpt-5.4', effort: 'low' },
+    backends: { kimi: { kind: 'openai_compat', provider: 'moonshot', baseUrl: 'http://127.0.0.1:9/v1', apiKeyEnv: 'CLS_TEST_KIMI_KEY', models: ['kimi-k2'] } },
+    loop: { roundCap: 3 },
+  }));
+  try {
+    const legacy = resolveSeatAdapters({ maker: { model: 'sonnet' }, reviewer: { model: 'gpt-5.4', effort: 'low' } });
+    assert.equal(legacy.maker, runClaude, 'a legacy snapshot resolves the historical claude maker');
+    assert.equal(legacy.reviewer, runCodexReview, 'a legacy snapshot resolves the historical codex reviewer');
+    assert.equal(legacy.makerBackend.provider, 'anthropic');
+
+    const reversed = resolveSeatAdapters({ maker: { backend: 'codex', model: 'gpt-5.4' }, reviewer: { backend: 'claude', model: 'sonnet' } });
+    assert.equal(reversed.maker, runCodexMaker, 'GPT can take the maker seat');
+    assert.equal(reversed.reviewer, runClaudeReview, 'Claude can take the reviewer seat');
+
+    const compat = resolveSeatAdapters({ maker: { backend: 'kimi', model: 'kimi-k2' }, reviewer: { backend: 'claude', model: 'sonnet' } });
+    assert.equal(typeof compat.maker, 'function', 'a declared compat backend fills the maker seat');
+    assert.equal(compat.makerBackend.provider, 'moonshot');
+
+    assert.throws(() => resolveSeatAdapters({ maker: { backend: 'ghost', model: 'x' }, reviewer: { backend: 'codex', model: 'gpt-5.4' } }), /not declared/, 'an undeclared backend refuses — never a silent fallback');
+  } finally {
+    if (prevFile === undefined) delete process.env.STUDIO_MODELS_FILE; else process.env.STUDIO_MODELS_FILE = prevFile;
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+// --- openai_compat adapter against a local chat-completions fixture -----------
+// No external network. The fixture streams SSE chunks like a real endpoint;
+// the adapter must capture text, usage, and the served model identity, and
+// every kill path must fail closed.
+{
+  const { createServer } = await import('node:http');
+  const { openAiCompatMaker, openAiCompatReviewer } = await import('./lib/adapters/openai-compat.mjs');
+
+  let mode = 'ok';
+  const sse = (obj) => `data: ${JSON.stringify(obj)}\n\n`;
+  const fixture = createServer(async (req, res) => {
+    let body = '';
+    for await (const c of req) body += c;
+    const parsed = JSON.parse(body);
+    if (req.headers.authorization !== 'Bearer test-key-123') return res.writeHead(401).end('{"error":"bad key"}');
+    if (mode === 'http500') return res.writeHead(500).end('upstream exploded');
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    if (mode === 'stall') {
+      res.write(sse({ model: 'kimi-served', choices: [{ delta: { content: 'partial' } }] }));
+      return; // never finishes — the idle watchdog must kill it
+    }
+    if (mode === 'empty') {
+      res.write(sse({ model: 'kimi-served', choices: [{ delta: {} }] }));
+      res.write('data: [DONE]\n\n');
+      return res.end();
+    }
+    const text = mode === 'review' ? JSON.stringify({
+      verdict: 'clean', findings: [], questions_for_human: [],
+      claim_assessments: [], coverage_assessments: [], threshold_assessments: [],
+    }) : mode === 'garbage-review' ? 'I refuse to answer in JSON, here is prose instead.'
+      : `Drafted for ${parsed.model}: the deliverable body.`;
+    const half = Math.ceil(text.length / 2);
+    res.write(sse({ model: 'kimi-served', choices: [{ delta: { content: text.slice(0, half) } }] }));
+    res.write(sse({ model: 'kimi-served', choices: [{ delta: { content: text.slice(half) } }] }));
+    res.write(sse({ usage: { prompt_tokens: 120, completion_tokens: 45 }, choices: [] }));
+    res.write('data: [DONE]\n\n');
+    res.end();
+  });
+  await new Promise((r) => fixture.listen(0, '127.0.0.1', r));
+  const entry = { name: 'kimi', kind: 'openai_compat', provider: 'moonshot', baseUrl: `http://127.0.0.1:${fixture.address().port}`, apiKeyEnv: 'CLS_TEST_KIMI_KEY', models: ['kimi-k2'] };
+  const prevKey = process.env.CLS_TEST_KIMI_KEY;
+  const prevIdle = process.env.OPENAI_COMPAT_IDLE_MS;
+  process.env.CLS_TEST_KIMI_KEY = 'test-key-123';
+  try {
+    const maker = openAiCompatMaker(entry);
+    const sessions = [];
+    const ok = await maker({ prompt: 'draft it', stage: 'make', model: 'kimi-k2', signal: new AbortController().signal, onSession: (l) => sessions.push(l) });
+    assert.equal(ok.ok, true, `compat maker succeeds against the fixture (${ok.error})`);
+    assert.match(ok.text, /^Drafted for kimi-k2/, 'the streamed deltas assemble into the deliverable');
+    assert.equal(ok.modelActual, 'moonshot:kimi-served', 'actual identity = declared provider + the SERVED model field');
+    assert.deepEqual(ok.usage, { input_tokens: 120, cached_input_tokens: null, output_tokens: 45 }, 'usage is the endpoint observation, cached stays null when unreported');
+    assert.equal(ok.costUsd, 0, 'no dollars are ever invented');
+    assert.ok(sessions.some((l) => l.includes('tool surface: none')), 'the toolless surface is stated in the session trail');
+
+    const hm = await maker({ prompt: 'x', stage: 'ground', model: 'kimi-k2', signal: new AbortController().signal, toolPolicy: 'hivemind_only' });
+    assert.equal(hm.ok, false, 'hivemind_only retrieval on a toolless backend is an infra error');
+    assert.match(hm.error, /claude backend/, 'the error names the fix');
+
+    mode = 'empty';
+    const empty = await maker({ prompt: 'x', stage: 'make', model: 'kimi-k2', signal: new AbortController().signal });
+    assert.equal(empty.ok, false, 'an empty completion fails, never a hollow success');
+
+    mode = 'http500';
+    const boom = await maker({ prompt: 'x', stage: 'make', model: 'kimi-k2', signal: new AbortController().signal });
+    assert.equal(boom.ok, false, 'HTTP failure fails closed');
+    assert.match(boom.error, /500/, 'the status survives into the error');
+
+    delete process.env.CLS_TEST_KIMI_KEY;
+    mode = 'ok';
+    const nokey = await maker({ prompt: 'x', stage: 'make', model: 'kimi-k2', signal: new AbortController().signal });
+    assert.equal(nokey.ok, false, 'a missing key is an infra error');
+    assert.match(nokey.error, /CLS_TEST_KIMI_KEY/, 'the error names the env var, never the key');
+    process.env.CLS_TEST_KIMI_KEY = 'test-key-123';
+
+    // Abort kill path: a stalling stream dies the moment the run aborts.
+    mode = 'stall';
+    process.env.OPENAI_COMPAT_IDLE_MS = '60000';
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 80);
+    const aborted = await maker({ prompt: 'x', stage: 'make', model: 'kimi-k2', signal: ac.signal });
+    assert.equal(aborted.ok, false, 'an aborted call is never a success');
+    assert.match(aborted.error, /aborted by user/);
+
+    // Idle watchdog kill path: silence beyond the window is an infra error.
+    process.env.OPENAI_COMPAT_IDLE_MS = '80';
+    const idle = await maker({ prompt: 'x', stage: 'make', model: 'kimi-k2', signal: new AbortController().signal });
+    assert.equal(idle.ok, false, 'a silent stream is killed');
+    assert.match(idle.error, /idle watchdog/);
+    delete process.env.OPENAI_COMPAT_IDLE_MS;
+
+    // Reviewer seat: strict JSON normalizes through the SAME fail-closed gate.
+    mode = 'review';
+    const reviewer = openAiCompatReviewer(entry);
+    const verdict = await reviewer({ prompt: 'judge it', model: 'kimi-k2', signal: new AbortController().signal, claims: [], criteria: [], thresholds: [] });
+    assert.equal(verdict.ran, true, `compat reviewer normalizes a clean verdict (${verdict.error})`);
+    assert.equal(verdict.verdict, 'APPROVED');
+    assert.equal(verdict.reviewerIdentity, 'moonshot:kimi-served', 'the auditor identity is provider-qualified from the served model');
+    assert.equal(verdict.reviewerEffort, null, 'no effort knob → no fabricated tier');
+
+    mode = 'garbage-review';
+    const garbage = await reviewer({ prompt: 'judge it', model: 'kimi-k2', signal: new AbortController().signal, claims: [], criteria: [], thresholds: [] });
+    assert.equal(garbage.ran, false, 'prose instead of the schema is an INFRA error, never a clean verdict');
+  } finally {
+    if (prevKey === undefined) delete process.env.CLS_TEST_KIMI_KEY; else process.env.CLS_TEST_KIMI_KEY = prevKey;
+    if (prevIdle === undefined) delete process.env.OPENAI_COMPAT_IDLE_MS; else process.env.OPENAI_COMPAT_IDLE_MS = prevIdle;
+    fixture.closeAllConnections?.();
+    fixture.close();
+  }
+}
+
+// --- same-vendor pairing: advisory standing, never independent ----------------
+{
+  const { deriveStatusDimensions, deriveHeadline } = await import('./lib/status-dims.mjs');
+  const { receiptCompleteness } = await import('./lib/evidence.mjs');
+  const roundsWith = (independence, verdict = 'APPROVED', extra = {}) => ({
+    gateReport: null,
+    verify: [{ pass: true }],
+    rounds: [{ verdict, rev: 1, independence, reviewerIdentity: 'anthropic:claude-sonnet-4-6', findings: [], claimAssessments: [], coverageAssessments: [], ...extra }],
+    revisions: [{ rev: 1 }],
+  });
+
+  const advisory = deriveStatusDimensions({ lane: 'freeform', status: 'done', evidence: roundsWith('same_vendor') });
+  assert.equal(advisory.audit, 'advisory_clean', 'a same-vendor round seals an ADVISORY audit');
+  assert.equal(deriveHeadline({ ...advisory, schemaVersion: undefined }), 'same_vendor_reviewed', 'the headline says same-vendor reviewed, never verified');
+
+  const advisoryFindings = deriveStatusDimensions({ lane: 'freeform', status: 'done_with_findings', evidence: roundsWith('same_vendor', 'REVISE') });
+  assert.equal(advisoryFindings.audit, 'advisory_findings', 'same-vendor REVISE seals advisory findings');
+
+  const advisoryCaveat = deriveStatusDimensions({ lane: 'freeform', status: 'done_with_findings', evidence: roundsWith('same_vendor', 'APPROVED', { findings: [{ severity: 'low', title: 'caveat' }] }) });
+  assert.equal(advisoryCaveat.audit, 'advisory_findings', 'a caveated same-vendor approval stays advisory findings');
+
+  const cross = deriveStatusDimensions({ lane: 'freeform', status: 'done', evidence: roundsWith('cross_vendor') });
+  assert.equal(cross.audit, 'independent_clean', 'a cross-vendor round keeps independent standing');
+
+  // Live control for the legacy path: a round with NO independence fact (every
+  // receipt sealed before seats existed) derives independent, as it always did.
+  const legacy = deriveStatusDimensions({ lane: 'freeform', status: 'done', evidence: roundsWith(null) });
+  assert.equal(legacy.audit, 'independent_clean', 'pre-seats rounds keep their cross-vendor-by-construction standing');
+
+  // An advisory audit is a COMPLETE receipt: the downgrade lives in the
+  // standing, not in receipt degradation.
+  const complete = receiptCompleteness({ lane: 'freeform', status: 'done', writeFailed: false, evidence: roundsWith('same_vendor') });
+  assert.equal(complete.degraded, false, 'a same-vendor run with a green verify is a complete receipt');
+  const broken = receiptCompleteness({ lane: 'freeform', status: 'done', writeFailed: false, evidence: { ...roundsWith('same_vendor'), rounds: [{ verdict: 'UNKNOWN', rev: 1, independence: 'same_vendor' }] } });
+  assert.equal(broken.degraded, true, 'a broken audit still degrades — advisory acceptance never swallows infra failure');
+}
+
+// --- evidence pack: provider-aware pairing identities --------------------------
+{
+  const { buildEvidencePack } = await import('./lib/evidence-pack.mjs');
+  const { validateEvidencePack } = await import('../../packages/trust/lib/validate.mjs');
+  const base = {
+    goal: 'Reversed-seat receipt.',
+    acceptanceContract: 'Every material claim is traceable.',
+    lane: 'freeform',
+    deliverable: '# Note\n\nNo claims.\n',
+    evidence: {
+      rounds: [{ rev: 1, verdict: 'APPROVED', reviewerModel: 'sonnet', reviewerEffort: null, reviewerIdentity: 'anthropic:claude-sonnet-4-6', independence: 'cross_vendor', findings: [], claimAssessments: [], coverageAssessments: [{ criterion_id: 'C1', decision: 'met', evidence: 'traceable' }] }],
+      revisions: [{ rev: 1, chars: 20 }],
+      verify: [{ pass: true, checks: [{ id: 'links', status: 'pass', detail: 'ok' }] }],
+      humanDecisions: [],
+      grounding: null,
+      gateReport: null,
+    },
+    statuses: { schemaVersion: 1, execution: 'completed', verification: 'passed', audit: 'independent_clean', publication: 'not_published' },
+    models: {
+      maker: { backend: 'kimi', provider: 'moonshot', model: 'kimi-k2', source: 'run request' },
+      reviewer: { backend: 'claude', provider: 'anthropic', model: 'sonnet', effort: null, modelSource: 'run request', effortSource: 'not honored by this backend' },
+    },
+    makerActualModels: ['moonshot:kimi-served'],
+    simulated: false,
+    createdAt: 50,
+  };
+  const pack = buildEvidencePack(base);
+  assert.equal(validateEvidencePack(pack).ok, true, 'a reversed-seat pack validates against the trust schema');
+  assert.equal(pack.pairing.executor.requested, 'moonshot:kimi-k2', 'requested executor carries the snapshot provider');
+  assert.equal(pack.pairing.executor.actual, 'moonshot:kimi-served', 'actual executor is the recorded observation');
+  assert.equal(pack.pairing.auditor.actual, 'anthropic:claude-sonnet-4-6', 'actual auditor comes from the round identity, not a hardcoded vendor');
+  assert.equal(pack.pairing.independence, 'cross_vendor', 'moonshot vs anthropic earns cross-vendor standing');
+  assert.ok(pack.session_log.some((l) => l === 'executor seat: backend=kimi; decision source=run request'), 'the pairing source is custody-bound in the receipt');
+  assert.ok(pack.session_log.some((l) => l === 'auditor seat: backend=claude; decision source=run request'), 'both seat decisions record their provenance');
+  assert.equal(pack.economics.find((e) => e.role === 'auditor').effort, null, 'no fabricated effort tier for a backend without the knob');
+
+  // Same-vendor pairing: advisory statuses map to same_vendor_advisory and validate.
+  const sameVendor = buildEvidencePack({
+    ...base,
+    statuses: { ...base.statuses, audit: 'advisory_clean' },
+    models: {
+      maker: { backend: 'claude', provider: 'anthropic', model: 'sonnet', source: 'checks/models.json' },
+      reviewer: { backend: 'claude', provider: 'anthropic', model: 'haiku', effort: null, modelSource: 'run request', effortSource: 'not honored by this backend' },
+    },
+    makerActualModels: ['anthropic:claude-sonnet-4-6'],
+    evidence: { ...base.evidence, rounds: [{ ...base.evidence.rounds[0], reviewerModel: 'haiku', reviewerIdentity: 'anthropic:claude-haiku-4-5', independence: 'same_vendor' }] },
+  });
+  assert.equal(validateEvidencePack(sameVendor).ok, true, 'a same-vendor pack validates');
+  assert.equal(sameVendor.pairing.independence, 'same_vendor_advisory', 'same-vendor pairing records advisory independence, never blocked, never promoted');
+
+  // The seal-time guard: independent standing over same recorded providers refuses.
+  assert.throws(() => buildEvidencePack({
+    ...base,
+    models: sameVendor === null ? null : {
+      maker: { backend: 'claude', provider: 'anthropic', model: 'sonnet', source: 'checks/models.json' },
+      reviewer: { backend: 'claude', provider: 'anthropic', model: 'haiku', effort: null, modelSource: 'run request', effortSource: 'not honored by this backend' },
+    },
+    makerActualModels: ['anthropic:claude-sonnet-4-6'],
+    evidence: { ...base.evidence, rounds: [{ ...base.evidence.rounds[0], reviewerModel: 'haiku', reviewerIdentity: 'anthropic:claude-haiku-4-5', independence: 'same_vendor' }] },
+    // statuses claim independent while both actuals are anthropic — refuse to seal
+  }), /independent audit standing conflicts/, 'an independent claim over same-vendor actuals refuses to seal');
+}
+
+// --- engine: pairing facts ride every review event -----------------------------
+{
+  const { runLoop } = await import('./lib/engine.mjs');
+  const prev = process.env.MOCK_OFFLINE;
+  process.env.MOCK_OFFLINE = '1';
+  const review = { ran: true, error: null, verdict: 'APPROVED', findings: [], blocking: [], nonblocking: [], questions: [], claimAssessments: [], coverageAssessments: [], reviewerModel: 'sonnet', reviewerEffort: null, reviewerIdentity: 'anthropic:claude-sonnet-4-6' };
+  const runOnce = async (makerActual) => {
+    const events = [];
+    await runLoop({
+      goal: 'g', lane: 'freeform', ground: false,
+      models: {
+        maker: { backend: 'kimi', provider: 'moonshot', model: 'kimi-k2', source: 'run request' },
+        reviewer: { backend: 'claude', provider: 'anthropic', model: 'sonnet', effort: null, modelSource: 'run request', effortSource: 'not honored by this backend' },
+        loop: { roundCap: 1 },
+      },
+    }, {
+      emit: (type, data) => events.push({ type, ...data }),
+      waitForAnswer: async () => 'ok',
+      adapters: {
+        maker: async () => ({ ok: true, error: null, text: '## Notes\n\nA plain note.\n', costUsd: 0, modelActual: makerActual }),
+        reviewer: async () => review,
+      },
+      hivemind: { searchKnowledge: async () => null, hivemindStatus: () => ({ mode: 'stub' }), publishArtifact: async () => null },
+      signal: new AbortController().signal, scratchDir: '/tmp', receiptsDir: '/tmp',
+    });
+    return events.find((e) => e.type === 'review');
+  };
+  const crossEvent = await runOnce('moonshot:kimi-served');
+  assert.equal(crossEvent.reviewerIdentity, 'anthropic:claude-sonnet-4-6', 'the review event carries the auditor identity');
+  assert.equal(crossEvent.independence, 'cross_vendor', 'moonshot maker vs anthropic reviewer records cross-vendor');
+  assert.equal(crossEvent.reviewerBackend, 'claude', 'the reviewer backend is recorded');
+  const sameEvent = await runOnce('anthropic:claude-sonnet-4-6');
+  assert.equal(sameEvent.independence, 'same_vendor', 'a same-provider observation records same_vendor — the fact follows the ACTUAL identities');
+
+  // Grounded managed-connector run with a non-claude maker: the engine backstop
+  // fails the run rather than silently retrieving through the wrong seat.
+  const events = [];
+  const result = await runLoop({
+    goal: 'g', lane: 'freeform', ground: true,
+    models: {
+      maker: { backend: 'kimi', provider: 'moonshot', model: 'kimi-k2', source: 'run request' },
+      reviewer: { backend: 'claude', provider: 'anthropic', model: 'sonnet', effort: null },
+      loop: { roundCap: 1 },
+    },
+  }, {
+    emit: (type, data) => events.push({ type, ...data }),
+    waitForAnswer: async () => 'ok',
+    adapters: { maker: async () => ({ ok: true, text: 'x', costUsd: 0 }), reviewer: async () => review },
+    hivemind: { searchKnowledge: async () => null, hivemindStatus: () => ({ mode: 'claude' }), publishArtifact: async () => null },
+    signal: new AbortController().signal, scratchDir: '/tmp', receiptsDir: '/tmp',
+  });
+  assert.equal(result.status, 'failed', 'the engine backstop refuses to ground through a non-claude maker');
+  assert.match(events.find((e) => e.type === 'error')?.message ?? '', /claude backend in the maker seat/, 'the failure names the rule');
+  if (prev === undefined) delete process.env.MOCK_OFFLINE; else process.env.MOCK_OFFLINE = prev;
+}
+
+// --- audit fixes 2026-08-04 ----------------------------------------------------
+// 1) the Build lane takes a gate-specific snapshot; 3) the codex maker's env
+// is scrubbed; 4) configurable-backend membership is validated at load;
+// 5) the claude reviewer has a real output-driven idle watchdog.
+{
+  const { writeFileSync, mkdtempSync, rmSync, chmodSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { getModels, gateModels } = await import('./lib/models.mjs');
+  const { scrubbedEnv } = await import('./lib/adapters/codex.mjs');
+  const { runClaudeReview } = await import('./lib/adapters/claude.mjs');
+
+  const tmp = mkdtempSync(join(tmpdir(), 'cls-audit-'));
+  const file = join(tmp, 'models.json');
+  const prevFile = process.env.STUDIO_MODELS_FILE;
+  process.env.STUDIO_MODELS_FILE = file;
+  const KIMI = { kind: 'openai_compat', provider: 'moonshot', baseUrl: 'http://127.0.0.1:9/v1', apiKeyEnv: 'CLS_TEST_KIMI_KEY', models: ['kimi-k2'] };
+  const writeModels = (obj) => writeFileSync(file, JSON.stringify(obj));
+  try {
+    // gateModels: the fixed gate either gets a compatible snapshot or a refusal.
+    writeModels({ maker: { backend: 'claude', model: 'sonnet' }, reviewer: { backend: 'codex', model: 'gpt-5.4', effort: 'low' }, loop: { roundCap: 3 } });
+    const compatible = gateModels();
+    assert.equal(compatible.ok, true, 'claude/codex standing decisions are gate-compatible');
+    assert.equal(compatible.models.maker.model, 'sonnet', 'the gate snapshot is the standing decision');
+    writeModels({ maker: { backend: 'kimi', model: 'kimi-k2' }, reviewer: { backend: 'codex', model: 'gpt-5.4', effort: 'low' }, backends: { kimi: KIMI }, loop: { roundCap: 3 } });
+    const refused = gateModels();
+    assert.equal(refused.ok, false, 'a non-gate maker seat refuses a build snapshot');
+    assert.match(refused.error, /claude-maker\/codex-reviewer gate/, 'the refusal names the fixed pairing');
+    assert.match(refused.error, /kimi:kimi-k2/, 'and the offending decision');
+    writeModels({ maker: { backend: 'claude', model: 'sonnet' }, reviewer: { backend: 'claude', model: 'haiku' }, loop: { roundCap: 3 } });
+    assert.equal(gateModels().ok, false, 'a non-codex reviewer seat refuses too');
+
+    // Membership: a hand-edited model outside a configurable backend's declared
+    // list dies at LOAD, where doctor and /api/config surface it.
+    writeModels({ maker: { backend: 'kimi', model: 'kimi-typo' }, reviewer: { backend: 'codex', model: 'gpt-5.4', effort: 'low' }, backends: { kimi: KIMI }, loop: { roundCap: 3 } });
+    assert.throws(() => getModels(), /declared models list/, 'an undeclared compat model refuses to load');
+    writeModels({ maker: { backend: 'kimi', model: 'kimi-k2' }, reviewer: { backend: 'kimi', model: 'nope' }, backends: { kimi: KIMI }, loop: { roundCap: 3 } });
+    assert.throws(() => getModels(), /reviewer\.model "nope"/, 'the reviewer seat is validated too, and the error names the seat');
+    writeModels({ maker: { backend: 'claude', model: 'my-custom-alias' }, reviewer: { backend: 'codex', model: 'gpt-x-unlisted', effort: 'low' }, loop: { roundCap: 3 } });
+    assert.equal(getModels().maker.model, 'my-custom-alias', 'CLI backends stay advisory: claude accepts unlisted ids by design, and the codex cache races its writers');
+  } finally {
+    if (prevFile === undefined) delete process.env.STUDIO_MODELS_FILE; else process.env.STUDIO_MODELS_FILE = prevFile;
+  }
+
+  // The codex maker's environment scrub: credentials never reach the maker;
+  // process basics, locale, and proxy transport do.
+  const scrubbed = scrubbedEnv({
+    PATH: '/usr/bin', HOME: '/Users/x', LC_ALL: 'en_US.UTF-8', HTTPS_PROXY: 'http://proxy:1',
+    HIVEMIND_API_KEY: 'hm_k_secret', MOONSHOT_API_KEY: 'sk-secret', AWS_SECRET_ACCESS_KEY: 'aws-secret', STUDIO_MODELS_FILE: '/tmp/x',
+  });
+  // Proxy values round-trip through URL parsing (see the credential-stripping
+  // test below), so the host survives in normalized form.
+  assert.deepEqual(scrubbed, { PATH: '/usr/bin', HOME: '/Users/x', HTTPS_PROXY: 'http://proxy:1/', LC_ALL: 'en_US.UTF-8' }, 'the allowlist keeps transport and basics and drops every credential');
+
+  // The claude reviewer's idle watchdog, forced to fire: a stub `claude` on
+  // PATH that never writes a byte must be killed by output-silence, not by
+  // the 8-minute hard cap — and the result is an infra error, never a verdict.
+  const stubDir = mkdtempSync(join(tmpdir(), 'cls-stub-'));
+  writeFileSync(join(stubDir, 'claude'), '#!/bin/sh\nsleep 30\n');
+  chmodSync(join(stubDir, 'claude'), 0o755);
+  const prevPath = process.env.PATH;
+  const prevIdle = process.env.REVIEW_IDLE_MS;
+  process.env.PATH = `${stubDir}:${process.env.PATH}`;
+  process.env.REVIEW_IDLE_MS = '150';
+  try {
+    const started = Date.now();
+    const hung = await runClaudeReview({ prompt: 'judge', model: 'sonnet', cwd: stubDir, signal: new AbortController().signal, claims: [], criteria: [], thresholds: [] });
+    assert.equal(hung.ran, false, 'a silent claude review is an infra error');
+    assert.match(hung.error, /idle watchdog/, 'the kill path names itself');
+    assert.ok(Date.now() - started < 5_000, 'the idle timer fired, not the hard timeout');
+  } finally {
+    process.env.PATH = prevPath;
+    if (prevIdle === undefined) delete process.env.REVIEW_IDLE_MS; else process.env.REVIEW_IDLE_MS = prevIdle;
+    rmSync(stubDir, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+// --- audit round 2: BOTH codex seats run hardened --------------------------
+// The threat: `-s read-only` blocks writes but permits file reads, and user
+// config keeps shell/MCP alive, so the agent could read $CODEX_HOME/auth.json
+// (plaintext access tokens). The fix removes the capability itself. These
+// assertions read the ACTUAL argv and environment of the spawned process via a
+// stub `codex` on PATH, so a flag dropped from either seat fails here.
+{
+  const { writeFileSync, readFileSync, mkdtempSync, rmSync, chmodSync, existsSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { hardenedCodexArgs, scrubbedEnv, runCodexReview, runCodexMaker, unexpectedToolEvent, sessionLineFromCodexEvent } = await import('./lib/adapters/codex.mjs');
+
+  // The flag set, verified by hand against codex-cli 0.144.1 (`codex exec --help`).
+  const flags = hardenedCodexArgs();
+  const joined = flags.join(' ');
+  for (const required of ['--ignore-user-config', '--ignore-rules', '--ephemeral', 'shell_environment_policy.inherit=none']) {
+    assert.ok(joined.includes(required), `the hardened arg set carries ${required}`);
+  }
+  assert.ok(joined.includes('--disable shell_tool'), 'the shell tool is disabled — the capability that could read auth.json');
+  assert.ok(joined.includes('--disable unified_exec'), 'the unified exec tool is disabled too; disabling one and leaving the other open would be a paper guard');
+  // Web search defaults to "cached" and stays ON unless explicitly disabled;
+  // omitting --search does nothing (audit round 3: a live probe searched and
+  // answered while the session line claimed otherwise).
+  assert.ok(joined.includes('web_search="disabled"'), 'web search is explicitly disabled, not merely left unrequested');
+  for (const family of ['apps', 'browser_use', 'in_app_browser', 'computer_use', 'image_generation', 'multi_agent', 'plugins', 'hooks']) {
+    assert.ok(joined.includes(`--disable ${family}`), `the unused default capability family ${family} is disabled`);
+  }
+
+  // Proxy credentials are stripped while transport survives; an unparseable
+  // value is dropped rather than passed through unexamined.
+  const stripped = [];
+  const env = scrubbedEnv({
+    PATH: '/usr/bin', HOME: '/Users/x', CODEX_HOME: '/Users/x/.codex',
+    HTTPS_PROXY: 'http://alice:s3cret@proxy.corp:8080', HTTP_PROXY: 'http://plain.corp:3128',
+    ALL_PROXY: 'not a url', NO_PROXY: 'localhost',
+    HIVEMIND_API_KEY: 'hm_k_secret', ANTHROPIC_API_KEY: 'sk-ant-secret',
+  }, (key, why) => stripped.push(`${key}:${why}`));
+  assert.ok(!JSON.stringify(env).includes('s3cret'), 'proxy userinfo never reaches the subprocess');
+  assert.match(env.HTTPS_PROXY, /^http:\/\/proxy\.corp:8080/, 'the proxy host and port survive, so transport still works');
+  assert.equal(env.HTTP_PROXY, 'http://plain.corp:3128/', 'a credential-free proxy passes through');
+  assert.equal('ALL_PROXY' in env, false, 'an unparseable proxy value is dropped, never forwarded blind');
+  assert.equal(env.HIVEMIND_API_KEY, undefined, 'service credentials are absent');
+  assert.equal(env.ANTHROPIC_API_KEY, undefined, 'other providers\' credentials are absent too');
+  assert.equal(env.HOME, '/Users/x', 'HOME stays: codex resolves its own auth through it, and the model has no tool to read it with');
+  assert.deepEqual(stripped.sort(), ['ALL_PROXY:unparseable', 'HTTPS_PROXY:credentials removed'], 'every strip is reported so the session trail can say it happened');
+
+  // The REAL spawn of each seat, observed through a stub `codex` that records
+  // its argv and environment. This is the live control: it fails if either
+  // seat stops passing the flags or stops scrubbing.
+  const stubDir = mkdtempSync(join(tmpdir(), 'cls-codexstub-'));
+  const argvFile = join(stubDir, 'argv.txt');
+  const envFile = join(stubDir, 'env.txt');
+  const verdict = JSON.stringify({ verdict: 'clean', findings: [], questions_for_human: [], claim_assessments: [], coverage_assessments: [], threshold_assessments: [] });
+  writeFileSync(join(stubDir, 'codex'), `#!/bin/sh
+printf '%s\\n' "$@" > ${argvFile}
+env > ${envFile}
+# honor -o/-c the way codex does: the file after -o gets the payload
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-o" ]; then printf '%s' '${verdict.replace(/'/g, "'\\''")}' > "$a"; fi
+  prev="$a"
+done
+exit 0
+`);
+  chmodSync(join(stubDir, 'codex'), 0o755);
+  const prevPath = process.env.PATH;
+  process.env.PATH = `${stubDir}:${process.env.PATH}`;
+  process.env.CLS_STUB_SECRET = 'must-not-appear';
+  try {
+    const sessions = [];
+    const review = await runCodexReview({
+      prompt: 'judge', cwd: stubDir, effort: 'low', model: 'gpt-5.4',
+      signal: new AbortController().signal, onTick: () => {}, onSession: (l) => sessions.push(l),
+      receiptDir: join(stubDir, 'receipt'), claims: [], criteria: [], thresholds: [],
+    });
+    assert.equal(review.ran, true, `the stub review normalizes (${review.error ?? ''})`);
+    const reviewArgv = readFileSync(argvFile, 'utf8');
+    for (const required of ['--ignore-user-config', '--ignore-rules', '--ephemeral', 'shell_tool', 'unified_exec', 'shell_environment_policy.inherit=none']) {
+      assert.ok(reviewArgv.includes(required), `the REVIEWER seat's real argv carries ${required}`);
+    }
+    const reviewEnv = readFileSync(envFile, 'utf8');
+    assert.ok(!reviewEnv.includes('must-not-appear'), 'the reviewer subprocess environment is scrubbed');
+    assert.ok(sessions.some((l) => l.startsWith('hardened seat:')), 'the reviewer states its hardening in the session trail');
+
+    rmSync(argvFile, { force: true });
+    const makerSessions = [];
+    const maker = await runCodexMaker({
+      prompt: 'draft', stage: 'make', model: 'gpt-5.4', cwd: stubDir,
+      signal: new AbortController().signal, onTick: () => {}, onSession: (l) => makerSessions.push(l),
+    });
+    // The stub writes only to the -o file, which the maker reads as its
+    // deliverable; the JSON verdict body is irrelevant here, the argv is not.
+    assert.equal(maker.ok, true, `the stub maker returns its -o payload (${maker.error ?? ''})`);
+    const makerArgv = readFileSync(argvFile, 'utf8');
+    for (const required of ['--ignore-user-config', '--ignore-rules', '--ephemeral', 'shell_tool', 'unified_exec', 'shell_environment_policy.inherit=none']) {
+      assert.ok(makerArgv.includes(required), `the MAKER seat's real argv carries ${required}`);
+    }
+    assert.ok(!readFileSync(envFile, 'utf8').includes('must-not-appear'), 'the maker subprocess environment is scrubbed');
+    assert.ok(makerSessions.some((l) => l.startsWith('hardened seat:')), 'the maker states its hardening too');
+    assert.ok(!makerSessions.some((l) => l.includes('tool surface: none')), 'the maker no longer claims a blanket toolless surface it cannot enforce');
+    assert.ok(existsSync(join(stubDir, 'receipt', 'last.json')), 'the raw verdict is still captured beside the run');
+  } finally {
+    process.env.PATH = prevPath;
+    delete process.env.CLS_STUB_SECRET;
+    rmSync(stubDir, { recursive: true, force: true });
+  }
+
+  // --- unexpected tool events: visible in the trail AND fail closed ----------
+  // These use the VERBATIM event JSON codex 0.144.1 emitted during the live
+  // probe that exposed the gap — a web_search item whose query is empty, so
+  // the old `text ? … : null` session mapper dropped it entirely.
+  const WEB_SEARCH_STARTED = '{"type":"item.started","item":{"id":"exec-0690","type":"web_search","query":"","action":{"type":"other"}}}';
+  const WEB_SEARCH_DONE = '{"type":"item.completed","item":{"id":"exec-0690","type":"web_search","query":"","action":{"type":"other"}}}';
+
+  assert.ok(sessionLineFromCodexEvent(WEB_SEARCH_DONE), 'a textless tool event is no longer dropped from the session trail');
+  assert.match(sessionLineFromCodexEvent(WEB_SEARCH_DONE), /web_search/, 'and the trail names the tool');
+  const withQuery = sessionLineFromCodexEvent('{"type":"item.completed","item":{"type":"web_search","query":"tokyo time"}}');
+  assert.match(withQuery, /tokyo time/, 'when the event carries a query, the receipt records WHAT was consulted');
+
+  // The sealed-vs-local BOUNDARY, pinned so the vocabulary cannot drift: a
+  // session line (hardened-seat notice, REFUSED notice) is local and
+  // replayable via events.jsonl, and is NOT part of the evidence pack's
+  // session_log — so it is not covered by receipt_id. If a future change puts
+  // streamed session lines into the pack, that is a deliberate schema decision
+  // (it moves receipt_id) and this assertion must be updated on purpose.
+  {
+    const { buildEvidencePack } = await import('./lib/evidence-pack.mjs');
+    const sealedPack = buildEvidencePack({
+      goal: 'Boundary probe.',
+      acceptanceContract: 'Every material claim is traceable.',
+      lane: 'freeform',
+      deliverable: '# Note\n\nNo claims.\n',
+      evidence: {
+        rounds: [{ rev: 1, verdict: 'APPROVED', reviewerModel: 'gpt-5.4', reviewerEffort: 'low', reviewerIdentity: 'openai:gpt-5.4', independence: 'cross_vendor', findings: [], claimAssessments: [], coverageAssessments: [{ criterion_id: 'C1', decision: 'met', evidence: 'traceable' }] }],
+        revisions: [{ rev: 1, chars: 20 }],
+        verify: [{ pass: true, checks: [{ id: 'links', status: 'pass', detail: 'ok' }] }],
+        humanDecisions: [], grounding: null, gateReport: null,
+      },
+      statuses: { schemaVersion: 1, execution: 'completed', verification: 'passed', audit: 'independent_clean', publication: 'not_published' },
+      models: {
+        maker: { backend: 'claude', provider: 'anthropic', model: 'sonnet', source: 'checks/models.json' },
+        reviewer: { backend: 'codex', provider: 'openai', model: 'gpt-5.4', effort: 'low', modelSource: 'checks/models.json', effortSource: 'checks/models.json' },
+      },
+      makerActualModels: ['anthropic:claude-sonnet-4-6'],
+      simulated: false,
+      createdAt: 60,
+    });
+    const sealedLog = sealedPack.session_log;
+    assert.ok(sealedLog.some((l) => l.startsWith('executor seat:')), 'the sealed session_log carries seat/pairing provenance');
+    assert.ok(sealedLog.some((l) => l.startsWith('coverage assessment ')), 'and the auditor decisions');
+    assert.equal(sealedLog.some((l) => l.includes('hardened seat')), false, 'a streamed session line is NOT in the sealed pack — "local session trail", never "sealed into the evidence pack"');
+    assert.equal(sealedLog.some((l) => l.includes('REFUSED')), false, 'a refusal notice is likewise local and replayable, not receipt_id-covered');
+  }
+
+  const rogue = unexpectedToolEvent(WEB_SEARCH_STARTED);
+  assert.equal(rogue?.itemType, 'web_search', 'the classifier flags a tool a text-only seat never granted');
+  assert.equal(unexpectedToolEvent('{"type":"item.completed","item":{"type":"reasoning","text":"thinking"}}'), null, 'reasoning is expected and never flagged');
+  assert.equal(unexpectedToolEvent('{"type":"item.completed","item":{"type":"agent_message","text":"verdict"}}'), null, 'the final message is expected');
+  assert.equal(unexpectedToolEvent('{"type":"turn.completed","usage":{}}'), null, 'bookkeeping events are not tool use');
+  assert.equal(unexpectedToolEvent('not json'), null, 'a torn line is not a false alarm');
+  // The forward-looking half: a capability this version has no flag for still
+  // fails closed, which is what makes the guard survive a future codex default.
+  const future = unexpectedToolEvent('{"type":"item.started","item":{"type":"some_future_tool","name":"whatever"}}');
+  assert.equal(future?.itemType, 'some_future_tool', 'an UNKNOWN future tool family is flagged too — the guard is not an allowlist of today\'s flags');
+  assert.equal(future.detail, 'whatever', 'and its target is captured');
+
+  // Adapter level: a stub codex that emits a web_search event must make BOTH
+  // seats fail closed with the tool named. Deterministic mirror of the live
+  // control (which re-enabled search on a real gpt-5.6-sol run and refused).
+  const rogueDir = mkdtempSync(join(tmpdir(), 'cls-rogue-'));
+  const rogueVerdict = JSON.stringify({ verdict: 'clean', findings: [], questions_for_human: [], claim_assessments: [], coverage_assessments: [], threshold_assessments: [] });
+  writeFileSync(join(rogueDir, 'codex'), `#!/bin/sh
+printf '%s\\n' '${WEB_SEARCH_STARTED}'
+printf '%s\\n' '${WEB_SEARCH_DONE}'
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-o" ]; then printf '%s' '${rogueVerdict.replace(/'/g, "'\\''")}' > "$a"; fi
+  prev="$a"
+done
+sleep 0.4
+exit 0
+`);
+  chmodSync(join(rogueDir, 'codex'), 0o755);
+  const prevPath2 = process.env.PATH;
+  process.env.PATH = `${rogueDir}:${process.env.PATH}`;
+  try {
+    const revSessions = [];
+    const rogueReview = await runCodexReview({
+      prompt: 'judge', cwd: rogueDir, effort: 'low', model: 'gpt-5.4',
+      signal: new AbortController().signal, onTick: () => {}, onSession: (l) => revSessions.push(l),
+      receiptDir: join(rogueDir, 'receipt'), claims: [], criteria: [], thresholds: [],
+    });
+    assert.equal(rogueReview.ran, false, 'the REVIEWER fails closed on an unexpected tool event, even though its verdict file was schema-valid');
+    assert.match(rogueReview.error, /unexpected web_search tool/, 'the infra error names the tool');
+    assert.ok(revSessions.some((l) => l.startsWith('REFUSED:')), 'the refusal is recorded in the reviewer trail');
+
+    const makeSessions = [];
+    const rogueMaker = await runCodexMaker({
+      prompt: 'draft', stage: 'make', model: 'gpt-5.4', cwd: rogueDir,
+      signal: new AbortController().signal, onTick: () => {}, onSession: (l) => makeSessions.push(l),
+    });
+    assert.equal(rogueMaker.ok, false, 'the MAKER fails closed too, even though its -o payload was present');
+    assert.match(rogueMaker.error, /unexpected web_search tool/, 'the maker error names the tool');
+    assert.ok(makeSessions.some((l) => l.startsWith('REFUSED:')), 'the refusal is recorded in the maker trail');
+  } finally {
+    process.env.PATH = prevPath2;
+    rmSync(rogueDir, { recursive: true, force: true });
+  }
+}
+
+// --- field report 2026-08-04 (WP6 game run): gate custody, stop, liveness ------
+{
+  const { acceptGateReceipt, gatePhaseFromSession, newestActivity, newestFileMtime, ownedReviewWatches, pidAlive, abortOwnedReviewers } = await import('./lib/code-lane.mjs');
+  const { writeFileSync, readFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawn, execFileSync } = await import('node:child_process');
+
+  // ── RECEIPT CUSTODY ─────────────────────────────────────────────────────────
+  // THE field failure: the gate requested round 2, the thin runner dropped the
+  // round argument, the reviewer defaulted to r0, and the loop accepted that
+  // receipt as round 2. Range alone allowed it; sequence + binding do not.
+  const bound = (over) => ({ gate_nonce: 'n1', round_requested: over, round_actual: over, effort_requested: 'high', effort_actual: 'high', bound: true });
+  assert.equal(acceptGateReceipt({ round: 1, expectedRound: 1, roundCap: 3, binding: bound(1) }).accept, true, 'the expected round with a matching binding is consumed');
+  const outOfSequence = acceptGateReceipt({ round: 3, expectedRound: 2, roundCap: 3, binding: bound(3) });
+  assert.equal(outOfSequence.accept, false, 'a receipt for a LATER round is refused while an earlier one is expected');
+  assert.match(outOfSequence.reason, /expects round 2/, 'the refusal names the round the run is waiting for');
+  assert.equal(acceptGateReceipt({ round: 1, expectedRound: 2, roundCap: 3, binding: bound(1) }).accept, false, 'a repeat of an already-consumed round is refused');
+  assert.equal(acceptGateReceipt({ round: 0, expectedRound: 1, roundCap: 3 }).accept, false, 'the r0 receipt the old default produced is out of range');
+  assert.equal(acceptGateReceipt({ round: 4, expectedRound: 4, roundCap: 3 }).accept, false, 'a round past the cap is refused even when expected');
+  // A receipt whose OWN binding says it was not bound must never be consumed.
+  const unboundClaim = acceptGateReceipt({ round: 2, expectedRound: 2, roundCap: 3, binding: { gate_nonce: 'n1', round_requested: 2, round_actual: 0, effort_requested: 'high', effort_actual: 'medium', bound: false } });
+  assert.equal(unboundClaim.accept, false, 'the exact field failure: requested r2/high, ran r0/medium — refused');
+  assert.match(unboundClaim.reason, /not bound/, 'the refusal quotes the reviewer\'s own binding');
+  assert.equal(acceptGateReceipt({ round: 2, expectedRound: 2, roundCap: 3, binding: { ...bound(2), round_requested: 1 } }).accept, false, 'a receipt filed under a round its binding never requested is refused');
+  assert.equal(acceptGateReceipt({ round: 2, expectedRound: 2, roundCap: 3, binding: bound(2), nonce: 'n1' }).accept, true, 'a matching gate nonce passes');
+  assert.equal(acceptGateReceipt({ round: 2, expectedRound: 2, roundCap: 3, binding: { ...bound(2), gate_nonce: 'other' }, nonce: 'n1' }).accept, false, 'a receipt from another gate run is refused');
+  assert.equal(acceptGateReceipt({ round: 2, expectedRound: 2, roundCap: 3, binding: bound(2), worktreeCanonical: '/a/wt', runWorktree: '/b/wt' }).accept, false, 'a receipt from another worktree is refused');
+  // A gate installed before binding existed stays resumable, but says so.
+  const legacy = acceptGateReceipt({ round: 1, expectedRound: 1, roundCap: 3, binding: null });
+  assert.equal(legacy.accept, true, 'a pre-binding gate receipt is still consumable');
+  assert.equal(legacy.unbound, true, 'but it is reported unbound rather than treated as verified provenance');
+
+  // ── PHASE SURFACING ─────────────────────────────────────────────────────────
+  // Studio showed "Igniting…" for ten minutes while the gate classified,
+  // planned, made a worktree, wrote three files and started reviewing.
+  assert.equal(gatePhaseFromSession('Bash: bash ~/.claude/skills/camus/scripts/wt.sh create camus-wt-x /p'), 'worktree');
+  assert.equal(gatePhaseFromSession('Bash: bash ~/.claude/skills/camus/scripts/review.sh /p/camus-wt-x "task" 2 high'), 'review');
+  assert.equal(gatePhaseFromSession('Bash: python3 ~/.claude/skills/camus/scripts/verify.py'), 'verify');
+  assert.equal(gatePhaseFromSession('Edit: src/enemy.cs'), 'implement', 'a file edit is the Implement phase');
+  assert.equal(gatePhaseFromSession('Bash: bash prep.sh'), 'classify');
+  assert.equal(gatePhaseFromSession('Read: notes.md'), null, 'an unrecognized line leaves the phase alone');
+  assert.equal(gatePhaseFromSession('Bash: python3 status.py'), null, 'bookkeeping is not a phase');
+
+  // ── LIVENESS ────────────────────────────────────────────────────────────────
+  // The regression: a phase-entry heartbeat goes stale during a long Implement
+  // or review while real work continues, and the 8-minute watchdog kills it.
+  const now = Date.now();
+  const stale = now - 9 * 60_000;
+  const killWindow = 8 * 60_000;
+  const staleOnly = newestActivity({ stdout: stale, heartbeat: stale });
+  assert.ok(now - staleOnly.at > killWindow, 'with only a stale heartbeat the watchdog still fires (the guard can fail)');
+  const growingReview = newestActivity({ stdout: stale, heartbeat: stale, review_events: now - 10_000 });
+  assert.ok(now - growingReview.at < killWindow, 'a growing review event stream keeps a long review alive');
+  assert.equal(growingReview.source, 'review_events', 'and the surviving signal is named, so the UI can show why');
+  const writingFiles = newestActivity({ stdout: stale, heartbeat: stale, worktree_files: now - 30_000 });
+  assert.ok(now - writingFiles.at < killWindow, 'files changing in the worktree keep a long Implement alive — the exact signal that was ignored');
+  assert.equal(newestActivity({}).source, 'none', 'no signals is honestly "none", never a fabricated fresh timestamp');
+
+  // newestFileMtime observes real writes and stays bounded.
+  const wt = mkdtempSync(join(tmpdir(), 'cls-wt-'));
+  mkdirSync(join(wt, 'src'), { recursive: true });
+  writeFileSync(join(wt, 'src', 'enemy.cs'), 'class Enemy {}');
+  const seen = await newestFileMtime(wt);
+  assert.ok(seen > 0, 'a written file is observed');
+  mkdirSync(join(wt, '.git'), { recursive: true });
+  const gitOnly = join(wt, '.git', 'index');
+  writeFileSync(gitOnly, 'x');
+  const future = new Date(Date.now() + 60_000);
+  utimesSync(gitOnly, future, future);
+  assert.ok(await newestFileMtime(wt) < future.getTime(), '.git churn is not counted as gate activity');
+
+  // ── STOP OWNS THE DETACHED REVIEWER ─────────────────────────────────────────
+  // Studio reported Stopped while the review wrapper survived under PID 1.
+  const reviewsDir = join(homedirForTest(), '.camus', 'reviews');
+  function homedirForTest() { return process.env.HOME || tmpdir(); }
+  assert.equal(pidAlive(process.pid), true, 'the current process reads as alive');
+  assert.equal(pidAlive(2_147_483_600), false, 'an absent pid reads as dead');
+  assert.equal(pidAlive(null), false, 'a missing pid is never "alive"');
+  // A real detached child, registered exactly as the gate registers one, must be
+  // ended by Stop — and its death proven, not assumed.
+  const prefix = `cls-stoptest-${process.pid}`;
+  const watchDir = join(reviewsDir, `${prefix}-r1.watch`);
+  mkdirSync(watchDir, { recursive: true });
+  const victim = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+  victim.unref();
+  try {
+    // A REAL started_at: the handle must describe the process that is actually
+    // running, which is what lets Stop confirm identity before signalling.
+    writeFileSync(join(watchDir, 'handle.json'), JSON.stringify({ pid: victim.pid, started_at: Math.floor(Date.now() / 1000), cmd: ['codex'], cwd: watchDir }));
+    const owned = await ownedReviewWatches(prefix);
+    assert.equal(owned.length, 1, 'the run finds the watch directory it owns');
+    assert.equal(owned[0].pid, victim.pid, 'and reads its detached pid from handle.json');
+    assert.equal(pidAlive(victim.pid), true, 'the detached reviewer is running before Stop');
+    // No gate script in this fixture path, so the abort form is unavailable —
+    // cleanup must still end the process rather than report a clean stop.
+    const cleanup = await abortOwnedReviewers(prefix, { scriptPath: join(watchDir, 'no-such-review.sh') });
+    assert.equal(cleanup.attempted.length, 1, 'Stop attempted the reviewer it owned');
+    assert.equal(cleanup.clean, true, `Stop proved the detached reviewer is gone (${JSON.stringify(cleanup.orphans)})`);
+    assert.equal(pidAlive(victim.pid), false, 'the process really is dead — not assumed dead');
+    const none = await abortOwnedReviewers(prefix, { scriptPath: join(watchDir, 'no-such-review.sh') });
+    assert.equal(none.clean, true, 'a second stop with nothing alive is clean, not a false orphan report');
+    assert.equal(none.attempted.length, 0, 'and it does not invent work to do');
+    assert.deepEqual(await abortOwnedReviewers(null), { attempted: [], orphans: [], clean: true }, 'a run that never started a reviewer stops clean');
+
+    // ── RECYCLED PID — Stop must not kill a stranger. A handle whose recorded
+    // start time does not match the live process is NOT our reviewer (the pid was
+    // reused after ours exited), so it is reported, never signalled.
+    const strangerDir = join(reviewsDir, `${prefix}-r9.watch`);
+    mkdirSync(strangerDir, { recursive: true });
+    const stranger = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+    stranger.unref();
+    // A REAL, EXECUTABLE abort script that records every invocation. The safety
+    // property is not just "the stranger survives" — it is "the abort form was
+    // never even invoked", because `review.sh abort` terminates the handle's pid
+    // and so is itself the recycled-pid hazard. The marker file proves it.
+    const abortLog = join(strangerDir, 'abort-invoked.log');
+    const abortScript = join(strangerDir, 'review.sh');
+    writeFileSync(abortScript, `#!/bin/sh\necho "$@" >> ${JSON.stringify(abortLog)}\nexit 0\n`);
+    execFileSync('chmod', ['+x', abortScript]);
+    try {
+      writeFileSync(join(strangerDir, 'handle.json'), JSON.stringify({ pid: stranger.pid, started_at: 1, cmd: ['codex'], cwd: strangerDir }));
+      const recycled = await abortOwnedReviewers(prefix, { scriptPath: abortScript });
+      assert.equal(existsSync(abortLog), false, 'the abort form was NOT invoked for an unverified pid — no signal path is opened until identity is proven');
+      assert.equal(pidAlive(stranger.pid), true, 'an unidentifiable pid is NOT killed on the strength of a stale handle');
+      assert.equal(recycled.clean, false, 'and the run reports it rather than claiming a clean stop');
+      assert.equal(recycled.attempted[0].aborted, false, 'the record shows no abort was attempted');
+      assert.match(recycled.orphans[0].note, /neither the abort form nor any signal was sent/, 'the report says the abort form was withheld, not merely that a kill failed');
+    } finally {
+      try { process.kill(stranger.pid, 'SIGKILL'); } catch { /* already gone */ }
+      rmSync(strangerDir, { recursive: true, force: true });
+    }
+
+    // ── PROCESS GROUP, not leader pid (live run 20260805-072933-jezu). Studio
+    // said "ended 1/1 detached reviewer" while a codex GROUP was still alive:
+    // review_watch starts each reviewer with start_new_session, so codex's
+    // children outlive a dead leader. Survival is judged on the whole group.
+    {
+      const { processGroupAlive } = await import('./lib/code-lane.mjs');
+      // A group whose leader is gone but whose children remain is ALIVE.
+      assert.equal(processGroupAlive(4242, { ps: () => ' 4243\n 4244\n' }), true, 'surviving group members keep the group alive even when the leader is gone');
+      assert.equal(processGroupAlive(4242, { ps: () => '' }), false, 'an empty group listing means the group is really gone');
+      assert.equal(processGroupAlive(4242, { ps: () => null }), false, 'when ps is unusable it falls back to the leader pid, never to an optimistic "gone"');
+      assert.equal(processGroupAlive(process.pid, { ps: () => ` ${process.pid}\n` }), true, 'a live group is reported alive');
+      assert.equal(processGroupAlive(0), false, 'a nonsense pgid is not a live group');
+    }
+
+    // ── REAL PROCESSES: leader exits, child survives in the same PGID ─────────
+    // The exact WP6 shape: review_watch starts the reviewer with its own session
+    // (pid == pgid), codex spawns children into that group, and the leader can
+    // exit first. Discovery used to gate on pidAlive(leader) and SKIPPED such a
+    // group entirely — a false clean over a live codex child. No mocks here: a
+    // real detached `sh` leader backgrounds a real `sleep` into its group and
+    // exits; cleanup must find the group, terminate it, and only then say clean.
+    {
+      const orphanDir = join(reviewsDir, `${prefix}-r5.watch`);
+      mkdirSync(orphanDir, { recursive: true });
+      const oAbort = join(orphanDir, 'review.sh');
+      writeFileSync(oAbort, '#!/bin/sh\nexit 0\n'); // abort form is a no-op: the GROUP kill must do the work
+      execFileSync('chmod', ['+x', oAbort]);
+      // NOT unref'd: the await below needs the child handle to keep the event
+      // loop alive until 'exit' fires (an unref'd handle lets node exit 13 with
+      // the top-level await unfinished). The leader exits in milliseconds.
+      const leader = spawn('sh', ['-c', 'sleep 120 & exit 0'], { detached: true, stdio: 'ignore' });
+      const pgid = leader.pid;
+      try {
+        await new Promise((resolve) => leader.on('exit', resolve));
+        const groupPids = () => {
+          try {
+            return execFileSync('ps', ['-g', String(pgid), '-o', 'pid='], { encoding: 'utf8' })
+              .split('\n').map((l) => Number(l.trim())).filter((n) => Number.isInteger(n) && n > 0);
+          } catch { return []; }
+        };
+        assert.equal(pidAlive(pgid), false, 'PRECONDITION: the leader is dead');
+        assert.ok(groupPids().length >= 1, 'PRECONDITION: a child survives in the leader\'s group');
+        writeFileSync(join(orphanDir, 'handle.json'), JSON.stringify({ pid: pgid, started_at: Math.floor(Date.now() / 1000), cmd: ['codex'], cwd: orphanDir }));
+        const swept = await abortOwnedReviewers(prefix, { scriptPath: oAbort });
+        assert.ok(swept.attempted.some((a) => a.dir === orphanDir), 'the leaderless group is DISCOVERED, not skipped as dead');
+        assert.equal(groupPids().length, 0, 'the surviving group member is actually terminated');
+        assert.equal(swept.clean, true, 'and only a genuinely empty group seals a clean stop');
+      } finally {
+        try { process.kill(-pgid, 'SIGKILL'); } catch { /* already gone */ }
+        rmSync(orphanDir, { recursive: true, force: true });
+      }
+    }
+
+    // AT THE CALL SITE, not just in the helper: a reviewer whose LEADER exited
+    // while its group survives must be reported as an orphan, so Stop cannot seal
+    // a clean `stopped` over a live codex group (the exact false "ended 1/1" claim).
+    {
+      const survivorDir = join(reviewsDir, `${prefix}-r6.watch`);
+      mkdirSync(survivorDir, { recursive: true });
+      const leader = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+      leader.unref();
+      const sAbort = join(survivorDir, 'review.sh');
+      writeFileSync(sAbort, '#!/bin/sh\nexit 0\n');
+      execFileSync('chmod', ['+x', sAbort]);
+      try {
+        writeFileSync(join(survivorDir, 'handle.json'), JSON.stringify({ pid: leader.pid, started_at: Math.floor(Date.now() / 1000), cmd: ['codex'], cwd: survivorDir }));
+        const groupSurvives = await abortOwnedReviewers(prefix, { scriptPath: sAbort, groupAlive: () => true });
+        assert.equal(groupSurvives.clean, false, 'a surviving process GROUP means the stop is not clean, even after the leader is signalled');
+        // Target THIS dir, not a global count: the injected always-alive groupAlive
+        // legitimately sweeps any other fixture dirs under the prefix too.
+        assert.ok(groupSurvives.orphans.some((o) => o.dir === survivorDir), 'and the survivor is reported as an orphan');
+        const leaderOnly = await abortOwnedReviewers(prefix, { scriptPath: sAbort, groupAlive: () => false });
+        assert.equal(leaderOnly.clean, true, 'a genuinely empty group is a clean stop (the control: this assertion can pass)');
+      } finally {
+        try { process.kill(leader.pid, 'SIGKILL'); } catch { /* already gone */ }
+        rmSync(survivorDir, { recursive: true, force: true });
+      }
+    }
+
+    // POSITIVE CONTROL — a VERIFIED reviewer must actually invoke the abort form,
+    // or the assertion above would pass on a script that never fires.
+    const verifiedDir = join(reviewsDir, `${prefix}-r7.watch`);
+    mkdirSync(verifiedDir, { recursive: true });
+    const verifiedVictim = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+    verifiedVictim.unref();
+    const vAbortLog = join(verifiedDir, 'abort-invoked.log');
+    const vAbortScript = join(verifiedDir, 'review.sh');
+    writeFileSync(vAbortScript, `#!/bin/sh\necho "$@" >> ${JSON.stringify(vAbortLog)}\nexit 0\n`);
+    execFileSync('chmod', ['+x', vAbortScript]);
+    try {
+      writeFileSync(join(verifiedDir, 'handle.json'), JSON.stringify({ pid: verifiedVictim.pid, started_at: Math.floor(Date.now() / 1000), cmd: ['codex'], cwd: verifiedDir }));
+      const cleaned = await abortOwnedReviewers(prefix, { scriptPath: vAbortScript });
+      assert.equal(existsSync(vAbortLog), true, 'a VERIFIED reviewer DOES invoke the abort form (so the negative control above is meaningful)');
+      assert.match(readFileSync(vAbortLog, 'utf8'), /abort/, 'and it is called with the abort verb');
+      assert.equal(cleaned.clean, true, 'and the verified reviewer is proven gone');
+      assert.equal(pidAlive(verifiedVictim.pid), false);
+    } finally {
+      try { process.kill(verifiedVictim.pid, 'SIGKILL'); } catch { /* already gone */ }
+      rmSync(verifiedDir, { recursive: true, force: true });
+    }
+
+    // ── COMPLETED reviewer — a watch dir with an exit_code is finished; its pid
+    // may since belong to anything, so it is never a termination target.
+    const doneDir = join(reviewsDir, `${prefix}-r8.watch`);
+    mkdirSync(doneDir, { recursive: true });
+    writeFileSync(join(doneDir, 'handle.json'), JSON.stringify({ pid: process.pid, started_at: Math.floor(Date.now() / 1000), cmd: ['codex'], cwd: doneDir }));
+    writeFileSync(join(doneDir, 'exit_code'), '0\n');
+    try {
+      const completedOnly = await abortOwnedReviewers(prefix, { scriptPath: join(doneDir, 'no-such-review.sh') });
+      assert.equal(completedOnly.attempted.length, 0, 'a completed watch dir is not a termination target (this test process would have been the victim)');
+      assert.equal(completedOnly.clean, true, 'and stopping with only completed reviewers is clean');
+      const listed = await ownedReviewWatches(prefix);
+      assert.equal(listed.find((w) => w.round === 8)?.completed, true, 'the completed reviewer is still LISTED, just not killable');
+    } finally {
+      rmSync(doneDir, { recursive: true, force: true });
+    }
+  } finally {
+    try { process.kill(victim.pid, 'SIGKILL'); } catch { /* already reaped */ }
+    rmSync(watchDir, { recursive: true, force: true });
+    rmSync(wt, { recursive: true, force: true });
+  }
+}
+
+// --- audit round 2 (2026-08-04): the PRE-RECEIPT path -------------------------
+// The previous round's helpers were right but only reachable after a completed
+// receipt: ownedPrefix, worktree and nonce all came from the first rN.json. So
+// Stop during Implement or an active r1 found nothing, liveness could not see a
+// live Implement, and progress stayed "Igniting". The durable status record is
+// what closes that window; these tests drive it, not the helpers in isolation.
+{
+  const { readGateStatus, prefixFromWorktree, pidMatchesHandle, newestActivity, acceptGateReceipt, ownedReviewWatches, abortOwnedReviewers } = await import('./lib/code-lane.mjs');
+  const { writeFileSync, mkdirSync, mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawn, execFileSync } = await import('node:child_process');
+
+  const feats = mkdtempSync(join(tmpdir(), 'cls-feats-'));
+  const salt = 'studio-pre-receipt';
+  const wtPath = join(feats, 'wt', 'camus-wt-task-abc123');
+  mkdirSync(wtPath, { recursive: true });
+  const statusScript = join(process.cwd(), '..', '..', 'packages', 'cli', 'skills', 'camus', 'scripts', 'status_record.py');
+
+  // Write the record the way the GATE does — through the production script, not
+  // a hand-built fixture, so the shape the reader consumes is the shape the
+  // writer emits.
+  const writeStatus = (args) => execFileSync('python3', [statusScript, 'write', '--salt', salt, ...args], {
+    env: { ...process.env, CAMUS_FEATS_DIR: feats }, encoding: 'utf8',
+  });
+
+  writeStatus(['--nonce', 'studio-pre-receipt:abc123', '--phase', 'Implement', '--worktree', wtPath, '--branch', 'camus/task-abc123', '--round', '1', '--effort', 'high']);
+  const status = await readGateStatus(salt, { feats });
+  assert.ok(status, 'the durable status is readable BEFORE any receipt exists');
+  assert.equal(status.phase, 'Implement', 'so progress can say Implement instead of Igniting');
+  assert.equal(status.worktree, wtPath, 'and the worktree is known before any receipt');
+  assert.equal(status.nonce, 'studio-pre-receipt:abc123', 'and the nonce, which acceptance needs');
+  assert.equal(prefixFromWorktree(status.worktree), 'camus-wt-task-abc123', 'the owned review prefix derives from it, so Stop can find reviewers pre-receipt');
+  assert.equal(await readGateStatus('no-such-salt', { feats }), null, 'an absent record reads null, never a fabricated phase');
+  assert.equal(prefixFromWorktree(null), null, 'and no worktree yields no prefix rather than a wrong one');
+
+  // The MAPPING THE WATCHER USES (not a re-derivation): what the run adopts from
+  // a durable status record. If the watcher stops consuming this, these fail.
+  const { gateStateFromStatus } = await import('./lib/code-lane.mjs');
+  const adopted = gateStateFromStatus(status);
+  assert.equal(adopted.prefix, 'camus-wt-task-abc123', 'the watcher adopts the owned prefix pre-receipt');
+  assert.equal(adopted.worktree, wtPath, 'and the worktree, so file activity can be scanned during Implement');
+  assert.equal(adopted.nonce, 'studio-pre-receipt:abc123', 'and the nonce, so receipts can be bound to this run');
+  assert.equal(adopted.phase, 'implement', 'and the phase, so progress is not "Igniting"');
+  assert.equal(adopted.branch, 'camus/task-abc123');
+  assert.ok(adopted.progressAt > 0, 'and a durable progress timestamp for liveness');
+  assert.equal(gateStateFromStatus(null), null, 'no record yields no state, never invented values');
+  assert.equal(gateStateFromStatus({ phase: '' }).phase, null, 'an empty phase is absent, not a phase named ""');
+
+  // LIVENESS during a long Implement: the gate's durable progress advances while
+  // the phase-entry heartbeat is long stale. This is the exact kill the field
+  // report hit at eight minutes.
+  const now = Date.now();
+  const stale = now - 9 * 60_000;
+  const killWindow = 8 * 60_000;
+  writeStatus(['--phase', 'Implement', '--progress-note', 'wrote Enemy.cs']);
+  const fresh = await readGateStatus(salt, { feats });
+  const live = newestActivity({ stdout: stale, heartbeat: stale, gate_status: fresh.last_progress_at * 1000 });
+  assert.ok(now - live.at < killWindow, 'a gate reporting progress mid-Implement is NOT judged idle');
+  assert.equal(live.source, 'gate_status', 'and the surviving signal names the gate itself');
+
+  // ACCEPTANCE against Studio's snapshot, which is the gap the auditor found:
+  // requested r2/high, reviewer ran r2/medium, receipt internally consistent.
+  const selfConsistent = {
+    gate_nonce: 'studio-pre-receipt:abc123', round_requested: 2, round_actual: 2,
+    effort_requested: 'medium', effort_actual: 'medium', reviewer_model: 'gpt-5.6-sol', bound: true,
+  };
+  const wrongEffort = acceptGateReceipt({
+    round: 2, expectedRound: 2, roundCap: 3, binding: selfConsistent,
+    nonce: 'studio-pre-receipt:abc123', expectedEffort: 'high', expectedReviewerModel: 'gpt-5.6-sol',
+  });
+  assert.equal(wrongEffort.accept, false, 'a self-consistent receipt that ran the WRONG effort is refused against the snapshot');
+  assert.match(wrongEffort.reason, /requested "high"/, 'and the refusal quotes the run-start decision');
+  const wrongModel = acceptGateReceipt({
+    round: 2, expectedRound: 2, roundCap: 3,
+    binding: { ...selfConsistent, effort_requested: 'high', effort_actual: 'high', reviewer_model: 'gpt-4o-mini' },
+    nonce: 'studio-pre-receipt:abc123', expectedEffort: 'high', expectedReviewerModel: 'gpt-5.6-sol',
+  });
+  assert.equal(wrongModel.accept, false, 'a receipt from a different reviewer model is refused against the snapshot');
+  const right = acceptGateReceipt({
+    round: 2, expectedRound: 2, roundCap: 3,
+    binding: { ...selfConsistent, effort_requested: 'high', effort_actual: 'high' },
+    nonce: 'studio-pre-receipt:abc123', expectedEffort: 'high', expectedReviewerModel: 'gpt-5.6-sol',
+  });
+  assert.equal(right.accept, true, 'the faithful receipt is still accepted (the guard does not overfire)');
+  // Once bound receipts are known, an unbound one may not authorize a round.
+  const unboundAfterBound = acceptGateReceipt({ round: 3, expectedRound: 3, roundCap: 3, binding: null, requireBinding: true });
+  assert.equal(unboundAfterBound.accept, false, 'a legacy unbound receipt cannot authorize a round on a binding gate');
+  assert.equal(acceptGateReceipt({ round: 3, expectedRound: 3, roundCap: 3, binding: null }).accept, true, 'while a genuinely legacy gate stays readable');
+  // A binding missing the fields Studio must check fails closed.
+  assert.equal(acceptGateReceipt({
+    round: 2, expectedRound: 2, roundCap: 3,
+    binding: { round_requested: 2, round_actual: 2, effort_requested: 'high', effort_actual: 'high', bound: true },
+    nonce: 'n', expectedReviewerModel: 'gpt-5.6-sol',
+  }).accept, false, 'a binding with no reviewer model or nonce cannot be checked, so it is refused');
+
+  // STOP DURING AN ACTIVE r1 — no r1 json exists yet. The reviewer is
+  // discoverable only through the status-derived prefix.
+  const reviewsDir = join(process.env.HOME || tmpdir(), '.camus', 'reviews');
+  const prefix = `cls-prereceipt-${process.pid}`;
+  const watchDir = join(reviewsDir, `${prefix}-r1.watch`);
+  mkdirSync(watchDir, { recursive: true });
+  const victim = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+  victim.unref();
+  try {
+    writeFileSync(join(watchDir, 'handle.json'), JSON.stringify({ pid: victim.pid, started_at: Math.floor(Date.now() / 1000), cmd: ['codex'], cwd: watchDir }));
+    writeFileSync(join(watchDir, 'events.jsonl'), '{"type":"thread.started"}\n');
+    const owned = await ownedReviewWatches(prefix);
+    assert.equal(owned.length, 1, 'an ACTIVE r1 reviewer is discoverable with no r1 receipt on disk');
+    assert.equal(owned[0].completed, false, 'and it is not mistaken for a finished one');
+    assert.equal(await pidMatchesHandle(victim.pid, Math.floor(Date.now() / 1000)), true, 'its identity is confirmable');
+    // Its growing event stream is liveness for a first review that has produced
+    // no receipt yet.
+    const r1Live = newestActivity({ stdout: stale, heartbeat: stale, review_events: owned[0].eventsMtime });
+    assert.ok(now - r1Live.at < killWindow, 'an active first review is kept alive by its own event stream');
+    const cleanup = await abortOwnedReviewers(prefix, { scriptPath: join(watchDir, 'no-such-review.sh') });
+    assert.equal(cleanup.clean, true, `Stop during an active r1 ends the reviewer (${JSON.stringify(cleanup.orphans)})`);
+    assert.equal(pidAliveLocal(victim.pid), false, 'and proves it is gone');
+  } finally {
+    try { process.kill(victim.pid, 'SIGKILL'); } catch { /* reaped */ }
+    rmSync(watchDir, { recursive: true, force: true });
+    rmSync(feats, { recursive: true, force: true });
+  }
+  function pidAliveLocal(pid) { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } }
+}
+
+// --- pragmatic decision flow: Refine RE-ENTERS terminal handling ---------------
+// The field failure a correction round later would find: Refine re-invoked the
+// gate but never re-classified the NEW report, so a run reported the stale
+// needs_human_offline outcome. resolveGateTerminal now loops, so a Refine that
+// returns another review_unresolved re-enters the decision, and a Refine that
+// converges to done returns done.
+{
+  const { resolveGateTerminal } = await import('./lib/code-lane.mjs');
+  const harness = (reports, answersToGive) => {
+    const events = [];
+    const asked = [];
+    let ignites = 0;
+    let ai = 0;
+    const igniteGate = async () => { ignites += 1; return reports[ignites]; }; // reports[0] is the first, already in hand
+    const ask = async (q) => { asked.push(q); return answersToGive[ai++]; };
+    return {
+      run: () => resolveGateTerminal(reports[0], {
+        emit: (t, d) => events.push({ t, ...d }),
+        log: () => {}, stage: () => {}, ask, igniteGate, answers: [],
+      }),
+      events, asked, ignites: () => ignites,
+    };
+  };
+  const greenUnresolved = (n) => ({ status: 'review_unresolved', verifyClean: true, parkedSha: `sha${n}`, branch: 'camus/x', blocking: [{ priority: 1, title: `open${n}` }] });
+  const doneReport = { status: 'done', parkedSha: 'shaFinal' };
+
+  // Refine → the gate converges to done → the run returns DONE, never the stale
+  // needs_human_offline / done_with_findings from the first report.
+  {
+    const h = harness([greenUnresolved(1), doneReport], ['Refine: run more review/fix rounds on the open findings']);
+    const res = await h.run();
+    assert.equal(res.status, 'done', 'a Refine that converges returns done, not the stale unresolved outcome');
+    assert.equal(h.ignites(), 1, 'the gate was re-invoked exactly once for the single Refine');
+    assert.ok(h.events.some((e) => e.t === 'status' && e.status === 'done'), 'the terminal status event is done');
+  }
+
+  // Refine → the gate returns ANOTHER review_unresolved → the decision RE-OPENS
+  // (not a stale return); accepting the second time yields done_with_findings.
+  {
+    const h = harness([greenUnresolved(1), greenUnresolved(2)], [
+      'Refine: run more review/fix rounds on the open findings',
+      'Accept the reviewed risk and keep the candidate parked for final human merge',
+    ]);
+    const res = await h.run();
+    assert.equal(res.status, 'done_with_findings', 'a repeated unresolved re-opens the decision rather than returning stale');
+    assert.equal(h.asked.length, 2, 'the human was asked again after the Refine returned another unresolved report');
+    assert.equal(res.parkedSha, 'sha2', 'and the candidate is the SECOND (refined) parked commit, not the first');
+    assert.equal(res.accepted, true);
+    assert.equal(res.landed, false, 'Studio never claims a land: accept keeps the candidate parked for the human merge');
+  }
+
+  // Accept vs Leave are visibly different decisions that both preserve the park.
+  {
+    const accept = await harness([greenUnresolved(1)], ['Accept the reviewed risk and keep the candidate parked for final human merge']).run();
+    const leave = await harness([greenUnresolved(1)], ['Leave it parked and stop here']).run();
+    assert.equal(accept.status, 'done_with_findings');
+    assert.equal(leave.status, 'done_with_findings');
+    assert.equal(accept.accepted, true, 'Accept records the risk decision');
+    assert.equal(leave.accepted, false, 'Leave does not');
+    assert.equal(accept.parkedSha, 'sha1');
+    assert.equal(leave.parkedSha, 'sha1', 'both preserve the same parked candidate');
+    assert.equal(accept.landed, false);
+    assert.equal(leave.landed, false, 'neither claims a merge');
+  }
+
+  // The refine budget is bounded: after refineCap refines the option is withdrawn.
+  {
+    const asked = [];
+    let asks = 0;
+    let ignites = 0;
+    // Always try to Refine; the flow withdraws the option past the cap, so the
+    // final ask cannot return a Refine and the loop must terminate.
+    const ask = async (q) => {
+      asked.push(q);
+      asks += 1;
+      const refine = q.options.find((o) => o.startsWith('Refine'));
+      return refine ?? 'Leave it parked and stop here';
+    };
+    const res = await resolveGateTerminal(greenUnresolved(0), {
+      emit: () => {}, log: () => {}, stage: () => {}, ask,
+      igniteGate: async () => { ignites += 1; return greenUnresolved(ignites); },
+      answers: [], refineCap: 2,
+    });
+    assert.equal(ignites, 2, 'refineCap=2 allows exactly two re-invocations');
+    assert.ok(!asked.at(-1).options.some((o) => o.startsWith('Refine')), 'past the cap, Refine is no longer offered');
+    assert.equal(res.status, 'done_with_findings', 'and the run resolves rather than looping forever');
+  }
+
+  // ── INTEGRATION: a retry green must reach the SEALED RECEIPT, commit-bound ──
+  // The reproduced defect (field report 2026-08-05): the retry event carried no
+  // commitSha and derivation preferred the ORIGINAL inconclusive event, so the UI
+  // could say green while the receipt sealed
+  //   {execution: completed, verification: infra_failed, audit: independent_clean}.
+  // This drives the REAL deriveEvidence → deriveStatusDimensions → buildEvidencePack
+  // chain, not the pure resolver, because that is where the defect lived.
+  {
+    const { deriveEvidence } = await import('./lib/evidence.mjs');
+    const { deriveStatusDimensions, deriveHeadline } = await import('./lib/status-dims.mjs');
+    const { buildEvidencePack } = await import('./lib/evidence-pack.mjs');
+    const HEAD = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+    const gateReport = { status: 'verify_inconclusive', commit_sha: HEAD, branch: 'camus/wp6', parkedSha: HEAD };
+    // The exact event order a recovery produces: the gate's inconclusive verdict,
+    // then Studio's host-side re-verify of the same commit.
+    const events = [
+      { type: 'review', round: 1, scope: 'round', rev: 1, verdict: 'APPROVED', source: 'camus_gate_review', reviewerModel: 'gpt-5.6-sol', reviewerEffort: 'high', findings: [], claimAssessments: [], coverageAssessments: [] },
+      { type: 'gate_report', report: gateReport },
+      { type: 'verify_result', pass: null, warnings: null, skipped: null, source: 'gate_report_status', derived: true, commitSha: HEAD },
+      { type: 'verify_result', pass: true, warnings: 0, skipped: 0, checks: [], source: 'studio_reverify', commitSha: HEAD },
+    ];
+    const evidence = deriveEvidence(events);
+    const dims = deriveStatusDimensions({ lane: 'build', status: 'done', evidence, published: false });
+    assert.equal(dims.verification, 'passed', `the sealed dimensions honour the retry green (got ${dims.verification})`);
+    assert.notEqual(dims.verification, 'infra_failed', 'the reproduced infra_failed receipt must not come back');
+    const { schemaVersion, ...forHeadline } = dims;
+    assert.equal(deriveHeadline(forHeadline), 'verified', 'a clean review plus a bound retry green derives VERIFIED');
+
+    // And the pack seals it against the candidate HEAD.
+    const pack = buildEvidencePack({
+      goal: 'WP6 enemy combat', acceptanceContract: 'Deterministic checks pass on the parked candidate.',
+      lane: 'build', targetPath: '/repo', evidence, statuses: dims,
+      models: { maker: { backend: 'claude', provider: 'anthropic', model: 'opus' },
+                reviewer: { backend: 'codex', provider: 'openai', model: 'gpt-5.6-sol', effort: 'high' } },
+      simulated: false, verifyCommand: 'dotnet test tests/App.Tests/App.Tests.csproj -f net10.0', createdAt: 500,
+    });
+    assert.equal(pack.artifact.head, HEAD, 'the sealed artifact binds the candidate HEAD');
+    assert.equal(pack.statuses.verification, 'passed', 'and the pack seals verification as passed');
+    // A receipt that says "verified" must say WHAT was run to earn that. The pack
+    // hardcoded command:null, so an override-driven green named nothing.
+    assert.equal(pack.verification.command, 'dotnet test tests/App.Tests/App.Tests.csproj -f net10.0',
+      'the explicit verify command is sealed into the pack');
+    // …and it is receipt-COVERED: changing the command changes the receipt id.
+    const otherCmd = buildEvidencePack({
+      goal: 'WP6 enemy combat', acceptanceContract: 'Deterministic checks pass on the parked candidate.',
+      lane: 'build', targetPath: '/repo', evidence, statuses: dims,
+      models: { maker: { backend: 'claude', provider: 'anthropic', model: 'opus' },
+                reviewer: { backend: 'codex', provider: 'openai', model: 'gpt-5.6-sol', effort: 'high' } },
+      simulated: false, verifyCommand: 'dotnet test --filter Category!=Everything', createdAt: 500,
+    });
+    assert.notEqual(otherCmd.receipt_id, pack.receipt_id, 'the sealed command is covered by receipt_id, not decoration');
+    // Absent means absent: auto-detection, never a guessed command.
+    const autoDetected = buildEvidencePack({
+      goal: 'WP6 enemy combat', acceptanceContract: 'Deterministic checks pass on the parked candidate.',
+      lane: 'build', targetPath: '/repo', evidence, statuses: dims,
+      models: { maker: { backend: 'claude', provider: 'anthropic', model: 'opus' },
+                reviewer: { backend: 'codex', provider: 'openai', model: 'gpt-5.6-sol', effort: 'high' } },
+      simulated: false, createdAt: 500,
+    });
+    assert.equal(autoDetected.verification.command, null, 'no explicit command seals null, never an invented one');
+
+    // AN UNBOUND retry green must NOT be honoured — that is the whole guard.
+    const unbound = deriveEvidence([...events.slice(0, 3),
+      { type: 'verify_result', pass: true, source: 'studio_reverify' }]);
+    assert.notEqual(deriveStatusDimensions({ lane: 'build', status: 'done', evidence: unbound }).verification, 'passed',
+      'a retry green with no commitSha is refused, so "latest" can never mean "unbound"');
+    // A retry bound to the WRONG commit is refused too.
+    const wrongSha = deriveEvidence([...events.slice(0, 3),
+      { type: 'verify_result', pass: true, source: 'studio_reverify', commitSha: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' }]);
+    assert.notEqual(deriveStatusDimensions({ lane: 'build', status: 'done', evidence: wrongSha }).verification, 'passed',
+      'a retry green bound to another commit certifies nothing here');
+    // A retry that comes back RED is a real red, not a resurrected inconclusive.
+    const red = deriveEvidence([...events.slice(0, 3),
+      { type: 'verify_result', pass: false, source: 'studio_reverify', commitSha: HEAD }]);
+    assert.equal(deriveStatusDimensions({ lane: 'build', status: 'verify_failed', evidence: red }).verification, 'failed',
+      'a bound retry red is honoured as failed');
+  }
+  {
+    // The resolver half: review-clean → done, unresolved review → done_with_findings,
+    // and the emitted retry event is commit-bound. The fixture head EQUALS the
+    // parked sha because that is what really happens: verify.py reports the head
+    // of the parked worktree it just checked.
+    const PARKED = 'feedfacefeedfacefeedfacefeedfacefeedface';
+    const seen = [];
+    const deps = { emit: (t, d) => seen.push({ t, ...d }), log: () => {}, stage: () => {}, igniteGate: async () => ({ status: 'done' }), answers: [],
+      ask: async (q) => q.options.find((o) => o.startsWith('Retry')),
+      verifyCandidate: async () => ({ ran: true, pass: true, raw: { head: PARKED } }) };
+    const clean = await resolveGateTerminal({ status: 'verify_inconclusive', parkedSha: PARKED, branch: 'camus/x' }, deps);
+    assert.equal(clean.status, 'done', 'a review-clean candidate that verifies on retry is DONE, not done_with_findings');
+    assert.equal(clean.verifiedSha, PARKED, 'the resolved sha is recorded');
+    const emitted = seen.filter((e) => e.t === 'verify_result' && e.source === 'studio_reverify').at(-1);
+    assert.equal(emitted.commitSha, PARKED, 'the retry event is COMMIT-BOUND to the verified head');
+    assert.equal(emitted.source, 'studio_reverify');
+    const unresolved = await resolveGateTerminal({ status: 'review_unresolved', verifyClean: null, parkedSha: PARKED, blocking: [{ priority: 1, title: 'open' }] }, deps);
+    assert.equal(unresolved.status, 'done_with_findings', 'an unresolved review keeps the findings qualifier even when verification passes');
+    // ── THE SHA MUST COME FROM THE VERIFIER ────────────────────────────────────
+    // This previously substituted the parked sha when the verifier reported no
+    // head, which asserts "the parked commit was checked" on no evidence at all.
+    // Both shapes below must refuse: no verdict emitted, nothing resolved.
+    const retryOnce = (verifyCandidate, sink) => {
+      let asked = 0;
+      return resolveGateTerminal({ status: 'verify_inconclusive', parkedSha: 'sha-parked' }, {
+        ...deps,
+        emit: (t, d) => sink.push({ t, ...d }),
+        verifyCandidate,
+        // Retry first, then leave it parked — a faithful human, not a spin.
+        ask: async (q) => (asked++ === 0 ? q.options.find((o) => o.startsWith('Retry')) : q.options.find((o) => o.startsWith('Leave'))),
+      });
+    };
+    for (const [label, raw] of [
+      ['no head reported', {}],
+      ['a head for a DIFFERENT commit', { head: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' }],
+    ]) {
+      const sink = [];
+      const out = await retryOnce(async () => ({ ran: true, pass: true, raw }), sink);
+      const emitted = sink.filter((e) => e.t === 'verify_result' && e.source === 'studio_reverify');
+      assert.equal(emitted.length, 0, `${label}: no verify_result is emitted — an unbindable result is not evidence`);
+      assert.ok(!['done', 'done_with_findings', 'verify_failed'].includes(out.status),
+        `${label}: nothing is resolved (got ${out.status})`);
+      assert.equal(out.status, 'needs_decision', `${label}: the candidate stays parked for a human`);
+      assert.equal(out.parkedSha, 'sha-parked', `${label}: the parked candidate is preserved`);
+      assert.ok(!('verifiedSha' in out), `${label}: no verified sha is claimed`);
+    }
+    // A verifier that never produces a bindable verdict must not spin forever:
+    // an auto-answering caller lands on the safe default instead of hanging.
+    {
+      const sink = [];
+      const out = await resolveGateTerminal({ status: 'verify_inconclusive', parkedSha: 'sha-parked' }, {
+        ...deps, emit: (t, d) => sink.push({ t, ...d }),
+        verifyCandidate: async () => ({ ran: true, pass: true, raw: {} }),   // always unbindable
+      });                                                                    // deps.ask always retries
+      assert.equal(out.status, 'needs_decision', 'unbounded retrying is bounded, and the safe default is parked');
+      // Scoped to the RETRY source on purpose: the gate's own derived inconclusive
+      // event is in this list legitimately, and a bare `type` filter would pass
+      // for the wrong reason.
+      assert.equal(sink.filter((e) => e.t === 'verify_result' && e.source === 'studio_reverify').length, 0,
+        'and still no fabricated verdict from any of the attempts');
+    }
+  }
+
+  // ── THE VERIFIER BODY ACTUALLY RUNS ────────────────────────────────────────
+  // makeCandidateVerifier called `extractJsonObject`, which does not exist in this
+  // codebase. Every test to date injected a fake verifyCandidate, so its body had
+  // never executed: the first real retry would have thrown ReferenceError and taken
+  // the server down. Found by driving the recovery for real (2026-08-05). These
+  // assertions run the body — subprocess, env, stdout, parse, mapping.
+  {
+    const { makeCandidateVerifier, extractVerifyResult, groupIsGone } = await import('./lib/code-lane.mjs');
+    const { mkdtempSync, writeFileSync, chmodSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join: pjoin } = await import('node:path');
+
+    // The parser: the real result NESTS objects, and the guard can print first.
+    const real = 'camus_guard: some note\n{"pass": true, "inconclusive": false, "failures": [], "checks": [{"name": "t", "cmd": ["x"], "exit": 0}], "head": "abc123"}\n';
+    assert.equal(extractVerifyResult(real).head, 'abc123', 'a nested result object is extracted past leading noise');
+    assert.equal(extractVerifyResult('{"inconclusive": true}'), null, 'an object with no boolean pass is not a result');
+    assert.equal(extractVerifyResult('no json here'), null, 'prose yields nothing rather than a guess');
+    assert.equal(extractVerifyResult(''), null, 'empty output yields nothing');
+
+    const dir = mkdtempSync(pjoin(tmpdir(), 'cls-verifier-'));
+    const stub = pjoin(dir, 'verify-stub.sh');
+    const write = (bodyLines) => { writeFileSync(stub, `#!/usr/bin/env bash\n${bodyLines}\n`); chmodSync(stub, 0o755); };
+
+    // A green that names its head, and CAMUS_VERIFY_CMD really reaches the script.
+    write('printf \'{"pass": true, "inconclusive": false, "failures": [], "checks": [], "head": "%s"}\\n\' "${CAMUS_VERIFY_CMD:-none}"');
+    const green = await makeCandidateVerifier({ worktree: dir, verifyCmd: 'pnpm test', scriptPath: stub })();
+    assert.equal(green.ran, true, 'the verifier body runs a real subprocess');
+    assert.equal(green.pass, true, 'and reports a green');
+    assert.equal(green.raw.head, 'pnpm test', 'CAMUS_VERIFY_CMD is passed through to the script');
+
+    // inconclusive maps to the WITHHELD verdict, not to red.
+    write('printf \'{"pass": false, "inconclusive": true, "failures": [{"stage":"verify","kind":"missing_tool"}], "checks": []}\\n\'');
+    const amber = await makeCandidateVerifier({ worktree: dir, scriptPath: stub })();
+    assert.equal(amber.ran, true);
+    assert.equal(amber.pass, null, 'inconclusive maps to pass:null, never false');
+
+    write('printf \'{"pass": false, "inconclusive": false, "failures": [{"stage":"test"}], "checks": []}\\n\'');
+    assert.equal((await makeCandidateVerifier({ worktree: dir, scriptPath: stub })()).pass, false, 'a real red stays red');
+
+    // ── STOP TERMINATES THE VERIFIER'S PROCESS GROUP ───────────────────────────
+    // A `dotnet test` sweep runs for minutes. The verifier used to be started with
+    // execFile and no signal, so Stop marked the run and then WAITED for the command
+    // — up to fifteen minutes, with tests still churning in the operator's worktree.
+    // This uses a real long-lived group with a child that outlives its parent shell,
+    // which is what a build tool actually looks like.
+    {
+      write([
+        // A grandchild that would survive a signal sent only to the parent.
+        'sleep 600 &',
+        'child=$!',
+        'echo "child=$child" > "$1/child.pid"',
+        'sleep 600',
+      ].join('\n'));
+      const probeDir = mkdtempSync(pjoin(tmpdir(), 'cls-verifygrp-'));
+      const ac = new AbortController();
+      const verify = makeCandidateVerifier({ worktree: probeDir, scriptPath: stub, signal: ac.signal, termGraceMs: 400 });
+      const running = verify();
+      // Wait until the tree really exists, so the test cannot pass by racing ahead.
+      const { readFileSync: rf, existsSync: ex } = await import('node:fs');
+      let childPid = null;
+      for (let i = 0; i < 60 && !childPid; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        if (ex(pjoin(probeDir, 'child.pid'))) childPid = Number(String(rf(pjoin(probeDir, 'child.pid'), 'utf8')).split('=')[1]);
+      }
+      assert.ok(childPid && childPid > 0, 'the probe verifier really started a child process');
+      const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      assert.equal(alive(childPid), true, 'and that child is alive before the stop');
+
+      const t0 = Date.now();
+      ac.abort();
+      const res = await running;
+      const elapsed = Date.now() - t0;
+
+      assert.equal(res.ran, false, 'a stopped verification produces no verdict');
+      assert.equal(res.stopped, true, 'and is reported as stopped');
+      assert.equal(res.groupTerminated, true, `the owned process GROUP was terminated (${res.error})`);
+      assert.ok(elapsed < 15_000, `stop returns promptly rather than waiting out the command (took ${elapsed}ms)`);
+      // The point of group signalling: the SURVIVING CHILD is gone too.
+      for (let i = 0; i < 30 && alive(childPid); i++) await new Promise((r) => setTimeout(r, 100));
+      assert.equal(alive(childPid), false, 'the long-lived grandchild was killed, not orphaned into the worktree');
+      assert.equal(groupIsGone(res.pgid), true, 'and nothing is left in the group');
+    }
+    // A TERM-RESISTANT group must still die. A build tool that traps SIGTERM (or
+    // ignores it while a child compiles) must not be able to outlive a Stop: TERM is
+    // ignored, so the escalation to KILL is what ends it — and KILL cannot be trapped.
+    {
+      write([
+        'trap "" TERM',                      // deliberately ignore the polite signal
+        'sleep 600 &',
+        'child=$!',
+        'echo "child=$child" > "$1/child.pid"',
+        'wait $child',
+      ].join('\n'));
+      const probeDir = mkdtempSync(pjoin(tmpdir(), 'cls-termresist-'));
+      const ac = new AbortController();
+      const running = makeCandidateVerifier({ worktree: probeDir, scriptPath: stub, signal: ac.signal, termGraceMs: 300, killGraceMs: 3000 })();
+      const { readFileSync: rf, existsSync: ex } = await import('node:fs');
+      let childPid = null;
+      for (let i = 0; i < 60 && !childPid; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        if (ex(pjoin(probeDir, 'child.pid'))) childPid = Number(String(rf(pjoin(probeDir, 'child.pid'), 'utf8')).split('=')[1]);
+      }
+      assert.ok(childPid > 0, 'the TERM-resistant probe started a child');
+      ac.abort();
+      const res = await running;
+      assert.equal(res.stopped, true, 'the stop is reported');
+      assert.equal(res.groupTerminated, true, `a group that IGNORES TERM is still killed (${res.error})`);
+      const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      for (let i = 0; i < 30 && alive(childPid); i++) await new Promise((r) => setTimeout(r, 100));
+      assert.equal(alive(childPid), false, 'and its child is gone too');
+    }
+    // A PERMANENTLY-ALIVE group must never be reported as terminated. Injected,
+    // because a process that truly survives SIGKILL cannot be produced on purpose —
+    // and the point is what Studio SAYS when its signals do not take.
+    {
+      const probeDir = mkdtempSync(pjoin(tmpdir(), 'cls-neverdies-'));
+      write('sleep 0.2');
+      const ac = new AbortController();
+      const running = makeCandidateVerifier({
+        worktree: probeDir, scriptPath: stub, signal: ac.signal,
+        termGraceMs: 100, killGraceMs: 200,
+        groupGone: () => false,                     // nothing we send ever takes
+      })();
+      await new Promise((r) => setTimeout(r, 50));
+      ac.abort();
+      const res = await running;
+      assert.equal(res.ran, false, 'no verdict from a stop');
+      assert.equal(res.stopped, true, 'it is reported as stopped');
+      assert.equal(res.groupTerminated, false, 'and NOT as terminated, because it was not');
+      assert.match(res.error, /still has a live member/, 'the error names the surviving group');
+      assert.ok(String(res.pgid).length > 0, 'and carries the pgid to chase');
+    }
+    // An abort that arrives BEFORE the spawn never starts a process at all.
+    {
+      const ac = new AbortController();
+      ac.abort();
+      const res = await makeCandidateVerifier({ worktree: dir, scriptPath: stub, signal: ac.signal })();
+      assert.equal(res.ran, false, 'an already-stopped run does not start the verifier');
+      assert.equal(res.stopped, true, 'and says it was stopped');
+    }
+
+    // Unreadable output and a missing script are REFUSALS, not verdicts.
+    write('echo "the toolchain exploded"; exit 3');
+    const junk = await makeCandidateVerifier({ worktree: dir, scriptPath: stub })();
+    assert.equal(junk.ran, false, 'unparseable output does not become a verdict');
+    assert.match(junk.error, /no readable/, 'and says so');
+    const missing = await makeCandidateVerifier({ worktree: dir, scriptPath: pjoin(dir, 'nope.sh') })();
+    assert.equal(missing.ran, false, 'a missing verify script is a refusal');
+    assert.equal((await makeCandidateVerifier({ worktree: null, scriptPath: stub })()).ran, false, 'and so is having no worktree');
+  }
+
+  // ── VERIFICATION-ONLY RECOVERY: ZERO MODEL TURNS ───────────────────────────
+  // Resume used to re-enter the gate on a parked candidate, and the gate enters
+  // Plan/Implement unconditionally: run 20260805-104802-rv4d resumed to
+  // `Verify → Plan → Implement` on a candidate that was already committed and
+  // already reviewed (field report 2026-08-05). Recovery is now its own lane.
+  {
+    const { recoveryTarget, runVerificationRecovery } = await import('./lib/code-lane.mjs');
+    const PARKED = 'e3487e891d409fc218591602c6c8565b16af9094';
+    const WT = '/wt/camus-wt-implement-only-wp6';
+    const sealed = {
+      id: '20260805-104802-rv4d', lane: 'build', status: 'needs_decision',
+      gateReport: { status: 'verify_inconclusive', commit_sha: PARKED, parkedSha: PARKED, branch: 'camus/wp6', worktree: WT },
+      evidencePack: { receipt_id: 'sha256:sourcereceipt' },
+    };
+
+    // ── THE REAL RECEIPT SHAPE ─────────────────────────────────────────────────
+    // The selector previously read a top-level `gateReport` that ONLY its own test
+    // fixture had. Production seals the gate report at `report` (and a copy at
+    // `evidence.gateReport`), so against the actual WP6 receipt it answered "the gate
+    // ended unknown" and the run fell through to the gate. This fixture is a
+    // sanitized copy of runs/20260805-104802-rv4d/report.json: values redacted,
+    // NOTHING added — it has no top-level gateReport and no sealed sha, exactly like
+    // production.
+    {
+      const { readFileSync } = await import('node:fs');
+      const legacy = JSON.parse(readFileSync(new URL('./fixtures/wp6-needs-decision.report.json', import.meta.url), 'utf8'));
+      assert.ok(!('gateReport' in legacy), 'the fixture really is production-shaped: no top-level gateReport');
+      assert.equal(legacy.report.status, 'verify_inconclusive', 'its gate report lives under `report`');
+      assert.equal(legacy.status, 'needs_decision', 'over an outer needs_decision');
+      const lt = recoveryTarget(legacy);
+      assert.equal(lt.eligible, true, `the REAL receipt shape is recoverable (got: ${lt.reason})`);
+      assert.ok(!/unknown/.test(String(lt.reason)), 'and never reports the gate status as unknown');
+      assert.equal(lt.sealedSha, null, 'production sealed no candidate sha');
+      assert.equal(lt.needsAdoption, true, 'so the target must be adopted, not assumed');
+      assert.equal(lt.branch, legacy.report.branch, 'the branch comes from the receipt');
+      assert.equal(lt.worktree, legacy.report.worktree, 'and so does the worktree');
+      // The copy under evidence works too, for receipts sealed without `report`.
+      const evOnly = { ...legacy, report: undefined };
+      assert.equal(recoveryTarget(evOnly).eligible, true, 'evidence.gateReport is read as well');
+
+      // ── A PARKED CANDIDATE IS FLAGGED THE MOMENT THE STATUSES MATCH ──────────
+      // `parkedCandidate` used to be attached only by the deeper checks, so a receipt
+      // whose worktree is gone came back as a plain ineligible and the caller fell
+      // straight through into the gate — the one thing this repair exists to prevent.
+      const noWt = JSON.parse(JSON.stringify(legacy));
+      delete noWt.report.worktree;
+      if (noWt.evidence?.gateReport) delete noWt.evidence.gateReport.worktree;
+      const gone = recoveryTarget(noWt);                 // and no durable fallback
+      assert.equal(gone.eligible, false, 'with no worktree anywhere it cannot be targeted');
+      assert.equal(gone.parkedCandidate, true, 'but it is STILL a parked candidate, so resume must refuse rather than re-plan');
+      assert.match(gone.reason, /worktree/, 'and the refusal names the missing worktree');
+      // The fallback still works when one is available.
+      assert.equal(recoveryTarget(noWt, { worktreeFallback: '/live/camus-wt-x' }).eligible, true,
+        'the durable status record can supply the worktree');
+      // Everything BEFORE the status match is a genuine non-candidate: those must not
+      // be flagged, or an ordinary failed run could never resume through the gate.
+      for (const [label, patch] of [
+        ['a words lane', { lane: 'freeform' }],
+        ['a finished run', { status: 'done' }],
+        ['a red gate', { report: { ...legacy.report, status: 'verify_failed' }, evidence: { ...legacy.evidence, gateReport: { ...legacy.evidence.gateReport, status: 'verify_failed' } } }],
+      ]) {
+        const r = recoveryTarget({ ...legacy, ...patch });
+        assert.equal(r.eligible, false, `${label} is not recoverable`);
+        assert.ok(!r.parkedCandidate, `${label} is NOT flagged as a parked candidate, so the gate stays available to it`);
+      }
+    }
+
+    // ELIGIBILITY. Only this exact shape recovers in place; everything else must
+    // fall through to the normal gate rather than silently verifying nothing.
+    const t = recoveryTarget(sealed);
+    assert.equal(t.eligible, true, 'needs_decision over verify_inconclusive with a parked commit is recoverable');
+    assert.equal(t.sealedSha, PARKED, 'the target names the sha the GATE sealed');
+    assert.equal(t.needsAdoption, false, 'and needs no adoption');
+    assert.equal(t.worktree, WT, 'and the parked worktree');
+    assert.equal(t.sourceRunId, '20260805-104802-rv4d', 'and the source run it recovers');
+    // An UNVALIDATED source pack is not claimed: a bare {receipt_id} stub cannot be
+    // verified to describe its own contents, so the link is withheld and the reason
+    // recorded (audit 2026-08-05 — the redacted fixture was exactly this shape).
+    assert.equal(t.sourceReceiptId, null, 'an unvalidated source pack is NOT linked');
+    assert.match(t.sourceReceiptStatus, /^unusable: /, 'and the receipt says why it was not linked');
+    assert.equal(t.sourceAudit, null, 'with no audit claimed from it either');
+    for (const [label, patch] of [
+      ['a words lane', { lane: 'freeform' }],
+      ['a finished run', { status: 'done' }],
+      ['a red gate', { gateReport: { ...sealed.gateReport, status: 'verify_failed' } }],
+      ['no worktree left', { gateReport: { status: 'verify_inconclusive', parkedSha: PARKED } }],
+    ]) {
+      const r = recoveryTarget({ ...sealed, ...patch });
+      assert.equal(r.eligible, false, `${label} is NOT recovered in place`);
+      assert.ok(r.reason && r.reason.length > 10, `${label} says why in plain words`);
+    }
+    // The durable status record supplies the worktree when the report predates it.
+    assert.equal(recoveryTarget({ ...sealed, gateReport: { status: 'verify_inconclusive', parkedSha: PARKED } }, { worktreeFallback: WT }).worktree, WT,
+      'a missing report worktree falls back to the live status record');
+
+    // ── LEGACY ADOPTION IS SAFE OR IT REFUSES ──────────────────────────────────
+    // With no sealed sha, the only honest target is the recorded worktree's current
+    // HEAD — and only when that worktree really is the one recorded, on the branch
+    // recorded, and clean. Anything else is a refusal, never a guess, and the result
+    // is labelled so no reader mistakes it for something the source sealed.
+    {
+      const { resolveRecoveryTarget } = await import('./lib/code-lane.mjs');
+      const HEAD = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      const legacy = { id: 'src', lane: 'build', status: 'needs_decision', report: { status: 'verify_inconclusive', worktree: WT, branch: 'camus/wp6' } };
+      // A git probe whose answers are the thing under test.
+      const probe = (over = {}) => ({
+        realpath: (p) => over.realpath !== undefined ? over.realpath : p,
+        run: async (args) => {
+          const key = args.join(' ');
+          const answers = {
+            'rev-parse --is-inside-work-tree': { ok: true, out: 'true' },
+            'rev-parse --show-toplevel': { ok: true, out: WT },
+            'rev-parse HEAD': { ok: true, out: HEAD },
+            'rev-parse --abbrev-ref HEAD': { ok: true, out: 'camus/wp6' },
+            'status --porcelain': { ok: true, out: '' },
+            ...over.answers,
+          };
+          return answers[key] ?? { ok: false, out: '' };
+        },
+      });
+      const happy = await resolveRecoveryTarget(legacy, { git: probe() });
+      assert.equal(happy.eligible, true, `a clean recorded worktree adopts its HEAD (got: ${happy.reason})`);
+      assert.equal(happy.parkedSha, HEAD, 'the adopted sha is the worktree HEAD');
+      assert.equal(happy.shaProvenance, 'adopted_clean_worktree_head', 'and it is LABELLED as adopted, not sealed');
+      assert.notEqual(happy.shaProvenance, 'sealed_by_source', 'never claiming the source sealed it');
+
+      for (const [label, over, expect] of [
+        ['the worktree is gone', { realpath: null }, /no longer exists/],
+        ['it is not a work tree', { answers: { 'rev-parse --is-inside-work-tree': { ok: true, out: 'false' } } }, /not a git work tree/],
+        ['it is a SUBDIRECTORY of one', { answers: { 'rev-parse --show-toplevel': { ok: true, out: '/somewhere/else' } } }, /not the root/],
+        ['HEAD does not resolve', { answers: { 'rev-parse HEAD': { ok: false, out: '' } } }, /no resolvable HEAD/],
+        ['it moved to another branch', { answers: { 'rev-parse --abbrev-ref HEAD': { ok: true, out: 'main' } } }, /different branch/],
+        ['it has uncommitted changes', { answers: { 'status --porcelain': { ok: true, out: ' M src/a.cs' } } }, /uncommitted changes/],
+        ['cleanliness is unknown', { answers: { 'status --porcelain': { ok: false, out: '' } } }, /cleanliness is unknown/],
+      ]) {
+        const r = await resolveRecoveryTarget(legacy, { git: probe(over) });
+        assert.equal(r.eligible, false, `${label}: adoption is REFUSED`);
+        assert.match(r.reason, expect, `${label}: the refusal names the obstacle`);
+        // And the refusal must be marked so the caller cannot fall through to the gate.
+        assert.equal(r.parkedCandidate, true, `${label}: still flagged as a parked candidate, so resume must refuse rather than re-plan`);
+      }
+      // A SEALED sha is never adopted, and a worktree that moved off it is refused.
+      const sealedSrc = { ...legacy, report: { ...legacy.report, parkedSha: HEAD } };
+      const kept = await resolveRecoveryTarget(sealedSrc, { git: probe() });
+      assert.equal(kept.shaProvenance, 'sealed_by_source', 'a sealed sha keeps sealed provenance');
+      const moved = await resolveRecoveryTarget(sealedSrc, { git: probe({ answers: { 'rev-parse HEAD': { ok: true, out: 'b'.repeat(40) } } }) });
+      assert.equal(moved.eligible, false, 'a worktree that moved off the sealed sha is refused');
+      assert.match(moved.reason, /different candidate/, 'and says it is a different candidate');
+    }
+
+    // ZERO TURNS. Any adapter or igniter touch is a failure of the whole design,
+    // so they are wired to throw rather than count.
+    const forbidden = (what) => () => { throw new Error(`FORBIDDEN: the recovery called ${what}`); };
+    const run = {
+      id: 'recovery-run', lane: 'build', idSalt: 'studio-20260805-104802-rv4d',
+      verifyCmd: 'dotnet test tests/Core.Tests/Core.Tests.csproj -f net10.0',
+      // What the SERVER passes: the resolved target, whose parkedSha and provenance
+      // came out of resolveRecoveryTarget's git checks.
+      recovery: { ...t, parkedSha: PARKED, shaProvenance: 'sealed_by_source', canonicalWorktree: WT },
+      models: { maker: { model: 'opus' }, reviewer: { model: 'gpt-5.6-sol' } },
+    };
+    const drive = async (verifyResult) => {
+      const events = [];
+      const out = await runVerificationRecovery(run, {
+        emit: (t2, d) => events.push({ t: t2, ...d }),
+        signal: { aborted: false },
+        // Present and poisoned: if the executor ever reaches for them, it throws.
+        adapters: { maker: forbidden('the maker seat'), reviewer: forbidden('the reviewer seat') },
+        igniteGate: forbidden('the gate igniter'),
+        waitForAnswer: forbidden('a human question'),
+        verifyCandidate: async () => verifyResult,
+      });
+      return { out, events };
+    };
+
+    // 1. A bound green resolves done and emits a commit-bound verdict.
+    {
+      const { out, events } = await drive({ ran: true, pass: true, raw: { head: PARKED } });
+      assert.equal(out.status, 'done', 'a bound green on the parked candidate is done');
+      assert.equal(out.verifiedSha, PARKED, 'and names the sha it certified');
+      const v = events.filter((e) => e.t === 'verify_result');
+      assert.equal(v.length, 1, 'exactly one verification verdict is emitted');
+      assert.equal(v[0].commitSha, PARKED, 'bound to the sha the ORIGINAL run sealed');
+      assert.equal(v[0].source, 'studio_reverify', 'and marked as the host re-verify');
+      // The PHASES are Verify-only: no plan, no implement, no gate, no review.
+      const stages = events.filter((e) => e.t === 'stage').map((e) => e.name);
+      assert.deepEqual([...new Set(stages)], ['verify'], `the only phase is verify (saw ${stages.join(', ')})`);
+      // And the receipt REFERENCES the source rather than replacing it.
+      assert.equal(out.recoveryOf.sourceRunId, '20260805-104802-rv4d', 'the receipt names the source run');
+      assert.equal(out.recoveryOf.sourceReceiptId, null, 'and withholds an unvalidated source receipt');
+      assert.match(out.recoveryOf.sourceReceiptStatus, /^unusable: /, 'recording why it is unlinked');
+      assert.equal(out.recoveryOf.parkedSha, PARKED, 'and the candidate sha');
+      assert.equal(out.recoveryOf.verifyCmd, run.verifyCmd, 'and the command that produced the result');
+      assert.equal(out.landed, false, 'nothing was landed — recovery never merges');
+    }
+    // 2. A bound red is a real red.
+    {
+      const { out } = await drive({ ran: true, pass: false, raw: { head: PARKED, failures: [{ stage: 'test' }] } });
+      assert.equal(out.status, 'verify_failed', 'a bound red is reported as a red');
+    }
+    // 3. Missing / mismatched HEAD on a VERDICT stays inconclusive and emits nothing.
+    for (const [label, raw] of [['no head', {}], ['a different commit', { head: 'deadbeef'.repeat(5) }]]) {
+      const { out, events } = await drive({ ran: true, pass: true, raw });
+      assert.equal(out.status, 'needs_decision', `${label}: stays parked for a human`);
+      assert.equal(events.filter((e) => e.t === 'verify_result').length, 0, `${label}: no verdict is emitted`);
+      assert.ok(!('verifiedSha' in out), `${label}: nothing is claimed as verified`);
+      assert.ok(out.recoveryNote && out.recoveryNote.length > 10, `${label}: the receipt says why`);
+    }
+    // 3b. AN INCONCLUSIVE RESULT IS CLASSIFIED BEFORE HEAD IS DEMANDED. A guard refusal
+    // has no verdict and no HEAD — there was nothing to take a HEAD of — so reporting
+    // "no HEAD" would replace the real diagnosis and send the operator after the wrong
+    // problem. The verifier's own failures survive into the receipt.
+    {
+      const guardRefusal = {
+        ran: true, pass: null,
+        raw: { inconclusive: true, checks: [], failures: [{ stage: 'guard', kind: 'refused', log_tail: 'target rejected by camus_guard (not the caller repo or a camus worktree)' }] },
+      };
+      const { out, events } = await drive(guardRefusal);
+      assert.equal(out.status, 'needs_decision', 'a guard refusal leaves the candidate parked');
+      assert.match(out.recoveryNote, /guard\/refused/, 'and the note carries the verifier\'s own stage/kind');
+      assert.ok(!/no HEAD/i.test(out.recoveryNote), 'it does NOT blame a missing HEAD');
+      assert.deepEqual(out.failures, guardRefusal.raw.failures, 'the verifier failures are preserved verbatim, diagnosis intact');
+      assert.equal(events.filter((e) => e.t === 'verify_result').length, 0, 'and no verdict is emitted');
+      // A missing toolchain is the same shape, with its own kind.
+      const noTool = await drive({ ran: true, pass: null, raw: { inconclusive: true, failures: [{ stage: 'verify', reason: 'no_verifier_detected', kind: 'missing_tool' }] } });
+      assert.match(noTool.out.recoveryNote, /missing_tool|no_verifier_detected/, 'a missing toolchain keeps its own diagnosis');
+      assert.ok(!/no HEAD/i.test(noTool.out.recoveryNote), 'and is not reported as a HEAD problem either');
+      // HEAD binding is still MANDATORY for a real verdict — proved above in 3.
+    }
+    // 4. A verifier that cannot run at all: honest, and still zero turns.
+    {
+      const { out, events } = await drive({ ran: false, error: 'dotnet workload missing' });
+      assert.equal(out.status, 'needs_decision', 'an unrunnable verifier leaves it parked');
+      assert.match(out.recoveryNote, /workload missing/, 'and preserves the reason verbatim');
+      assert.equal(events.filter((e) => e.t === 'verify_result').length, 0, 'with no invented verdict');
+    }
+    // 5. STOP DURING RECOVERY MUST NOT REJECT. The server consumes the runner with
+    // a bare .then(), so a throw here is an unhandled rejection that kills the whole
+    // process — which is exactly what happened when a Stop landed inside the verify
+    // await while driving this for real (2026-08-05).
+    {
+      const events = [];
+      const signal = { aborted: false };
+      const out = await runVerificationRecovery(run, {
+        emit: (t2, d) => events.push({ t: t2, ...d }),
+        signal,
+        adapters: { maker: forbidden('the maker seat'), reviewer: forbidden('the reviewer seat') },
+        igniteGate: forbidden('the gate igniter'),
+        // The stop lands WHILE the verifier is running, the real race.
+        verifyCandidate: async () => { signal.aborted = true; return { ran: true, pass: true, raw: { head: PARKED } }; },
+      });
+      assert.equal(out.status, 'stopped', 'a stop mid-verify resolves as stopped rather than throwing');
+      assert.equal(events.filter((e) => e.t === 'verify_result').length, 0, 'and no verdict is recorded for a stopped recovery');
+      assert.equal(events.filter((e) => e.t === 'status').at(-1).status, 'stopped', 'the terminal event says stopped');
+      assert.match(out.recoveryNote, /group terminated/, 'and the clean stop states that the group was terminated');
+    }
+    // 6. A STOP OVER A SURVIVING GROUP IS NOT CLEAN. `stopped` asserts nothing of ours
+    // is still running in the operator's worktree, so a verifier reporting
+    // groupTerminated:false must seal an infra failure naming the pgid — the same
+    // false-clean the reviewer lane was already fixed for.
+    {
+      const events = [];
+      const out = await runVerificationRecovery(run, {
+        emit: (t2, d) => events.push({ t: t2, ...d }),
+        signal: { aborted: true },
+        adapters: { maker: forbidden('the maker seat'), reviewer: forbidden('the reviewer seat') },
+        igniteGate: forbidden('the gate igniter'),
+        verifyCandidate: async () => ({ ran: false, stopped: true, groupTerminated: false, pgid: 424242, error: 'verification was stopped but process group 424242 still has a live member' }),
+      });
+      assert.equal(out.status, 'failed', `a surviving verifier group seals FAILED, never stopped (got ${out.status})`);
+      assert.notEqual(out.status, 'stopped', 'never a clean stop over an orphan');
+      assert.equal(out.orphanedPgid, 424242, 'and the receipt carries the pgid to chase');
+      assert.match(out.recoveryNote, /survived TERM and KILL/, 'and says the signals did not take');
+      assert.match(out.recoveryNote, /424242/, 'naming the group');
+      assert.equal(events.filter((e) => e.t === 'status').at(-1).status, 'failed', 'the terminal event says failed');
+      assert.equal(events.filter((e) => e.t === 'verify_result').length, 0, 'with no verdict invented');
+    }
+  }
+
+  // ── RECOVERY LINEAGE IS SEALED, AND A ZERO-MODEL RUN NAMES NO VENDOR ───────
+  // The lineage lived only as a top-level report field, so editing the displayed
+  // source receipt would not have changed receipt_id — a provenance claim outside the
+  // hash meant to cover it. And the model-free run sealed `anthropic:not-recorded` /
+  // `unknown:not-recorded`, inventing vendors for a run that made no model calls.
+  {
+    const { buildEvidencePack, NO_MODEL_IDENTITY } = await import('./lib/evidence-pack.mjs');
+    const SHA = 'e3487e891d409fc218591602c6c8565b16af9094';
+    const base = {
+      goal: 'recover a parked candidate', acceptanceContract: 'Deterministic checks pass on the parked candidate.',
+      lane: 'build', targetPath: '/repo',
+      evidence: { gateReport: { commit_sha: SHA }, verify: [{ pass: true, commitSha: SHA, source: 'studio_reverify' }], rounds: [], revisions: [] },
+      statuses: { schemaVersion: 1, execution: 'completed', verification: 'passed', audit: 'not_run', publication: 'not_published' },
+      models: { maker: null, reviewer: null, loop: { roundCap: 0 }, recovery: true },
+      simulated: false, verifyCommand: 'dotnet test Core.Tests -f net10.0', createdAt: 1,
+      recoveryOf: { sourceRunId: '20260805-104802-rv4d', sourceReceiptId: 'sha256:5819ccaaaa', parkedSha: SHA, shaProvenance: 'adopted_clean_worktree_head' },
+    };
+    const pack = buildEvidencePack(base);
+    const log = pack.session_log.join('\n');
+    assert.match(log, /recovery of run: 20260805-104802-rv4d/, 'the source run is SEALED into the pack');
+    assert.match(log, /recovery source receipt: sha256:5819ccaaaa/, 'so is the source receipt');
+    assert.match(log, new RegExp(`recovery candidate: ${SHA}`), 'so is the candidate sha');
+    assert.match(log, /recovery sha provenance: adopted_clean_worktree_head/, 'and how that sha was established');
+
+    // THE BREAK-TEST THE AUDIT ASKED FOR: lineage must be receipt-COVERED.
+    const otherReceipt = buildEvidencePack({ ...base, recoveryOf: { ...base.recoveryOf, sourceReceiptId: 'sha256:DIFFERENT' } });
+    assert.notEqual(otherReceipt.receipt_id, pack.receipt_id, 'changing the source RECEIPT changes receipt_id');
+    const otherRun = buildEvidencePack({ ...base, recoveryOf: { ...base.recoveryOf, sourceRunId: 'some-other-run' } });
+    assert.notEqual(otherRun.receipt_id, pack.receipt_id, 'changing the source RUN changes receipt_id');
+    const otherProv = buildEvidencePack({ ...base, recoveryOf: { ...base.recoveryOf, shaProvenance: 'sealed_by_source' } });
+    assert.notEqual(otherProv.receipt_id, pack.receipt_id, 'changing the SHA PROVENANCE changes receipt_id');
+    const noLineage = buildEvidencePack({ ...base, recoveryOf: null });
+    assert.notEqual(noLineage.receipt_id, pack.receipt_id, 'and removing the lineage entirely changes it too');
+    assert.ok(!noLineage.session_log.some((l) => l.startsWith('recovery ')), 'a non-recovery pack carries no recovery lines');
+
+    // ZERO-MODEL IDENTITY names no vendor.
+    assert.equal(pack.pairing.executor.actual, NO_MODEL_IDENTITY, 'the executor identity is the explicit no-model token');
+    assert.equal(pack.pairing.auditor.actual, NO_MODEL_IDENTITY, 'and so is the auditor identity');
+    for (const field of ['requested', 'resolved', 'actual']) {
+      for (const role of ['executor', 'auditor']) {
+        const v = String(pack.pairing[role][field]);
+        assert.ok(!/anthropic|openai|moonshot/i.test(v), `${role}.${field} implies no vendor (got ${v})`);
+        assert.ok(!/not-recorded/.test(v), `${role}.${field} does not read as a lost observation (got ${v})`);
+      }
+    }
+    assert.match(log, /no model seats/, 'and the session log says plainly that no seats ran');
+    assert.equal(pack.pairing.independence, 'none', 'no independence is claimed');
+    for (const e of pack.economics) {
+      assert.ok(!/anthropic|openai/i.test(String(e.provider ?? '') + String(e.model ?? '')), 'economics name no vendor either');
+      assert.equal(e.usage, null, 'and record no usage');
+    }
+    // A REAL run is untouched by any of this.
+    const real = buildEvidencePack({
+      ...base, recoveryOf: null,
+      models: { maker: { backend: 'claude', provider: 'anthropic', model: 'opus' }, reviewer: { backend: 'codex', provider: 'openai', model: 'gpt-5.6-sol', effort: 'high' } },
+      evidence: { ...base.evidence, gateReport: { commit_sha: SHA, model: 'opus' }, rounds: [{ verdict: 'APPROVED', reviewerModel: 'gpt-5.6-sol', reviewerIdentity: 'openai:gpt-5.6-sol', source: 'camus_gate_review' }] },
+      statuses: { ...base.statuses, audit: 'independent_clean' },
+    });
+    assert.equal(real.pairing.executor.actual, 'anthropic:opus', 'a real run still records its real maker');
+    assert.equal(real.pairing.auditor.actual, 'openai:gpt-5.6-sol', 'and its real auditor');
+  }
+
+  // ── AN INTERRUPTED VERIFICATION DECISION IS STILL A PARKED CANDIDATE ───────
+  // Studio restarted while the gate awaited the verification question, so NO terminal
+  // report.json was written. Every sealed-report check found nothing, the replay was
+  // labelled `incomplete`, and the only offered action re-entered the gate and reran
+  // the model phases — with the review already clean at round 2 (production run
+  // 20260805-181917-f4b1). The event trail alone is enough to rebuild the parked state.
+  {
+    const { reconstructInterruptedParked, recoveryTarget } = await import('./lib/code-lane.mjs');
+    const { replayRecoveryKind } = await import('./public/run-ui-policy.mjs');
+    const SHA = '921a55885f36fc711c90a0671da87533c3bea93e';
+    const WT = '/wt/camus-wt-implement-only-wp7-enemybody-perception--zapxw';
+    const gate = { status: 'verify_inconclusive', commit_sha: SHA, parkedSha: SHA, branch: 'camus/implement-only-wp7-enemybody-perception--zapxw', worktree: WT, rounds: 2 };
+    // The EXACT trail shape the production run left: review rounds, the gate's
+    // inconclusive report, then an unanswered verification question. No terminal status.
+    const trail = [
+      { type: 'review', round: 1, verdict: 'CHANGES', source: 'camus_gate_review' },
+      { type: 'review', round: 2, verdict: 'APPROVED', source: 'camus_gate_review' },
+      { type: 'verify_result', pass: null, source: 'gate_report_status', derived: true, commitSha: SHA },
+      { type: 'gate_report', report: gate },
+      { type: 'question', id: 'q-1', kind: 'verify', text: '…', options: ['Retry verification with the configured command', 'Record that I ran the checks myself and they passed', 'Leave the candidate parked and stop here'] },
+    ];
+    const meta = { id: '20260805-181917-f4b1', lane: 'build', idSalt: 'studio-20260805-181917-f4b1', verifyCmd: 'dotnet test x.csproj', targetPath: '/repo' };
+
+    // The old path: a run.json with no gate report is not a parked candidate at all.
+    assert.ok(!recoveryTarget(meta).parkedCandidate, 'the sealed-report path finds nothing here — the gap that fell through to the gate');
+
+    const rebuilt = reconstructInterruptedParked(trail, meta);
+    assert.ok(rebuilt, 'the interrupted run IS reconstructed from its event trail');
+    assert.equal(rebuilt.status, 'needs_decision', 'as the parked state it was in');
+    assert.equal(rebuilt.report.status, 'verify_inconclusive', 'carrying the gate report VERBATIM');
+    assert.equal(rebuilt.report.parkedSha, SHA, 'with the parked candidate sha');
+    assert.equal(rebuilt.pendingQuestionId, 'q-1', 'and the question that was never answered');
+    assert.equal(rebuilt.evidencePack, null, 'and NO evidence pack, because none was sealed');
+    assert.equal(rebuilt.interruptedRecovery, true, 'flagged as an interrupted recovery');
+    assert.equal(rebuilt.idSalt, meta.idSalt, 'the gate identity is preserved');
+    assert.equal(rebuilt.verifyCmd, meta.verifyCmd, 'and so is the operator command the run was launched with');
+
+    // It flows into the SAME safety checks, and claims no review it cannot show.
+    const t = recoveryTarget(rebuilt);
+    assert.equal(t.eligible, true, 'the reconstructed state is recovery-eligible');
+    assert.equal(t.parkedCandidate, true, 'and flagged so a later refusal cannot fall through to the gate');
+    assert.equal(t.sourceReceiptId, null, 'no source receipt is claimed');
+    assert.match(t.sourceReceiptStatus, /sealed no evidence pack/, 'and the receipt says exactly why');
+    assert.equal(t.sourceAudit, null, 'so no review linkage is implied either');
+
+    // REFUSALS — none of these may be reconstructed into a parked candidate.
+    const without = (pred) => trail.filter((e) => !pred(e));
+    assert.equal(reconstructInterruptedParked(without((e) => e.type === 'question'), meta), null,
+      'no pending question → not an interrupted DECISION');
+    assert.equal(reconstructInterruptedParked(without((e) => e.type === 'gate_report'), meta), null,
+      'no gate report → nothing says a candidate was parked');
+    assert.equal(reconstructInterruptedParked([...trail, { type: 'answer', kind: 'verify', question: '…', answer: 'Leave the candidate parked and stop here' }], meta), null,
+      'an ANSWERED question means the decision flow moved on');
+    assert.equal(reconstructInterruptedParked([...trail, { type: 'question_answered', id: 'q-1' }], meta), null,
+      'and so does an answered-acknowledgement');
+    for (const terminal of ['done', 'done_with_findings', 'verify_failed', 'failed', 'stopped', 'needs_decision', 'no_changes']) {
+      assert.equal(reconstructInterruptedParked([...trail, { type: 'status', status: terminal }], meta), null,
+        `a run that reached ${terminal} is not interrupted`);
+    }
+    assert.equal(reconstructInterruptedParked(trail.map((e) => (e.type === 'gate_report' ? { ...e, report: { ...gate, status: 'verify_failed' } } : e)), meta), null,
+      'a RED gate is never reconstructed as a parked candidate');
+    assert.equal(reconstructInterruptedParked(trail, { ...meta, lane: 'freeform' }), null, 'and the words lanes park nothing');
+    assert.equal(reconstructInterruptedParked(null, meta), null, 'a missing trail reconstructs nothing');
+    assert.equal(reconstructInterruptedParked([], meta), null, 'and neither does an empty one');
+
+    // The replay classification routes to the verification-only lane, not a gate resume.
+    assert.equal(replayRecoveryKind({ lane: 'build', empty: false, parked: true }), 'recover_parked_candidate',
+      'a parked interruption is offered the verification-only lane');
+    assert.equal(replayRecoveryKind({ lane: 'build', empty: false, parked: false }), 'resume_build',
+      'an ordinary unfinished build still resumes the gate');
+    assert.equal(replayRecoveryKind({ lane: 'build', empty: true, parked: true }), null, 'an empty trail offers nothing');
+    assert.equal(replayRecoveryKind({ lane: 'freeform', empty: false, parked: true }), null, 'and the words lanes are unaffected');
+  }
+
+  // A gate report's `failures` ride the same evidence field as verification CHECKS, and
+  // mapping them blindly produced {id:"undefined", status:undefined} — the validator then
+  // REFUSED the whole pack, so the report being described degraded its own receipt.
+  {
+    const { buildEvidencePack } = await import('./lib/evidence-pack.mjs');
+    const { validateEvidencePack } = await import('../../packages/trust/lib/validate.mjs');
+    const SHA = 'c'.repeat(40);
+    const packOf = (checks) => buildEvidencePack({
+      goal: 'g', acceptanceContract: 'a'.repeat(40), lane: 'build', targetPath: '/r',
+      evidence: { gateReport: { commit_sha: SHA }, verify: [{ pass: true, commitSha: SHA, source: 'studio_reverify', checks }], rounds: [], revisions: [] },
+      statuses: { schemaVersion: 1, execution: 'completed', verification: 'passed', audit: 'not_run', publication: 'not_published' },
+      models: { maker: null, reviewer: null, loop: { roundCap: 0 }, recovery: true },
+      simulated: false, createdAt: 1,
+    });
+    // Gate FAILURES in the checks slot: not checks, so they must not be sealed as such.
+    const withFailures = packOf([{ stage: 'prep', kind: 'guard_refused', log_tail: 'target rejected by camus_guard' }]);
+    assert.equal(validateEvidencePack(withFailures).ok, true, 'a gate failure in the checks slot still yields a VALID pack');
+    assert.equal(withFailures.verification.checks.length, 1, 'falling back to the head-bound summary');
+    assert.equal(withFailures.verification.checks[0].id, 'studio_reverify', 'named by its source');
+    assert.equal(withFailures.verification.checks[0].status, 'pass', 'with a schema-legal status');
+    // Real checks are still sealed verbatim.
+    const real = packOf([{ id: 'dotnet:test', status: 'pass', detail: null }, { id: 'dotnet:build', status: 'warn' }]);
+    assert.equal(validateEvidencePack(real).ok, true, 'real checks validate');
+    assert.deepEqual(real.verification.checks.map((c) => c.id), ['dotnet:test', 'dotnet:build'], 'and are preserved');
+    // A mixed list keeps only what is actually a check.
+    const mixed = packOf([{ id: 'dotnet:test', status: 'pass' }, { stage: 'integrity', kind: 'tracked_mutation' }]);
+    assert.equal(validateEvidencePack(mixed).ok, true, 'a mixed list validates');
+    assert.deepEqual(mixed.verification.checks.map((c) => c.id), ['dotnet:test'], 'keeping only the real check');
+  }
+
+  // The interrupted banner's PROVENANCE. "already committed and reviewed" overstated it:
+  // nothing sealed, so the review verdict exists only in the local event trail and no
+  // receipt covers it. Asserted on the shipped source because the string is the claim.
+  {
+    const { readFileSync } = await import('node:fs');
+    const app = readFileSync(new URL('./public/app.js', import.meta.url), 'utf8');
+    const banner = (app.match(/INTERRUPTED WHILE AWAITING[^']*/) || [''])[0];
+    assert.ok(banner.length > 80, 'the interrupted banner copy is present');
+    assert.match(banner, /NO evidence pack and NO receipt were written/, 'it says nothing was sealed');
+    assert.match(banner, /local event trail/, 'and that the review verdict lives only in the local trail');
+    assert.match(banner, /not sealed and not receipt-covered/, 'stating the boundary explicitly');
+    assert.match(banner, /no reviewed standing can be claimed/, 'and that no reviewed standing follows from it');
+    assert.ok(!/already reviewed/.test(banner), 'and never simply claims the candidate is "already reviewed"');
+    assert.ok(!/already committed and reviewed/.test(app), 'the old overstatement is gone from the file entirely');
+    // The client must not re-derive the recovery kind; the server is authoritative.
+    assert.ok(!/state\.replayParked/.test(app), 'the browser holds no second classifier for parked runs');
+    assert.match(app, /parked: ev\.parked === true/, 'it consumes the classification the server sends');
+
+    // ── REPLAY-NESS IS PER-STREAM, NOT PER-PAGE ────────────────────────────
+    // Live run 20260806-145411-hy1w: an old receipt was opened from disk (replay_start →
+    // state.replaying = true), Resume started a REAL run, and every decision button on the new
+    // run's question rendered inert with "asked by a Studio session that has since ended" — the
+    // live loop sat at needs_human waiting on an answer the UI had already disabled. The stream
+    // opener must clear the flag; only a replay_start from the NEW stream may set it again.
+    const attachBody = (app.match(/function attach\(id, goal\) \{[\s\S]*?\n\}/) || [''])[0];
+    assert.ok(attachBody.length > 200, 'the stream opener is present in the shipped file');
+    assert.match(attachBody, /state\.replaying = false/, 'opening a stream clears replay-ness');
+    assert.match(attachBody, /state\.replayPendingQuestion = null/, 'and clears the pending replayed question');
+    // Ordering is load-bearing: cleared BEFORE the EventSource can deliver a single event.
+    assert.ok(attachBody.indexOf('state.replaying = false') < attachBody.indexOf('new EventSource'),
+      'the reset happens before the stream can deliver an event');
+    // And nothing else in the file may turn it on — replay_start is the only source of truth.
+    const setsTrue = [...app.matchAll(/state\.replaying\s*=\s*([^;]+);/g)].map((m) => m[1].trim());
+    assert.deepEqual(setsTrue.slice().sort(), ['false', 'true'], 'replay-ness is set in exactly two places: the reset and the replay marker');
+    const replayCase = (app.match(/case 'replay_start':[\s\S]*?break;/) || [''])[0];
+    assert.match(replayCase, /state\.replaying = true/, 'the one place that sets it is the disk-replay marker');
+
+    // ── GATE PROGRESS IS PER-STREAM TOO ────────────────────────────────────
+    // It is merged across events, so a new run's first frames rendered the PREVIOUS run's phase
+    // until the gate stamped its own (live run 20260806-164809-hiju).
+    assert.match(attachBody, /gateProgressState = \{\}/, 'opening a stream clears the gate-progress state');
+    assert.ok(attachBody.indexOf('gateProgressState = {}') < attachBody.indexOf('new EventSource'),
+      'cleared before the stream can deliver a frame');
+
+    // ── THE THREE PHASE/ROUND LABELS COME FROM THE PURE POLICY ─────────────
+    const { gatePhaseStrip, gateRoundFact, phaseLabel, GATE_PHASES } = await import('./public/gate-phase-policy.mjs');
+    // At the cap there is no next round; "round 2/2 · expecting r3" pointed the reader at a review
+    // that would never be requested (live run 20260806-164809-hiju).
+    assert.equal(gateRoundFact({ round: 2, roundCap: 2, expectedRound: 3 }), 'round 2/2 · round cap reached');
+    assert.equal(gateRoundFact({ round: 3, roundCap: 2, expectedRound: 4 }), 'round 3/2 · round cap reached',
+      'past the cap reads the same way, never a prediction');
+    assert.equal(gateRoundFact({ round: 1, roundCap: 3, expectedRound: 2 }), 'round 1/3 · expecting r2',
+      'mid-loop still names the round it is waiting for');
+    assert.equal(gateRoundFact({ round: 1, roundCap: null, expectedRound: 2 }), 'round 1/? · expecting r2',
+      'an unknown cap is unknown, not assumed reached');
+    assert.equal(gateRoundFact({ round: 2, roundCap: 2 }), null, 'no expectation, no fact');
+    assert.ok(!/expecting r\$\{/.test(app), 'the browser no longer builds that string itself');
+
+    // Fix is a phase the gate reports; it rendered as a raw lowercase "fix" after Verify.
+    assert.deepEqual(GATE_PHASES.map(([k]) => k), ['igniting', 'classify', 'plan', 'implement', 'review', 'fix', 'verify'],
+      'Fix sits between Review and Verify, where it runs');
+    assert.match(gatePhaseStrip('fix'), /Review {2}· {2}▸ Fix {2}· {2}Verify/, 'an active Fix is marked in place');
+    assert.ok(!/▸ fix/.test(gatePhaseStrip('fix')), 'and never as the raw lowercase key');
+    // Any future unstamped phase stays visible AND spelled like a label.
+    assert.match(gatePhaseStrip('prep'), /▸ Prep$/, 'an unknown phase is labelled, not printed raw');
+    assert.equal(phaseLabel('land'), 'Land');
+    assert.equal(phaseLabel(''), '', 'nothing in, nothing out');
+    assert.equal(gatePhaseStrip(null), gatePhaseStrip(undefined), 'no active phase marks nothing');
+  }
+
+  // ── A REFUSAL MAY NOT CLAIM PRESERVATION IT DID NOT MEASURE ────────────────
+  // The refusal report said "its state is preserved" while HEAD had in fact moved to a fresh
+  // commit (live run 20260806-110809-2r9j). Preservation is now a measured comparison.
+  {
+    const { worktreeSnapshot, snapshotsAgree } = await import('./lib/code-lane.mjs');
+    const { execFileSync } = await import('node:child_process');
+    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join: pj } = await import('node:path');
+    const wt = mkdtempSync(pj(tmpdir(), 'cls-snap-'));
+    const g = (...a) => { try { return execFileSync('git', ['-C', wt, ...a], { encoding: 'utf8' }).trim(); } catch { return null; } };
+    if (g('init', '-q') !== null) {
+      g('config', 'user.email', 't@e.com'); g('config', 'user.name', 't');
+      writeFileSync(pj(wt, 'a.txt'), 'one\n');
+      g('add', '-A'); g('commit', '-qm', 'one');
+      const before = worktreeSnapshot(wt);
+      assert.equal(before.head?.length, 40, 'the snapshot measures a real HEAD');
+      assert.equal(before.dirty, false, 'and cleanliness');
+      assert.equal(snapshotsAgree(before, worktreeSnapshot(wt)), true, 'an untouched worktree AGREES with itself');
+      // A COMMIT between refusal and shutdown must break agreement — the exact WP9 shape.
+      writeFileSync(pj(wt, 'a.txt'), 'two\n');
+      g('add', '-A'); g('commit', '-qm', 'two');
+      const after = worktreeSnapshot(wt);
+      assert.notEqual(after.head, before.head, 'the commit moved HEAD');
+      assert.equal(snapshotsAgree(before, after), false, 'so preservation can NOT be claimed');
+      // An uncommitted edit alone also breaks it.
+      writeFileSync(pj(wt, 'a.txt'), 'three\n');
+      assert.equal(snapshotsAgree(after, worktreeSnapshot(wt)), false, 'a dirty tree is not preserved state either');
+    }
+    // UNKNOWN is never agreement: a snapshot that could not be measured must not read as proof.
+    assert.equal(snapshotsAgree({ worktree: '/w', branch: null, head: 'a', dirty: false }, { worktree: '/w', branch: null, head: 'a', dirty: false }), false,
+      'a null field means unknown, and unknown never proves preservation');
+    assert.equal(snapshotsAgree(null, { worktree: '/w', branch: 'b', head: 'a', dirty: false }), false, 'a missing before-snapshot proves nothing');
+    const none = worktreeSnapshot(null);
+    assert.equal(none.head, null, 'no worktree yields an all-null snapshot');
+    assert.equal(snapshotsAgree(none, none), false, 'which can never agree with itself');
+  }
+
+  // ── THE UI READS THE SEAL, NEVER THE MUTABLE TWIN ──────────────────────────
+  // `report.recoveryOf` can be edited without changing receipt_id, and the UI rendered
+  // it as authoritative — so a forged source run displayed under a valid receipt
+  // (audit 2026-08-05, proven by setting it to `forged-source`). The pack's
+  // session_log is receipt-covered, so that is what the UI must read.
+  {
+    const { sealedRecoveryLineage, lineageTrust } = await import('./public/run-ui-policy.mjs');
+    const { buildEvidencePack } = await import('./lib/evidence-pack.mjs');
+    const SHA = 'e3487e891d409fc218591602c6c8565b16af9094';
+    const recoveryOf = { sourceRunId: 'real-source', sourceReceiptId: 'sha256:realreceipt', sourceReceiptStatus: 'validated', sourceAudit: 'independent_clean', parkedSha: SHA, shaProvenance: 'adopted_clean_worktree_head' };
+    const pack = buildEvidencePack({
+      goal: 'g', acceptanceContract: 'a'.repeat(40), lane: 'build', targetPath: '/r',
+      evidence: { gateReport: { commit_sha: SHA }, verify: [{ pass: true, commitSha: SHA, source: 'studio_reverify' }], rounds: [], revisions: [] },
+      statuses: { schemaVersion: 1, execution: 'completed', verification: 'passed', audit: 'not_run', publication: 'not_published' },
+      models: { maker: null, reviewer: null, loop: { roundCap: 0 }, recovery: true },
+      simulated: false, verifyCommand: 'true', createdAt: 1, recoveryOf,
+    });
+
+    const sealed = sealedRecoveryLineage(pack);
+    assert.equal(sealed.sourceRunId, 'real-source', 'the lineage is parsed out of the SEALED session log');
+    assert.equal(sealed.sourceReceiptId, 'sha256:realreceipt', 'including the source receipt');
+    assert.equal(sealed.sourceAudit, 'independent_clean', 'and the source audit the linked wording depends on');
+    assert.equal(sealed.parkedSha, SHA, 'and the candidate');
+    assert.equal(sealed.shaProvenance, 'adopted_clean_worktree_head', 'and its provenance');
+
+    const honest = lineageTrust(pack, recoveryOf);
+    assert.equal(honest.trusted, true, 'an untouched pair is trusted');
+    assert.deepEqual(honest.mismatched, [], 'with nothing mismatched');
+
+    // THE FORGERY the audit performed: edit the twin, keep receipt_id.
+    const forged = { ...recoveryOf, sourceRunId: 'forged-source' };
+    const caught = lineageTrust(pack, forged);
+    assert.equal(caught.trusted, false, 'a forged source run is CAUGHT');
+    assert.deepEqual(caught.mismatched, ['sourceRunId'], 'and named precisely');
+    assert.match(caught.reason, /disagree with the sealed receipt/, 'with a reason the UI can show');
+    assert.equal(caught.sealed.sourceRunId, 'real-source', 'and the SEALED value is still what is available to render');
+    assert.notEqual(caught.sealed.sourceRunId, 'forged-source', 'the forgery is never the value returned');
+    // Every lineage field is compared, not just the run id.
+    for (const [key, val] of [['sourceReceiptId', 'sha256:forged'], ['parkedSha', 'b'.repeat(40)], ['shaProvenance', 'sealed_by_source'], ['sourceAudit', 'independent_findings']]) {
+      const t = lineageTrust(pack, { ...recoveryOf, [key]: val });
+      assert.deepEqual(t.mismatched, [key], `a forged ${key} is caught`);
+    }
+    // A non-recovery receipt yields no lineage at all, so no recovery copy unlocks.
+    const plain = buildEvidencePack({
+      goal: 'g', acceptanceContract: 'a'.repeat(40), lane: 'build', targetPath: '/r',
+      evidence: { gateReport: { commit_sha: SHA }, verify: [], rounds: [], revisions: [] },
+      statuses: { schemaVersion: 1, execution: 'completed', verification: 'not_run', audit: 'not_run', publication: 'not_published' },
+      models: { maker: { provider: 'anthropic', model: 'opus' }, reviewer: { provider: 'openai', model: 'gpt-5.6-sol' } },
+      simulated: false, createdAt: 1,
+    });
+    assert.equal(sealedRecoveryLineage(plain), null, 'a non-recovery pack has no sealed lineage');
+    assert.equal(lineageTrust(plain, recoveryOf).trusted, false, 'so a recoveryOf field on it is NOT trusted');
+    assert.equal(lineageTrust(null, recoveryOf).trusted, false, 'and a missing pack unlocks nothing');
+  }
+
+  // The wiring, not just the policy: breaking app.js to read the mutable twin was NOT
+  // caught by the pure tests above (found while break-testing, 2026-08-05). The twin is
+  // now absent from client state entirely, which is asserted here so it cannot creep
+  // back — the live browser proof covers the rendering itself.
+  {
+    const { readFileSync } = await import('node:fs');
+    const app = readFileSync(new URL('./public/app.js', import.meta.url), 'utf8');
+    assert.ok(!/state\.recoveryDetail/.test(app), 'the unsealed lineage twin is not held in client state at all');
+    assert.match(app, /recoveryPill\(dimensions, state\.sealedLineage\)/, 'the pill reads the SEALED lineage');
+    assert.match(app, /doneBanner\([^)]*state\.sealedLineage/, 'and so does the terminal banner');
+    assert.match(app, /lineageTrust\(report\.evidencePack, report\.recoveryOf\)/, 'and the twin is used only to detect disagreement');
+  }
+
+  // ── THE SANITIZED FIXTURE IS A VALID RECEIPT ───────────────────────────────
+  // Redaction changed the content the pack was sealed over, so the shipped fixture's
+  // ids no longer described it: `artifact_id does not match the sealed artifact
+  // contents`. A fixture that is itself an invalid receipt cannot stand in for a real
+  // one, and the recovery path was accepting its receipt_id anyway.
+  {
+    const { validateEvidencePack } = await import('../../packages/trust/lib/validate.mjs');
+    const { readFileSync } = await import('node:fs');
+    const f = JSON.parse(readFileSync(new URL('./fixtures/wp6-needs-decision.report.json', import.meta.url), 'utf8'));
+    const v = validateEvidencePack(f.evidencePack);
+    assert.equal(v.ok, true, `the sanitized fixture's pack VALIDATES after resealing (${v.error ?? ''})`);
+    // And the recovery path links it, because it validates.
+    const { recoveryTarget } = await import('./lib/code-lane.mjs');
+    const t = recoveryTarget(f);
+    assert.equal(t.sourceReceiptId, f.evidencePack.receipt_id, 'a validated source pack IS linked');
+    assert.equal(t.sourceReceiptStatus, 'validated', 'and recorded as validated');
+    // Tamper with it and the link is withheld, with the reason.
+    const tampered = JSON.parse(JSON.stringify(f));
+    tampered.evidencePack.goal = 'a different goal than the one that was sealed';
+    const tt = recoveryTarget(tampered);
+    assert.equal(tt.sourceReceiptId, null, 'a tampered source pack is NOT linked');
+    assert.match(tt.sourceReceiptStatus, /^unusable: /, 'and the refusal names the validation failure');
+    assert.equal(tt.eligible, true, 'the recovery itself still proceeds — it just claims no source review');
+  }
+
+  // ── THE RECOVERY PILL SAYS WHAT HAPPENED, WITHOUT CLAIMING AN AUDIT ────────
+  {
+    const { recoveryPill, standingPill } = await import('./public/story.mjs');
+    const dims = { verification: 'passed', audit: 'not_run' };
+    const SHA = 'e3487e891d409fc218591602c6c8565b16af9094';
+
+    // A VALIDATED source receipt that records an audit is the only thing that earns
+    // "source review linked" — that wording is a claim about ANOTHER receipt.
+    const linkedLineage = { sourceRunId: '20260805-104802-rv4d', sourceReceiptId: 'sha256:5819cc', sourceAudit: 'independent_clean', parkedSha: SHA };
+    const linked = recoveryPill(dims, linkedLineage);
+    assert.equal(linked.label, 'Verification passed · source review linked', 'a validated source audit earns the linked wording');
+    assert.match(linked.title, /NO review/, 'and still states this receipt performed no review');
+    assert.match(linked.title, /links but does not absorb/, 'and that it is a link, not inheritance');
+
+    // A LEGACY source with no sealed receipt has no review to link. This said
+    // "source review linked" anyway (audit 2026-08-05).
+    const bare = recoveryPill(dims, { sourceRunId: 'legacy-run', sourceReceiptId: null, sourceAudit: null, parkedSha: SHA, sourceReceiptStatus: 'unusable: the source run sealed no evidence pack' });
+    assert.equal(bare.label, 'Verification passed', 'with nothing to link, the pill says only what this run proved');
+    assert.ok(!/source review linked/.test(bare.label), 'and never claims a linked review');
+    assert.match(bare.title, /NO source review is available/, 'the explanation says so explicitly');
+    assert.match(bare.title, /nothing here has been independently reviewed/i, 'in plain words');
+    assert.match(bare.title, /sealed no evidence pack/, 'carrying the reason it is unusable');
+    // A receipt id WITHOUT a recorded audit does not earn it either.
+    const noAudit = recoveryPill(dims, { sourceRunId: 'r', sourceReceiptId: 'sha256:abc', sourceAudit: 'not_run', parkedSha: SHA });
+    assert.equal(noAudit.label, 'Verification passed', 'a source receipt with audit not_run links no review');
+    // Nor does an audit with no validated receipt behind it.
+    const noReceipt = recoveryPill(dims, { sourceRunId: 'r', sourceReceiptId: null, sourceAudit: 'independent_clean', parkedSha: SHA });
+    assert.equal(noReceipt.label, 'Verification passed', 'an audit value with no validated receipt links nothing');
+
+    for (const p2 of [linked, bare, noAudit, noReceipt]) {
+      assert.ok(!/Not verified/i.test(p2.label), 'never "Not verified" over a sealed passing verification');
+      assert.ok(!/already reviewed/i.test(p2.label + p2.title), 'and never an unconditional "already reviewed"');
+      assert.equal(p2.className, 'standing advisory', 'styled advisory, never trusted');
+    }
+    // NARROW: no lineage, or no passing verification, and the derived standing stands.
+    assert.equal(recoveryPill(dims, null), null, 'a non-recovery run keeps the derived standing');
+    assert.equal(recoveryPill({ verification: 'infra_failed', audit: 'not_run' }, linkedLineage), null, 'an unverified recovery gets no upgrade');
+    assert.equal(recoveryPill({ verification: 'failed', audit: 'not_run' }, linkedLineage), null, 'and neither does a failed one');
+    assert.equal(standingPill('done', 'unverified').label, 'Not verified', 'the underlying standing vocabulary is unchanged');
+  }
+
+  // ── A BOUND GREEN IS NOT SUMMARIZED AS "NOT VERIFIED" ──────────────────────
+  // A verification-only recovery is {verification: passed, audit: not_run} by
+  // construction. The default branch summarized that as "DONE (gate claim)… audit
+  // not run", which reads as the opposite of what happened. It must say what this
+  // receipt proves and where the review evidence lives — without claiming to have
+  // inherited it.
+  {
+    const { doneBanner } = await import('./public/banner.mjs');
+    const dims = { verification: 'passed', audit: 'not_run', execution: 'completed', publication: 'not_published' };
+    const recoveryOf = { sourceRunId: '20260805-104802-rv4d', sourceReceiptId: 'sha256:abcdef123456789', parkedSha: 'e3487e891d409fc218591602c6c8565b16af9094' };
+    const b = doneBanner('done', 'unverified', dims, recoveryOf);
+    assert.equal(b.cls, 'good', 'a commit-bound green is not styled as a problem');
+    assert.match(b.label, /VERIFIED HERE/, 'it says verification passed here');
+    assert.match(b.label, /e3487e891d40/, 'and names the candidate it is bound to');
+    assert.match(b.label, /20260805-104802-rv4d/, 'and points at the source run for the review evidence');
+    assert.ok(!/Not verified|not verified/.test(b.label), 'and never calls a bound green "not verified"');
+    // It must NOT claim the audit carried over.
+    assert.ok(!/reviewed and verified/i.test(b.label), 'it never claims independent verified standing');
+    assert.match(b.label, /No review ran in this recovery/, 'it states plainly that no review ran here');
+    // WITHOUT a recovery link, the honest uncorroborated copy still applies — this
+    // wording is for a linked recovery only, never a general upgrade.
+    const plain = doneBanner('done', 'unverified', dims, null);
+    assert.match(plain.label, /does not corroborate/, 'a non-recovery run keeps the uncorroborated copy');
+    assert.equal(plain.cls, 'meh', 'and its cautious styling');
+    // And a recovery whose verification did NOT pass gets no upgrade either.
+    const notPassed = doneBanner('done', 'unverified', { ...dims, verification: 'infra_failed' }, recoveryOf);
+    assert.match(notPassed.label, /does not corroborate/, 'an unverified recovery is not dressed up');
+  }
+
+  // ── BUILD RECOVERY IS OFFERED ON THE STATE WP6 ACTUALLY REACHES ────────────
+  // An inconclusive verification resolves to needs_decision, but the terminal
+  // renderer's recovery list was an inline literal of stopped/failed/verify_failed
+  // — so the operator landed on the exact screen the recovery control exists for
+  // and found no control (field report 2026-08-05). The rule is pure now.
+  {
+    const { offersBuildRecovery, terminalBannerClass, terminalFailureBanner } = await import('./public/run-ui-policy.mjs');
+    assert.equal(offersBuildRecovery('needs_decision', 'build'), true,
+      'needs_decision — the state an inconclusive WP6 run ends in — OFFERS recovery');
+    for (const s of ['stopped', 'failed', 'verify_failed']) {
+      assert.equal(offersBuildRecovery(s, 'build'), true, `${s} still offers recovery`);
+    }
+    // Controls: a finished run has nothing to recover, and words lanes never do.
+    for (const s of ['done', 'done_with_findings', 'no_changes', 'running']) {
+      assert.equal(offersBuildRecovery(s, 'build'), false, `${s} offers no recovery`);
+    }
+    assert.equal(offersBuildRecovery('needs_decision', 'freeform'), false, 'the words lanes have no gate to resume');
+    assert.equal(offersBuildRecovery('needs_decision', 'comparison'), false, 'a comparison is not a build gate');
+
+    // And needs_decision is not a FAILURE: a parked, intact candidate rendered red
+    // repeats the inconclusive-as-red misreading on the very state being surfaced.
+    // The control drives TWO different actions and the copy must say which. It used to
+    // read "Resume the gate … finished work skips and only unproven work re-runs",
+    // which described neither: recovery reruns nothing, and the gate reruns everything.
+    const { recoveryAction } = await import('./public/run-ui-policy.mjs');
+    const rec = recoveryAction('needs_decision');
+    assert.equal(rec.mode, 'verify_only', 'a parked candidate takes the verification-only lane');
+    assert.equal(rec.button, 'Verify the parked candidate', 'and the button says exactly that');
+    assert.match(rec.note, /Runs verification only/, 'the note says verification only');
+    assert.match(rec.note, /no models, planning, implementation, or review rerun/, 'and names what does NOT rerun');
+    assert.ok(!/finished work skips/.test(rec.note), 'the stale "finished work skips" promise is gone');
+    assert.ok(!/Resume the gate/.test(rec.button), 'and it is not called resuming the gate');
+    for (const s of ['stopped', 'failed', 'verify_failed', 'incomplete']) {
+      const g = recoveryAction(s);
+      assert.equal(g.mode, 'gate', `${s} re-enters the gate`);
+      assert.equal(g.button, 'Resume the gate', `${s} keeps the gate wording`);
+      assert.match(g.note, /reruns its phases/, `${s} says the gate reruns phases`);
+      assert.ok(!/finished work skips/.test(g.note), `${s} makes no skip promise either`);
+    }
+
+    assert.equal(terminalBannerClass('needs_decision', {}), 'meh', 'needs_decision is not red');
+    assert.equal(terminalBannerClass('verify_failed', {}), 'bad', 'a real red still reads red');
+    assert.equal(terminalBannerClass('done', { good: true }), 'good', 'and a green still reads green');
+    const nd = terminalFailureBanner('needs_decision', 'build');
+    assert.match(nd, /NEEDS A DECISION/, 'the banner names the state instead of leaking the raw enum');
+    assert.match(nd, /parked/, 'and says the candidate is parked');
+    assert.match(nd, /verification command/, 'and points at the lever that unblocks it');
+    assert.doesNotMatch(nd, /^needs_decision$/, 'never the bare status string');
+  }
+
+  // ── TRI-STATE VERIFY RENDERING + ACTIONABLE INCONCLUSIVE (WP6 2026-08-05) ──
+  {
+    const { verifySummary } = await import('./public/run-ui-policy.mjs');
+    // pass:null is a WITHHELD verdict. `!ev.pass` rendered it as "RED. Sending
+    // back for a fix.", so a good candidate looked broken.
+    const amber = verifySummary({ pass: null, warnings: 0, skipped: 3 });
+    assert.equal(amber.cls, 'inconclusive', 'pass:null renders amber, never the red class');
+    assert.match(amber.label, /INCONCLUSIVE/, 'the label says inconclusive');
+    assert.match(amber.label, /could not run/, 'and that verification could not run');
+    assert.match(amber.label, /stays parked/, 'and that the candidate remains parked');
+    assert.doesNotMatch(amber.label, /RED|Sending back/, 'an inconclusive run is never described as red');
+    assert.equal(verifySummary({ pass: undefined }).cls, 'inconclusive', 'a missing pass is inconclusive too, not red');
+    // The two controls: real green and real red keep their meaning.
+    assert.equal(verifySummary({ pass: true }).cls, 'pass');
+    assert.match(verifySummary({ pass: true, skipped: 2 }).label, /GREEN, with caveats/);
+    const red = verifySummary({ pass: false });
+    assert.equal(red.cls, 'fail');
+    assert.match(red.label, /RED/, 'a real red is still red');
+  }
+  {
+    // An inconclusive terminal must OFFER something. Before this it returned
+    // needs_decision immediately and the screen had no controls at all.
+    const asked = [];
+    const events = [];
+    const base = { emit: (t, d) => events.push({ t, ...d }), log: () => {}, stage: () => {}, igniteGate: async () => ({ status: 'done' }), answers: [] };
+
+    // 1. Retry that PASSES → done_with_findings, marked as verified on retry.
+    // `raw.head` is the parked sha because verify.py names the head it checked;
+    // a verdict that names no head is refused (proved in the block above).
+    const pass = await resolveGateTerminal({ status: 'verify_inconclusive', parkedSha: 'sha1', branch: 'camus/x' }, {
+      ...base,
+      ask: async (q) => { asked.push(q); return q.options.find((o) => o.startsWith('Retry')); },
+      verifyCandidate: async () => ({ ran: true, pass: true, raw: { head: 'sha1' } }),
+    });
+    // Review-clean + a bound retry green is simply DONE; the findings qualifier is
+    // reserved for an unresolved review (proved in the integration block above).
+    assert.equal(pass.status, 'done', 'a retry that passes on a review-clean candidate yields DONE');
+    assert.equal(pass.verifiedOnRetry, true);
+    assert.ok(asked[0].options.some((o) => o.startsWith('Retry')), 'the retry option is offered');
+    assert.ok(asked[0].options.some((o) => o.startsWith('Record')), 'human-attested evidence is offered');
+    assert.ok(asked[0].options.some((o) => o.startsWith('Leave')), 'leaving it parked is offered');
+
+    // 2. Retry that comes back RED → a real red, not a fabricated green.
+    const red = await resolveGateTerminal({ status: 'verify_inconclusive', parkedSha: 'sha1' }, {
+      ...base,
+      ask: async (q) => q.options.find((o) => o.startsWith('Retry')),
+      verifyCandidate: async () => ({ ran: true, pass: false, raw: { head: 'sha1', failures: [{ stage: 'test' }] } }),
+    });
+    assert.equal(red.status, 'verify_failed', 'a retry that fails reports the real red');
+
+    // 3. Retry that STILL cannot run → re-offers, and the fallback is honest.
+    let tries = 0;
+    const stuckEvents = [];
+    const stuck = await resolveGateTerminal({ status: 'verify_inconclusive', parkedSha: 'sha1' }, {
+      ...base,
+      emit: (t, d) => stuckEvents.push({ t, ...d }),
+      ask: async (q) => (++tries === 1 ? q.options.find((o) => o.startsWith('Retry')) : 'Leave the candidate parked and stop here'),
+      verifyCandidate: async () => ({ ran: false, error: 'dotnet workload missing' }),
+    });
+    assert.equal(stuck.status, 'needs_decision', 'a still-unrunnable check leaves an honest needs_decision');
+    assert.equal(tries, 2, 'and it re-asked instead of inventing a verdict');
+    // The guard that matters: when verification never RAN, nothing green is emitted.
+    // (A review-clean candidate whose bound retry genuinely passes does emit `done`
+    // — that is the audited contract, proved in the integration block above.)
+    assert.ok(!stuckEvents.some((e) => e.t === 'status' && ['done', 'done_with_findings'].includes(e.status)),
+      'a check that could not run never produces a green of any kind');
+    assert.ok(!stuckEvents.some((e) => e.t === 'verify_result' && e.pass === true),
+      'and no passing verify_result is invented');
+
+    // 4. Human attestation is recorded as ATTESTATION, never as a machine green.
+    const attested = await resolveGateTerminal({ status: 'verify_inconclusive', parkedSha: 'sha1' }, {
+      ...base,
+      ask: async (q) => q.options.find((o) => o.startsWith('Record')),
+      verifyCandidate: async () => ({ ran: false, error: 'x' }),
+    });
+    assert.equal(attested.humanAttestedVerification, true, 'the human claim is recorded');
+    assert.equal(attested.deterministicVerification, 'inconclusive', 'and deterministic verification stays honestly inconclusive');
+    assert.equal(attested.landed, false, 'nothing was merged');
+
+    // 5. With no verifier available, retry is not offered — but the other two are.
+    const noRetry = await resolveGateTerminal({ status: 'verify_inconclusive' }, {
+      ...base,
+      ask: async (q) => {
+        assert.ok(!q.options.some((o) => o.startsWith('Retry')), 'no verifier → no retry option');
+        return 'Leave the candidate parked and stop here';
+      },
+    });
+    assert.equal(noRetry.status, 'needs_decision');
+  }
+
+  // A verify-RED unresolved is the one honest halt; verify-inconclusive is a decision.
+  {
+    const red = await harness([{ status: 'review_unresolved', verifyClean: false, blocking: [] }], []).run();
+    assert.equal(red.status, 'verify_failed', 'verify-red + unresolved is genuinely not done');
+    const incon = await harness([{ status: 'review_unresolved', verifyClean: null, blocking: [] }], []).run();
+    assert.equal(incon.status, 'needs_decision', 'verify could not run → a decision, never a failure');
+  }
+
+  // (1) The gate can ask a HUMAN QUESTION after a Refine. review_unresolved →
+  // Refine → the gate returns needs_human → the loop ASKS and re-invokes (never
+  // classifies the question as failed) → the answered run converges to done.
+  {
+    const REFINE = 'Refine: run more review/fix rounds on the open findings';
+    const h = harness(
+      [greenUnresolved(1), { status: 'needs_human', question: 'Which API should the guard use?' }, doneReport],
+      [REFINE, 'Use the v2 API.'],
+    );
+    const res = await h.run();
+    assert.equal(res.status, 'done', 'a post-Refine gate question is answered and re-invoked, not failed');
+    assert.equal(h.ignites(), 2, 'the gate was re-invoked for the Refine and again after the human answer');
+    assert.ok(h.asked.some((q) => q.text.includes('Which API')), 'the gate\'s question was surfaced to the human');
+    assert.ok(!h.events.some((e) => e.t === 'status' && e.status === 'failed'), 'a gate question never becomes a failed status');
+  }
+
+  // (2) A DIRECT verify_inconclusive gate result is a decision, never a red.
+  {
+    const incon = await harness([{ status: 'verify_inconclusive' }], []).run();
+    assert.equal(incon.status, 'needs_decision', 'a direct verify_inconclusive maps to needs_decision');
+    const inconEvents = harness([{ status: 'verify_inconclusive' }], []);
+    await inconEvents.run();
+    assert.ok(inconEvents.events.some((e) => e.t === 'status' && e.status === 'needs_decision'), 'and emits needs_decision, not verify_failed');
+    // Ground-truth RED is still preserved as a real failure.
+    const red = await harness([{ status: 'verify_failed' }], []).run();
+    assert.equal(red.status, 'verify_failed', 'an actual deterministic RED stays verify_failed');
+    // And needs_decision derives to interrupted, never failed.
+    const { deriveStatusDimensions } = await import('./lib/status-dims.mjs');
+    assert.equal(deriveStatusDimensions({ lane: 'build', status: 'needs_decision', evidence: { gateReport: null, verify: [], rounds: [], revisions: [] } }).execution, 'interrupted', 'needs_decision is interrupted, not failed');
+  }
+
+  // (3) refineCap is ENFORCED on the answer, not merely hidden: an out-of-options
+  // "Refine" after the cap must NOT invoke the gate — it re-asks with no model
+  // turn. refineCap:0 + arbitrary "Refine" answers → zero gate invocations.
+  {
+    const REFINE = 'Refine: run more review/fix rounds on the open findings';
+    let ignites = 0;
+    let asks = 0;
+    const res = await resolveGateTerminal(greenUnresolved(1), {
+      emit: () => {}, log: () => {}, stage: () => {},
+      // Answer "Refine" a few times (never offered at cap 0), then finally a
+      // valid option so the run can terminate.
+      ask: async () => { asks += 1; return asks <= 3 ? REFINE : 'Leave it parked and stop here'; },
+      igniteGate: async () => { ignites += 1; return greenUnresolved(ignites); },
+      answers: [], refineCap: 0,
+    });
+    assert.equal(ignites, 0, 'refineCap:0 with arbitrary Refine answers invokes the gate ZERO times');
+    assert.ok(asks >= 4, 'each out-of-options Refine re-asked instead of spending a gate round');
+    assert.equal(res.status, 'done_with_findings', 'and a valid option still resolves the candidate');
+    assert.equal(res.landed, false);
+  }
+
+  // The DEFAULT refine allowance is 1 (pragmatic token use): the caller gets one
+  // refine unless it passes a larger refineCap.
+  {
+    const REFINE = 'Refine: run more review/fix rounds on the open findings';
+    let ignites = 0;
+    const res = await resolveGateTerminal(greenUnresolved(0), {
+      emit: () => {}, log: () => {}, stage: () => {},
+      ask: async (q) => q.options.find((o) => o.startsWith('Refine')) ?? 'Leave it parked and stop here',
+      igniteGate: async () => { ignites += 1; return greenUnresolved(ignites); },
+      answers: [], // refineCap omitted → default
+    });
+    assert.equal(ignites, 1, 'the default refine allowance is exactly one gate round');
+    assert.equal(res.status, 'done_with_findings');
+  }
 }
 
 console.log('verify.test: all assertions passed');

@@ -51,9 +51,9 @@ Defaults: `ROUND_CAP = 3`.
 
 ## review_unresolved is a decision, not always a failure (2026-06-11)
 
-When review doesn't converge, the loop now **consults deterministic verify before reporting** —
-because camus's own rule is *deterministic ground truth wins*, and a probabilistic review was
-halting verify-clean, shippable code on a stale re-flag. Two behaviors:
+When review doesn't converge, the loop **consults deterministic verify before reporting** so the
+human sees both independent axes. A green suite is necessary evidence, but it does not clear an
+unresolved finding or prove untested contract behavior. Two behaviors:
 - **Verify is run on a non-converged review.** A `review_unresolved` carries `verifyClean`:
   `true` (type-check/lint/tests pass → a DECISION POINT: accept the worktree as-is, or refine),
   `false` (genuinely not done), or `null` (verify couldn't run). camus-feat surfaces a verify-clean
@@ -165,6 +165,36 @@ halting verify-clean, shippable code on a stale re-flag. Two behaviors:
   (a specific task), `--pause` (graceful resumable halt), `--show` / `--clear`. A note is
   consumed ONCE. Live mid-task injection is deliberately unsupported — the engine is a
   deterministic, resumable script; the boundary is the safe redirect point.
+
+## Outer-agent operator loop
+
+When another agent operates Camus for a human, keep that layer thin. Camus owns task execution,
+review rounds, custody, and receipts; the outer agent chooses the surface, supplies the complete
+contract, watches host-owned evidence, and hands the result back.
+
+1. **Choose the smallest useful surface.** Use Studio when the human benefits from visible seat
+   selection, live phase/status controls, stop/resume, or receipt inspection. Use `/camus-loop`
+   directly for one already-bounded task and `/camus-feat` for an ordered package. Use
+   `/camus-plan` only when the request genuinely needs decomposition. Studio must accept the full
+   acceptance contract and supported controls; never replace them with a narrower UI preset.
+2. **Set outcomes, then allow bounded freedom.** Bind the source/spec, exact scope, exclusions,
+   deterministic verify command, and handoff condition. Leave implementation choices open where
+   that contract permits them. Pick the smallest credible `roundCap` and model/effort pairing for
+   the stakes; do not spend review rounds to optimize style.
+3. **Let a healthy run solve the task.** Observe `camus watch`/`camus status` or Studio's phase,
+   process, worktree, and receipt signals. Do not inspect live reviewer-handle artifacts, add a
+   third polling loop, re-judge every clean verdict, or implement the task outside Camus while the
+   run is viable.
+4. **Interrupt only for material invalidation.** Stop and repair Camus when custody is wrong, the
+   task/contract drifts, a round cap is ignored, a process is orphaned, verification is bypassed,
+   or a receipt/provenance claim is false. Record cosmetic UI friction, minor copy, token/latency
+   waste, and non-blocking ergonomics for the retrospective instead of restarting the run.
+5. **Close from evidence.** Require a terminal state, the intended clean worktree/commit, head-bound
+   deterministic verification, and an honest valid receipt. Resume with the same persisted identity
+   after an infra repair; do not create a parallel worktree or silently finish the code by hand.
+6. **Feed back without self-modifying.** Run `camus retro` after meaningful dogfood sessions and
+   combine its read-only history with the operator's bugs/UX/efficiency notes. Prioritize recurring
+   or result-invalidating problems. Retro recommends; it never edits Camus or run configuration.
 
 ## Shipped hardening (all live, all tested)
 

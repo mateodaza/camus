@@ -26,6 +26,40 @@
 
 _camus_common_dir() { git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null; }
 
+# camus_anchor — SELF-ANCHOR the script's cwd at the trusted repo root, so a call site needs no
+# `cd` prefix of its own. Live run 20260806-145411-hy1w: the orchestrator prefixed prep/verify with
+# `cd "$(… --show-toplevel)" && …` computed from targetPath. Inside a LINKED worktree
+# `--show-toplevel` is that worktree, not the main repo, so the emitted command cd'd into the WP8
+# worktree and then verified the WP9 one. Auto mode denied that cross-worktree compound command, the
+# runner answered in prose, and the loop mistook the prose for a broken toolchain. A plain
+# `bash …/verify.sh <wt>` is what the allow-list and the classifier are meant to see; this function
+# is how the script gets the trusted cwd that `camus_guard` demands, without any model-authored cd.
+#
+# Fail CLOSED, and STRICTLY NOT a relaxation of camus_guard's $PWD cross-check:
+#  - No CAMUS_REPO_ROOT (manual/dev run): do nothing. $PWD is already the anchor.
+#  - $PWD inside a DIFFERENT git repo than the anchor: REFUSE, exactly as before. The
+#    `CAMUS_REPO_ROOT=/other <script> /other/…` override is still caught by the real cwd.
+#  - $PWD in no git repo at all (a fresh runner process started outside any checkout — the case
+#    REPO_CD was papering over): cd to the anchor. That is the only newly-accepted state, and it
+#    is one camus_guard would otherwise reject while nothing untrusted has been consulted.
+# Returns 0 = anchored (or nothing to do), 1 = refuse. Call BEFORE camus_guard.
+camus_anchor() {
+  local anchor anchor_common pwd_common
+  anchor="${CAMUS_REPO_ROOT:-}"
+  [ -n "$anchor" ] || return 0
+  anchor_common="$(_camus_common_dir "$anchor")" || true
+  if [ -z "$anchor_common" ]; then
+    echo "camus_anchor: trust anchor CAMUS_REPO_ROOT=$anchor is not inside a git repo" >&2; return 1
+  fi
+  pwd_common="$(_camus_common_dir "$PWD")" || true
+  if [ -n "$pwd_common" ] && [ "$pwd_common" != "$anchor_common" ]; then
+    echo "camus_anchor: \$PWD ($PWD) is in a different repo than CAMUS_REPO_ROOT=$anchor" >&2; return 1
+  fi
+  cd "$anchor" 2>/dev/null || {
+    echo "camus_anchor: cannot enter the trust anchor CAMUS_REPO_ROOT=$anchor" >&2; return 1; }
+  return 0
+}
+
 camus_guard() {
   local mode="$1" target="$2"
   local anchor caller_common pwd_common target_abs target_common branch base suffix

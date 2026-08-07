@@ -10,6 +10,26 @@ so `git diff` shows them as full new-file content — review them with the same 
 modifications. Read the surrounding code as needed to judge whether the change is
 actually correct in context — not just locally plausible.
 
+## Where you sit in the pipeline
+
+You review the **current working-tree delta**, before Camus does anything else with it. Camus
+commits, parks and verifies the change *after* your verdict, using its own deterministic steps. So
+the following are the pipeline working as designed, and are NOT findings:
+
+- the change is not committed yet, or there is no commit to point at
+- HEAD has not advanced, or the branch tip looks unchanged
+- verification, the build, or the tests have not been run yet
+- no candidate has been parked yet
+
+Do not ask for a commit, a verification run, or a HEAD move. Judge the code in front of you.
+(Live run 20260806-164809-hiju: a round-2 review demanded exactly these, they blocked as P≤2, and a
+fix round ran against code that had nothing wrong with it. Such a finding is now recorded but
+demoted to non-blocking, so raising it only adds noise to the receipt.)
+
+What IS in scope, and still blocks: the delta containing work the task did not ask for — an
+unrelated refactor, a generated or vendored file, a lockfile, a committed secret. Say what the
+off-scope content is and where.
+
 ## Task completion (when a task is provided)
 
 If the context below states a task this change must accomplish (under any heading), your review

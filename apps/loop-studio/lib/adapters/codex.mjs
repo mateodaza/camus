@@ -152,19 +152,23 @@ export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSe
   const lastFile = join(dir, 'last.json');
 
   // Model and effort are always named explicitly — the account default is
-  // never reachable (it isn't a decision anyone made).
-  const args = ['exec', '--json', '-s', 'read-only', '-m', model, '-c', `model_reasoning_effort=${effort}`];
+  // never reachable (it isn't a decision anyone made). The seat runs hardened:
+  // the review judges the prompt-supplied draft and needs no execution at all.
+  const args = ['exec', '--json', '-s', 'read-only', ...hardenedCodexArgs(), '-m', model, '-c', `model_reasoning_effort=${effort}`];
   if (process.env.CAMUS_CODEX_TIER) args.push('-c', `service_tier=${process.env.CAMUS_CODEX_TIER}`);
   for (const id of (process.env.CAMUS_CODEX_DISABLE_MCP || '').split(',').filter(Boolean)) {
     args.push('-c', `mcp_servers.${id.trim()}.enabled=false`);
   }
   args.push('--output-schema', SCHEMA_PATH, '-o', lastFile, prompt);
+  const childEnv = scrubbedEnv(process.env, (key, why) => onSession?.(`env ${key}: ${why}`));
+  onSession?.('hardened seat: shell/exec, web search, browser, apps and plugins disabled by flag; no user config or MCP; ephemeral session; environment scrubbed; any unexpected tool event fails the call.');
 
   let stderrTail = '';
   let usage = null;
+  let unexpectedTool = null;
   const startedAt = Date.now();
   const exitCode = await new Promise((done_) => {
-    const child = spawn('codex', args, { cwd: resolve(cwd), stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('codex', args, { cwd: resolve(cwd), stdio: ['ignore', 'pipe', 'pipe'], env: childEnv });
     let done = false;
     const finish = (code) => { if (!done) { done = true; clearTimeout(hardT); clearTimeout(idleT); done_(code); } };
 
@@ -184,6 +188,16 @@ export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSe
         if (!line.trim()) continue;
         const sess = sessionLineFromCodexEvent(line);
         if (sess) onSession?.(sess);
+        // A tool event this seat never granted means the verdict may rest on
+        // material no receipt sealed. Kill the call and fail closed.
+        const rogue = unexpectedToolEvent(line);
+        if (rogue && !unexpectedTool) {
+          unexpectedTool = rogue;
+          onSession?.(`REFUSED: unexpected ${rogue.itemType} tool event${rogue.detail ? ` (${rogue.detail})` : ''}`);
+          child.kill('SIGKILL');
+          finish(-5);
+          return;
+        }
         usage = usageFromCodexEvent(line) ?? usage;
       }
       const now = Date.now();
@@ -205,6 +219,7 @@ export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSe
   if (exitCode === -2) return failed('codex review hit the hard timeout');
   if (exitCode === -3) return failed(`codex went silent for ${Math.round(IDLE_KILL_MS / 60000)} min — killed (idle watchdog)`);
   if (exitCode === -4) return failed('review aborted by user');
+  if (exitCode === -5) return failed(`the reviewer seat used an unexpected ${unexpectedTool.itemType} tool${unexpectedTool.detail ? ` (${unexpectedTool.detail})` : ''}; a verdict resting on material no receipt sealed is refused as infra`);
 
   // "codex wrote nothing" and "the verdict file can't be read" are different
   // diagnoses — both fail closed, but only one sends you debugging codex.
@@ -227,8 +242,223 @@ export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSe
   if (norm.ran) {
     norm.reviewerModel = model;
     norm.reviewerEffort = effort;
+    // codex's --json stream does not restate the model; the argv pin plus a
+    // ran:true verdict is the invocation fact, provider-qualified for receipts.
+    norm.reviewerIdentity = `openai:${model}`;
   }
   return norm;
+}
+
+// Both codex seats run HARDENED (audit P1, 2026-08-04, round 2): Studio's
+// words seats are prompt-in/text-out, so the agent gets NO execution
+// capability at all — with the shell and unified-exec tools disabled it has
+// no way to read $CODEX_HOME/auth.json (plaintext access tokens per OpenAI's
+// own auth doc) or anything else, which `-s read-only` alone never prevented
+// ("don't rely on read-only to protect secrets" — Codex action security doc).
+// User config (and with it every user MCP server and hook) does not load,
+// execpolicy rules do not load, no session files persist, and any shell that
+// a future flag flip re-enabled would inherit an empty environment. Every
+// flag verified against codex-cli 0.144.1 and live-fire break-tested: a
+// hardened agent asked to read a planted sentinel outside the workspace
+// answered CANNOT-READ while an unhardened control read it.
+export function hardenedCodexArgs() {
+  return [
+    '--ignore-user-config', // no config.toml: no user MCP servers/hooks, no config-held credentials; auth still resolves
+    '--ignore-rules', // no user/project execpolicy rules
+    '--ephemeral', // no session files persisted
+    '--disable', 'shell_tool',
+    '--disable', 'unified_exec',
+    '-c', 'shell_environment_policy.inherit=none',
+    // Web search defaults to "cached" and is ON unless explicitly disabled —
+    // omitting --search does NOT turn it off (audit P1, 2026-08-04 round 3:
+    // a live gpt-5.6-sol probe under the previous arg set emitted web_search
+    // events and answered from them, while the session line claimed "no web
+    // search"). A words seat judges or drafts the text it was handed; an
+    // uncustodied source fetched mid-review would be evidence nobody sealed.
+    '-c', 'web_search="disabled"',
+    // The remaining default-on capability families a text-only seat never
+    // needs. Each verified to parse on codex-cli 0.144.1; disabling a family
+    // that is already inert costs nothing and removes a future default flip
+    // from the threat model.
+    '--disable', 'apps',
+    '--disable', 'browser_use',
+    '--disable', 'browser_use_external',
+    '--disable', 'browser_use_full_cdp_access',
+    '--disable', 'in_app_browser',
+    '--disable', 'computer_use',
+    '--disable', 'image_generation',
+    '--disable', 'multi_agent',
+    '--disable', 'plugins',
+    '--disable', 'hooks',
+  ];
+}
+
+// A text-only seat may legitimately produce reasoning, its final message, and
+// bookkeeping. ANY other item type means a tool ran — a capability this seat
+// does not grant, or a new default in a future codex version. Both seats FAIL
+// CLOSED on it rather than trusting an allowlist of flags to stay complete:
+// flags are a promise about today's CLI, this is an observation about the run
+// that actually happened. Pure, so the classifier is directly testable.
+const ALLOWED_ITEM_TYPES = new Set(['reasoning', 'agent_message', 'todo_list', 'plan_update', 'error']);
+export function unexpectedToolEvent(line) {
+  let ev;
+  try { ev = JSON.parse(line); } catch { return null; }
+  const msg = ev.msg ?? ev;
+  const type = msg.type || '';
+  if (!/^item\.(started|completed|updated)$/.test(type)) return null;
+  const item = msg.item ?? ev.item ?? {};
+  const itemType = typeof item.type === 'string' ? item.type : '';
+  if (!itemType || ALLOWED_ITEM_TYPES.has(itemType)) return null;
+  // Name the query/target when the event carries one, so the receipt records
+  // WHAT was consulted, not merely that something was.
+  const detail = [item.query, item.url, item.command, item.name, item.action?.type]
+    .find((value) => typeof value === 'string' && value.trim());
+  return { itemType, detail: detail ? String(detail).slice(0, 200) : null };
+}
+
+// The codex subprocesses get a MINIMAL environment: the server's env carries
+// credentials (Hivemind keys, openai_compat backend keys, whatever the shell
+// exported) that neither seat has any business reading. The allowlist
+// covers process basics, codex's own home/auth discovery, locale/terminal,
+// and proxy transport config the user set for exactly these tools. Exported
+// so the scrub is directly testable.
+// HOME and CODEX_HOME stay because codex resolves its own auth through them
+// (`--ignore-user-config` skips config.toml but, by design, "auth still uses
+// CODEX_HOME"). That is the precise boundary: the codex PROCESS can still
+// authenticate itself, while the MODEL has no shell, exec, or file tool with
+// which to read those paths — which is why the tool disabling above, not the
+// env list, is what actually protects auth.json.
+const ENV_ALLOWLIST = [
+  'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'LANG', 'TERM', 'CODEX_HOME',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy',
+];
+const PROXY_KEYS = new Set(['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']);
+
+// A proxy URL may embed credentials (http://user:pass@host). Keep the
+// transport, drop the userinfo: an unparseable value is dropped entirely
+// rather than passed through unexamined. If a proxy genuinely requires
+// authentication the call then fails LOUDLY on the network instead of quietly
+// handing a credential to a subprocess — and onStrip lets the caller say so
+// in the session trail, so the operator knows exactly why.
+export function scrubbedEnv(env = process.env, onStrip = null) {
+  const out = {};
+  for (const key of ENV_ALLOWLIST) {
+    const value = env[key];
+    if (value === undefined) continue;
+    if (!PROXY_KEYS.has(key)) { out[key] = value; continue; }
+    let url;
+    try { url = new URL(value); } catch { onStrip?.(key, 'unparseable'); continue; }
+    if (url.username || url.password) {
+      url.username = '';
+      url.password = '';
+      onStrip?.(key, 'credentials removed');
+    }
+    out[key] = url.toString();
+  }
+  for (const key of Object.keys(env)) if (key.startsWith('LC_')) out[key] = env[key];
+  return out;
+}
+
+// ---- maker seat ---------------------------------------------------------------
+// Codex in the maker seat (the reversed pairing: GPT writes, Claude reviews).
+// Same spawn contract as the reviewer — read-only sandbox, explicit model,
+// -o captures the final agent message as the deliverable. No web search is
+// enabled in this slice: the draft comes from the prompt plus any frozen
+// grounding items, and the session line says so, so a contract demanding
+// live-loaded URLs fails review honestly instead of being quietly faked.
+// The session line claims only what the sandbox actually enforces: read-only
+// blocks WRITES; codex's own tool surface (shell, user-configured MCP) can
+// still run, which is why the environment is scrubbed above.
+export async function runCodexMaker({ prompt, stage = 'make', model, cwd, signal, onTick, onSession }) {
+  const fail = (error) => ({ ok: false, error, text: null, costUsd: 0 });
+  if (!model) return fail('codex maker needs an explicit model — the account default is not a decision');
+  const dir = resolve(cwd);
+  await mkdir(dir, { recursive: true });
+  const lastFile = join(dir, `.codex-maker-${stage}.md`);
+
+  // The maker seat has no effort decision in the record; the codex CLI still
+  // gets an explicit value so the account default stays unreachable. `medium`
+  // is a recorded constant of this seat, named in the session line below.
+  const args = ['exec', '--json', '-s', 'read-only', ...hardenedCodexArgs(), '-m', model, '-c', 'model_reasoning_effort=medium'];
+  if (process.env.CAMUS_CODEX_TIER) args.push('-c', `service_tier=${process.env.CAMUS_CODEX_TIER}`);
+  for (const id of (process.env.CAMUS_CODEX_DISABLE_MCP || '').split(',').filter(Boolean)) {
+    args.push('-c', `mcp_servers.${id.trim()}.enabled=false`);
+  }
+  args.push('-o', lastFile, prompt);
+  const childEnv = scrubbedEnv(process.env, (key, why) => onSession?.(`env ${key}: ${why}`));
+  onSession?.('hardened seat: shell/exec, web search, browser, apps and plugins disabled by flag; no user config or MCP; ephemeral session; environment scrubbed; any unexpected tool event fails the call. Effort pinned medium as a seat constant.');
+
+  const MAKER_TIMEOUTS = { plan: 120_000, ground: 300_000, make: 540_000, fix: 420_000 };
+  let stderrTail = '';
+  let usage = null;
+  let unexpectedTool = null;
+  const startedAt = Date.now();
+  const exitCode = await new Promise((done_) => {
+    const child = spawn('codex', args, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], env: childEnv });
+    let done = false;
+    const finish = (code) => { if (!done) { done = true; clearTimeout(hardT); clearTimeout(idleT); done_(code); } };
+    const hardT = setTimeout(() => { child.kill('SIGKILL'); finish(-2); }, MAKER_TIMEOUTS[stage] ?? 540_000);
+    let idleT = setTimeout(() => { child.kill('SIGKILL'); finish(-3); }, IDLE_KILL_MS);
+    const poke = () => { clearTimeout(idleT); idleT = setTimeout(() => { child.kill('SIGKILL'); finish(-3); }, IDLE_KILL_MS); };
+    let lineBuf = '';
+    child.stdout.on('data', (buf) => {
+      if (done) return;
+      poke();
+      lineBuf += buf;
+      const lines = lineBuf.split('\n');
+      lineBuf = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const sess = sessionLineFromCodexEvent(line);
+        if (sess) onSession?.(sess);
+        // A tool event this seat never granted means the draft may rest on
+        // material no receipt sealed. Kill the call and fail closed.
+        const rogue = unexpectedToolEvent(line);
+        if (rogue && !unexpectedTool) {
+          unexpectedTool = rogue;
+          onSession?.(`REFUSED: unexpected ${rogue.itemType} tool event${rogue.detail ? ` (${rogue.detail})` : ''}`);
+          child.kill('SIGKILL');
+          finish(-5);
+          return;
+        }
+        usage = usageFromCodexEvent(line) ?? usage;
+      }
+      onTick?.(stage === 'plan' ? 'planning…' : 'drafting (text only)…');
+    });
+    child.stderr.on('data', (b) => { if (!done) { poke(); stderrTail = (stderrTail + b).slice(-400); } });
+    signal?.addEventListener('abort', () => { child.kill('SIGKILL'); finish(-4); }, { once: true });
+    child.on('error', (e) => { stderrTail = `spawn error: ${e.code || e.message}`; finish(-1); });
+    child.on('close', (code) => finish(code ?? -1));
+  });
+
+  if (exitCode === -1) return fail(`failed to spawn codex (${stderrTail || 'unknown'}) — check the codex CLI is installed and on PATH`);
+  if (exitCode === -2) return fail(`codex ${stage} stage hit the hard timeout`);
+  if (exitCode === -3) return fail(`codex went silent for ${Math.round(IDLE_KILL_MS / 60000)} min — killed (idle watchdog)`);
+  if (exitCode === -4) return fail('aborted by user');
+  if (exitCode === -5) return fail(`the maker seat used an unexpected ${unexpectedTool.itemType} tool${unexpectedTool.detail ? ` (${unexpectedTool.detail})` : ''}; a draft resting on material no receipt sealed is refused as infra`);
+  if (exitCode !== 0) return fail(`codex exited ${exitCode}: ${stderrTail.slice(0, 300)}`);
+
+  let text = '';
+  try {
+    text = String(await readFile(lastFile, 'utf8')).trim();
+  } catch (err) {
+    return fail(`codex wrote no deliverable file (${err.code || err.message})`);
+  }
+  if (!text) return fail('codex returned an empty deliverable');
+  return {
+    ok: true,
+    error: null,
+    text,
+    costUsd: 0, // usage and time only; dollars are never invented
+    usage,
+    durationMs: Date.now() - startedAt,
+    // The argv pin plus exit 0 and a non-empty -o file is the invocation fact.
+    modelActual: `openai:${model}`,
+    hivemindQueried: false,
+    hivemindQueries: 0,
+    hivemindQueryTexts: [],
+    hivemindResults: [],
+  };
 }
 
 // Usage is an observation from Codex's own completion event. Missing fields stay
@@ -264,7 +494,17 @@ export function sessionLineFromCodexEvent(line) {
       const text = String(item.summary ?? item.text ?? '').replace(/\s+/g, ' ').trim();
       if (item.type === 'reasoning') return text ? `reasoning: ${text.slice(0, 110)}` : 'reasoning…';
       if (item.type === 'agent_message') return `verdict drafted (${text.length} chars)`;
-      return text ? `${item.type}: ${text.slice(0, 90)}` : null;
+      if (text) return `${item.type}: ${text.slice(0, 90)}`;
+      // A TEXTLESS item still happened. Dropping it hid web_search calls from
+      // the receipt entirely (audit P1, 2026-08-04 round 3): the event carries
+      // its query in `query`/`action`, not in text, so the old `text ? … : null`
+      // made a tool use invisible. Name the type, and its target when present.
+      if (item.type) {
+        const detail = [item.query, item.url, item.command, item.name, item.action?.type]
+          .find((value) => typeof value === 'string' && value.trim());
+        return detail ? `${item.type}: ${String(detail).slice(0, 90)}` : `${item.type} (no detail reported)`;
+      }
+      return null;
     }
     if (/error/i.test(t)) return `error: ${String(ev.message ?? t).slice(0, 120)}`;
     return null;

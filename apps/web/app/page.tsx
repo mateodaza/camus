@@ -29,6 +29,7 @@ export default function Home() {
               <a className="cta-ghost" href="#proof">See a real catch ↓</a>
             </div>
             <div className="hero-proof" aria-label="What Camus gives you">
+              <b>public alpha 0.3.1</b>
               <b>an independent second opinion</b>
               <b>sources and tests attached</b>
               <b>human decisions preserved</b>
@@ -232,12 +233,12 @@ receipt        0b8960d2e40d`}
                 </p>
               </Reveal>
               <Reveal className="direction-card">
-                <p className="direction-tag">Planned: Compare &amp; Learn</p>
-                <h3>Evidence-backed improvement</h3>
+                <p className="direction-tag">Available in Studio</p>
+                <h3>Controlled comparison</h3>
                 <p>
-                  Run the same goal and frozen knowledge across different models,
-                  efforts, or orchestration strategies. Keep failed arms. Compare
-                  blindly. Learn locally, and route only when enough evidence exists.
+                  Freeze one goal, contract, reviewer, and knowledge snapshot across
+                  two or three executor arms. Keep every success and failure in the
+                  parent receipt. Blinded winner selection remains the next slice.
                 </p>
               </Reveal>
             </div>
@@ -272,9 +273,10 @@ receipt        0b8960d2e40d`}
                 </p>
                 <ul>
                   <li>browser interface, no JSON noise</li>
-                  <li>acceptance contract in your own words</li>
+                  <li>the full acceptance contract in your own words</li>
+                  <li>configurable maker and reviewer seats</li>
                   <li>Hivemind grounding through your Claude MCP</li>
-                  <li>downloadable evidence pack</li>
+                  <li>verification-only recovery for parked code</li>
                 </ul>
                 <a className="cta" href="/studio/">Open Loop Studio</a>
               </Reveal>
@@ -285,7 +287,7 @@ receipt        0b8960d2e40d`}
                 <p>
                   Give an agent a real repository without giving up custody. Work stays
                   isolated, reviews bind to exact commits, tests have the final word,
-                  and only proven changes reach your branch.
+                  and every change reaches your branch with its actual standing attached.
                 </p>
                 <ul>
                   <li>isolated worktrees and controlled merge</li>
@@ -320,7 +322,7 @@ receipt        0b8960d2e40d`}
             <Reveal>
               <div className="term">
                 <pre>
-{`$ npm i -g camus-cli
+{`$ npm i -g camus-cli@0.3.1
 $ camus install
 $ camus check
 

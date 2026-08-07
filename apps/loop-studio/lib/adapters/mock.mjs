@@ -118,7 +118,7 @@ export function createMockAdapters() {
   let claudeCalls = 0;
   let reviewCalls = 0;
 
-  return {
+  const adapters = {
     name: 'mock',
     async claude({ stage, signal, onTick, onSession }) {
       onTick?.(stage === 'plan' ? 'planning…' : 'drafting: researching sources…');
@@ -170,6 +170,12 @@ export function createMockAdapters() {
       };
     },
   };
+  // Seat-named aliases: the engine addresses maker/reviewer seats, and the
+  // rehearsal fills both with the same scripted pair whatever the decision
+  // record says — a mock run never impersonates a real backend anyway.
+  adapters.maker = adapters.claude;
+  adapters.reviewer = adapters.codex;
+  return adapters;
 }
 
 
@@ -181,17 +187,49 @@ export async function runMockCodeLoop(run, ctx) {
   const stage = (name, status, extra = {}) => emit('stage', { name, status, ...extra });
   const log = (line) => emit('log', { line });
   const sess = (line) => emit('session', { actor: 'gate', line });
+  // The rehearsal mirrors the live gate's progress surface: phase transitions and
+  // the periodic progress row (phase, round, worktree, models, liveness,
+  // watchdog). Without these the rehearsal would demo an "Igniting…" screen the
+  // real lane no longer shows.
+  let phase = 'igniting';
+  const progress = (extra = {}) => emit('gate_progress', {
+    phase,
+    round: extra.round ?? null,
+    expectedRound: extra.expectedRound ?? 1,
+    roundCap: 3,
+    worktree: extra.worktree ?? null,
+    worktreePrefix: 'camus-wt-mock',
+    makerModel: run.models?.maker?.model ?? 'sonnet',
+    reviewerModel: run.models?.reviewer?.model ?? 'gpt-5.4',
+    reviewerEffort: run.models?.reviewer?.effort ?? 'low',
+    lastActivityAt: Date.now(),
+    lastActivitySource: extra.source ?? 'stdout',
+    idleMs: 0,
+    idleKillMs: 8 * 60_000,
+    unboundRounds: 0,
+    asyncReattach: null,
+  });
+  const setPhase = (next, extra = {}) => {
+    phase = next;
+    emit('gate_phase', { phase, at: Date.now() });
+    progress(extra);
+  };
   try {
     stage('gate', 'active');
     sess(`invocation: /camus-loop {"task":"${run.goal.slice(0, 60)}…","targetPath":"${run.targetPath}"}`);
+    progress();
     await sleep(2000, signal);
     sess('Bash: git -C . status --porcelain');
+    setPhase('classify');
     sess('Bash: bash ~/.claude/skills/camus/scripts/wt.sh create camus-wt-mock ~/.camus/worktrees/…');
+    setPhase('worktree', { worktree: '/Users/you/.camus/worktrees/camus-wt-mock' });
     log('gate preflight clean: worktree created, baseline verified');
     await sleep(3000, signal);
+    setPhase('implement', { worktree: '/Users/you/.camus/worktrees/camus-wt-mock', source: 'worktree_files' });
     sess('Edit: src/embedding.ts — guard empty input before the provider call');
     sess('Bash: pnpm test  (baseline + new spec)');
     await sleep(2500, signal);
+    setPhase('review', { round: 1, expectedRound: 1, worktree: '/Users/you/.camus/worktrees/camus-wt-mock', source: 'review_events' });
     emit('round', { round: 1, cap: 3 });
     stage('review', 'done', { round: 1 });
     log('gate review round 1: revise (2 blocking)');
@@ -208,6 +246,7 @@ export async function runMockCodeLoop(run, ctx) {
     emit('round', { round: 2, cap: 3 });
     stage('review', 'done', { round: 2 });
     log('gate review round 2: clean');
+    setPhase('verify', { round: 2, expectedRound: 3, worktree: '/Users/you/.camus/worktrees/camus-wt-mock' });
     sess('Bash: pnpm test  — 163 passed · head-bound (simulated)');
     await sleep(1500, signal);
     // Rehearsal creates no gate branch, commit, or gate receipt. Studio still

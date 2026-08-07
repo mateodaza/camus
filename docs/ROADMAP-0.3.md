@@ -45,6 +45,56 @@ boundaries, so every new phase/handoff must satisfy all five:
 
 A 0.3 feature that can't answer all five isn't designed yet.
 
+## Friends-ready dogfood checkpoint (achieved 2026-08-07)
+
+This checkpoint began as a private readiness test for Mateo and a small group of friends.
+The CodenameWukong Enemies feature completed WP1–WP10, including a final bounded run that
+did not require mid-run harness surgery, and its all-in-one branch reached a reviewable PR.
+That evidence satisfied the checkpoint. On 2026-08-07 the release decision changed from
+private dogfood to a public 0.x alpha: publish the proven build, let friends use it on real
+work, and continue improving it from concrete runs rather than invented features.
+
+The north star is **a useful solution when one can be produced safely**. Deterministic
+custody, bounded review, and receipts exist to prevent false claims, leaked processes, and
+lost work; they must not become ceremony that keeps capable models from completing the
+task. Give the loop bounded freedom over implementation details when the acceptance
+contract permits it. Stop a dogfood run immediately for a custody breach, false receipt,
+ignored round cap, orphaned process, or other result-invalidating defect. Record smaller
+UI/UX and efficiency issues for the retrospective instead of repeatedly interrupting the
+solution path.
+
+Before calling the local build friends-ready:
+
+1. **Complete the real proof.** WP8, WP9, and WP10 finish with head-bound deterministic
+   verification, honest review provenance, and no manual implementation outside Camus.
+2. **One project completes without harness surgery.** A fresh end-to-end feature can plan,
+   implement, review, perform its bounded repair, verify, stop/resume, and hand off a parked
+   candidate without changing Camus mid-run.
+3. **Add an operator layer to the existing Camus skill, not another orchestrator.** An agent
+   operating Camus should be told how to choose Studio versus direct skill use, select a
+   posture/model pairing, watch host-owned signals, intervene only on material defects,
+   preserve/resume the worktree, and feed observations into `camus retro`. Reuse the earlier
+   task-skill direction and current scripts; do not create a second scheduler or receipt
+   system.
+4. **Make feedback cheap and cumulative.** Bugs, UI/UX friction, token/latency waste, and
+   successful interventions collected during a run become read-only retro input and a short
+   prioritized report. Retro recommends; it never mutates configuration or code.
+5. **Studio exposes the contract rather than narrowing it.** Progressive disclosure and
+   templates are welcome, but the operator must be able to supply the full acceptance
+   contract and run controls supported by Camus. The UI must not silently reduce the engine's
+   expressive contract.
+
+After the current round-cap and thin-runner fixes, WP9 and WP10 are validation rounds. Add
+no new architecture during them unless a material trust or completion defect proves it is
+required. A successful bounded run is evidence to stop building the harness and finish the
+product using it.
+
+**Outcome:** achieved. The operator layer lives in the existing skill, Studio exposes the
+full acceptance contract, and run feedback remains evidence for `camus retro` rather than
+a second orchestrator. Future dogfood should happen on real product features. A material
+custody or false-receipt defect may still stop a run; ordinary UX and efficiency findings
+belong in the retrospective and must not prevent a useful solution.
+
 ## 1. Postures: `bookend` + `forward` (decided)
 
 The other half of the posture dial (VELOCITY §1). `bookend` reviews first-and-last only;

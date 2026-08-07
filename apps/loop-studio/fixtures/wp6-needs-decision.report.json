@@ -1,0 +1,224 @@
+{
+ "id": "20260805-104802-rv4d",
+ "goal": "REDACTED for the fixture; the real receipt carried project text here.",
+ "displayGoal": null,
+ "acceptanceContract": "REDACTED for the fixture; the real receipt carried project text here.",
+ "lane": "build",
+ "depth": "quick",
+ "ground": false,
+ "targetPath": "<<TARGET>>",
+ "idSalt": "studio-20260804-204046-2vqv",
+ "engine": "live",
+ "status": "needs_decision",
+ "report": {
+  "status": "verify_inconclusive",
+  "task": "REDACTED for the fixture; the real receipt carried project text here.",
+  "worktree": "<<WORKTREE>>",
+  "branch": "camus/implement-only-wp6-WidgetCore-combat-runt-1xorex",
+  "rounds": 1,
+  "failures": [
+   {
+    "stage": "verify",
+    "reason": "no_verifier_detected",
+    "kind": "missing_tool",
+    "log_tail": "REDACTED for the fixture; the real receipt carried project text here."
+   }
+  ],
+  "tier": "standard",
+  "tierSource": "neutral_default",
+  "classificationSkipped": true,
+  "model": "opus",
+  "initialModel": "opus",
+  "finalFixModel": "opus",
+  "escalated": false,
+  "planSkipped": false,
+  "note": "REDACTED for the fixture; the real receipt carried project text here."
+ },
+ "answers": [],
+ "models": {
+  "maker": {
+   "backend": "claude",
+   "provider": "anthropic",
+   "model": "opus",
+   "source": "checks/models.json"
+  },
+  "reviewer": {
+   "backend": "codex",
+   "provider": "openai",
+   "model": "gpt-5.6-sol",
+   "effort": "high",
+   "modelSource": "checks/models.json",
+   "effortSource": "checks/models.json"
+  },
+  "loop": {
+   "roundCap": 3,
+   "source": "checks/models.json"
+  }
+ },
+ "simulated": false,
+ "experimentContext": null,
+ "knowledgeSnapshotId": null,
+ "deliverable": null,
+ "evidence": {
+  "plan": null,
+  "grounding": null,
+  "rounds": [
+   {
+    "round": 1,
+    "scope": "round",
+    "rev": null,
+    "verdict": "APPROVED",
+    "rawVerdict": "patch is correct",
+    "confidence": 0.91,
+    "explanation": "No blocking correctness, safety, scope, or contract-adherence defects were found. The implementation and focused tests match the pinned WP6 behavior without introducing WP7+ APIs. Test execution could not be independently verified because the read-only sandbox denied MSBuild permission to create its temporary directory.",
+    "source": "camus_gate_review",
+    "reviewerModel": "gpt-5.6-sol",
+    "reviewerEffort": "high",
+    "reviewerBackend": null,
+    "reviewerIdentity": null,
+    "independence": null,
+    "at": 1785945382673,
+    "claimAssessments": [],
+    "coverageAssessments": [],
+    "thresholdAssessments": [],
+    "findings": []
+   }
+  ],
+  "findings": [],
+  "revisions": [],
+  "verify": [
+   {
+    "pass": null,
+    "warnings": null,
+    "skipped": null,
+    "source": "gate_report_status",
+    "derived": true,
+    "commitSha": null,
+    "detail": "REDACTED for the fixture; the real receipt carried project text here.",
+    "checks": null
+   }
+  ],
+  "humanDecisions": [],
+  "gateReport": {
+   "status": "verify_inconclusive",
+   "task": "REDACTED for the fixture; the real receipt carried project text here.",
+   "worktree": "<<WORKTREE>>",
+   "branch": "camus/implement-only-wp6-WidgetCore-combat-runt-1xorex",
+   "rounds": 1,
+   "failures": [
+    {
+     "stage": "verify",
+     "reason": "no_verifier_detected",
+     "kind": "missing_tool",
+     "log_tail": "REDACTED for the fixture; the real receipt carried project text here."
+    }
+   ],
+   "tier": "standard",
+   "tierSource": "neutral_default",
+   "classificationSkipped": true,
+   "model": "opus",
+   "initialModel": "opus",
+   "finalFixModel": "opus",
+   "escalated": false,
+   "planSkipped": false,
+   "note": "REDACTED for the fixture; the real receipt carried project text here."
+  }
+ },
+ "evidencePack": {
+  "schemaVersion": 2,
+  "goal": "Implement only WP6 — WidgetCore combat runtime and its focused WidgetCoreTests — from docs/Plans/parked-candidate-SPEC.md exactly as left at commit c727f187a0d6fa98b0eac2baa6911a0feda90670. Use the current clean post-WP5 branch as the accepted foundation. Do not implement WP7 or later, merge, push, publish, or release. Leave a tested candidate parked in Camus's isolated worktree for human review.",
+  "acceptance_contract": "Source of truth and scope\n- The binding specification is docs/Plans/parked-candidate-SPEC.md at commit c727f187a0d6fa98b0eac2baa6911a0feda90670, especially §§7.1–7.3, the WidgetCoreTests list in §9, and work-package row 6 in §10.\n- Implement only WP6 on the existing post-WP5 foundation. Preserve all existing behavior and tests. Do not implement WP7 perception probes, EnemyPerception/BuildPerception behavior, IEnemyBrain, PatrolChaseAttackBrain, WP8 EnemyAgent, content/spawn work, previewer work, or later documentation obligations.\n- Keep changes focused in WidgetCore.Core/Combat and its WidgetCore tests; adjacent edits are allowed only when strictly required by the WP6 API. Do not merge, push, publish, release, or modify the source branch.\n\nWP6 API and ownership\n- Add the WP6 value/API surface needed by WidgetCore: EnemyIntent(float MoveAxis, string? AttackId = null, bool? FaceLeft = null), WidgetCoreView(Position, Velocity, Grounded, FacingLeft, AttackInProgress, ActiveAttackId, AttackCooldownRemaining), and EnemyHitConfirmation(MonsterId, AttackId), in namespace WidgetCore.Core.Combat.\n- WidgetCore owns Definition, Player, BodyBox, ActiveHitbox, HitThisStep, View, controller state, facing, attack playback, cooldown, previous attack frame, and one-hit latch. Its constructor takes MonsterDefinition, SpriteSheetManifest, PlatformerWorld, and spawn feet, and throws for Flying locomotion.\n- Do not silently expand the API into WP7. If the full §7.2 listing includes BuildPerception, treat its probe implementation as WP7 per work-package row 7.\n\nDerived controller and facing\n- Construct CharacterController with PlatformerConfig RunSpeed and SprintSpeed both equal to definition.MoveSpeed, BodyWidth and BodyHeight from the definition, MaxJumps = 1, and all other fields at defaults.\n- Facing is body-owned: explicit FaceLeft wins; otherwise a nonzero MoveAxis sets facing from its sign; otherwise facing is unchanged. Freeze facing for the entire attack and always drive the controller with LockFacing = true.\n\nAttack legality and playback\n- Accept AttackId only when no attack is in progress, cooldown is exactly zero, and the body is grounded. Ignoring illegal timing is normal flow. An unknown attack id throws KeyNotFoundException.\n- On acceptance, play the configured attack sprite state with restart: true, reset the hit latch, and reset previous attack frame to -1. The same attack must therefore restart on a later swing.\n- While attacking, feed MoveAxis = 0 to the controller and let normal grounded deceleration plant the feet; residual skid is permitted. Jump inputs remain false.\n- Cooldown ticks toward zero only while no attack is active, and starts only after attack teardown.\n\nPinned Step order\n1. For non-finite or non-positive deltaSeconds, return without advancing state. Clear HitThisStep for a valid step.\n2. Tick cooldown toward zero only if no attack is active.\n3. Resolve facing from the intent, but skip this entirely during an active attack.\n4. Apply grounded/no-active/no-cooldown attack acceptance.\n5. Drive the controller with zero axis while attacking or intent.MoveAxis otherwise; LockFacing true and no jump.\n6. Select then update animation.\n7. Detect hits over every newly reached attack frame.\n8. Teardown last: if the attack animation is Finished, end the attack and start cooldown after detection so a final-frame hit still confirms.\n\nAnimation and hit detection\n- Animation priority is active attack state, then fall when airborne, then run when abs(Velocity.X) >= 0.25 or intent axis is nonzero, otherwise idle.\n- Track previous attack frame and reset it to -1 on attack start. After Player.Update, newly reached frames are previous+1 through Player.Frame inclusive; frame 0 counts on the first step, and no frame advance produces an empty interval.\n- Confirm a hit only when that reached-frame interval intersects the configured active-frame interval, the facing-aware CombatBox.AttackBox overlaps the supplied player hurtbox at end-of-step positions, and the latch is unset.\n- A confirmation sets HitThisStep to the current monster id and attack id and sets the latch. The latch resets only on the next accepted attack, yielding at most one hit per swing. Update previous attack frame after detection.\n- ActiveHitbox is non-null only while an attack is active and the currently displayed frame lies inside its active window; detection itself must use the reached-frame interval so large deltas cannot skip hits.\n\nDeterministic acceptance tests\n- Add focused WidgetCoreTests covering: walk and face from axis; explicit face override while stationary; attack playback and planting feet; cooldown rejection; airborne rejection; same-attack replay restart; exactly one confirmation inside the window; no confirmation outside the window; frame-0 window confirmation on the first attack step; large-delta skipped-window confirmation; left-facing hitbox flip; out-of-range hurtbox rejection; unknown id throws; non-positive delta no-op; and Flying constructor rejection.\n- Include a test proving attack facing remains frozen through the whole swing and that a FaceLeft plus AttackId request turns before the swing starts.\n- Run the WP6-focused tests and the complete existing test suite. The deterministic suite must be green with no pre-existing test disabled, weakened, or deleted.\n- The candidate is acceptable only if implementation, tests, and behavior match this contract without WP7+ scope. Camus may park a local candidate commit for human inspection, but must not merge or publish it.",
+  "artifact": {
+   "kind": "code",
+   "repo": "/fixtures/ParkedProject-parked-candidate-local",
+   "head": null,
+   "diff_hash": null,
+   "changed_files": null,
+   "deliverable_hash": null,
+   "claims": null,
+   "contract_coverage": null
+  },
+  "verification": {
+   "command": null,
+   "checks": [
+    {
+     "id": "gate_report_status",
+     "status": "warn",
+     "detail": "Verification could not RUN (toolchain/deps missing in the worktree, or no verifier detected) — NOT a code failure. Fix the environment (install deps / correct node; see env_check) and re-run."
+    }
+   ]
+  },
+  "session_log": [
+   "executor seat: backend=claude; decision source=checks/models.json",
+   "auditor seat: backend=codex; decision source=checks/models.json",
+   "executor initial model: anthropic:opus",
+   "executor final model: anthropic:opus",
+   "auditor actual effort: high"
+  ],
+  "pairing": {
+   "schemaVersion": 1,
+   "executor": {
+    "requested": "anthropic:opus",
+    "resolved": "anthropic:opus",
+    "actual": "anthropic:opus"
+   },
+   "auditor": {
+    "requested": "openai:gpt-5.6-sol",
+    "resolved": "openai:gpt-5.6-sol",
+    "actual": "openai:gpt-5.6-sol"
+   },
+   "independence": "cross_vendor"
+  },
+  "statuses": {
+   "schemaVersion": 1,
+   "execution": "interrupted",
+   "verification": "infra_failed",
+   "audit": "independent_clean",
+   "publication": "not_published"
+  },
+  "human_decisions": [],
+  "economics": [
+   {
+    "schemaVersion": 1,
+    "role": "executor",
+    "requested": "anthropic:opus",
+    "resolved": "anthropic:opus",
+    "actual": "anthropic:opus",
+    "effort": null,
+    "fallback": null,
+    "usage": null,
+    "billing_mode": "unknown",
+    "estimated_cost_usd": null,
+    "duration_ms": null
+   },
+   {
+    "schemaVersion": 1,
+    "role": "auditor",
+    "requested": "openai:gpt-5.6-sol",
+    "resolved": "openai:gpt-5.6-sol",
+    "actual": "openai:gpt-5.6-sol",
+    "effort": "high",
+    "fallback": null,
+    "usage": null,
+    "billing_mode": "unknown",
+    "estimated_cost_usd": null,
+    "duration_ms": null
+   }
+  ],
+  "created_at": 1785945445502,
+  "artifact_id": "sha256:6e4967254cf788fce7dcafa8b28729c0ebc962608e5ac0e491a6545ad7d2a3e7",
+  "receipt_id": "sha256:024ab0f18fc9a24a370971f95ca7f80c545c9e47ff5f0e668a88d0e85cba8523"
+ },
+ "evidencePackError": null,
+ "receiptsDegraded": false,
+ "receiptsNote": null,
+ "statuses": {
+  "schemaVersion": 1,
+  "execution": "interrupted",
+  "verification": "infra_failed",
+  "audit": "independent_clean",
+  "publication": "not_published"
+ },
+ "startedAt": 1785944882567,
+ "endedAt": 1785945445502
+}

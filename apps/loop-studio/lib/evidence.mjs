@@ -28,6 +28,12 @@ export function deriveEvidence(events) {
     source: r.source ?? null,
     reviewerModel: r.reviewerModel ?? null,
     reviewerEffort: r.reviewerEffort ?? null,
+    // Seat-selection facts (docs/MULTI-MODEL-SEATS.md). Absent on receipts
+    // sealed before seats existed — those rounds were cross-vendor by
+    // construction, and the audit derivation treats the absence that way.
+    reviewerBackend: r.reviewerBackend ?? null,
+    reviewerIdentity: r.reviewerIdentity ?? null,
+    independence: r.independence ?? null,
     at: Number.isInteger(r.at) ? r.at : null,
     claimAssessments: (r.claimAssessments ?? []).map((a) => ({
       marker: a.marker,
@@ -131,7 +137,10 @@ export function receiptCompleteness({ lane, evidence, writeFailed, status = null
     if (['done', 'done_with_findings'].includes(status)) {
       const { verification, audit } = verificationAndAudit(lane, evidence);
       const missing = [];
-      if (!['independent_clean', 'independent_findings'].includes(audit)) missing.push('an independent audit bound to the final revision');
+      // A same-vendor pairing seals an ADVISORY audit — the trail is complete
+      // and the downgrade lives in the standing (same_vendor_reviewed), not in
+      // a degraded receipt. Only a broken or absent audit degrades here.
+      if (!['independent_clean', 'independent_findings', 'advisory_clean', 'advisory_findings'].includes(audit)) missing.push('a usable audit bound to the final revision');
       if (!['passed', 'passed_with_caveats'].includes(verification)) missing.push('a conclusive deterministic verification');
       if (missing.length) return { degraded: true, note: `the successful words run is missing ${missing.join(', ')}; do not treat it as a complete receipt` };
     }

@@ -15,9 +15,30 @@ const hashText = (text) => `sha256:${createHash('sha256').update(String(text), '
 const named = (provider, value) => `${provider}:${value || 'not-recorded'}`;
 const providerOf = (value) => String(value).split(':')[0];
 
+// A verification-only recovery runs NO model. Left to the legacy defaults below it
+// sealed `anthropic:not-recorded` / `unknown:not-recorded`, which reads as "a run
+// that used those vendors and lost the observation" — inventing provider provenance
+// for a run that had none by construction (audit 2026-08-05). A zero-model run says
+// so, in a token that names no vendor.
+export const NO_MODEL_IDENTITY = 'none:no-model-run';
+const isModelFreeRun = (models) => models?.recovery === true
+  && (models?.maker ?? null) === null && (models?.reviewer ?? null) === null;
+
 function actuals({ lane, evidence, models, makerActualModels = [], simulated }) {
-  const requestedExecutor = named('anthropic', models?.maker?.model);
-  const requestedAuditor = named('openai', models?.reviewer?.model);
+  if (isModelFreeRun(models)) {
+    return {
+      executor: { requested: NO_MODEL_IDENTITY, resolved: NO_MODEL_IDENTITY, actual: NO_MODEL_IDENTITY },
+      auditor: { requested: NO_MODEL_IDENTITY, resolved: NO_MODEL_IDENTITY, actual: NO_MODEL_IDENTITY },
+      auditorEffort: null,
+      session: ['no model seats: this run resolved no maker or auditor and made no model calls'],
+    };
+  }
+  // A snapshot without providers predates seat selection; its meaning was
+  // claude-writes / codex-reviews, so those defaults are the recorded truth
+  // for legacy runs, not a guess about new ones (new snapshots always carry
+  // providers).
+  const requestedExecutor = named(models?.maker?.provider || 'anthropic', models?.maker?.model);
+  const requestedAuditor = named(models?.reviewer?.provider || 'openai', models?.reviewer?.model);
   if (simulated) {
     const session = ['rehearsal: scripted maker and auditor; no model calls ran'];
     if (evidence?.grounding?.snapshotId) session.push(`frozen knowledge snapshot: ${evidence.grounding.snapshotId}`);
@@ -38,11 +59,15 @@ function actuals({ lane, evidence, models, makerActualModels = [], simulated }) 
   // the run-start request, and that difference is exactly what must survive.
   const executorActual = lane === 'build'
     ? named('anthropic', final)
-    : makerActualModels.at(-1) ?? named('anthropic', models?.maker?.model);
-  const auditorActual = latestReview?.reviewerModel
-    ? named('openai', latestReview.reviewerModel)
-    : 'unknown:not-recorded';
+    : makerActualModels.at(-1) ?? requestedExecutor;
+  // The round's provider-qualified identity is the observation of record; a
+  // pre-seats round without one was codex by construction. No identity at
+  // all fails closed to unknown — never a guess.
+  const auditorActual = latestReview?.reviewerIdentity
+    ?? (latestReview?.reviewerModel ? named('openai', latestReview.reviewerModel) : 'unknown:not-recorded');
   const session = [];
+  if (models?.maker?.backend) session.push(`executor seat: backend=${models.maker.backend}; decision source=${models.maker.source ?? 'not recorded'}`);
+  if (models?.reviewer?.backend) session.push(`auditor seat: backend=${models.reviewer.backend}; decision source=${models.reviewer.modelSource ?? 'not recorded'}`);
   if (initial) session.push(`executor initial model: ${named('anthropic', initial)}`);
   if (final) session.push(`executor final model: ${named('anthropic', final)}`);
   if (latestReview?.reviewerEffort) session.push(`auditor actual effort: ${latestReview.reviewerEffort}`);
@@ -62,11 +87,21 @@ function actuals({ lane, evidence, models, makerActualModels = [], simulated }) 
   };
 }
 
+const CHECK_STATUSES = ['pass', 'fail', 'warn', 'skip'];
+
 function verificationChecks(evidence) {
   const latest = (evidence?.verify ?? []).at(-1) ?? null;
   if (!latest) return [];
-  if (Array.isArray(latest.checks) && latest.checks.length) {
-    return latest.checks.map((c) => ({ id: String(c.id), status: c.status, detail: c.detail ?? null }));
+  // Only entries that ARE checks. The gate's `failures` ride this same field (they carry
+  // stage/kind, not id/status), so mapping them blindly produced `{id: "undefined",
+  // status: undefined}` and the whole pack was REFUSED — a degraded receipt caused by
+  // the report it was describing (caught by the restart test, 2026-08-05). Anything that
+  // is not a check falls through to the head-bound summary below.
+  const usable = Array.isArray(latest.checks)
+    ? latest.checks.filter((c) => c && (typeof c.id === 'string' || typeof c.id === 'number') && CHECK_STATUSES.includes(c.status))
+    : [];
+  if (usable.length) {
+    return usable.map((c) => ({ id: String(c.id), status: c.status, detail: c.detail ?? null }));
   }
   // The build gate exposes a head-bound summary rather than its internal test
   // list. Keep that provenance explicit instead of inventing check counts.
@@ -88,6 +123,8 @@ export function buildEvidencePack({
   models,
   makerActualModels = [],
   simulated = false,
+  verifyCommand = null,
+  recoveryOf = null,
   createdAt = Date.now(),
 }) {
   const ids = actuals({ lane, evidence, models, makerActualModels, simulated });
@@ -147,6 +184,25 @@ export function buildEvidencePack({
   const thresholdSession = thresholdAssessments.map((a) =>
     `threshold assessment ${a.id}: ${a.decision}; line_hash=${thresholdLineHash(a) ?? 'none'}; evidence_hash=${thresholdEvidenceHash(a) ?? 'none'}`,
   );
+  // RECOVERY LINEAGE IS SEALED, not decoration. The UI named a source receipt that
+  // existed only as a top-level report field, so editing the displayed lineage would
+  // not have changed receipt_id — a claim about which receipt this one descends from,
+  // outside the hash that is supposed to cover it (audit 2026-08-05). These lines ride
+  // session_log, which receipt_id already covers, so no pack field is added.
+  const recoverySession = recoveryOf
+    ? [
+        `recovery of run: ${recoveryOf.sourceRunId ?? 'not recorded'}`,
+        `recovery source receipt: ${recoveryOf.sourceReceiptId ?? 'none sealed by the source run'}`,
+        `recovery candidate: ${recoveryOf.parkedSha ?? 'not recorded'}`,
+        `recovery sha provenance: ${recoveryOf.shaProvenance ?? 'not recorded'}`,
+        // Sealed because the UI's "source review linked" wording is a claim ABOUT
+        // ANOTHER RECEIPT. Read from the mutable report field it could be edited to
+        // imply a review that was never sealed.
+        `recovery source receipt status: ${recoveryOf.sourceReceiptStatus ?? 'not checked'}`,
+        `recovery source audit: ${recoveryOf.sourceAudit ?? 'none recorded'}`,
+      ]
+    : [];
+
   const pack = {
     schemaVersion: 2,
     goal,
@@ -154,8 +210,13 @@ export function buildEvidencePack({
     artifact: lane === 'build'
       ? { kind: 'code', repo: targetPath, head, diff_hash: null, changed_files: null, deliverable_hash: null, claims: null, contract_coverage: null }
       : { kind: 'research', repo: null, head: null, diff_hash: null, changed_files: null, deliverable_hash: deliverable == null ? null : hashText(deliverable), claims, contract_coverage: contractCoverage },
-    verification: { command: null, checks: verificationChecks(evidence) },
-    session_log: [...ids.session, ...claimSession, ...coverageSession, ...thresholdSession],
+    // A green is only as good as the command that produced it, so the explicit
+    // per-run verify command is SEALED here (receipt_id covers it): a receipt that
+    // says "verified" now also says what was run to earn that. null means no
+    // explicit command was in force and verify.py auto-detected the stack — an
+    // absence, never a claim about which checks it chose.
+    verification: { command: verifyCommand == null ? null : String(verifyCommand), checks: verificationChecks(evidence) },
+    session_log: [...ids.session, ...recoverySession, ...claimSession, ...coverageSession, ...thresholdSession],
     pairing: {
       schemaVersion: 1,
       executor: ids.executor,

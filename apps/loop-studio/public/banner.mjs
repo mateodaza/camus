@@ -8,7 +8,7 @@
 // never sealed). Missing evidence fails CLOSED: a `done` with no headline —
 // including every pre-dimension receipt in runs/ — renders as an
 // uncorroborated claim, never as "reviewed and verified".
-export function doneBanner(status, headline, dimensions) {
+export function doneBanner(status, headline, dimensions, recoveryOf = null) {
   const claim = status === 'done_with_findings' ? 'DONE WITH FINDINGS' : 'DONE';
   // A headline is disposable PRESENTATION derived from the dimensions — never
   // evidence on its own. No dimensions on the event means there is nothing the
@@ -30,9 +30,29 @@ export function doneBanner(status, headline, dimensions) {
     case 'published':
       return { cls: 'good', label: 'DONE. Verified and published.' };
     default: {
+      const nice = (s) => String(s).replace(/_/g, ' ');
+      // A VERIFICATION-ONLY RECOVERY is this shape by construction: it ran no review,
+      // so audit is honestly not_run, but its verification is a real commit-bound
+      // green. Summarising that as "not verified" told the operator the opposite of
+      // what happened (audit 2026-08-05). Say what this receipt proves, and where the
+      // review evidence lives — without claiming this receipt inherited it.
+      if (dimensions.verification === 'passed' && dimensions.audit === 'not_run' && recoveryOf) {
+        const src = recoveryOf.sourceRunId ? ` (run ${recoveryOf.sourceRunId})` : '';
+        const bound = recoveryOf.parkedSha ? `, bound to ${String(recoveryOf.parkedSha).slice(0, 12)}` : '';
+        // A linked review needs a VALIDATED source receipt that records an audit. A
+        // legacy source with no sealed pack has no review to point at, and implying
+        // one would invent it.
+        const linked = Boolean(recoveryOf.sourceReceiptId)
+          && ['independent_clean', 'independent_findings', 'advisory_clean', 'advisory_findings'].includes(recoveryOf.sourceAudit);
+        return {
+          cls: 'good',
+          label: linked
+            ? `VERIFIED HERE. Deterministic verification passed on the parked candidate${bound}. No review ran in this recovery — the review evidence stays in the source run${src}, receipt ${String(recoveryOf.sourceReceiptId).replace(/^sha256:/, '').slice(0, 12)}, which this receipt links but does not absorb.`
+            : `VERIFIED HERE. Deterministic verification passed on the parked candidate${bound}. No review ran in this recovery, and NO source review is available to link${src ? ` — the source run${src} sealed no validated receipt recording an audit` : ''}: nothing here has been independently reviewed.`,
+        };
+      }
       // Unverified, needs_decision, a headline this UI does not know, or no
       // headline at all — the claim is named as a claim, with the reason.
-      const nice = (s) => String(s).replace(/_/g, ' ');
       return { cls: 'meh', label: `${claim} (gate claim). The receipt does not corroborate it: verification ${nice(dimensions.verification)}, audit ${nice(dimensions.audit)}. Trust the receipts, not the word.` };
     }
   }

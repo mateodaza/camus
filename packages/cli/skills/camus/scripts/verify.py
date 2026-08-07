@@ -42,6 +42,27 @@ def _exists(repo, *names):
     return any(os.path.exists(os.path.join(repo, n)) for n in names)
 
 
+def _glob_exists(repo, *patterns):
+    """Any file matching these glob patterns, searched shallowly then one level
+    deep. .NET repos put the solution at the root and projects in subdirectories,
+    so a root-only check misses every real layout."""
+    for pat in patterns:
+        if glob.glob(os.path.join(repo, pat)) or glob.glob(os.path.join(repo, "*", pat)):
+            return True
+    return False
+
+
+def _dotnet_test_projects(repo):
+    """Project files that look like test projects. dotnet has no manifest field for
+    this, so the convention (a *Tests*/*Test* project name, or a project under
+    tests/) is the only signal — and it is the one every .NET repo follows."""
+    hits = []
+    for pat in ("*.csproj", "*/*.csproj", "*/*/*.csproj", "tests/*/*.csproj"):
+        hits.extend(glob.glob(os.path.join(repo, pat)))
+    return [h for h in hits
+            if "test" in os.path.basename(h).lower() or os.sep + "tests" + os.sep in h.lower()]
+
+
 def _read_json(path):
     try:
         with open(path, "r", encoding="utf-8") as fh:
@@ -194,6 +215,24 @@ def detect_checks(repo, env=None):
         checks.append({"name": "foundry:build", "cmd": ["forge", "build"]})
         checks.append({"name": "foundry:test", "cmd": ["forge", "test"]})
 
+    # --- .NET --------------------------------------------------------------
+    # Field report 2026-08-05 (WP6): a real C# repo verified as "no checks" because
+    # nothing looked for .slnx/.sln/.csproj, so a committed candidate could not be
+    # verified at all. `dotnet build` is the compile gate; `dotnet test` is added
+    # only when a test project actually exists, so a library-only repo does not
+    # verify red for having no tests.
+    if _glob_exists(repo, "*.slnx", "*.sln", "*.csproj"):
+        # Name the target when it is unambiguous. A bare `dotnet build` in a repo
+        # with several solutions/projects at the root exits with MSB1011 ("more
+        # than one project or solution"), which is an ENVIRONMENTAL ambiguity about
+        # what to build — never a statement about the code (classified inconclusive
+        # below). One root solution is the common case and removes the ambiguity.
+        roots = sorted(glob.glob(os.path.join(repo, "*.slnx")) + glob.glob(os.path.join(repo, "*.sln")))
+        target = [os.path.basename(roots[0])] if len(roots) == 1 else []
+        checks.append({"name": "dotnet:build", "cmd": ["dotnet", "build", "--nologo"] + target})
+        if _dotnet_test_projects(repo):
+            checks.append({"name": "dotnet:test", "cmd": ["dotnet", "test", "--nologo"] + target})
+
     # --- Make (fallback only, when no language ecosystem matched) -----------
     if not checks and _make_has_test_target(repo):
         checks.append({"name": "make:test", "cmd": ["make", "test"]})
@@ -288,6 +327,21 @@ def _classify_failure(chk, exit_code, tail):
         # pytest exit 5 = "no tests collected": nothing ran, so nothing failed. A
         # repo with pytest but zero tests must not verify red. (audit 2026-06-12, F1)
         return "no_tests"
+    # .NET workload/SDK gaps are environment statements: a mobile (maui/ios/android)
+    # workload that is not installed means the check could not RUN on this host, so
+    # it must be inconclusive — never a red verdict on the candidate. NETSDK1147 is
+    # the canonical "workloads must be installed" code (WP6 dogfood 2026-08-05).
+    _dotnet_env_markers = ("NETSDK1147", "workloads must be installed", "workload must be installed",
+                           "is not installed", "NETSDK1045", "requires a newer .NET SDK",
+                           "No .NET SDKs were found", "SDK not found",
+                           # MSB1011: several projects/solutions and no target given.
+                           # That is "the harness did not say WHAT to build", an
+                           # environment/config statement — a multi-solution repo
+                           # must never read as broken code.
+                           "MSB1011", "more than one project or solution",
+                           "Specify which project or solution file to use")
+    if any(m.lower() in tail.lower() for m in _dotnet_env_markers) and "dotnet" in " ".join(cmd):
+        return "missing_tool"
     if "No module named" in tail:
         # exit 1/2 with this tail is an ENVIRONMENT statement (system python3 in a
         # poetry/uv/pipenv/conda repo; deps not synced) — never a code verdict.
@@ -301,6 +355,24 @@ def _classify_failure(chk, exit_code, tail):
         # "not found" stays red. (stack-matrix audit 2026-06-12, F7)
         return "missing_tool"
     return "failed"
+
+
+def _reports_no_tests_on_success(chk, exit_code, tail):
+    """True when a nominally successful test command explicitly ran zero tests.
+
+    Some .NET test targets return exit 0 after selecting an assembly for which no
+    test adapter discovers tests. Scope the output heuristic to a command that
+    actually invokes `dotnet test`; the same prose in an unrelated successful
+    command must not turn its verdict inconclusive.
+    """
+    if exit_code != 0 or "no test is available" not in (tail or "").lower():
+        return False
+    cmd = [str(p) for p in (chk.get("cmd") or [])]
+    if cmd[:2] == ["dotnet", "test"]:
+        return True
+    if cmd[:2] == ["bash", "-lc"] and len(cmd) > 2:
+        return re.search(r"(?:^|[;&|()\s])dotnet\s+test(?:\s|$)", cmd[2]) is not None
+    return False
 
 
 def build_result(checks, runner, repo, porcelain=None, head=None):
@@ -385,6 +457,9 @@ def build_result(checks, runner, repo, porcelain=None, head=None):
                     "[camus] timed out — raise CAMUS_VERIFY_TIMEOUT (seconds) for cold compiled stacks"
             failures.append({"stage": chk["name"], "exit": exit_code,
                              "kind": kind, "log_tail": tail})
+        elif _reports_no_tests_on_success(chk, exit_code, tail):
+            failures.append({"stage": chk["name"], "exit": exit_code,
+                             "kind": "no_tests", "log_tail": tail})
     tampered = False
     if before is not None:
         after = snap(repo)

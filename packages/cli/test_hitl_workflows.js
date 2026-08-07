@@ -43,8 +43,54 @@ function makeAgent(scripts, calls, capture) {
       ;(capture.states = capture.states || []).push(p)   // …and EVERY persist, for intermediate-state assertions
     }
     const s = (label in scripts) ? scripts[label] : scripts[key(label)]
-    return typeof s === 'function' ? s(p, opts) : s
+    const out = typeof s === 'function' ? s(p, opts) : s
+    // A REAL reviewer publishes the binding of the invocation it actually ran
+    // (round, effort, model, backend, nonce, worktree) on stdout, and asGate now
+    // refuses a verdict without one. So the harness's reviewer echoes a FAITHFUL
+    // binding parsed from the command the workflow composed — realistic fixtures,
+    // not a weakened asGate. A fixture that sets its own `binding` (a break test)
+    // is left exactly as written; a `pending` handle is not a verdict.
+    if (key(label) === 'review') return bindReviewOutput(out, p)
+    // A SCHEMA'd agent returns the validated OBJECT in production (agent(..., {schema})), not
+    // text. Mirror that so fixtures can exercise the maker-resolutions path faithfully.
+    if (opts.schema && typeof out === 'string' && out.trim().startsWith('{')) {
+      try { return JSON.parse(out) } catch (_) { return out }
+    }
+    return out
   }
+}
+// Attach a faithful binding to a reviewer verdict, parsed from the workflow's own
+// review command in the prompt. The values are what the gate would truly have run
+// with, so asGate accepts them; a mismatch is only ever produced by a break-test
+// fixture that supplies its own binding.
+let lastStartBinding = null
+function bindReviewOutput(out, prompt) {
+  if (typeof out !== 'string') return out
+  let g
+  try { g = JSON.parse(out) } catch (_) { return out }
+  if (!g || typeof g !== 'object' || g.pending === true || 'binding' in g) return out
+  const round = Number((prompt.match(/CAMUS_REVIEW_ROUND=(\d+)/) || [])[1])
+  const effort = (prompt.match(/CAMUS_REVIEW_EFFORT=(\w+)/) || [])[1] || null
+  const nonce = (prompt.match(/CAMUS_GATE_NONCE="([^"]*)"/) || [])[1] || null
+  const model = (prompt.match(/--model "([^"]*)"/) || [])[1] || null
+  const backend = (prompt.match(/--backend "([^"]*)"/) || [])[1] || 'codex'
+  let worktree = (prompt.match(/--worktree "([^"]*)"/) || [])[1] || null
+  // An await prompt has no --model/--worktree: production's emit_outcome reconstructs both from
+  // the round's meta.json, so the faithful fixture does the same rather than emitting a binding
+  // the real gate would never produce (live seam 20260806-110809-2r9j).
+  if (model === null && worktree === null && lastStartBinding) {
+    return (() => {
+      g.binding = { ...lastStartBinding, round: Number.isInteger(round) ? round : lastStartBinding.round,
+        effort: effort || lastStartBinding.effort, nonce: nonce || lastStartBinding.nonce }
+      return JSON.stringify(g)
+    })()
+  }
+  g.binding = {
+    round: Number.isFinite(round) ? round : null, effort, model, backend, nonce, worktree,
+    round_requested: Number.isFinite(round) ? round : null, effort_requested: effort,
+  }
+  lastStartBinding = g.binding      // what a later AWAIT reconstructs from meta.json
+  return J(g)
 }
 async function runLoop(args, scripts, budget) {
   const calls = []
@@ -168,24 +214,150 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     let r = 0
     return {
       ...cls, ...planOf('clear', ''), implement: happyTail.implement, fix: '', ...cleanVerify,
+      // The FINAL round now gets one bounded fix (contract change 2026-08-06), so the run
+      // reaches commit + verify instead of halting — the stub set must complete that path.
+      commit: J({ committed: true, sha: h40('varyblk') }),
+      verify: J({ pass: true, failures: [], head: h40('varyblk') }),
       review: () => { r++; return J({ ran: true, clean: false, blocking: [{ priority: 1, title: 't' + r, code_location: 'f.ts:' + r }], nonblocking: [] }) },
     }
   }
   {
     const { res, calls } = await runLoop({ task: 't', roundCap: 1 }, varyBlock())
-    ok('S8a roundCap:1 → review_unresolved after 1 round', res.status === 'review_unresolved', res.status)
+    ok('S8a roundCap:1 → ONE bounded fix, parked as done_with_findings', res.status === 'done_with_findings', res.status)
     ok('S8a exactly 1 review round ran', calls.filter((c) => c.startsWith('review')).length === 1, calls.filter((c) => c.startsWith('review')).join(','))
-    ok('S8a note reports the honored cap', /ROUND_CAP=1/.test(res.note || ''))
+    ok('S8a the note says the fix was NOT re-reviewed', /UNREVIEWED/.test(res.note || ''), (res.note || '').slice(0, 120))
+    ok('S8a and never claims review-clean', !/review-clean\b(?!.*NOT)/i.test(res.note || '') && /NOT review-clean/.test(res.note || ''), (res.note || '').slice(0, 160))
   }
   {
     // out-of-range cap (99) falls back to the default 3 — bounded so a bad value can't run away.
     const { res, calls } = await runLoop({ task: 't', roundCap: 99 }, varyBlock())
     ok('S8b out-of-range roundCap → default 3 rounds', calls.filter((c) => c.startsWith('review')).length === 3, String(calls.filter((c) => c.startsWith('review')).length))
-    ok('S8b → review_unresolved', res.status === 'review_unresolved', res.status)
+    ok('S8b → done_with_findings after the final bounded fix', res.status === 'done_with_findings', res.status)
+  }
+  // S8e/S8f — FIXED EFFORT (displayed pairing = executed pairing). The review
+  // label encodes the effort each round actually ran at ("review:rN codex·<effort>"),
+  // so these prove a PINNED effort holds every round while an UNPINNED run keeps
+  // the adaptive schedule. The task is COMPLEX and runs to the cap, the exact
+  // conditions under which adaptive escalation would otherwise raise a pinned-low
+  // run to high/xhigh.
+  const effortsOf = (calls) => calls.filter((c) => c.startsWith('review:')).map((c) => (c.match(/codex·(\w+)/) || [])[1])
+  {
+    // Pinned low on a COMPLEX task: adaptive would go high (complex) then xhigh (P0),
+    // but the pin holds low for all three rounds.
+    const clsComplex = { classify: { tier: 'complex', reason: 'hard' } }
+    const p0Block = () => {
+      let r = 0
+      return { ...clsComplex, ...planOf('clear', ''), implement: happyTail.implement, fix: '', ...cleanVerify,
+        review: () => { r++; return J({ ran: true, clean: false, blocking: [{ priority: 0, title: 'crit' + r, code_location: 'a.ts:' + r }], nonblocking: [] }) } }
+    }
+    const { calls } = await runLoop({ task: 't', roundCap: 3, reviewerEffort: 'low' }, p0Block())
+    const efs = effortsOf(calls)
+    ok('S8e pinned low executes low EVERY round (displayed = executed)', efs.length === 3 && efs.every((e) => e === 'low'), efs.join(','))
+    ok('S8e adaptive escalation did NOT leak a higher effort', !efs.includes('high') && !efs.includes('xhigh'), efs.join(','))
+  }
+  {
+    // The SAME complex/P0 shape UNPINNED keeps the adaptive schedule: high (complex, r1)
+    // then xhigh once a P0 finding is carried into the next round.
+    const clsComplex = { classify: { tier: 'complex', reason: 'hard' } }
+    const p0Block = () => {
+      let r = 0
+      return { ...clsComplex, ...planOf('clear', ''), implement: happyTail.implement, fix: '', ...cleanVerify,
+        review: () => { r++; return J({ ran: true, clean: false, blocking: [{ priority: 0, title: 'crit' + r, code_location: 'a.ts:' + r }], nonblocking: [] }) } }
+    }
+    const { calls } = await runLoop({ task: 't', roundCap: 3 }, p0Block())
+    const efs = effortsOf(calls)
+    ok('S8f unpinned stays ADAPTIVE (high on complex, xhigh after a P0)', efs[0] === 'high' && efs.slice(1).includes('xhigh'), efs.join(','))
+  }
+  {
+    // An invalid pin is ignored (not honored as a literal), and the run stays adaptive.
+    const clsComplex = { classify: { tier: 'complex', reason: 'hard' } }
+    const { calls } = await runLoop({ task: 't', roundCap: 1, reviewerEffort: 'ludicrous' }, {
+      ...clsComplex, ...planOf('clear', ''), implement: happyTail.implement, fix: '', ...cleanVerify,
+      review: J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'x', code_location: 'a:1' }], nonblocking: [] }),
+    })
+    ok('S8g an invalid reviewerEffort is ignored, not run as a literal', effortsOf(calls)[0] === 'high', effortsOf(calls).join(','))
+  }
+  // S11 — NORTH-STAR SPEND. A live WP6 run burned ~211k tokens and 10+ minutes
+  // before the reviewer ever ran: ~40k on three "thin" status-stamp agents, ~35k
+  // classifying a task whose model was already pinned, ~51.5k planning against a
+  // contract that already stated the work (2026-08-05). An agent turn costs its
+  // whole context, so the fix is to spend FEWER TURNS, not cheaper ones.
+  {
+    // Studio's shape: model AND review effort pinned. The tier cannot change any
+    // decision, so the classifier must not run at all.
+    const { calls, prompts } = await runLoop(
+      { task: 't', model: 'opus', reviewerEffort: 'low' },
+      { ...clsStd, ...planOf('clear', ''), ...happyTail },
+    )
+    ok('S11 classifier is SKIPPED when the model and effort are already pinned', !calls.includes('classify'), calls.join(','))
+    ok('S11 …and no status-stamp agent turns are spawned', !calls.some((c) => c.startsWith('status:')), calls.join(','))
+    ok('S11 the run still completes', calls.includes('implement') && calls.some((c) => c.startsWith('review')), calls.join(','))
+  }
+  {
+    // The phase marker did not disappear — it rides the prompt the agent already
+    // runs. Needs a custody identity, since that is what the status record keys on.
+    const { calls, prompts } = await runLoop(
+      { task: 't', model: 'opus', reviewerEffort: 'low', identitySalt: 'studio-run-1' },
+      { ...clsStd, ...planOf('clear', ''), ...happyTail },
+    )
+    ok('S11 no status-stamp agent turns under a custody identity either', !calls.some((c) => c.startsWith('status:')), calls.join(','))
+    ok('S11 the plan prompt still stamps its phase (no extra turn)',
+      /status_record\.py write .*--phase "Plan"/.test(prompts.plan || ''), (prompts.plan || '').slice(0, 200))
+    ok('S11 the implement prompt stamps Implement',
+      /status_record\.py write .*--phase "Implement"/.test(prompts.implement || ''), (prompts.implement || '').slice(0, 200))
+  }
+  {
+    // With NOTHING pinned, the classifier still runs — the saving must come from
+    // it being moot, never from dropping a decision the caller relies on.
+    const { res, calls } = await runLoop({ task: 't' }, { ...clsStd, ...planOf('clear', ''), ...happyTail })
+    ok('S11 the classifier still runs when nothing is pinned', calls.includes('classify'), calls.join(','))
+    ok('S11 a real classification reports its provenance as the classifier',
+      res.tierSource === 'classifier' && res.classificationSkipped === false, `${res.tierSource}/${res.classificationSkipped}`)
+  }
+  {
+    // PROVENANCE: a skipped classification must not report a tier as though one
+    // was computed. Routing still uses the neutral default, but the report says so.
+    const { res } = await runLoop({ task: 't', model: 'opus', reviewerEffort: 'low' }, { ...planOf('clear', ''), ...happyTail })
+    ok('S11 a skipped classification is reported as skipped', res.classificationSkipped === true, String(res.classificationSkipped))
+    ok('S11 …and names the tier as a neutral default, not a classifier verdict',
+      res.tierSource === 'neutral_default' && res.tier === 'standard', `${res.tierSource}/${res.tier}`)
+    const { res: tierRes } = await runLoop({ task: 't', modelTier: 'complex' }, { ...planOf('clear', ''), ...happyTail })
+    ok('S11 an explicit tier is attributed to the caller, not to a classifier',
+      tierRes.tierSource === 'args.modelTier' && tierRes.tier === 'complex', `${tierRes.tierSource}/${tierRes.tier}`)
+  }
+  {
+    // A pinned model ALONE is not enough: without a pinned effort the tier still
+    // drives review escalation, so the classifier must still run.
+    const { calls } = await runLoop({ task: 't', model: 'opus' }, { ...clsStd, ...planOf('clear', ''), ...happyTail })
+    ok('S11 a pinned model alone does not skip classification (tier still drives review effort)', calls.includes('classify'), calls.join(','))
+  }
+  {
+    // An explicit tier makes the classifier moot for the same reason.
+    const { calls } = await runLoop({ task: 't', modelTier: 'complex' }, { ...planOf('clear', ''), ...happyTail })
+    ok('S11 an explicit modelTier also skips the classifier', !calls.includes('classify'), calls.join(','))
+  }
+  {
+    // A binding acceptance contract bounds the plan survey instead of re-deriving
+    // requirements — the ask-gate is untouched.
+    const withContract = 'do the thing\n\nAcceptance contract (binding):\nEvery public method keeps its signature.'
+    const { prompts } = await runLoop({ task: withContract, model: 'opus', reviewerEffort: 'low' }, { ...planOf('clear', ''), ...happyTail })
+    ok('S11 a binding contract scopes the plan instead of a broad repo survey',
+      /Plan AGAINST it/.test(prompts.plan || '') && /do not re-derive requirements/.test(prompts.plan || ''), 'plan prompt')
+    ok('S11 …and clarity judgement is explicitly preserved',
+      /Clarity is still yours to judge/.test(prompts.plan || ''), 'plan prompt')
+    const { prompts: plain } = await runLoop({ task: 't', model: 'opus', reviewerEffort: 'low' }, { ...planOf('clear', ''), ...happyTail })
+    ok('S11 a task with no contract keeps the unscoped plan prompt', !/Plan AGAINST it/.test(plain.plan || ''), 'plain plan prompt')
+  }
+  {
+    // The ask-gate still fires with everything pinned — spend cuts must never cost
+    // ambiguity detection.
+    const { res } = await runLoop({ task: 't', model: 'opus', reviewerEffort: 'low' }, { ...planOf('ambiguous', 'Which X?', ['a', 'b']) })
+    ok('S11 ambiguity still pauses even with classification skipped', res.status === 'needs_human', res.status)
   }
   // S10: review_unresolved now CONSULTS deterministic verify before reporting, and a finding
   // re-raised after a fix STOPS early for a human decision (Fix 2026-06-11 — "deterministic ground
-  // truth wins"; a probabilistic review was halting verify-clean shippable code).
+  // deterministic verification and unresolved review are separate axes; green tests do not
+  // silently clear a contract finding).
   const stuckReview = J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'same', code_location: 'a.ts:1' }], nonblocking: [] })
   const stuckBase = { ...cls, ...planOf('clear', ''), implement: happyTail.implement, review: stuckReview, fix: '', prep: J({ prepped: true, ran: [] }) }
   // Since the run-6 integrity work, the unresolved path PARKS FIRST (unconditionally) and then
@@ -198,7 +370,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('S10a review_unresolved + verify GREEN → verifyClean true', res.status === 'review_unresolved' && res.verifyClean === true, res.status + '/' + res.verifyClean)
     ok('S10a verify actually ran on the halt (ground truth consulted)', calls.includes('verify'))
     ok('S10a park precedes verify (seal, then certify)', calls.indexOf('park') < calls.indexOf('verify'), calls.join(','))
-    ok('S10a note frames it as a decision, not a failure', /DECIDE|shippable/.test(res.note || ''))
+    ok('S10a note frames it as a decision, not a pass', /DECIDE/.test(res.note || '') && !/shippable/.test(res.note || ''))
     ok('S10a stuck finding surfaced for the human', Array.isArray(res.stuck) && res.stuck.length === 1)
     ok('S10a stopped early (2 rounds, not roundCap 5)', calls.filter((c) => c.startsWith('review')).length === 2, String(calls.filter((c) => c.startsWith('review')).length))
   }
@@ -296,9 +468,9 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   {
     const emptyFindings = J({ ran: true, clean: false, blocking: [{ priority: 1 }], nonblocking: [] }) // no title / code_location
     const { res, calls } = await runLoop({ task: 't', roundCap: 3 },
-      { ...cls, ...planOf('clear', ''), implement: happyTail.implement, review: emptyFindings, fix: '', prep: J({ prepped: true, ran: [] }), verify: J({ pass: false, failures: [] }) })
+      { ...cls, ...planOf('clear', ''), implement: happyTail.implement, review: emptyFindings, fix: '', prep: J({ prepped: true, ran: [] }), commit: J({ committed: true, sha: h40('s11f') }), verify: J({ pass: false, failures: [] }) })
     ok('S11f un-keyable findings do NOT falsely stuck → runs to cap (3)', calls.filter((c) => c.startsWith('review')).length === 3, String(calls.filter((c) => c.startsWith('review')).length))
-    ok('S11f → review_unresolved (not a stuck early-stop)', res.status === 'review_unresolved' && !res.stuck)
+    ok('S11f un-keyable findings never falsely stuck, and a RED verify keeps its meaning', res.status === 'verify_failed' && !res.stuck, res.status + '/' + JSON.stringify(res.stuck || null))
   }
   // S12 (run-5 fix 2026-06-11): LAND MODE — commit already-proven work without re-running the loop.
   const landStubs = {
@@ -466,9 +638,10 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // halt report described an already-fixed worktree).
   {
     const { res, calls } = await runLoop({ task: 't', roundCap: 2 }, varyBlock())
-    ok('S16 fix dispatched only when a round remains to confirm it', calls.filter((c) => c.startsWith('fix')).length === 1, calls.join(','))
-    ok('S16 both review rounds ran', calls.filter((c) => c.startsWith('review')).length === 2)
-    ok('S16 → review_unresolved', res.status === 'review_unresolved', res.status)
+    ok('S16 the FINAL round gets its own bounded fix (2 fixes for 2 rounds)', calls.filter((c) => c.startsWith('fix')).length === 2, calls.join(','))
+    ok('S16 both review rounds ran — and NO third', calls.filter((c) => c.startsWith('review')).length === 2, calls.filter((c) => c.startsWith('review')).join(','))
+    ok('S16 → done_with_findings (never review-clean)', res.status === 'done_with_findings', res.status)
+    ok('S16 the findings are recorded verbatim for the human', Array.isArray(res.findings) && res.findings.length === 1, JSON.stringify(res.findings || []).slice(0, 120))
   }
   // S17 (0.2.5 item 1): HEARTBEAT — under a feat (idSalt) every runner command and think prompt
   // touches ~/.camus/feats/<featId>.hb first, so its mtime is a phase-boundary liveness signal.
@@ -2317,6 +2490,468 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     // and the merge command never inlines it double-quoted either (shq + validation)
     const mp = r.prompts['merge:' + tid] || ''
     ok('F49 …nor double-quoted in the merge command', !mp.includes('"camus/feat/x/$(id)"'), mp.slice(0, 160))
+  }
+
+  // ── F52: PREP AND VERIFY ARE EMITTED AS PLAIN TRUSTED-SCRIPT COMMANDS ──────
+  // Both scripts anchor `_guard.sh` at $PWD and a fresh runner process is not guaranteed to
+  // start inside the target repository, so WP7 (20260805-181917-f4b1) got `target rejected by
+  // camus_guard` after a clean review. That was first fixed by prefixing REPO_CD — and inside a
+  // LINKED worktree `git rev-parse --show-toplevel` is the worktree itself, so WP9
+  // (20260806-145411-hy1w) emitted `cd <wp8-worktree> && verify.sh <wp9-worktree>`, auto mode
+  // denied the cross-worktree compound command, and the runner's prose refusal was read as a
+  // missing toolchain. The anchoring now lives in the scripts (`camus_anchor`, off the
+  // process-level CAMUS_REPO_ROOT), so what the runner is handed must be a PLAIN script call.
+  // These assert the PRODUCTION command shape the workflow actually emits.
+  {
+    const { calls, prompts } = await runLoop({ task: 't', targetPath: '/some/target/repo' },
+      { ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+        review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
+        commit: J({ committed: true, sha: h40('cwdanch') }), prep: J({ prepped: true, ran: [] }),
+        verify: J({ pass: true, failures: [], head: h40('cwdanch') }) })
+    const prepLbl = calls.find((c) => /prep/.test(c))
+    const verifyLbl = calls.find((c) => /verify/.test(c))
+    // The command LINE only — the surrounding prose legitimately mentions the word "cd".
+    const cmdLine = (p) => ((p || '').split('\n').find((l) => /(prep|verify)\.sh /.test(l)) || '')
+    const prepCmd = cmdLine(prompts[prepLbl])
+    const verifyCmd = cmdLine(prompts[verifyLbl])
+    ok('F52a the prep command carries NO cd of any kind', prepCmd !== '' && !/(^|[;&|\s])cd\s/.test(prepCmd), prepCmd)
+    ok('F52b the verify command carries NO cd of any kind', verifyCmd !== '' && !/(^|[;&|\s])cd\s/.test(verifyCmd), verifyCmd)
+    ok('F52c neither command mentions rev-parse --show-toplevel (the WP9 cross-worktree cd)',
+      !/--show-toplevel/.test(prepCmd) && !/--show-toplevel/.test(verifyCmd), prepCmd + ' | ' + verifyCmd)
+    ok('F52d each ends with the trusted script and the worktree as its ARGUMENT',
+      /prep\.sh "/.test(prepCmd) && /verify\.sh "/.test(verifyCmd), prepCmd + ' | ' + verifyCmd)
+    // Both runners are told to change nothing about the line — and the instruction states the
+    // operational reason (what gets measured), not what a permission check would decide. A real
+    // Haiku runner read the earlier "auto mode refuses to run" phrasing as coaching it past a
+    // permission gate and refused the whole command (auto-mode preflight, 2026-08-06).
+    ok('F52e both runners are told to add nothing and remove nothing',
+      /adding nothing and removing nothing/.test(prompts[prepLbl] || '')
+        && /Add NOTHING and remove nothing/.test(prompts[verifyLbl] || ''),
+      (prompts[verifyLbl] || '').slice(0, 320))
+    ok('F52e2 and neither prompt reasons about what auto mode will approve',
+      !/auto mode/i.test(prompts[prepLbl] || '') && !/auto mode/i.test(prompts[verifyLbl] || ''),
+      (prompts[verifyLbl] || '').slice(0, 320))
+    ok('F52f the runner is told to REPORT a refusal rather than diagnose the repo',
+      /RUNNER_COULD_NOT_EXECUTE/.test(prompts[prepLbl] || '') && /RUNNER_COULD_NOT_EXECUTE/.test(prompts[verifyLbl] || ''),
+      'both thin runners must have a way to say "I never ran it"')
+    ok('F52g the mechanical heartbeat/status prefixes are still inlined by the orchestrator',
+      /verify\.sh /.test(verifyCmd), verifyCmd)
+  }
+
+  // ── F52h: A RUNNER THAT NEVER RAN THE COMMAND IS NOT AN ENVIRONMENT DIAGNOSIS ──
+  // WP9 (20260806-145411-hy1w): Bash auto-mode denied the verify command, the Haiku runner
+  // replied in prose, asVerify discarded it for a generic "not parseable", and the receipt told
+  // the operator the .NET toolchain and dependencies were missing from a worktree nothing had
+  // measured. The runner's own words are the only evidence of what happened.
+  {
+    const refusal = 'I could not run that command: permission to use Bash was denied for this path, so I did not execute the verification.'
+    const { res } = await runLoop({ task: 't' },
+      { ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+        review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
+        commit: J({ committed: true, sha: h40('denied') }), prep: J({ prepped: true, ran: [] }),
+        verify: refusal })
+    const f = (res.failures || [])[0] || {}
+    ok('F52h a refused verify ends inconclusive, never a code failure', res.status === 'verify_inconclusive', res.status)
+    ok('F52i the kind is runner_refused', f.kind === 'runner_refused', JSON.stringify(res.failures))
+    ok('F52j the runner\'s reply survives verbatim in the log tail',
+      typeof f.log_tail === 'string' && f.log_tail.includes('permission to use Bash was denied'), String(f.log_tail).slice(0, 200))
+    ok('F52k the note says NOTHING was measured', /NOTHING about this worktree/.test(res.note || ''), (res.note || '').slice(0, 220))
+    // Not the WORD "toolchain" — the note legitimately says nothing about the toolchain was
+    // measured. What must be absent is the fabricated DIAGNOSIS the live receipt carried.
+    ok('F52l the note does NOT diagnose a missing toolchain or dependencies',
+      !/toolchain\/deps missing/.test(res.note || '') && !/Fix the environment/.test(res.note || '')
+        && !/env_check/.test(res.note || '') && !/no verifier detected/.test(res.note || ''),
+      (res.note || '').slice(0, 260))
+    ok('F52m the note hands over the exact command to re-run by hand',
+      /verify\.sh/.test(res.note || ''), (res.note || '').slice(0, 300))
+    // Output that simply did not parse is a DIFFERENT kind — and still not an env diagnosis.
+    const { res: garble } = await runLoop({ task: 't' },
+      { ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+        review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
+        commit: J({ committed: true, sha: h40('garble') }), prep: J({ prepped: true, ran: [] }),
+        verify: 'Sure! Here is a summary of what the tests did.' })
+    const gf = (garble.failures || [])[0] || {}
+    ok('F52n unparseable output is runner_unparseable, not runner_refused', gf.kind === 'runner_unparseable', JSON.stringify(garble.failures))
+    ok('F52o and it too keeps the reply verbatim',
+      String(gf.log_tail || '').includes('Here is a summary'), String(gf.log_tail || '').slice(0, 160))
+    ok('F52p neither unparseable case claims a missing toolchain',
+      !/toolchain\/deps missing/.test(garble.note || '') && !/Fix the environment/.test(garble.note || ''), (garble.note || '').slice(0, 200))
+    // A long refusal is BOUNDED — a runner can emit an essay and it must not swallow the receipt.
+    const long = 'permission denied. ' + 'x'.repeat(6000)
+    const { res: big } = await runLoop({ task: 't' },
+      { ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+        review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
+        commit: J({ committed: true, sha: h40('longref') }), prep: J({ prepped: true, ran: [] }),
+        verify: long })
+    const bf = (big.failures || [])[0] || {}
+    ok('F52q the raw tail is bounded', String(bf.log_tail || '').length < 1600, String(bf.log_tail || '').length)
+    ok('F52r and it is a TAIL (the end of the reply survives)', /x{100}$/.test(String(bf.log_tail || '')), String(bf.log_tail || '').slice(-40))
+    // A REAL verdict is untouched by any of this.
+    const { res: good } = await runLoop({ task: 't' },
+      { ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+        review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
+        commit: J({ committed: true, sha: h40('realok') }), prep: J({ prepped: true, ran: [] }),
+        verify: J({ pass: true, failures: [], head: h40('realok') }) })
+    ok('F52s a real green verdict still parses and passes', good.status === 'done', good.status)
+    // A prep runner that never ran gets the same honesty, not `missing_tool`.
+    const { res: prepRef } = await runLoop({ task: 't' },
+      { ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+        review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
+        commit: J({ committed: true, sha: h40('prepref') }),
+        prep: 'I was not allowed to run that command.',
+        verify: J({ pass: true, failures: [], head: h40('prepref') }) })
+    const pf = (prepRef.failures || [])[0] || {}
+    ok('F52t a refused PREP is runner_refused, not missing_tool', pf.kind === 'runner_refused', JSON.stringify(prepRef.failures))
+    ok('F52u and its note does not blame the package manager',
+      !/package manager/.test(prepRef.note || ''), (prepRef.note || '').slice(0, 200))
+
+    // ── F52v: "EXACTLY AS THE GATE WOULD" MUST INCLUDE THIS RUN'S VERIFIER ──
+    // A .NET run carries args.verifyCmd, so the handed-over command needs the same override the
+    // gate used. A bare verify.sh would auto-detect a DIFFERENT verifier and answer a different
+    // question while claiming to reproduce the gate's own check.
+    const { res: ov } = await runLoop({ task: 't', verifyCmd: 'dotnet test Wukong.sln' },
+      { ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+        review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
+        commit: J({ committed: true, sha: h40('ovcmd') }), prep: J({ prepped: true, ran: [] }),
+        verify: 'permission denied; I did not run it.' })
+    ok('F52v the handed-over command carries the run\'s verifier override',
+      /bash "\$HOME\/\.claude\/skills\/camus\/scripts\/verify\.sh" "[^"]*" --verify-cmd "dotnet test Wukong\.sln"/.test(ov.note || ''),
+      (ov.note || '').slice(-260))
+    ok('F52w and the "exactly as the gate would" claim is therefore true',
+      /exactly as the gate would/.test(ov.note || '') && /--verify-cmd "dotnet test/.test(ov.note || ''),
+      (ov.note || '').slice(-200))
+    // NEVER as an env-assignment prefix: a real Haiku runner in auto mode refuses that shape.
+    ok('F52w2 the override is never handed over as an env-assignment prefix',
+      !/CAMUS_VERIFY_CMD=/.test(ov.note || ''), (ov.note || '').slice(-200))
+    // With NO override the command stays bare — no empty flag, no invented verifier.
+    ok('F52x a run with no override hands over a bare verify.sh',
+      /(^|[^"])bash "\$HOME\/\.claude\/skills\/camus\/scripts\/verify\.sh"/.test(res.note || '')
+        && !/--verify-cmd/.test(res.note || ''), (res.note || '').slice(-200))
+  }
+
+  // ── F53: A GUARD REFUSAL IS REPORTED AS A GUARD REFUSAL ────────────────────
+  // Every prep failure was flattened to `missing_tool`, so a refused target produced
+  // "dependency install failed; check the package manager / lockfile" — an install that
+  // was never attempted, sending the operator after an uninvolved lockfile.
+  {
+    const refusal = 'target rejected by camus_guard (not a same-repo camus-wt-* worktree)'
+    const { res } = await runLoop({ task: 't' },
+      { ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+        review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
+        commit: J({ committed: true, sha: h40('guardrf') }),
+        prep: J({ prepped: false, ran: null, reason: 'guard_refused', log_tail: refusal }),
+        verify: J({ pass: true, failures: [], head: h40('guardrf') }) })
+    ok('F53a a refused prep still ends inconclusive, never a code failure', res.status === 'verify_inconclusive', res.status)
+    ok('F53b the failure kind is guard_refused, not missing_tool',
+      (res.failures || []).some((f) => f.kind === 'guard_refused'), JSON.stringify(res.failures))
+    ok('F53c the verbatim guard reason survives into the receipt',
+      (res.failures || []).some((f) => f.log_tail === refusal), JSON.stringify(res.failures))
+    ok('F53d the note names the guard refusal', /target guard rejected the worktree/.test(res.note || ''), (res.note || '').slice(0, 200))
+    ok('F53e the note does NOT blame a dependency install',
+      !/dependency install failed/.test(res.note || '') && !/package manager/.test(res.note || ''), (res.note || '').slice(0, 200))
+    ok('F53f the note says nothing was attempted', /NO dependency install and NO verification were attempted/.test(res.note || ''), (res.note || '').slice(0, 220))
+    // A REAL dependency failure keeps its own (correct) diagnosis.
+    const { res: dep } = await runLoop({ task: 't' },
+      { ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+        review: J({ ran: true, clean: true, blocking: [], nonblocking: [] }),
+        commit: J({ committed: true, sha: h40('depfail') }),
+        prep: J({ prepped: false, ran: null, log_tail: 'pnpm install exited 1' }),
+        verify: J({ pass: true, failures: [], head: h40('depfail') }) })
+    ok('F53g a real dep failure is still reported as one',
+      (dep.failures || []).some((f) => f.kind === 'missing_tool') && /dependency install failed/.test(dep.note || ''),
+      JSON.stringify(dep.failures) + ' | ' + (dep.note || '').slice(0, 120))
+  }
+
+  // ── F54: THE AWAIT CARRIES THE SAME IDENTITY AS THE START ──────────────────
+  // A reattach that cannot prove the watch is its own gets declined by the adoption gate,
+  // and the fresh path then overwrote a COMPLETED round and paid for a second reviewer
+  // (production run 20260806-063400-vzqs: pid 45073 → 71857, meta.json left with no
+  // gate_nonce and effort silently high). The await must present nonce, round and effort.
+  {
+    const { calls, prompts } = await runLoop({ task: 't', reviewerEffort: 'medium' },
+      { ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+        // A pending handle forces the await path, then the round completes.
+        review: [J({ pending: true, handle: '/tmp/camus-wt-x-r1.watch' }), J({ ran: true, clean: true, blocking: [], nonblocking: [] })],
+        commit: J({ committed: true, sha: h40('awaitid') }), prep: J({ prepped: true, ran: [] }),
+        verify: J({ pass: true, failures: [], head: h40('awaitid') }) })
+    const awaitLbl = calls.find((c) => /await/.test(c))
+    const p = prompts[awaitLbl] || ''
+    ok('F54a the await presents the gate nonce', /CAMUS_GATE_NONCE=/.test(p), p.slice(0, 200))
+    ok('F54b …the requested round', /CAMUS_REVIEW_ROUND=1\b/.test(p), p.slice(0, 200))
+    ok('F54c …and the PINNED effort, not the adaptive schedule', /CAMUS_REVIEW_EFFORT=medium\b/.test(p), p.slice(0, 200))
+    ok('F54d the await still runs the await form (never a fresh start)', / await "/.test(p), p.slice(0, 200))
+  }
+
+  // ── F55: THE FINAL ROUND GETS ONE BOUNDED SOLUTION PASS ────────────────────
+  // The live WP8 run ended at 2/2 holding one NEW, concrete P1 (its coherent test never
+  // advanced through cooldown expiry to count the second hit) and never attempted it, because
+  // no confirmation round remained. The contract changed on purpose: one bounded fix, no extra
+  // reviewer round, roundCap untouched, and honest fixed_unreviewed provenance.
+  {
+    let r = 0
+    let fx = 0
+    const { res, calls } = await runLoop({ task: 't', roundCap: 2 }, {
+      ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+      // A REAL structured final-fix response, so the claimed resolution is mapped on.
+      fix: () => {
+        fx++
+        return J({
+          summary: fx === 1 ? 'Candidate after the first repair.' : 'Final candidate after the bounded repair.',
+          decisions: fx === 1
+            ? [{ what: 'First repair choice', why: 'Addressed round one' }]
+            : [{ what: 'Final repair choice', why: 'Addressed the final finding' }],
+          resolutions: [{ title: 'new-2', resolution: 'advanced the clock past cooldown expiry and asserted the second hit' }],
+        })
+      },
+      // r1 raises a finding; r2 raises a DIFFERENT one (new, not a repeat, not oscillating).
+      review: () => { r++; return J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'new-' + r, code_location: 'f.ts:' + r }], nonblocking: [] }) },
+      prep: J({ prepped: true, ran: [] }),
+      commit: J({ committed: true, sha: h40('f1na1f') }),
+      verify: J({ pass: true, failures: [], head: h40('f1na1f') }),
+    })
+    const reviews = calls.filter((c) => c.startsWith('review'))
+    const fixes = calls.filter((c) => c.startsWith('fix'))
+    ok('F55a exactly TWO reviewer calls (roundCap honoured, no extra round)', reviews.length === 2, reviews.join(','))
+    ok('F55b exactly TWO fix calls (r1 fix + the final bounded fix)', fixes.length === 2, fixes.join(','))
+    ok('F55c the candidate is parked with a head-bound green', res.status === 'done_with_findings', res.status)
+    ok('F55d …committed at the verified sha', res.commit_sha === h40('f1na1f'), String(res.commit_sha))
+    ok('F55e provenance is fixed_unreviewed, never review-clean', /UNREVIEWED/.test(res.note || '') && /NOT review-clean/.test(res.note || ''), (res.note || '').slice(0, 140))
+    ok('F55f …and explicitly NOT independent_clean', /NOT independent_clean/.test(res.note || ''), (res.note || '').slice(0, 140))
+    ok('F55g the FINAL findings are recorded verbatim', Array.isArray(res.findings) && res.findings.some((f) => f.title === 'new-2'), JSON.stringify(res.findings || []).slice(0, 140))
+    // The harness returns strings, so a schema-parsed object cannot arrive here; assert the
+    // PRODUCTION wiring instead — the final bounded fix asks for the resolutions schema and the
+    // sealed note points the reader at those claims.
+    ok('F55h the maker\'s claimed resolution rides the final finding', Array.isArray(res.findings) && res.findings.some((f) => f.title === 'new-2' && /cooldown expiry/.test(String(f.claimedResolution || ''))), JSON.stringify(res.findings || []).slice(0, 200))
+    ok('F55h1 …and the sealed resolution field says fixed_unreviewed', res.resolution === 'fixed_unreviewed', String(res.resolution))
+    ok('F55h2 …and the note directs the human to those claimed resolutions', /claimed resolutions/.test(res.note || ''), (res.note || '').slice(0, 200))
+    ok('F55h3 done_with_findings carries the FINAL post-fix summary', res.summary === 'Final candidate after the bounded repair.', String(res.summary))
+    ok('F55h4 …and replaces superseded decisions', Array.isArray(res.decisions) && res.decisions.length === 1 && res.decisions[0].what === 'Final repair choice', JSON.stringify(res.decisions))
+    ok('F55i no human pause preceded the solution attempt', !calls.some((c) => /ask|question/i.test(c)), calls.join(','))
+    ok('F55j the note names the final-round case, not the oneshot posture', /FINAL-ROUND BOUNDED FIX/.test(res.note || ''), (res.note || '').slice(0, 90))
+  }
+  // RED and INCONCLUSIVE controls: the verdict keeps its own honest meaning, but the unreviewed
+  // fix's findings, resolutions and provenance must survive into BOTH — and neither may read
+  // review-clean or quietly drop what the reviewer found.
+  for (const [label, verifyStub, wantStatus] of [
+    ['red', J({ pass: false, failures: [{ stage: 'test', kind: 'assert' }] }), 'verify_failed'],
+    ['inconclusive', J({ pass: false, inconclusive: true, failures: [{ stage: 'verify', kind: 'missing_tool' }] }), 'verify_inconclusive'],
+  ]) {
+    let rr = 0
+    const { res } = await runLoop({ task: 't', roundCap: 2 }, {
+      ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+      fix: J({ resolutions: [{ title: 'new-2', resolution: 'attempted the cooldown fix' }] }),
+      review: () => { rr++; return J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'new-' + rr, code_location: 'f.ts:' + rr }], nonblocking: [] }) },
+      prep: J({ prepped: true, ran: [] }), commit: J({ committed: true, sha: h40('ctrl' + label.slice(0, 2)) }),
+      verify: verifyStub,
+    })
+    ok(`F55m ${label} verification keeps its own meaning`, res.status === wantStatus, res.status)
+    ok(`F55n ${label} still carries the unreviewed findings`, Array.isArray(res.findings) && res.findings.some((f) => f.title === 'new-2'), JSON.stringify(res.findings || []).slice(0, 140))
+    ok(`F55o ${label} still carries the claimed resolution`, Array.isArray(res.findings) && res.findings.some((f) => /cooldown/.test(String(f.claimedResolution || ''))), JSON.stringify(res.findings || []).slice(0, 160))
+    ok(`F55p ${label} keeps the fixed_unreviewed provenance`, res.resolution === 'fixed_unreviewed', String(res.resolution))
+    ok(`F55q ${label} never reads review-clean`, !/\breview[- ]clean\b/i.test(res.note || '') || /NOT review-clean/i.test(res.note || ''), (res.note || '').slice(0, 130))
+  }
+
+  // NO_CHANGES after an unreviewed fix: the copy must not claim the review passed, and the
+  // findings must survive.
+  {
+    let rr = 0
+    const { res } = await runLoop({ task: 't', roundCap: 2 }, {
+      ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+      fix: J({ resolutions: [{ title: 'new-2', resolution: 'attempted the cooldown fix' }] }),
+      review: () => { rr++; return J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'new-' + rr, code_location: 'f.ts:' + rr }], nonblocking: [] }) },
+      prep: J({ prepped: true, ran: [] }),
+      commit: J({ committed: false, reason: 'empty', sha: h40('nochg1') }), 'noop-audit': '0',
+      verify: J({ pass: true, failures: [], head: h40('nochg1') }),
+    })
+    ok('F55r no_changes after an unreviewed fix keeps its status', res.status === 'no_changes', res.status)
+    ok('F55s …and never claims the review passed', !/^Review passed/.test(res.note || '') && /NOT review-clean/.test(res.note || ''), (res.note || '').slice(0, 150))
+    ok('F55t …and still carries the findings', Array.isArray(res.findings) && res.findings.some((f) => f.title === 'new-2'), JSON.stringify(res.findings || []).slice(0, 130))
+    ok('F55u …with the fixed_unreviewed provenance', res.resolution === 'fixed_unreviewed', String(res.resolution))
+  }
+  // A PRE-VERIFY infra failure (commit) must propagate the fields too — the fix ran, so its
+  // findings are already owed to the reader even though no verdict exists.
+  {
+    let rr = 0
+    const { res } = await runLoop({ task: 't', roundCap: 2 }, {
+      ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+      fix: J({ resolutions: [{ title: 'new-2', resolution: 'attempted the cooldown fix' }] }),
+      review: () => { rr++; return J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'new-' + rr, code_location: 'f.ts:' + rr }], nonblocking: [] }) },
+      commit: 'not json at all',
+    })
+    ok('F55v a pre-verify infra failure still reports infra_error', res.status === 'infra_error', res.status)
+    ok('F55w …and still carries the unreviewed findings', Array.isArray(res.findings) && res.findings.some((f) => f.title === 'new-2'), JSON.stringify(res.findings || []).slice(0, 130))
+    ok('F55x …with the fixed_unreviewed provenance', res.resolution === 'fixed_unreviewed', String(res.resolution))
+  }
+
+  // ── F56: STRINGIFIED ARGS MUST HONOUR roundCap ─────────────────────────────
+  // The runtime can hand args over as a JSON STRING. ROUND_CAP was computed before the
+  // normalization block, so `args.roundCap` was undefined and the cap silently fell back to 3:
+  // live run 20260806-091643-9nbv passed roundCap 2 everywhere and the loop still launched an
+  // r3 watch. This passes args EXACTLY as the runtime does — stringified.
+  {
+    let rr = 0
+    const { res, calls } = await runLoop(JSON.stringify({ task: 't', roundCap: 2 }), {
+      ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+      fix: J({ resolutions: [{ title: 'new-2', resolution: 'advanced past cooldown expiry' }] }),
+      review: () => { rr++; return J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'new-' + rr, code_location: 'f.ts:' + rr }], nonblocking: [] }) },
+      prep: J({ prepped: true, ran: [] }),
+      commit: J({ committed: true, sha: h40('str1ng') }),
+      verify: J({ pass: true, failures: [], head: h40('str1ng') }),
+    })
+    const reviews = calls.filter((c) => c.startsWith('review'))
+    ok('F56a stringified args honour roundCap:2 — exactly two reviewer calls', reviews.length === 2, reviews.join(','))
+    ok('F56b NO third round is ever attempted (no r3 agent)', !calls.some((c) => /r3/.test(c)), calls.join(','))
+    ok('F56c the final round still gets its ONE bounded fix', calls.filter((c) => c.startsWith('fix')).length === 2, calls.join(','))
+    ok('F56d → done_with_findings', res.status === 'done_with_findings', res.status)
+    ok('F56e resolution is fixed_unreviewed', res.resolution === 'fixed_unreviewed', String(res.resolution))
+    ok('F56f reviewedAfterFix is false', res.reviewedAfterFix === false, String(res.reviewedAfterFix))
+    ok('F56g the note reports the honoured cap (2/2), not 3', /round 2\/2/.test(res.note || ''), (res.note || '').slice(0, 110))
+    // The task itself must still survive the same normalization.
+    ok('F56h the stringified task is still parsed', res.task === 't', String(res.task))
+  }
+
+  // ── F57: THE RUNNER BOUNDARY IS EXPLICIT ───────────────────────────────────
+  // A thin runner improvised a six-minute Python poll and tried to parse the .watch DIRECTORY
+  // as JSON; other rounds read stale artifacts. Each turned a healthy pending handle into an
+  // infra retry. The instruction now names the boundary in both reviewer prompts.
+  {
+    const { calls, prompts } = await runLoop({ task: 't' },
+      { ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+        review: [J({ pending: true, handle: '/tmp/camus-wt-x-r1.watch' }), J({ ran: true, clean: true, blocking: [], nonblocking: [] })],
+        commit: J({ committed: true, sha: h40('bound1') }), prep: J({ prepped: true, ran: [] }),
+        verify: J({ pass: true, failures: [], head: h40('bound1') }) })
+    const start = prompts[calls.find((c) => /review:r1 codex/.test(c) && !/await/.test(c))] || ''
+    const awaitP = prompts[calls.find((c) => /await/.test(c))] || ''
+    for (const [label, p] of [['start', start], ['await', awaitP]]) {
+      ok(`F57 ${label}: a pending handle is returned immediately`, /STOP AFTER THAT ONE COMMAND/.test(p), p.slice(0, 90))
+      ok(`F57 ${label}: never inspect or parse the handle directory`, /NOT (look inside|inspect) the handle/i.test(p), p.slice(0, 90))
+      ok(`F57 ${label}: never poll, sleep or loop`, /poll/.test(p) && /(sleep|loop)/.test(p), p.slice(0, 90))
+      ok(`F57 ${label}: never run a second command`, /second\s+command/.test(p), p.slice(0, 90))
+      ok(`F57 ${label}: the WORKFLOW owns reattachment`, /workflow (owns|will call you again)|this workflow will call you again/i.test(p), p.slice(0, 90))
+    }
+    ok('F57 the start names await as forbidden for the runner', /do NOT run \\`await\\`/.test(start) || /do NOT run `await`/.test(start), start.slice(0, 90))
+  }
+
+  // ── F58: CUSTODY ACROSS THE ASYNC REATTACH BOUNDARY ────────────────────────
+  // Live run 20260806-110809-2r9j: r2 completed at the reviewer-process level (correct
+  // gate_nonce and fp1: fingerprint in meta.json, exit 0, verdict produced), but the reattach
+  // process emitted a receipt with NO binding block. The mixed bound/unbound guard refused it —
+  // and the loop still ran fix, verify and a commit, then reported the round as preserved.
+  {
+    let rr = 0
+    const { res, calls } = await runLoop(JSON.stringify({ task: 't', roundCap: 2 }), {
+      ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+      fix: J({ resolutions: [{ title: 'new-2', resolution: 'repaired' }] }),
+      review: () => {
+        rr++
+        // r1 bound with findings; r2 returns a PENDING handle (a separate process owns it);
+        // the await then returns the completed, BOUND verdict.
+        if (rr === 1) return J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'new-1', code_location: 'f.ts:1' }], nonblocking: [] })
+        if (rr === 2) return J({ pending: true, handle: '/tmp/camus-wt-x-r2.watch' })
+        return J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'new-2', code_location: 'f.ts:2' }], nonblocking: [] })
+      },
+      prep: J({ prepped: true, ran: [] }),
+      commit: J({ committed: true, sha: h40('cust0dy') }),
+      verify: J({ pass: true, failures: [], head: h40('cust0dy') }),
+    })
+    const reviews = calls.filter((c) => c.startsWith('review') && !/await/.test(c))
+    ok('F58a a pending r2 is re-attached, not re-reviewed', calls.some((c) => /await/.test(c)), calls.join(','))
+    ok('F58b exactly two reviewer rounds under cap 2', reviews.length === 2, reviews.join(','))
+    ok('F58c no third round', !calls.some((c) => /r3/.test(c)), calls.join(','))
+    ok('F58d the completed BOUND await is accepted → commit + verify terminal', res.status === 'done_with_findings', res.status)
+    ok('F58e …at the verified head', res.commit_sha === h40('cust0dy'), String(res.commit_sha))
+    ok('F58f …with fixed_unreviewed provenance', res.resolution === 'fixed_unreviewed', String(res.resolution))
+  }
+  // NEGATIVES: an unbound / tampered-nonce receipt must refuse AND leave everything untouched.
+  for (const [label, second] of [
+    ['missing binding', J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'x', code_location: 'f.ts:9' }], nonblocking: [], binding: null })],
+    ['tampered nonce', J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'x', code_location: 'f.ts:9' }], nonblocking: [], binding: { round: 2, effort: 'high', model: 'gpt-5.6-sol', backend: 'codex', worktree: '/w/camus-wt-x', nonce: 'someone-elses-run' } })],
+  ]) {
+    let rr = 0
+    const { res, calls } = await runLoop(JSON.stringify({ task: 't', roundCap: 2 }), {
+      ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+      fix: J({ resolutions: [{ title: 'new-1', resolution: 'repaired' }] }),
+      review: () => {
+        rr++
+        if (rr === 1) return J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'new-1', code_location: 'f.ts:1' }], nonblocking: [] })
+        return second
+      },
+      prep: J({ prepped: true, ran: [] }),
+      commit: J({ committed: true, sha: h40('shouldnt') }),
+      verify: J({ pass: true, failures: [], head: h40('shouldnt') }),
+    })
+    ok(`F58g ${label}: the refused receipt ends the run as infra, not a verdict`, res.status === 'infra_error', res.status)
+    ok(`F58h ${label}: NOTHING was committed`, res.committed === false && !res.commit_sha, `${res.committed}/${res.commit_sha}`)
+    ok(`F58i ${label}: no commit agent ran at all`, !calls.some((c) => c.startsWith('commit')), calls.join(','))
+    ok(`F58j ${label}: no verify ran on an unvalidated verdict`, !calls.some((c) => c.startsWith('verify')), calls.join(','))
+    ok(`F58k ${label}: the round did NOT advance`, res.roundAdvanced === false, String(res.roundAdvanced))
+    ok(`F58l ${label}: the report states the observed facts`, /OBSERVED THIS ROUND: fix dispatched=/.test(res.note || '') && /committed=false/.test(res.note || ''), (res.note || '').slice(-120))
+    ok(`F58m ${label}: the refusal names the binding, not a code problem`, /binding|nonce/i.test(res.error || ''), String(res.error).slice(0, 90))
+  }
+
+  // A PENDING that outlives the await budget must end as infra — never as a clean verdict that
+  // sends the loop to commit/verify (the shape that let an unvalidated round mutate the tree).
+  {
+    const { res, calls } = await runLoop(JSON.stringify({ task: 't', roundCap: 2 }), {
+      ...clsStd, ...planOf('clear', ''), implement: happyTail.implement, fix: '',
+      review: J({ pending: true, handle: '/tmp/camus-wt-x-r1.watch' }),   // never completes
+      prep: J({ prepped: true, ran: [] }), commit: J({ committed: true, sha: h40('nope00') }),
+      verify: J({ pass: true, failures: [], head: h40('nope00') }),
+    })
+    ok('F58n an unresolved pending is NOT a verdict', res.status === 'infra_error', res.status)
+    ok('F58o …and never reads as clean', !/clean/i.test(res.status), res.status)
+    ok('F58p …nothing was committed', res.committed === false && !res.commit_sha, `${res.committed}/${res.commit_sha}`)
+    ok('F58q …no commit or verify agent ran', !calls.some((c) => c.startsWith('commit') || c.startsWith('verify')), calls.join(','))
+    // After the await budget the loop aborts the watch, so the ABORT's output is what gets
+    // judged — the contract is that a refusal is reported, never a verdict.
+    ok('F58r …and an infra reason is reported, never a verdict', typeof res.error === 'string' && res.error.length > 0 && !/clean/i.test(res.error), String(res.error).slice(0, 80))
+  }
+
+  // ── F59: TERMINAL NARRATIVE FOLLOWS THE REVIEWED CANDIDATE ───────────────
+  // WP10's first candidate duplicated production helpers. Review caught it, the bounded fix
+  // moved those helpers into production, r2 passed, and deterministic verification was green —
+  // but the terminal report still repeated the initial summary/decision. The existing fix turn
+  // must replace that narrative; buying a separate summarizer would waste time and tokens.
+  {
+    let rr = 0
+    const initial = {
+      ...happyTail.implement,
+      summary: 'Initial candidate duplicates production helpers in its tests.',
+      decisions: [{ what: 'Duplicate helper behavior in tests', why: 'Fast first implementation' }],
+    }
+    const finalNarrative = {
+      summary: 'Final candidate exposes the pure helpers from production and tests those exact implementations.',
+      decisions: [{ what: 'Move pure helpers into Core', why: 'Tests now exercise production behavior directly' }],
+    }
+    const { res, prompts } = await runLoop({ task: 't', roundCap: 2 }, {
+      ...clsStd, ...planOf('clear', ''), implement: initial,
+      review: () => {
+        rr++
+        return rr === 1
+          ? J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'Tests duplicate production logic', code_location: 'tests/f.cs:1' }], nonblocking: [] })
+          : J({ ran: true, clean: true, blocking: [], nonblocking: [] })
+      },
+      fix: finalNarrative,
+      prep: J({ prepped: true, ran: [] }),
+      commit: J({ committed: true, sha: h40('narrative') }),
+      verify: J({ pass: true, failures: [], head: h40('narrative') }),
+    })
+    ok('F59a the reviewed candidate reaches done', res.status === 'done', res.status)
+    ok('F59b terminal summary is the POST-FIX summary', res.summary === finalNarrative.summary, String(res.summary))
+    ok('F59c terminal decisions are the COMPLETE post-fix set', JSON.stringify(res.decisions) === JSON.stringify(finalNarrative.decisions), JSON.stringify(res.decisions))
+    ok('F59d superseded summary and decisions do not survive', !/duplicates|Duplicate helper/.test(JSON.stringify({ summary: res.summary, decisions: res.decisions })), JSON.stringify(res))
+    ok('F59e the fix sees the pre-fix narrative it must rewrite', /Initial candidate duplicates production helpers/.test(prompts['fix:r1'] || '') && /Duplicate helper behavior in tests/.test(prompts['fix:r1'] || ''), (prompts['fix:r1'] || '').slice(-500))
+    ok('F59f the rewrite happens in the existing fix turn', /COMPLETE current candidate/.test(prompts['fix:r1'] || '') && /do not merely append/.test(prompts['fix:r1'] || ''), (prompts['fix:r1'] || '').slice(-500))
+  }
+
+  // A STUCK dispute still stops without a fix — the bounded pass is for NEW findings only.
+  {
+    const stuckSame = J({ ran: true, clean: false, blocking: [{ priority: 1, title: 'same', code_location: 'f.ts:1' }], nonblocking: [] })
+    const { res, calls } = await runLoop({ task: 't', roundCap: 2 },
+      { ...clsStd, ...planOf('clear', ''), implement: happyTail.implement, fix: '', review: stuckSame,
+        prep: J({ prepped: true, ran: [] }), commit: J({ committed: true, sha: h40('stuck1') }), verify: J({ pass: true, failures: [], head: h40('stuck1') }) })
+    ok('F55k a REPEATED finding still halts for the human (no bounded fix)', res.status === 'review_unresolved', res.status)
+    ok('F55l …with exactly one fix (the r1 attempt), never a second', calls.filter((c) => c.startsWith('fix')).length === 1, calls.join(','))
   }
 
   console.log(`\n${pass} passed, ${fail} failed`)

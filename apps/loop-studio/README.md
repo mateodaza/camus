@@ -1,6 +1,7 @@
 # Camus Loop Studio
 
-A local web UI that runs the Camus loop on words instead of code — research and analysis on any topic — so non-technical people can watch it work:
+A local web UI for operating Camus across written work and code, with the complete
+acceptance contract visible and every human handoff attached to the run:
 
 **plan → draft (Claude) → adversarial review (Codex, a different vendor) → fix → deterministic verify → done — or a plain-English question routed to the human.**
 
@@ -12,7 +13,7 @@ The studio is the loop's visual front door. What it does today:
 
 - **Words, any topic** — research memos, teardowns, freeform analysis.
 - **Marketing, the tuned vertical** — the compliance wordlist ships regulated-claims defaults and grounding rides Myosin's Hivemind (staging today), because that is where the studio has real internal knowledge to stand on (and the two products co-market).
-- **Code** — the Build lane points the camus gate at a git repo on this machine: isolated worktree, cross-model review, the repo's own tests as the verdict, needs_human pauses answered from the same question card. In beta, newer than the words lanes.
+- **Code** — the Build lane points the Camus gate at a git repo on this machine: isolated worktree, cross-model review, the repo's own tests as the verdict, and `needs_human` pauses answered from the same question card. An eligible parked candidate resumes through verification only—no repeated Plan, Implement, or Review—and an unsafe or contradictory candidate fails closed. This lane is public-alpha software, proven through the WP1–WP10 CodenameWukong Enemies feature.
 
 The trust-protocol integration now ships in Studio: every new run starts with an explicit acceptance contract; seals raw execution × verification × audit × publication dimensions; records requested/resolved/actual executor and auditor identities plus actual reviewer effort; and mints separate artifact and receipt hashes in a downloadable evidence pack. Research packs include two structured ledgers. Citation markers become claim candidates labeled `supported`, `unsupported`, or `unchecked`; a live URL alone never becomes support. The acceptance contract is deterministically split into stable criteria labeled `met`, `unmet`, or `unclear`, so comparison arms are judged against identical requirements. If deterministic repair changes the final revision, Studio runs a fresh closure audit before that revision can inherit standing. Evidence-pack v2 preserves the identity split: criteria and claim meaning bind the artifact, while their auditor decisions bind the receipt. The one-word standing remains derived presentation and never enters the permanent pack.
 
@@ -39,7 +40,28 @@ The setup is guided from inside the page. One command starts the studio (`node s
 
 ## Models are decisions
 
-Every model is named explicitly on every call (`claude --model`, `codex -m`) — **account and CLI defaults are never reachable.** [checks/models.json](checks/models.json) is the decision record (current: maker `sonnet`, reviewer `gpt-5.4` at `low` effort, with the why and the date). Change a model there deliberately; `--doctor` and the UI status pill always show what's pinned.
+Every model is named explicitly on every call (`claude --model`, `codex -m`, or the configured endpoint) — **account and CLI defaults are never reachable.** [checks/models.json](checks/models.json) is the decision record, with the why and the date on every entry. Change a decision there, in Settings, or per run from the launch form; `--doctor` and the UI status pill always show what's pinned.
+
+### Any model in either seat
+
+Since the multi-model-seats slice ([docs/MULTI-MODEL-SEATS.md](../../docs/MULTI-MODEL-SEATS.md)) the two seats — **maker** (drafts and fixes) and **reviewer** (tries to break it) — are filled independently from a backend-qualified catalog: the built-in `claude` and `codex` CLI backends in either seat (including reversed: GPT writes, Claude reviews), plus opt-in `openai_compat` entries for open-weight endpoints. Declare one under `backends`:
+
+```json
+"backends": {
+  "kimi": {
+    "kind": "openai_compat",
+    "provider": "moonshot",
+    "baseUrl": "https://api.moonshot.ai/v1",
+    "apiKeyEnv": "MOONSHOT_API_KEY",
+    "models": ["kimi-k2-0905-preview"],
+    "why": "added <date> for <reason>"
+  }
+}
+```
+
+No backend exists until someone writes one down; the key lives only in the named env var. A same-vendor pairing is allowed and recorded honestly: the review seals as **advisory** and the standing reads **same-vendor reviewed**, never independent. Boundaries of the slice: Build keeps the gate's own pairing, Compare & Learn and audit replay keep their frozen claude/codex catalogs, grounded managed-connector runs need a claude-backend maker, and `openai_compat` backends have no tools (no web, no MCP) — a contract demanding live-loaded sources will honestly fail review under such a maker.
+
+Both **codex** seats run a hardened subprocess: shell/exec, web search (which defaults to *on*), browser, apps, and plugins disabled by flag; no user config, rules, or MCP; ephemeral session; a scrubbed environment; and a fail-closed watch that refuses the call if any unexpected tool event appears. See [docs/MULTI-MODEL-SEATS.md](../../docs/MULTI-MODEL-SEATS.md#the-hardened-codex-profile-both-seats) for the flag table and the live controls behind each claim.
 
 Useful env:
 
@@ -49,7 +71,8 @@ Useful env:
 | `MOCK_SPEED=2` | Slow the rehearsal beats down (e.g. while narrating) |
 | `MOCK_OFFLINE=1` | Skip network link-checks (venue with no wifi) |
 | `ROUND_CAP=3` | Review round budget (1–6) |
-| `CLAUDE_MODEL`, `CODEX_MODEL`, `CODEX_EFFORT` | Override the models.json decisions for one session |
+| `CLAUDE_MODEL`, `CODEX_MODEL`, `CODEX_EFFORT` | Override the models.json decisions for one session (honored only when the seat runs the matching CLI backend) |
+| `OPENAI_COMPAT_IDLE_MS` | Idle watchdog for `openai_compat` streams (default 120000) |
 | `CAMUS_CODEX_TIER`, `CAMUS_CODEX_DISABLE_MCP` | Passed through to `codex exec` exactly as camus does |
 | `HIVEMIND_VIA_CLAUDE=1` | Use the connected Hivemind Staging entry in Claude (preferred; no Studio key) |
 | `HIVEMIND_MCP_URL`, `HIVEMIND_API_KEY` | Ground drafts via Studio-side Hivemind MCP (see below) |
