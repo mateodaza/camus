@@ -224,9 +224,9 @@ export function modelsSummary() {
 // selectable. Pure so the filter is directly testable.
 export function reviewerSlugsFromCache(cache) {
   const models = Array.isArray(cache?.models) ? cache.models : [];
-  return models
+  return [...new Set(models
     .filter((m) => m && m.visibility === 'list' && typeof m.slug === 'string' && m.slug)
-    .map((m) => m.slug);
+    .map((m) => m.slug))];
 }
 
 function codexModels() {

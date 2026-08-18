@@ -2192,12 +2192,13 @@ Members asked for practical milestones [H1].
   const cache = { models: [
     { slug: 'gpt-5.4', visibility: 'list' },
     { slug: 'gpt-5.4-mini', visibility: 'list' },
+    { slug: 'gpt-5.4-mini', visibility: 'list' },
     { slug: 'codex-auto-review', visibility: 'hide' },
     { slug: 'no-visibility-field' },
     { visibility: 'list' },
   ] };
   const slugs = reviewerSlugsFromCache(cache);
-  assert.deepEqual(slugs, ['gpt-5.4', 'gpt-5.4-mini'], 'only listable slugs are offered');
+  assert.deepEqual(slugs, ['gpt-5.4', 'gpt-5.4-mini'], 'only unique listable slugs are offered');
   assert.ok(!slugs.includes('codex-auto-review'), 'a hidden internal model is never offered in the picker');
   assert.deepEqual(reviewerSlugsFromCache(null), [], 'no cache → no slugs');
   assert.deepEqual(reviewerSlugsFromCache({ models: 'nope' }), [], 'a malformed cache → no slugs');
