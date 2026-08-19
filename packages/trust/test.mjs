@@ -1125,6 +1125,212 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
     extraPairingField.pairing.bonus = 1;
     refuses(seal(extraPairingField), /pairing.*unknown fields: bonus/, 'v2 pairing unknown field refused');
   }
+
+  // === §10.8.4 envelope-v3 SEMANTIC cross-checks (Task 6) =====================
+  // Four rules run only after the 3/2/2 shapes hold. Each section keeps its own
+  // accepting control (build3 resealed) and flips ONE field to force the guard
+  // under test — a break-on-purpose refusal, never a stale-hash artifact.
+  const builtin1 = (c) => ['builtin1', hex(c)].join(':');
+
+  // --- R1: seal independence ↔ seat identities + shared_gateway consistency ----
+  {
+    // cross_vendor accepts the untouched build3 (different orgs/families, both
+    // verified_operator, no shared gateway).
+    assert.ok(validateEvidencePack(seal(build3())).ok, 'R1 cross_vendor control accepts');
+    for (const [label, mutate] of [
+      ['shared training_org', (b) => { b.pairing.auditor.training_org = 'alibaba'; }],
+      ['shared direct model_family', (b) => { b.pairing.auditor.model_family = 'qwen'; }],
+      ['derived-family intersection', (b) => { b.pairing.auditor.lineage.derived_from = 'qwen'; }],
+      // A non-verified seat, kept lineage-consistent (operator_declared lineage +
+      // origin_confidence) so the RFC mapping passes and the independence guard —
+      // not the mapping guard — is the one that fires.
+      ['a non-verified seat', (b) => { b.pairing.executor.origin_confidence = 'operator_declared'; b.pairing.executor.lineage.source = 'operator_declared'; }],
+      // Equal actual provider prefixes: cross_vendor is a lie the preserved v1
+      // guard refuses even though orgs/families still differ (single field off).
+      ['equal actual provider prefixes', (b) => { b.pairing.auditor.actual = 'dashscope:grok-build'; }],
+      // Sentinel actual providers (unknown/none) have no vendor to be cross of.
+      ['unknown/none actual sentinels', (b) => { b.pairing.executor.actual = 'unknown:not-recorded'; b.pairing.auditor.actual = 'none:no-model-run'; }],
+    ]) {
+      const bad = build3();
+      mutate(bad);
+      refuses(seal(bad), /pairing\.independence/, `R1 cross_vendor refuses ${label}`);
+    }
+
+    // cross_vendor_declared: different KNOWN orgs, at least one operator_declared,
+    // and a declared_* audit so R2 agrees — an accepting control. The declared
+    // seat's lineage.source is operator_declared, matching its origin_confidence
+    // per the RFC mapping.
+    const declared = () => {
+      const b = build3();
+      b.pairing.independence = 'cross_vendor_declared';
+      b.pairing.executor.origin_confidence = 'operator_declared';
+      b.pairing.executor.lineage.source = 'operator_declared';
+      b.statuses.audit = 'declared_clean';
+      return b;
+    };
+    assert.ok(validateEvidencePack(seal(declared())).ok, 'R1 cross_vendor_declared control accepts');
+    for (const [label, mutate] of [
+      ['equal org', (b) => { b.pairing.auditor.training_org = 'alibaba'; }],
+      ['unknown org', (b) => { b.pairing.auditor.training_org = 'unknown'; }],
+      ['unknown family', (b) => { b.pairing.executor.model_family = 'unknown'; }],
+      // Unknown lineage kept mapping-consistent (source + confidence both unknown)
+      // so the independence guard, not the mapping guard, is what refuses it.
+      ['unknown lineage source', (b) => { b.pairing.auditor.lineage.source = 'unknown'; b.pairing.auditor.origin_confidence = 'unknown'; }],
+      // The unknown peer alongside one legitimate declared seat: valid mappings on
+      // both, but a cross_vendor_declared claim cannot rest on an unknown lineage.
+      ['an unknown peer beside one legitimate declared seat', (b) => { b.pairing.auditor.lineage.source = 'unknown'; b.pairing.auditor.origin_confidence = 'unknown'; }],
+      ['neither seat declared (fully verified — claim cross_vendor)', (b) => { b.pairing.executor.origin_confidence = 'verified_operator'; b.pairing.executor.lineage.source = 'registry'; }],
+    ]) {
+      const bad = declared();
+      mutate(bad);
+      refuses(seal(bad), /pairing\.independence/, `R1 cross_vendor_declared refuses ${label}`);
+    }
+
+    // The RFC-derived lineage.source ↔ origin_confidence mapping, per seat, each
+    // a single field off build3 so the mapping guard — not any independence
+    // check — is provably what refuses. registry ⇒ verified_operator,
+    // operator_declared ⇒ operator_declared, unknown ⇒ unknown; no auto-correct.
+    for (const [label, mutate] of [
+      ['registry lineage forged to operator_declared confidence', (b) => { b.pairing.executor.origin_confidence = 'operator_declared'; }],
+      ['operator_declared lineage forged to verified_operator confidence', (b) => { b.pairing.executor.lineage.source = 'operator_declared'; }],
+      ['unknown lineage wearing a non-unknown confidence', (b) => { b.pairing.executor.lineage.source = 'unknown'; }],
+    ]) {
+      const bad = build3();
+      mutate(bad);
+      refuses(seal(bad), /executor\.origin_confidence/, `R1 mapping refuses ${label}`);
+    }
+
+    // shared_gateway: exact name when both seats route one nonempty gateway:<name>.
+    const gatewayed = () => {
+      const b = build3();
+      b.pairing.executor.inference_operator = 'gateway:openrouter';
+      b.pairing.auditor.inference_operator = 'gateway:openrouter';
+      b.pairing.shared_gateway = 'openrouter';
+      return b;
+    };
+    assert.ok(validateEvidencePack(seal(gatewayed())).ok, 'R1 shared_gateway control accepts the exact name');
+    for (const [label, mutate] of [
+      ['null while both seats share a gateway', (b) => { b.pairing.shared_gateway = null; }],
+      ['the wrong gateway name', (b) => { b.pairing.shared_gateway = 'fireworks'; }],
+    ]) {
+      const bad = gatewayed();
+      mutate(bad);
+      refuses(seal(bad), /shared_gateway/, `R1 shared_gateway refuses ${label}`);
+    }
+    // and a stray name while the seats share no gateway (single-field off build3).
+    const stray = build3();
+    stray.pairing.shared_gateway = 'openrouter';
+    refuses(seal(stray), /shared_gateway/, 'R1 shared_gateway refuses a name while seats share no gateway');
+  }
+
+  // --- R2: audit standing ↔ pairing independence -------------------------------
+  {
+    const declaredBase = () => {
+      const b = build3();
+      b.pairing.independence = 'cross_vendor_declared';
+      b.pairing.executor.origin_confidence = 'operator_declared';
+      b.pairing.executor.lineage.source = 'operator_declared';
+      b.statuses.audit = 'declared_clean';
+      return b;
+    };
+    const independentBase = () => build3();
+    const advisoryBase = () => {
+      const b = build3();
+      b.pairing.independence = 'same_vendor_advisory';
+      b.statuses.audit = 'advisory_clean';
+      return b;
+    };
+    const advisoryUnknownBase = () => {
+      const b = build3();
+      b.pairing.independence = 'none';
+      b.pairing.executor.origin_confidence = 'unknown';
+      b.pairing.executor.lineage.source = 'unknown';
+      b.statuses.audit = 'advisory_clean';
+      return b;
+    };
+    for (const [label, build] of [
+      ['declared_clean under cross_vendor_declared', declaredBase],
+      ['declared_findings under cross_vendor_declared', () => { const b = declaredBase(); b.statuses.audit = 'declared_findings'; return b; }],
+      ['independent_clean under cross_vendor', independentBase],
+      ['independent_findings under cross_vendor', () => { const b = independentBase(); b.statuses.audit = 'independent_findings'; return b; }],
+      ['advisory_clean under same_vendor_advisory', advisoryBase],
+      ['advisory_findings under same_vendor_advisory', () => { const b = advisoryBase(); b.statuses.audit = 'advisory_findings'; return b; }],
+      ['advisory_clean with an unknown-lineage seat', advisoryUnknownBase],
+    ]) {
+      assert.ok(validateEvidencePack(seal(build())).ok, `R2 accepts ${label}`);
+    }
+    for (const [label, build] of [
+      ['declared_clean demands cross_vendor_declared', () => { const b = independentBase(); b.statuses.audit = 'declared_clean'; return b; }],
+      ['independent_clean demands cross_vendor + verified', () => { const b = advisoryBase(); b.statuses.audit = 'independent_clean'; return b; }],
+      ['advisory_clean demands advisory or unknown lineage', () => { const b = independentBase(); b.statuses.audit = 'advisory_clean'; return b; }],
+    ]) {
+      refuses(seal(build()), /statuses\.audit/, `R2 refuses ${label}`);
+    }
+  }
+
+  // --- R3: qualification namespace ↔ backend + transport, per seat -------------
+  {
+    // null and absent qualification refuse (Task 5 shape, retained under R3).
+    const nullQual = build3();
+    nullQual.pairing.executor.qualification = null;
+    refuses(seal(nullQual), /qualification/, 'R3 null qualification refused');
+    const absentQual = build3();
+    delete absentQual.pairing.auditor.qualification;
+    refuses(seal(absentQual), /qualification/, 'R3 absent qualification refused');
+
+    // A vendor-managed built-in backend (provider prefix claude|codex) carries
+    // builtin1. Both built-in providers accept.
+    const builtinExec = (provider) => {
+      const b = build3();
+      const e = b.pairing.executor;
+      e.requested = `${provider}:balanced`;
+      e.transport = 'vendor_managed';
+      e.qualification.fingerprint = builtin1('a');
+      return b;
+    };
+    for (const provider of ['claude', 'codex']) {
+      assert.ok(validateEvidencePack(seal(builtinExec(provider))).ok, `R3 accepts vendor-managed ${provider} built-in with builtin1`);
+    }
+    // builtin1 on a loopback (non-vendor-managed) built-in refuses.
+    const loopback = builtinExec('claude');
+    loopback.pairing.executor.transport = 'loopback';
+    refuses(seal(loopback), /fingerprint/, 'R3 refuses builtin1 on a non-vendor-managed transport');
+    // qual1 on a vendor-managed built-in refuses.
+    const vmQual1 = builtinExec('claude');
+    vmQual1.pairing.executor.qualification.fingerprint = qual1('a');
+    refuses(seal(vmQual1), /fingerprint/, 'R3 refuses qual1 on a vendor-managed built-in');
+
+    // A codex_cli custom-provider seat is NOT a built-in (prefix decides, never
+    // executor_kind): it accepts qual1, and refuses a smuggled builtin1.
+    const codexCustom = () => {
+      const b = build3();
+      const e = b.pairing.executor;
+      e.executor_kind = 'codex_cli';
+      e.requested = 'customcloud:balanced';
+      e.transport = 'vendor_managed';
+      return b;
+    };
+    assert.ok(validateEvidencePack(seal(codexCustom())).ok, 'R3 accepts codex_cli custom-provider with qual1');
+    const codexCustomBuiltin = codexCustom();
+    codexCustomBuiltin.pairing.executor.qualification.fingerprint = builtin1('a');
+    refuses(seal(codexCustomBuiltin), /fingerprint/, 'R3 refuses builtin1 on a codex_cli custom-provider seat');
+  }
+
+  // --- R4: review_scope ↔ auditor gate_scope (exact, incl. null↔null) ----------
+  {
+    const scoped = (review, gate) => {
+      const b = build3();
+      b.pairing.review_scope = review;
+      b.pairing.auditor.qualification.gate_scope = gate;
+      return b;
+    };
+    assert.ok(validateEvidencePack(seal(scoped('full', 'full'))).ok, 'R4 accepts full/full');
+    assert.ok(validateEvidencePack(seal(scoped('light', 'light'))).ok, 'R4 accepts light/light');
+    assert.ok(validateEvidencePack(seal(scoped(null, null))).ok, 'R4 accepts null/null');
+    refuses(seal(scoped('full', 'light')), /review_scope/, 'R4 refuses light qualification behind a full round');
+    refuses(seal(scoped(null, 'full')), /review_scope/, 'R4 refuses review_scope null with a scoped auditor gate');
+    refuses(seal(scoped('full', null)), /review_scope/, 'R4 refuses a full round with a null auditor gate');
+  }
 }
 
 // --- ingester over a fixture reviews dir ---------------------------------------

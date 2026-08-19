@@ -157,6 +157,139 @@ export function validatePairingManifest(m, path = 'pairing') {
   return OK;
 }
 
+// --- §10.8.4 envelope-v3 semantic cross-checks --------------------------------
+// These four rules run ONLY for a genuine 3/2/2 pack, AFTER every mechanical
+// shape/enum/nullability check above has passed. They enforce the meaning the
+// shapes cannot: seal independence must agree with the seat identities (R1),
+// the audit standing must agree with the pairing independence (R2), a seat's
+// qualification namespace must match its backend + transport (R3), and the
+// round's review_scope must equal the auditor's gate_scope (R4). Producers are
+// unchanged; this is a reader-side refusal at the pack boundary.
+const isUnknown = (v) => v === 'unknown';
+// A seat's family-lineage set: its model_family PLUS its non-null derived_from.
+// Two seats share family lineage when these sets intersect.
+function familyLineageSet(seat) {
+  const set = new Set([seat.model_family]);
+  if (seat.lineage.derived_from !== null) set.add(seat.lineage.derived_from);
+  return set;
+}
+const setsIntersect = (a, b) => [...a].some((v) => b.has(v));
+// A nonempty gateway:<name> inference_operator yields its <name>; anything else
+// (bare provider, empty, malformed) yields null.
+function gatewayName(inferenceOperator) {
+  const m = /^gateway:(.+)$/.exec(inferenceOperator ?? '');
+  return m ? m[1] : null;
+}
+// A seat has "unknown lineage" when ANY of its identity signals is unknown.
+const seatHasUnknownLineage = (seat) =>
+  isUnknown(seat.training_org) || isUnknown(seat.model_family) || isUnknown(seat.lineage.source) || isUnknown(seat.origin_confidence);
+// RFC-derived mapping: a seat's lineage.source DETERMINES its origin_confidence
+// exactly. registry ⇒ verified_operator (a registry attested the origin),
+// operator_declared ⇒ operator_declared (the operator only asserted it), unknown
+// ⇒ unknown. Any other pairing is a forged upgrade — a seat wearing a confidence
+// its lineage never earned — and must refuse before an independence claim is
+// accepted. Fail toward the lower standing; never auto-correct.
+const LINEAGE_SOURCE_CONFIDENCE = Object.freeze({
+  registry: 'verified_operator',
+  operator_declared: 'operator_declared',
+  unknown: 'unknown',
+});
+// Sentinel actual providers that can never satisfy a cross_vendor independence
+// claim: an unrecorded or absent model run has no vendor to be cross of.
+const SENTINEL_PROVIDERS = Object.freeze(['unknown', 'none']);
+
+function validatePairingSemanticsV3(pairing, statuses, path) {
+  const pp = `${path}.pairing`;
+  const exec = pairing.executor;
+  const aud = pairing.auditor;
+  const indep = pairing.independence;
+
+  // R1(mapping) lineage.source ↔ origin_confidence, per seat. This runs FIRST —
+  // before any independence claim is weighed — so a forged registry/declared
+  // upgrade (or an unknown peer wearing an earned confidence) refuses at the seat
+  // rather than laundering into a cross_vendor* claim.
+  for (const [role, seat] of [['executor', exec], ['auditor', aud]]) {
+    const expected = LINEAGE_SOURCE_CONFIDENCE[seat.lineage.source];
+    if (seat.origin_confidence !== expected) {
+      return err(`${pp}.${role}.origin_confidence`, `lineage.source ${seat.lineage.source} requires origin_confidence ${expected}, not ${seat.origin_confidence}`);
+    }
+  }
+
+  // R1a shared_gateway ↔ inference_operator: exact name when both seats route
+  // through the same nonempty gateway:<name>, else null. No downgrade/adjust.
+  const gw = gatewayName(exec.inference_operator);
+  const bothSameGateway = gw !== null && gw === gatewayName(aud.inference_operator);
+  if (bothSameGateway) {
+    if (pairing.shared_gateway !== gw) return err(`${pp}.shared_gateway`, `must name the shared gateway '${gw}' exactly when both seats route through gateway:${gw}`);
+  } else if (pairing.shared_gateway !== null) {
+    return err(`${pp}.shared_gateway`, 'must be null unless both seats share one nonempty gateway:<name> inference_operator');
+  }
+
+  // R1b seal independence ↔ seat identities.
+  const orgDiffers = exec.training_org !== aud.training_org;
+  const noUnknownIdentity = !isUnknown(exec.training_org) && !isUnknown(aud.training_org)
+    && !isUnknown(exec.model_family) && !isUnknown(aud.model_family)
+    && !isUnknown(exec.lineage.source) && !isUnknown(aud.lineage.source);
+  const bothVerified = exec.origin_confidence === 'verified_operator' && aud.origin_confidence === 'verified_operator';
+  const familiesIntersect = setsIntersect(familyLineageSet(exec), familyLineageSet(aud));
+  if (indep === 'cross_vendor') {
+    // The shipped v1 actual-provider guard, preserved for pairing v2: parse each
+    // seat.actual's provider prefix exactly as the v1 rule does. cross_vendor is a
+    // lie when both actuals run the same provider, or when either is a sentinel
+    // (unknown/none) with no vendor to be cross of. This is IN ADDITION to the
+    // org/family/confidence rules below.
+    const execProvider = String(exec.actual).split(':')[0];
+    const audProvider = String(aud.actual).split(':')[0];
+    const sentinel = [execProvider, audProvider].find((p) => SENTINEL_PROVIDERS.includes(p));
+    if (sentinel !== undefined) return err(`${pp}.independence`, `cross_vendor requires a known actual provider on both seats, not the sentinel '${sentinel}'`);
+    if (execProvider === audProvider) return err(`${pp}.independence`, `cross_vendor claimed but both seats run actual provider ${execProvider}`);
+    if (!bothVerified) return err(`${pp}.independence`, 'cross_vendor requires both seats at verified_operator origin_confidence');
+    if (!noUnknownIdentity) return err(`${pp}.independence`, 'cross_vendor requires known training_org, model_family, and lineage.source on both seats');
+    if (!orgDiffers) return err(`${pp}.independence`, `cross_vendor requires different training_org, but both are ${exec.training_org}`);
+    if (familiesIntersect) return err(`${pp}.independence`, 'cross_vendor requires disjoint family-lineage sets, but the two seats share a family');
+  } else if (indep === 'cross_vendor_declared') {
+    if (!orgDiffers) return err(`${pp}.independence`, `cross_vendor_declared requires different training_org, but both are ${exec.training_org}`);
+    if (!noUnknownIdentity) return err(`${pp}.independence`, 'cross_vendor_declared requires known training_org, model_family, and lineage.source on both seats');
+    const anyDeclared = exec.origin_confidence === 'operator_declared' || aud.origin_confidence === 'operator_declared';
+    if (!anyDeclared) {
+      return err(`${pp}.independence`, bothVerified
+        ? 'both seats are fully verified; claim cross_vendor instead of cross_vendor_declared'
+        : 'cross_vendor_declared requires at least one seat at operator_declared origin_confidence');
+    }
+  }
+
+  // R2 audit standing ↔ pairing independence.
+  const audit = statuses.audit;
+  const anyUnknownLineage = seatHasUnknownLineage(exec) || seatHasUnknownLineage(aud);
+  if (audit === 'declared_clean' || audit === 'declared_findings') {
+    if (indep !== 'cross_vendor_declared') return err(`${path}.statuses.audit`, `${audit} requires independence cross_vendor_declared, not ${indep}`);
+  } else if (audit === 'independent_clean' || audit === 'independent_findings') {
+    if (indep !== 'cross_vendor' || !bothVerified) return err(`${path}.statuses.audit`, `${audit} requires cross_vendor with both seats verified_operator`);
+  } else if (audit === 'advisory_clean' || audit === 'advisory_findings') {
+    if (indep !== 'same_vendor_advisory' && !anyUnknownLineage) return err(`${path}.statuses.audit`, `${audit} requires same_vendor_advisory or at least one unknown-lineage seat`);
+  }
+
+  // R3 qualification namespace, applied independently to each seat. The built-in
+  // backend is decided SOLELY by the requested provider prefix (claude|codex),
+  // never executor_kind. builtin1 is legal iff built-in AND vendor_managed; every
+  // other seat requires qual1.
+  for (const [role, seat] of [['executor', exec], ['auditor', aud]]) {
+    const provider = seat.requested.split(':')[0];
+    const builtinBackend = provider === 'claude' || provider === 'codex';
+    const vendorManagedBuiltin = builtinBackend && seat.transport === 'vendor_managed';
+    const isBuiltinFingerprint = seat.qualification.fingerprint.startsWith('builtin1:');
+    if (vendorManagedBuiltin && !isBuiltinFingerprint) return err(`${pp}.${role}.qualification.fingerprint`, 'a vendor-managed built-in backend must carry a builtin1 fingerprint, not qual1');
+    if (!vendorManagedBuiltin && isBuiltinFingerprint) return err(`${pp}.${role}.qualification.fingerprint`, 'builtin1 is legal only for a vendor-managed built-in backend; this seat requires qual1');
+  }
+
+  // R4 review scope ↔ auditor gate_scope (exact equality, including null↔null).
+  if (pairing.review_scope !== aud.qualification.gate_scope) {
+    return err(`${pp}.review_scope`, `review_scope ${JSON.stringify(pairing.review_scope)} must equal the auditor gate_scope ${JSON.stringify(aud.qualification.gate_scope)}`);
+  }
+
+  return OK;
+}
+
 export function validateHumanDecision(d, path = 'human_decision') {
   if (!isObj(d)) return err(path, 'must be an object');
   if (d.schemaVersion !== 1) return err(path, 'schemaVersion must be 1');
@@ -264,6 +397,11 @@ export function validateEvidencePack(p, path = 'evidence_pack') {
   if (!pm.ok) return pm;
   const st = validateStatus(p.statuses, `${path}.statuses`);
   if (!st.ok) return st;
+  // §10.8.4 envelope-v3 semantic cross-checks — only after the 3/2/2 shapes hold.
+  if (p.schemaVersion === 3) {
+    const sem = validatePairingSemanticsV3(p.pairing, p.statuses, path);
+    if (!sem.ok) return sem;
+  }
   if (p.schemaVersion === 2 && ['independent_clean', 'advisory_clean'].includes(p.statuses.audit)) {
     if (Array.isArray(p.artifact.claims) && p.artifact.claims.some((c) => c.decision !== 'supported')) {
       return err(`${path}.statuses.audit`, 'clean audit conflicts with unsupported or unchecked claim decisions');
