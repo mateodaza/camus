@@ -2444,6 +2444,17 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       { ...featBase, 'fork-scan': J({ feats: [twin] }) }, loopDone)
     ok('F43 same-title different-id in-progress → needs_human fork', fork.res && fork.res.status === 'needs_human' && fork.res.stage === 'fork', fork.res && (fork.res.status + '/' + fork.res.stage))
     ok('F43 fork note names the other branch', /shared-title-zz9999/.test((fork.res && fork.res.note) || ''))
+    const readyTask = taskIdOf('Shared Title', ['only task'], 'only task')
+    const readyPrior = { featId: myId, feat: 'Shared Title', status: 'running',
+      tasks: [{ taskId: readyTask, status: 'ready_to_merge', provenStatus: 'done_with_findings',
+        provenCommit: h40('ready'), branch: `camus/feat/${myId}/${readyTask}`, decisions: [] }] }
+    const forkWithProof = await runFeat({ feat: 'Shared Title', tasks: ['only task'] },
+      { ...featBase, preflight: { clean: true, base: 'main', dirtyFiles: 0,
+        stateRaw: JSON.stringify(readyPrior), argsPresent: false }, 'fork-scan': J({ feats: [twin] }) }, loopDone)
+    ok('F43 fork halt preserves the hydrated ready_to_merge lane, never serializes it pending',
+      forkWithProof.stateJSON.tasks[0].status === 'ready_to_merge'
+        && forkWithProof.stateJSON.tasks[0].provenStatus === 'done_with_findings',
+    J(forkWithProof.stateJSON.tasks[0]))
     const mineDone = await runFeat({ feat: 'Shared Title', tasks: ['only task'] },
       { ...featBase, 'fork-scan': J({ feats: [{ featId: myId, title: 'Shared Title', status: 'running' }] }) }, loopDone)
     ok('F43 current featId excluded → no false fork (proceeds)', mineDone.res && mineDone.res.status === 'done', mineDone.res && mineDone.res.status)
