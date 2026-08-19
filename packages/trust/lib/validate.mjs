@@ -13,12 +13,22 @@ function isObj(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
+// DIMENSIONS.audit is the v2 enum (it broadened to carry declared_*). A status
+// v1 block is a FROZEN published contract: its audit stays the six pre-declared
+// values, so a v1 pack can never smuggle a declared_* value (§10.8.2/§10.8.4).
+// This subset is local and frozen; it is the v1 audit floor, never re-derived
+// from the broadened DIMENSIONS.audit.
+const STATUS_V1_AUDIT = Object.freeze(['not_run', 'independent_clean', 'independent_findings', 'advisory_clean', 'advisory_findings', 'infra_failed']);
+
 export function validateStatus(s, path = 'status') {
   if (!isObj(s)) return err(path, 'must be an object');
-  if (s.schemaVersion !== 1) return err(path, 'schemaVersion must be 1');
-  for (const dim of ['execution', 'verification', 'audit', 'publication']) {
+  if (![1, 2].includes(s.schemaVersion)) return err(path, 'schemaVersion must be 1 or 2');
+  for (const dim of ['execution', 'verification', 'publication']) {
     if (!DIMENSIONS[dim].includes(s[dim])) return err(`${path}.${dim}`, `must be one of ${DIMENSIONS[dim].join('|')}`);
   }
+  // v2 accepts the full DIMENSIONS.audit; v1 stays on the frozen six.
+  const auditValues = s.schemaVersion === 2 ? DIMENSIONS.audit : STATUS_V1_AUDIT;
+  if (!auditValues.includes(s.audit)) return err(`${path}.audit`, `must be one of ${auditValues.join('|')}`);
   const extra = Object.keys(s).filter((k) => !['schemaVersion', 'execution', 'verification', 'audit', 'publication'].includes(k));
   if (extra.length) return err(path, `unknown fields: ${extra.join(', ')}`);
   return OK;
@@ -33,9 +43,104 @@ function validateRoleIdentity(r, path) {
   return OK;
 }
 
+// Pairing v2 shape (§10.8.1, pairing-manifest.v2.schema.json). This block owns
+// version/shape/enum/presence/nullability facts ONLY. It deliberately does NOT
+// implement rule 7 (independence↔identity/shared_gateway consistency), the
+// audit↔pairing cross-checks, builtin1 namespace selection, or the
+// review_scope↔gate_scope equality — those are Task 6 semantics.
+const SEAT_FIELDS = Object.freeze([
+  'requested', 'resolved', 'actual', 'reported', 'actual_evidence',
+  'executor_kind', 'training_org', 'model_family', 'lineage',
+  'inference_operator', 'transport', 'connection', 'origin_confidence',
+  'qualification',
+]);
+const SEAT_STRING_FIELDS = Object.freeze(['requested', 'resolved', 'actual', 'executor_kind', 'training_org', 'model_family', 'inference_operator']);
+const ACTUAL_EVIDENCE = Object.freeze(['observed_api_response', 'observed_cli_event', 'asserted_pin', 'mapped_by_operator_docs', 'none']);
+const LINEAGE_SOURCE = Object.freeze(['registry', 'operator_declared', 'unknown']);
+const SEAT_TRANSPORT = Object.freeze(['loopback', 'direct_https', 'ssh_tunnel', 'vendor_managed', 'legacy_http']);
+const ORIGIN_CONFIDENCE = Object.freeze(['verified_operator', 'operator_declared', 'unknown']);
+const GATE_SCOPE = Object.freeze(['full', 'light', null]);
+const QUAL_FINGERPRINT_RE = /^(?:qual1|builtin1):[0-9a-f]{64}$/;
+const PAIRING_V2_INDEPENDENCE = Object.freeze(['cross_vendor', 'cross_vendor_declared', 'same_vendor_advisory', 'none']);
+const REVIEW_SCOPE = Object.freeze(['full', 'light', null]);
+// v2-only pairing top-level fields; their presence on a v1/v2 envelope's pairing
+// is a half-upgrade the pack boundary refuses (§10.8.4).
+const PAIRING_V2_ONLY_FIELDS = Object.freeze(['shared_gateway', 'review_scope']);
+// v2-only seat parents: every sealed seat field a v1 role identity never had
+// (SEAT_FIELDS minus the three v1 role keys). A v1-versioned pairing that grows
+// ANY of these — including a lineage or qualification block whose descendants
+// ride along with the parent — is a half-upgrade the pack boundary refuses.
+const SEAT_V2_ONLY_FIELDS = Object.freeze(SEAT_FIELDS.filter((k) => !ROLE_KEYS.includes(k)));
+
+// Pack-boundary-only legacy half-upgrade detection (§10.8.4): a v1-versioned
+// pairing block that carries ANY v2-only field — top-level shared_gateway/
+// review_scope OR a nested executor/auditor seat field. This is deliberately
+// separate from the shipped v1 validatePairingManifest branch, which stays
+// unchanged: the refusal lives only at the evidence-pack envelope boundary.
+function detectLegacyPairingV2Fields(pairing) {
+  const found = PAIRING_V2_ONLY_FIELDS.filter((k) => k in pairing);
+  for (const role of ['executor', 'auditor']) {
+    const seat = pairing[role];
+    if (!isObj(seat)) continue;
+    for (const k of SEAT_V2_ONLY_FIELDS) if (k in seat) found.push(`${role}.${k}`);
+  }
+  return found;
+}
+
+const strOrNull = (v) => v === null || typeof v === 'string';
+
+function validateSeatIdentitySealed(seat, path) {
+  const shape = exactFields(seat, SEAT_FIELDS, path);
+  if (!shape.ok) return shape;
+  const missing = SEAT_FIELDS.filter((k) => !(k in seat));
+  if (missing.length) return err(path, `missing required field(s): ${missing.join(', ')}`);
+  for (const k of SEAT_STRING_FIELDS) {
+    if (typeof seat[k] !== 'string' || !seat[k]) return err(`${path}.${k}`, 'must be a non-empty string');
+  }
+  if (!strOrNull(seat.reported)) return err(`${path}.reported`, 'must be a string or null');
+  if (!ACTUAL_EVIDENCE.includes(seat.actual_evidence)) return err(`${path}.actual_evidence`, `must be one of ${ACTUAL_EVIDENCE.join('|')}`);
+  const lineage = seat.lineage;
+  const lineageShape = exactFields(lineage, ['source', 'derived_from'], `${path}.lineage`);
+  if (!lineageShape.ok) return lineageShape;
+  for (const k of ['source', 'derived_from']) if (!(k in lineage)) return err(`${path}.lineage`, `missing required field: ${k}`);
+  if (!LINEAGE_SOURCE.includes(lineage.source)) return err(`${path}.lineage.source`, `must be one of ${LINEAGE_SOURCE.join('|')}`);
+  if (!strOrNull(lineage.derived_from)) return err(`${path}.lineage.derived_from`, 'must be a string or null');
+  if (!SEAT_TRANSPORT.includes(seat.transport)) return err(`${path}.transport`, `must be one of ${SEAT_TRANSPORT.join('|')}`);
+  if (!strOrNull(seat.connection)) return err(`${path}.connection`, 'must be a string or null');
+  if (!ORIGIN_CONFIDENCE.includes(seat.origin_confidence)) return err(`${path}.origin_confidence`, `must be one of ${ORIGIN_CONFIDENCE.join('|')}`);
+  // qualification is ALWAYS present and non-null: a receipt names which admission
+  // evidence stood behind the seat.
+  const q = seat.qualification;
+  if (!isObj(q)) return err(`${path}.qualification`, 'must be a non-null object (always present)');
+  const qShape = exactFields(q, ['fingerprint', 'gate_scope', 'contract_version'], `${path}.qualification`);
+  if (!qShape.ok) return qShape;
+  for (const k of ['fingerprint', 'gate_scope', 'contract_version']) if (!(k in q)) return err(`${path}.qualification`, `missing required field: ${k}`);
+  if (typeof q.fingerprint !== 'string' || !QUAL_FINGERPRINT_RE.test(q.fingerprint)) return err(`${path}.qualification.fingerprint`, 'must match qual1:<hex64> or builtin1:<hex64>');
+  if (!GATE_SCOPE.includes(q.gate_scope)) return err(`${path}.qualification.gate_scope`, 'must be full | light | null');
+  if (!strOrNull(q.contract_version)) return err(`${path}.qualification.contract_version`, 'must be a string or null');
+  return OK;
+}
+
+function validatePairingManifestV2(m, path) {
+  const rootShape = exactFields(m, ['schemaVersion', 'executor', 'auditor', 'independence', 'shared_gateway', 'review_scope'], path);
+  if (!rootShape.ok) return rootShape;
+  for (const k of ['schemaVersion', 'executor', 'auditor', 'independence', 'shared_gateway', 'review_scope']) {
+    if (!(k in m)) return err(path, `missing required field: ${k}`);
+  }
+  for (const role of ['executor', 'auditor']) {
+    const r = validateSeatIdentitySealed(m[role], `${path}.${role}`);
+    if (!r.ok) return r;
+  }
+  if (!PAIRING_V2_INDEPENDENCE.includes(m.independence)) return err(`${path}.independence`, `must be one of ${PAIRING_V2_INDEPENDENCE.join('|')}`);
+  if (!strOrNull(m.shared_gateway)) return err(`${path}.shared_gateway`, 'must be a string or null');
+  if (!REVIEW_SCOPE.includes(m.review_scope)) return err(`${path}.review_scope`, 'must be full | light | null');
+  return OK;
+}
+
 export function validatePairingManifest(m, path = 'pairing') {
   if (!isObj(m)) return err(path, 'must be an object');
-  if (m.schemaVersion !== 1) return err(path, 'schemaVersion must be 1');
+  if (m.schemaVersion === 2) return validatePairingManifestV2(m, path);
+  if (m.schemaVersion !== 1) return err(path, 'schemaVersion must be 1 or 2');
   for (const role of ['executor', 'auditor']) {
     const r = validateRoleIdentity(m[role], `${path}.${role}`);
     if (!r.ok) return r;
@@ -77,16 +182,34 @@ const PACK_FIELDS = ['schemaVersion', 'artifact_id', 'receipt_id', 'goal', 'acce
 
 export function validateEvidencePack(p, path = 'evidence_pack') {
   if (!isObj(p)) return err(path, 'must be an object');
-  if (![1, 2].includes(p.schemaVersion)) return err(path, 'schemaVersion must be 1 or 2');
+  if (![1, 2, 3].includes(p.schemaVersion)) return err(path, 'schemaVersion must be 1, 2, or 3');
   const unknown = Object.keys(p).filter((k) => !PACK_FIELDS.includes(k));
   if (unknown.length) return err(path, `unknown field(s): ${unknown.join(', ')} — schema v${p.schemaVersion} does not know them; nothing enters or escapes a hash silently`);
+  // §10.8.4 cross-version matrix: an envelope admits EXACTLY its published
+  // interior versions (1/1/1, 2/1/1, 3/2/2). Mixed, half-upgraded, missing, and
+  // future interior versions fail closed here, before any interior shape runs.
+  const expectedInteriorVersion = p.schemaVersion === 3 ? 2 : 1;
+  if (!isObj(p.pairing)) return err(`${path}.pairing`, 'must be an object');
+  if (!isObj(p.statuses)) return err(`${path}.statuses`, 'must be an object');
+  if (p.pairing.schemaVersion !== expectedInteriorVersion) return err(`${path}.pairing.schemaVersion`, `evidence-pack v${p.schemaVersion} requires pairing schemaVersion ${expectedInteriorVersion}`);
+  if (p.statuses.schemaVersion !== expectedInteriorVersion) return err(`${path}.statuses.schemaVersion`, `evidence-pack v${p.schemaVersion} requires statuses schemaVersion ${expectedInteriorVersion}`);
+  // Half-upgraded legacy envelope: a v1-versioned pairing block that carries ANY
+  // v2-only field — top-level shared_gateway/review_scope OR a nested
+  // executor/auditor seat field (lineage/qualification descendants ride along
+  // with their parent) — refuses even though its version reads 1 (§10.8.4).
+  if (p.schemaVersion !== 3) {
+    const v2Only = detectLegacyPairingV2Fields(p.pairing);
+    if (v2Only.length) return err(`${path}.pairing`, `evidence-pack v${p.schemaVersion} pairing cannot carry v2-only field(s): ${v2Only.join(', ')} (half-upgraded)`);
+  }
+  // Envelopes 2 and 3 share the coverage-aware artifact shape; envelope 1 does not.
+  const usesV2Artifact = p.schemaVersion === 2 || p.schemaVersion === 3;
   if (!/^sha256:[0-9a-f]{64}$/.test(p.artifact_id ?? '')) return err(`${path}.artifact_id`, 'must be sha256:<hex64>');
   if (!/^sha256:[0-9a-f]{64}$/.test(p.receipt_id ?? '')) return err(`${path}.receipt_id`, 'must be sha256:<hex64>');
   if (typeof p.goal !== 'string' || !p.goal) return err(`${path}.goal`, 'required');
   if (typeof p.acceptance_contract !== 'string' || !p.acceptance_contract) return err(`${path}.acceptance_contract`, 'required — audits bottleneck on it');
   if (!isObj(p.artifact) || !['code', 'research'].includes(p.artifact.kind)) return err(`${path}.artifact.kind`, 'must be code | research');
-  if (p.schemaVersion === 1 && 'contract_coverage' in p.artifact) {
-    return err(`${path}.artifact.contract_coverage`, 'requires evidence-pack schemaVersion 2');
+  if (!usesV2Artifact && 'contract_coverage' in p.artifact) {
+    return err(`${path}.artifact.contract_coverage`, 'requires evidence-pack schemaVersion 2 or 3');
   }
   if (p.artifact.claims !== null && p.artifact.claims !== undefined) {
     if (!Array.isArray(p.artifact.claims)) return err(`${path}.artifact.claims`, 'must be an array or null');
@@ -97,7 +220,7 @@ export function validateEvidencePack(p, path = 'evidence_pack') {
       const known = ['claim', 'marker', 'url', 'evidence_hash', 'retrieved_at', 'decision'];
       const extra = Object.keys(c).filter((k) => !known.includes(k));
       if (extra.length) return err(cp, `unknown fields: ${extra.join(', ')}`);
-      if (p.schemaVersion === 2) {
+      if (usesV2Artifact) {
         const missing = known.filter((k) => !(k in c));
         if (missing.length) return err(cp, `missing required fields: ${missing.join(', ')}`);
       }
@@ -111,8 +234,8 @@ export function validateEvidencePack(p, path = 'evidence_pack') {
       if (!['supported', 'unsupported', 'unchecked', null].includes(c.decision)) return err(`${cp}.decision`, 'must be supported | unsupported | unchecked | null');
     }
   }
-  if (p.schemaVersion === 2) {
-    if (!('contract_coverage' in p.artifact)) return err(`${path}.artifact.contract_coverage`, 'required in evidence-pack v2');
+  if (usesV2Artifact) {
+    if (!('contract_coverage' in p.artifact)) return err(`${path}.artifact.contract_coverage`, 'required in evidence-pack v2 or v3');
     const coverage = p.artifact.contract_coverage;
     if (coverage !== null && !Array.isArray(coverage)) return err(`${path}.artifact.contract_coverage`, 'must be an array or null');
     if (p.artifact.kind === 'research' && (!Array.isArray(coverage) || coverage.length === 0)) {
