@@ -681,6 +681,122 @@ def test_direct_lane_opens_reviews_seals_and_lands_without_model_relays():
     assert _git(world["repo"], "merge-base", "--is-ancestor", sealed["commit"], world["state"]["featBranch"]) == ""
 
 
+def test_direct_maker_usage_keeps_units_separate_and_is_idempotent():
+    world = _direct_fixture()
+    result_path = os.path.join(world["base"], "claude-result.json")
+    _write(result_path, {
+        "is_error": False,
+        "duration_ms": 2000,
+        "duration_api_ms": 1800,
+        "num_turns": 3,
+        "total_cost_usd": 1.25,
+        "terminal_reason": "completed",
+        "permission_denials": [],
+        "usage": {
+            "input_tokens": 7,
+            "cache_creation_input_tokens": 100,
+            "cache_read_input_tokens": 500,
+            "output_tokens": 40,
+        },
+        "modelUsage": {
+            "claude-opus-4-8": {
+                "inputTokens": 7,
+                "cacheCreationInputTokens": 100,
+                "cacheReadInputTokens": 500,
+                "outputTokens": 40,
+                "costUSD": 1.25,
+                "canonicalModel": "claude-opus-4-8",
+                "provider": "firstParty",
+            },
+        },
+        "result": "content is deliberately not persisted in state",
+    })
+    recorded = K.record_maker_usage(
+        world["feat_id"], world["node"]["taskId"], result_path,
+        repo=world["repo"], base=world["base"], now=103,
+    )
+    assert recorded["idempotent"] is False
+    assert recorded["totals"] == {
+        "inputTokens": 7, "cacheCreationInputTokens": 100,
+        "cacheReadInputTokens": 500, "outputTokens": 40,
+        "costUsd": 1.25, "durationMs": 2000, "turns": 3, "calls": 1,
+    }
+    assert recorded["budgetUsage"]["tokens"] == 0, "unlike direct metrics never enter legacy token budget"
+    node = K._validated_run(world["feat_id"], world["base"])["nodes"][0]
+    receipt = node["directMakerUsage"]["receipts"][0]
+    assert receipt["modelRequested"] == "claude-opus-4-8"
+    assert receipt["candidateFingerprint"].startswith("candidate1:")
+    assert "result" not in receipt and "session_id" not in receipt, "maker content/session data is not persisted"
+
+    replay = K.record_maker_usage(
+        world["feat_id"], world["node"]["taskId"], result_path,
+        repo=world["repo"], base=world["base"], now=104,
+    )
+    assert replay["idempotent"] is True
+    assert replay["totals"] == recorded["totals"]
+    assert replay["budgetUsage"] == recorded["budgetUsage"]
+    node = K._validated_run(world["feat_id"], world["base"])["nodes"][0]
+    assert len(node["directMakerUsage"]["receipts"]) == 1
+
+
+def test_direct_maker_usage_refuses_unbound_model_without_state_mutation():
+    world = _direct_fixture()
+    result_path = os.path.join(world["base"], "wrong-model.json")
+    _write(result_path, {
+        "is_error": False, "duration_ms": 1, "duration_api_ms": 1, "num_turns": 1,
+        "total_cost_usd": 0, "permission_denials": [],
+        "usage": {"output_tokens": 1},
+        "modelUsage": {"claude-sonnet-4-6": {"outputTokens": 1, "costUSD": 0}},
+    })
+    state_path = os.path.join(world["base"], "feats", world["feat_id"] + ".json")
+    before = open(state_path, encoding="utf-8").read()
+    try:
+        K.record_maker_usage(
+            world["feat_id"], world["node"]["taskId"], result_path,
+            repo=world["repo"], base=world["base"], now=103,
+        )
+        assert False, "usage from an unbound maker model was accepted"
+    except K.Refusal as exc:
+        assert "pinned model" in str(exc)
+    assert open(state_path, encoding="utf-8").read() == before
+
+
+def test_direct_maker_usage_refuses_zero_output_from_the_pinned_model():
+    world = _direct_fixture()
+    result_path = os.path.join(world["base"], "zero-pinned-output.json")
+    _write(result_path, {
+        "is_error": False, "duration_ms": 1, "duration_api_ms": 1, "num_turns": 1,
+        "total_cost_usd": 0, "permission_denials": [],
+        "usage": {"output_tokens": 50},
+        "modelUsage": {
+            "claude-opus-4-8": {"outputTokens": 0, "costUSD": 0},
+            "claude-sonnet-4-6": {"outputTokens": 50, "costUSD": 0},
+        },
+    })
+    try:
+        K.record_maker_usage(
+            world["feat_id"], world["node"]["taskId"], result_path,
+            repo=world["repo"], base=world["base"], now=103,
+        )
+        assert False, "mere presence of the pinned model was accepted as use"
+    except K.Refusal as exc:
+        assert "nonzero output" in str(exc)
+
+
+def test_seats_refuse_the_same_maker_and_reviewer_model():
+    world = _direct_fixture()
+    state_path = os.path.join(world["base"], "feats", world["feat_id"] + ".json")
+    state = json.load(open(state_path, encoding="utf-8"))
+    state["kernel"]["seats"]["reviewerModel"] = "claude-opus-4-8"
+    _write(state_path, state)
+    run = K._validated_run(world["feat_id"], world["base"])
+    try:
+        K._seats(run)
+        assert False, "the same maker/reviewer model was accepted"
+    except K.Refusal as exc:
+        assert "different models" in str(exc)
+
+
 def test_direct_clean_review_refuses_a_late_untracked_file():
     world = _direct_fixture()
     with mock.patch.object(K, "_run_direct_review", return_value=world["verdict"]):

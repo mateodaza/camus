@@ -158,6 +158,12 @@ The direct lane removes the legacy thin-agent relays without removing the gates:
 
 - `kernel open` creates or reattaches the deterministic task worktree.
 - The orchestrator dispatches exactly one maker in that worktree.
+- `kernel maker-usage` ingests the maker's Claude print-mode JSON after each maker/fix call. It
+  stores input, cache-creation, cache-read, output, cost, duration, model, and outcome as distinct
+  metrics bound to the task candidate; it never adds them to the legacy workflow-total counter.
+  Response-level and per-model fields retain their separate upstream scopes rather than being
+  forced into a false equality. Candidate binding uses the lane's standard intent-to-add index
+  normalization, the same representation used by review and seal.
 - `kernel review` invokes the pinned independent reviewer directly, binds its receipt to the trace,
   and returns either `seal` or `fix_then_seal`.
 - After an optional single maker fix, `kernel seal` binds an unchanged clean candidate or preserves
@@ -213,7 +219,12 @@ required before first use.
   preserved through acceptance and merge.
 - Token metrics retain their source/unit name; runtime total tokens and transcript output tokens
   are never silently mixed.
-- LLM judgments are not described as calibrated until measured against human-labeled examples.
+- Grading follows a cheapest-reliable ladder: deterministic code checks establish schemas, exact
+  values, presence, provenance, Git custody, and test outcomes; an independent different-model
+  judge handles semantic correctness under a constrained rubric, and equal maker/reviewer model
+  pins refuse before dispatch; humans decide only high-stakes,
+  novel, or unresolved conflicts. Judge output is not described as calibrated until measured
+  against human-labeled examples, and missing coverage must remain explicit.
 - The kernel does not push, publish, deploy, merge to main, or perform external side effects.
 
 ## Migration and rollback

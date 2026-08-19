@@ -75,6 +75,8 @@ usage: npx camus-cli <command>
                                                   merge an accepted task without a model turn
                        kernel open <featId> <taskId>
                                                   create/reattach the direct task worktree
+                       kernel maker-usage <featId> <taskId> --result-file <path>
+                                                  bind direct maker metrics without mixing units
                        kernel review <featId> <taskId>
                                                   run one bound reviewer with no model relay
                        kernel seal <featId> <taskId> [--fixed-unreviewed]

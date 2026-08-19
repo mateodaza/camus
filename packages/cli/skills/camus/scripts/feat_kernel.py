@@ -38,6 +38,10 @@ Commands:
   feat_kernel.py open FEAT_ID TASK_ID
       Materialize the deterministic task worktree for a direct hybrid run.
 
+  feat_kernel.py maker-usage FEAT_ID TASK_ID --result-file PATH [--role maker|fix]
+      Ingest one Claude print-mode JSON result as a task-bound, idempotent usage receipt. Direct
+      input/cache/output/cost metrics stay separate from legacy workflow-total token budgets.
+
   feat_kernel.py review FEAT_ID TASK_ID
       Run the bound independent reviewer directly, without a model relay.
 
@@ -271,12 +275,15 @@ def _seats(run, overrides=None):
     effort = choose("reviewerEffort")
     if effort is not None and effort not in ("low", "medium", "high", "xhigh"):
         raise Refusal("reviewer effort must be low|medium|high|xhigh")
-    return {
+    seats = {
         "makerModel": choose("makerModel", run["args"].get("model")),
         "reviewerBackend": choose("reviewerBackend"),
         "reviewerModel": choose("reviewerModel"),
         "reviewerEffort": effort,
     }
+    if seats["makerModel"] is not None and seats["makerModel"] == seats["reviewerModel"]:
+        raise Refusal("maker and reviewer must use different models")
+    return seats
 
 
 def _budget_stop(budgets, usage, now=None):
@@ -998,6 +1005,152 @@ def open_task(feat_id, task_id, repo=None, base=None, now=None):
         return payload
 
 
+def _nonnegative_int(value, label):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise Refusal("%s must be a non-negative integer" % label)
+    return value
+
+
+def _nonnegative_number(value, label):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        raise Refusal("%s must be a non-negative number" % label)
+    return value
+
+
+def _claude_usage_receipt(path, requested_model):
+    """Extract only stable, non-content metrics from a Claude --output-format json result."""
+    result = _read_json(path)
+    usage = result.get("usage")
+    models = result.get("modelUsage")
+    if not isinstance(usage, dict) or not isinstance(models, dict) or not models:
+        raise Refusal("maker result lacks Claude usage/modelUsage evidence")
+    if not isinstance(requested_model, str) or not requested_model:
+        raise Refusal("direct maker has no pinned model")
+
+    per_model = []
+    requested_output_tokens = 0
+    for model, raw in sorted(models.items()):
+        if not isinstance(model, str) or not model or not isinstance(raw, dict):
+            raise Refusal("maker result has malformed per-model usage")
+        canonical = raw.get("canonicalModel")
+        output_tokens = _nonnegative_int(raw.get("outputTokens", 0), "%s outputTokens" % model)
+        if model == requested_model or canonical == requested_model:
+            requested_output_tokens += output_tokens
+        per_model.append({
+            "model": model,
+            "canonicalModel": canonical if isinstance(canonical, str) else None,
+            "provider": raw.get("provider") if isinstance(raw.get("provider"), str) else None,
+            "inputTokens": _nonnegative_int(raw.get("inputTokens", 0), "%s inputTokens" % model),
+            "cacheCreationInputTokens": _nonnegative_int(
+                raw.get("cacheCreationInputTokens", 0), "%s cacheCreationInputTokens" % model,
+            ),
+            "cacheReadInputTokens": _nonnegative_int(
+                raw.get("cacheReadInputTokens", 0), "%s cacheReadInputTokens" % model,
+            ),
+            "outputTokens": output_tokens,
+            "costUsd": _nonnegative_number(raw.get("costUSD", 0), "%s costUSD" % model),
+        })
+    if requested_output_tokens <= 0:
+        raise Refusal("maker result does not prove nonzero output from pinned model %s" % requested_model)
+
+    denials = result.get("permission_denials", [])
+    if not isinstance(denials, list):
+        raise Refusal("maker result permission_denials is malformed")
+    is_error = result.get("is_error")
+    if not isinstance(is_error, bool):
+        raise Refusal("maker result lacks a boolean is_error outcome")
+    return {
+        "source": "claude_print_json",
+        "receiptSha256": _sha256_file(path),
+        "modelRequested": requested_model,
+        "models": per_model,
+        "usage": {
+            "inputTokens": _nonnegative_int(usage.get("input_tokens", 0), "usage input_tokens"),
+            "cacheCreationInputTokens": _nonnegative_int(
+                usage.get("cache_creation_input_tokens", 0), "usage cache_creation_input_tokens",
+            ),
+            "cacheReadInputTokens": _nonnegative_int(
+                usage.get("cache_read_input_tokens", 0), "usage cache_read_input_tokens",
+            ),
+            "outputTokens": _nonnegative_int(usage.get("output_tokens", 0), "usage output_tokens"),
+        },
+        "costUsd": _nonnegative_number(result.get("total_cost_usd", 0), "total_cost_usd"),
+        "durationMs": _nonnegative_int(result.get("duration_ms", 0), "duration_ms"),
+        "apiDurationMs": _nonnegative_int(result.get("duration_api_ms", 0), "duration_api_ms"),
+        "turns": _nonnegative_int(result.get("num_turns", 0), "num_turns"),
+        "isError": is_error,
+        "terminalReason": result.get("terminal_reason")
+        if isinstance(result.get("terminal_reason"), str) else None,
+        "permissionDenials": len(denials),
+    }
+
+
+def record_maker_usage(feat_id, task_id, result_file, role="maker", repo=None, base=None, now=None):
+    """Persist direct-maker metrics without folding unlike token units into kernel.usage.tokens."""
+    now = int(time.time()) if now is None else int(now)
+    if role not in ("maker", "fix"):
+        raise Refusal("maker usage role must be maker|fix")
+    base = base or camus_home()
+    with _locked(os.path.join(base, "feats"), feat_id):
+        run = _validated_run(feat_id, base)
+        repo = _resolve_repo(run, repo)
+        kernel, node = _direct_task(run, task_id)
+        if kernel.get("phase") not in ("task_open", "task_reviewed", "task_verify_failed"):
+            raise Refusal("kernel is not at a direct maker-usage phase")
+        worktree, head = _validated_worktree(repo, node, node.get("worktree"))
+        receipt = _claude_usage_receipt(result_file, _seats(run).get("makerModel"))
+
+        existing = node.get("directMakerUsage")
+        receipts = existing.get("receipts") if isinstance(existing, dict) else []
+        receipts = receipts if isinstance(receipts, list) else []
+        duplicate = next((item for item in receipts if isinstance(item, dict)
+                          and item.get("receiptSha256") == receipt["receiptSha256"]), None)
+        if duplicate is not None:
+            return {
+                "schemaVersion": SCHEMA_VERSION, "traceId": kernel.get("traceId"),
+                "action": "maker_usage_recorded", "taskId": task_id,
+                "idempotent": True, "receipt": duplicate,
+                "totals": existing.get("totals") if isinstance(existing, dict) else None,
+                "budgetUsage": _usage(run["state"]),
+            }
+
+        receipt.update({
+            "sequence": len(receipts) + 1,
+            "role": role,
+            "head": head,
+            "candidateFingerprint": _candidate_fingerprint(worktree),
+            "recordedAt": now,
+        })
+        receipts.append(receipt)
+        metric_keys = (
+            "inputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens",
+        )
+        totals = {key: sum(item.get("usage", {}).get(key, 0) for item in receipts) for key in metric_keys}
+        totals.update({
+            "costUsd": sum(item.get("costUsd", 0) for item in receipts),
+            "durationMs": sum(item.get("durationMs", 0) for item in receipts),
+            "turns": sum(item.get("turns", 0) for item in receipts),
+            "calls": len(receipts),
+        })
+        node["directMakerUsage"] = {
+            "metric": "claude_print_json_usage_v1",
+            "receipts": receipts,
+            "totals": totals,
+        }
+        kernel["updatedAt"] = now
+        run["state"]["kernel"] = kernel
+        _append_event(run["state"], "Kernel %s recorded %s usage receipt %d for %s" % (
+            kernel.get("traceId"), role, receipt["sequence"], task_id,
+        ))
+        _atomic_write(run["statePath"], run["state"])
+        return {
+            "schemaVersion": SCHEMA_VERSION, "traceId": kernel.get("traceId"),
+            "action": "maker_usage_recorded", "taskId": task_id,
+            "idempotent": False, "receipt": receipt, "totals": totals,
+            "budgetUsage": _usage(run["state"]),
+        }
+
+
 def _run_direct_review(run, repo, node, worktree, backend, model, effort, round_no=1):
     scripts = os.path.dirname(os.path.abspath(__file__))
     nonce = "%s:%s" % (_kernel(run["state"])["traceId"], node["taskId"].rsplit("-", 1)[-1])
@@ -1576,6 +1729,13 @@ def _parser():
         p.add_argument("task_id")
         p.add_argument("--repo", default=None)
         p.add_argument("--dir", dest="base", default=None, help=argparse.SUPPRESS)
+    p = sub.add_parser("maker-usage")
+    p.add_argument("feat_id")
+    p.add_argument("task_id")
+    p.add_argument("--result-file", required=True)
+    p.add_argument("--role", choices=("maker", "fix"), default="maker")
+    p.add_argument("--repo", default=None)
+    p.add_argument("--dir", dest="base", default=None, help=argparse.SUPPRESS)
     p = sub.add_parser("seal")
     p.add_argument("feat_id")
     p.add_argument("task_id")
@@ -1619,6 +1779,11 @@ def main(argv=None):
         elif options.command == "review":
             value = review_task(
                 options.feat_id, options.task_id, repo=options.repo, base=options.base,
+            )
+        elif options.command == "maker-usage":
+            value = record_maker_usage(
+                options.feat_id, options.task_id, options.result_file, role=options.role,
+                repo=options.repo, base=options.base,
             )
         elif options.command == "seal":
             value = seal_task(
