@@ -292,6 +292,11 @@ const state = {
   // across resumes (carried from prior state); the cap keeps the state file small.
   events: [], eventSeq: 0,
 }
+// Preflight can halt before the normal resume-hydration block (dirty tree, detached HEAD, or the
+// common "you are still on the feat branch" guard). Keep the raw prior checkpoint available so
+// finalize cannot replace proven task lanes with freshly-created pending nodes on those paths.
+let priorStateForFinalize = ''
+let priorHydrated = false
 // A short, human-voiced summary of a task spec for the live narration + status feed (run feedback
 // 2026-06-11: dumping the whole multi-paragraph spec made the view ugly). The complete spec stays
 // on the task node; this is just the headline — the first clause, capped.
@@ -482,6 +487,33 @@ Return {written:true} once that file is on disk with exactly that content.`,
   )
 }
 
+function hydratePriorForEarlyFinalize() {
+  if (priorHydrated) return
+  priorHydrated = true
+  const prior = priorStateForFinalize ? extractJsonObject(priorStateForFinalize) : null
+  if (!prior || prior.featId !== featId || !Array.isArray(prior.tasks)) return
+  const priorById = new Map(prior.tasks.filter((t) => t && t.taskId).map((t) => [t.taskId, t]))
+  for (const node of state.tasks) {
+    const old = priorById.get(node.taskId)
+    if (!old) continue
+    // Preserve execution evidence, but never let an out-of-tree state file replace the task
+    // contract or computed branch identity used by this invocation.
+    const { taskId: _taskId, spec: _spec, brief: _brief, dependsOn: _dependsOn,
+      branch: _branch, mergedBranch, ...dynamic } = old
+    Object.assign(node, dynamic)
+    if (mergedBranch && _CAMUS_BRANCH_OK.test(String(mergedBranch))) node.mergedBranch = mergedBranch
+  }
+  if (Array.isArray(prior.events)) {
+    state.events = prior.events.filter((e) => e && e.msg).slice(-20)
+    state.eventSeq = Number(prior.eventSeq) || state.events.length
+  }
+  for (const key of ['baseline', 'env', 'envRecheck', 'integration']) {
+    if (state[key] == null && prior[key] != null) state[key] = prior[key]
+  }
+  if (prior.posture === 'full' || prior.posture === 'oneshot') state.posture = prior.posture
+  if (prior.postureDecision) state.postureDecision = prior.postureDecision
+}
+
 // Worktree cleanup, FAIL-SOFT (run feedback 2026-06-10: per-task `camus-wt-*` folders read as
 // trash in the user's filesystem). Once a task's outcome is recorded (merged, or noop with an
 // empty diff) the checkout adds nothing — git preserves the branch. SECURITY: the path comes
@@ -516,6 +548,7 @@ If git refuses (dirty, locked, or already gone): do NOT force and do NOT delete 
 }
 
 async function finalize(status, extra = {}) {
+  hydratePriorForEarlyFinalize()
   state.status = status
   // FEAT-LEVEL pauses must reach the BOARD (smoke 2026-06-12): the posture pause's question only
   // lived in the report, so status rendered a generic — and wrong-shaped — task-answers hint.
@@ -588,6 +621,7 @@ const pf = await agent(
 Return {clean, base, dirtyFiles, stateRaw, argsPresent}.`,
   { model: MODEL_RUNNER, phase: 'Preflight', label: 'preflight', schema: PREFLIGHT_SCHEMA }
 )
+if (pf && typeof pf.stateRaw === 'string') priorStateForFinalize = pf.stateRaw
 if (!pf) return finalize('infra_error', { stage: 'preflight', note: 'preflight agent returned nothing' })
 // NOT A GIT REPO (product question 2026-06-12): without git there is no bounded diff for the
 // cross-vendor reviewer, no isolation worktree, no merge-on-done rollback, no commit-backed
@@ -716,6 +750,7 @@ if (prior && Array.isArray(prior.tasks)) {
   }
   if (carried) note(`Resume: ${carried} task(s) already done/noop in ${STATE_PATH} — will skip.`)
 }
+priorHydrated = true
 
 // FORK DETECTION (field soak 2026-06-13, finding 8/5): editing/reordering/adding a task mints a
 // NEW featId → a silently-cut second feat branch, orphaning the original's work. Scan existing
