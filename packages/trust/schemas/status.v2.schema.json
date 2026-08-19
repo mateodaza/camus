@@ -1,0 +1,15 @@
+{
+  "$id": "https://camus.sh/schemas/status/v2",
+  "title": "Orthogonal status dimensions v2",
+  "description": "Raw dimensions are permanent evidence; headlines are derived, disposable presentation (lib/status.mjs deriveHeadline). Never persist a headline in place of its dimensions. v2 adds the declared_clean/declared_findings audit pair — configured cross-vendor standing whose origin is declared, not attested.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "execution", "verification", "audit", "publication"],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "execution": { "enum": ["pending", "running", "completed", "interrupted", "failed"] },
+    "verification": { "enum": ["not_run", "passed", "passed_with_caveats", "failed", "infra_failed"] },
+    "audit": { "enum": ["not_run", "independent_clean", "independent_findings", "advisory_clean", "advisory_findings", "declared_clean", "declared_findings", "infra_failed"] },
+    "publication": { "enum": ["not_published", "published"] }
+  }
+}

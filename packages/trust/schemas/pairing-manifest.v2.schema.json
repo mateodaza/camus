@@ -1,0 +1,77 @@
+{
+  "$id": "https://camus.sh/schemas/pairing-manifest/v2",
+  "title": "Executor x auditor pairing manifest v2",
+  "description": "Both sealed seat identities appear on every receipt. v2 carries the structured origin facts alongside the v1 string forms: training org, model family, lineage, transport, origin confidence, and the always-present qualification the seat ran under. Configured cross-vendor standing (cross_vendor_declared) is origin declared, not attested.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "executor", "auditor", "independence", "shared_gateway", "review_scope"],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "executor": { "$ref": "#/$defs/seatIdentitySealed" },
+    "auditor": { "$ref": "#/$defs/seatIdentitySealed" },
+    "independence": { "enum": ["cross_vendor", "cross_vendor_declared", "same_vendor_advisory", "none"] },
+    "shared_gateway": { "type": ["string", "null"] },
+    "review_scope": { "enum": ["full", "light", null] }
+  },
+  "$defs": {
+    "seatIdentitySealed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested", "resolved", "actual", "reported", "actual_evidence",
+        "executor_kind", "training_org", "model_family", "lineage",
+        "inference_operator", "transport", "connection", "origin_confidence",
+        "qualification"
+      ],
+      "properties": {
+        "requested": { "type": "string" },
+        "resolved": { "type": "string" },
+        "actual": {
+          "type": "string",
+          "description": "provider:model, or the sentinels unknown:not-recorded / none:no-model-run."
+        },
+        "reported": { "type": ["string", "null"] },
+        "actual_evidence": { "enum": ["observed_api_response", "observed_cli_event", "asserted_pin", "mapped_by_operator_docs", "none"] },
+        "executor_kind": {
+          "type": "string",
+          "description": "claude_cli | codex_cli | http_client | a registered executor kind."
+        },
+        "training_org": {
+          "type": "string",
+          "description": "Registry org, or 'unknown' for an unconfirmed configurable entry."
+        },
+        "model_family": {
+          "type": "string",
+          "description": "Registry family, or 'unknown' for an unconfirmed configurable entry."
+        },
+        "lineage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "derived_from"],
+          "properties": {
+            "source": { "enum": ["registry", "operator_declared", "unknown"] },
+            "derived_from": { "type": ["string", "null"] }
+          }
+        },
+        "inference_operator": {
+          "type": "string",
+          "description": "An operator name, self_hosted, gateway:<name>, or unknown."
+        },
+        "transport": { "enum": ["loopback", "direct_https", "ssh_tunnel", "vendor_managed", "legacy_http"] },
+        "connection": { "type": ["string", "null"] },
+        "origin_confidence": { "enum": ["verified_operator", "operator_declared", "unknown"] },
+        "qualification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fingerprint", "gate_scope", "contract_version"],
+          "description": "ALWAYS non-null: the admission evidence the seat ran under. qual1: a probe-earned receipt; builtin1: the versioned built-in contract constant.",
+          "properties": {
+            "fingerprint": { "type": "string", "pattern": "^(qual1|builtin1):[0-9a-f]{64}$" },
+            "gate_scope": { "enum": ["full", "light", null] },
+            "contract_version": { "type": ["string", "null"] }
+          }
+        }
+      }
+    }
+  }
+}

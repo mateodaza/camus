@@ -7,7 +7,7 @@ import { readFileSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSyn
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DIMENSIONS, HEADLINES, deriveHeadline, allCombinations, validStatus } from './lib/status.mjs';
+import { DIMENSIONS, HEADLINES, deriveHeadline, allCombinations, validStatus, DECLARED_CROSS_VENDOR_REVIEWED_DISPLAY } from './lib/status.mjs';
 import { canonicalize, canonicalString, computeArtifactId, computeReceiptId, artifactMatches, receiptMatches, seal, artifactProjection } from './lib/canonical.mjs';
 import { computeExperimentId, experimentMatches, sealExperiment } from './lib/experiment.mjs';
 import { scrubSecrets, scrubPaths, redactFinding } from './lib/redact.mjs';
@@ -16,7 +16,7 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
 // --- status: exhaustive totality + protocol invariants ----------------------
 {
   const combos = allCombinations();
-  assert.equal(combos.length, 5 * 5 * 6 * 2, 'full combination space');
+  assert.equal(combos.length, 5 * 5 * 8 * 2, 'full combination space');
   for (const d of combos) {
     const h = deriveHeadline(d);
     assert.ok(HEADLINES.includes(h), `total function: ${JSON.stringify(d)} → ${h}`);
@@ -68,12 +68,93 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
   assert.ok(!validStatus({ execution: 'completed' }), 'partial status is invalid');
 }
 
+// --- §10.8.3 declared_* headline truth table, exhausted through allCombinations
+{
+  const DCR = 'declared_cross_vendor_reviewed';
+  let declaredCells = 0;
+  for (const d of allCombinations()) {
+    if (d.audit !== 'declared_clean' && d.audit !== 'declared_findings') continue;
+    declaredCells += 1;
+    const h = deriveHeadline(d);
+    // The published overlay: a published declared_* pack never meets the
+    // publication bar (rule P over an inner DCR/unverified) — it is a loud
+    // needs_decision, exactly like a published same-vendor advisory.
+    if (d.publication === 'published') {
+      assert.equal(h, 'needs_decision', `published-DCR overlay → needs_decision: ${JSON.stringify(d)}`);
+      continue;
+    }
+    // Any execution ≠ completed → unverified for every declared cell.
+    if (d.execution !== 'completed') {
+      assert.equal(h, 'unverified', `incomplete declared_* → unverified: ${JSON.stringify(d)}`);
+      continue;
+    }
+    // execution: completed, publication: not_published — the §10.8.3 rows.
+    let expected;
+    if (d.verification === 'passed' || d.verification === 'passed_with_caveats') {
+      expected = DCR; // passed / passed_with_caveats × declared_clean|declared_findings
+    } else if (d.verification === 'failed') {
+      expected = d.audit === 'declared_clean' ? 'needs_decision' : 'unverified';
+    } else {
+      expected = 'unverified'; // not_run, infra_failed
+    }
+    assert.equal(h, expected, `§10.8.3 declared cell: ${JSON.stringify(d)}`);
+  }
+  // 2 declared audit values × the rest of the space (5 execution × 5 verification × 2 publication).
+  assert.equal(declaredCells, 2 * 5 * 5 * 2, 'the truth table is exhausted over both declared values');
+  // Named anchor rows, so a mutated table row is caught by an explicit case too.
+  const base = { execution: 'completed', publication: 'not_published' };
+  assert.equal(deriveHeadline({ ...base, verification: 'passed', audit: 'declared_clean' }), DCR);
+  assert.equal(deriveHeadline({ ...base, verification: 'passed', audit: 'declared_findings' }), DCR);
+  assert.equal(deriveHeadline({ ...base, verification: 'passed_with_caveats', audit: 'declared_clean' }), DCR);
+  assert.equal(deriveHeadline({ ...base, verification: 'passed_with_caveats', audit: 'declared_findings' }), DCR);
+  assert.equal(deriveHeadline({ ...base, verification: 'failed', audit: 'declared_clean' }), 'needs_decision', 'declared_clean joins the clean-review set under red');
+  assert.equal(deriveHeadline({ ...base, verification: 'failed', audit: 'declared_findings' }), 'unverified', 'declared red + findings is just red');
+  assert.equal(deriveHeadline({ ...base, verification: 'not_run', audit: 'declared_clean' }), 'unverified');
+  assert.equal(deriveHeadline({ ...base, verification: 'infra_failed', audit: 'declared_findings' }), 'unverified');
+  assert.equal(deriveHeadline({ execution: 'completed', verification: 'passed', audit: 'declared_clean', publication: 'published' }), 'needs_decision', 'published-DCR is loud, not published');
+}
+
+// --- wording lock: the declared headline never launders into a stronger word
+// (acceptance test 9). Neither the locked display copy nor the token itself may
+// contain the bare words 'independent' or 'verified'.
+{
+  assert.equal(DECLARED_CROSS_VENDOR_REVIEWED_DISPLAY, 'cross-vendor as configured — origin declared, not attested', 'display copy is locked');
+  assert.ok(!DECLARED_CROSS_VENDOR_REVIEWED_DISPLAY.includes('independent'), 'display copy never says independent');
+  assert.ok(!DECLARED_CROSS_VENDOR_REVIEWED_DISPLAY.includes('verified'), 'display copy never says verified');
+  const token = 'declared_cross_vendor_reviewed';
+  assert.ok(HEADLINES.includes(token), 'the declared headline token is a real headline');
+  assert.ok(!token.includes('independent'), 'the token never says independent');
+  assert.ok(!token.includes('verified'), 'the token never says verified');
+}
+
+// --- SCHEMAS.md register pins every schema file and exactly the accepted tuples
+{
+  const schemaFiles = readdirSync(new URL('./schemas/', import.meta.url)).filter((f) => f.endsWith('.schema.json'));
+  assert.ok(schemaFiles.length > 0, 'there are published schema files to pin');
+  const register = readFileSync(new URL('./SCHEMAS.md', import.meta.url), 'utf8');
+  for (const f of schemaFiles) {
+    assert.ok(register.includes(f), `SCHEMAS.md names ${f}`);
+  }
+  const tuples = [...new Set([...register.matchAll(/\b\d\/\d\/\d\b/g)].map((m) => m[0]))].sort();
+  assert.deepEqual(tuples, ['1/1/1', '2/1/1', '3/2/2'], 'the register lists exactly the accepted version tuples');
+}
+
 // --- schema/validator agreement: enums in the JSON match DIMENSIONS ----------
 {
-  const schema = JSON.parse(readFileSync(new URL('./schemas/status.v1.schema.json', import.meta.url)));
+  // DIMENSIONS is the v2 status model now, so the v2 schema is its live mirror.
+  const schemaV2 = JSON.parse(readFileSync(new URL('./schemas/status.v2.schema.json', import.meta.url)));
+  assert.equal(schemaV2.properties.schemaVersion.const, 2, 'the v2 status schema is version 2');
   for (const dim of Object.keys(DIMENSIONS)) {
-    assert.deepEqual(schema.properties[dim].enum, DIMENSIONS[dim], `schema and code agree on ${dim}`);
+    assert.deepEqual(schemaV2.properties[dim].enum, DIMENSIONS[dim], `v2 schema and code agree on ${dim}`);
   }
+  // v1 is a FROZEN published contract: its shared dimensions still match, but
+  // its audit enum stays the pre-declared six values — declared_* is v2-only.
+  const schema = JSON.parse(readFileSync(new URL('./schemas/status.v1.schema.json', import.meta.url)));
+  for (const dim of ['execution', 'verification', 'publication']) {
+    assert.deepEqual(schema.properties[dim].enum, DIMENSIONS[dim], `v1 schema and code agree on ${dim}`);
+  }
+  assert.deepEqual(schema.properties.audit.enum, ['not_run', 'independent_clean', 'independent_findings', 'advisory_clean', 'advisory_findings', 'infra_failed'],
+    'v1 audit stays frozen at the six pre-declared values');
   const packV2Schema = JSON.parse(readFileSync(new URL('./schemas/evidence-pack.v2.schema.json', import.meta.url)));
   assert.equal(packV2Schema.properties.schemaVersion.const, 2, 'coverage extends the protocol through evidence-pack v2');
   assert.ok(packV2Schema.properties.artifact.required.includes('contract_coverage'), 'v2 schema requires an explicit coverage state');
@@ -83,6 +164,150 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
   const experimentV2Schema = JSON.parse(readFileSync(new URL('./schemas/experiment.v2.schema.json', import.meta.url)));
   assert.equal(experimentV2Schema.properties.mode.const, 'parallel_execution', 'parallel execution extends experiments through v2');
   assert.equal(experimentV2Schema.properties.manifest.properties.arms.minItems, 2, 'a parallel experiment requires at least two arms');
+}
+
+// --- envelope 3 binds its interior blocks to pairing v2 + status v2 exactly ---
+// The RFC §10.8.1 rule: envelope schemaVersion 3 DETERMINES pairing v2 and
+// statuses v2. The v3 schema binds each interior with a $ref to the published
+// v2 file's $id, so the envelope no longer accepts an arbitrary object there.
+// This zero-dep resolver walks the actual published files (never a copy), so a
+// drift between the envelope's binding and the v2 contract fails the test.
+{
+  const schemaDir = new URL('./schemas/', import.meta.url);
+  const load = (file) => JSON.parse(readFileSync(new URL(file, schemaDir)));
+  const registry = Object.create(null);
+  for (const file of ['evidence-pack.v3.schema.json', 'pairing-manifest.v2.schema.json', 'status.v2.schema.json']) {
+    const doc = load(file);
+    registry[doc.$id] = doc;
+  }
+  const v3 = registry['https://camus.sh/schemas/evidence-pack/v3'];
+  // The binding is a $ref to the published v2 $ids, not a bare `type: object`.
+  assert.equal(v3.properties.pairing.$ref, 'https://camus.sh/schemas/pairing-manifest/v2', 'pairing binds pairing-manifest/v2');
+  assert.equal(v3.properties.statuses.$ref, 'https://camus.sh/schemas/status/v2', 'statuses binds status/v2');
+  assert.ok(!('type' in v3.properties.pairing) && !('type' in v3.properties.statuses), 'the interiors are no longer arbitrary objects');
+
+  // A minimal JSON Schema evaluator over exactly the keywords these files use
+  // (type/const/enum/pattern/required/properties/additionalProperties/items/
+  // $ref, both #/$defs pointers and cross-file $id references). It resolves the
+  // envelope's $ref into the published v2 file, so "does v3 accept this
+  // interior?" is answered by the real contract.
+  const jsonEq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const typeOk = (t, v) => ({
+    object: v !== null && typeof v === 'object' && !Array.isArray(v),
+    array: Array.isArray(v),
+    string: typeof v === 'string',
+    integer: Number.isInteger(v),
+    number: typeof v === 'number',
+    boolean: typeof v === 'boolean',
+    null: v === null,
+  })[t] ?? false;
+  const resolveRef = (ref, root) => {
+    if (ref.startsWith('#')) {
+      let node = root;
+      for (const part of ref.slice(1).split('/').filter(Boolean)) node = node[part.replace(/~1/g, '/').replace(/~0/g, '~')];
+      return { schema: node, root };
+    }
+    const doc = registry[ref];
+    if (!doc) throw new Error(`unresolved $ref: ${ref}`);
+    return { schema: doc, root: doc };
+  };
+  const validate = (schema, v, root, path = '') => {
+    if (schema.$ref) {
+      const r = resolveRef(schema.$ref, root);
+      const e = validate(r.schema, v, r.root, path);
+      if (e) return e;
+    }
+    if (schema.type) {
+      const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+      if (!types.some((t) => typeOk(t, v))) return `${path || '/'}: expected ${types.join('|')}`;
+    }
+    if ('const' in schema && !jsonEq(v, schema.const)) return `${path}: const mismatch`;
+    if (schema.enum && !schema.enum.some((e) => jsonEq(e, v))) return `${path}: not in enum`;
+    if (schema.pattern && (typeof v !== 'string' || !new RegExp(schema.pattern).test(v))) return `${path}: pattern`;
+    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+      for (const k of schema.required ?? []) if (!(k in v)) return `${path}/${k}: required`;
+      const props = schema.properties ?? {};
+      for (const [k, val] of Object.entries(v)) {
+        if (props[k]) { const e = validate(props[k], val, root, `${path}/${k}`); if (e) return e; }
+        else if (schema.additionalProperties === false) return `${path}/${k}: additional property`;
+      }
+    }
+    if (schema.items && Array.isArray(v)) {
+      for (let i = 0; i < v.length; i++) { const e = validate(schema.items, v[i], root, `${path}/${i}`); if (e) return e; }
+    }
+    return null;
+  };
+  // The named entry points the tests exercise: the envelope's own property
+  // schemas, evaluated with the envelope as the resolution root.
+  const acceptsPairing = (v) => validate(v3.properties.pairing, v, v3) === null;
+  const acceptsStatus = (v) => validate(v3.properties.statuses, v, v3) === null;
+
+  const seat = (provider, org, family) => ({
+    requested: `${provider}:m`,
+    resolved: `${provider}:m`,
+    actual: `${provider}:m`,
+    reported: null,
+    actual_evidence: 'observed_api_response',
+    executor_kind: 'http_client',
+    training_org: org,
+    model_family: family,
+    lineage: { source: 'registry', derived_from: null },
+    inference_operator: provider,
+    transport: 'direct_https',
+    connection: null,
+    origin_confidence: 'verified_operator',
+    qualification: { fingerprint: `builtin1:${'a'.repeat(64)}`, gate_scope: 'full', contract_version: null },
+  });
+  const validPairingV2 = {
+    schemaVersion: 2,
+    executor: seat('anthropic', 'anthropic', 'claude'),
+    auditor: seat('openai', 'openai', 'gpt'),
+    independence: 'cross_vendor',
+    shared_gateway: null,
+    review_scope: 'full',
+  };
+  const validStatusV2 = { schemaVersion: 2, execution: 'completed', verification: 'passed', audit: 'declared_clean', publication: 'not_published' };
+  // Sanity: the fixtures are real v2 instances the shipped v1 validators reject,
+  // so acceptance below is the envelope binding to v2, not a v1 coincidence.
+  assert.ok(!validatePairingManifest(validPairingV2).ok, 'the v2 pairing fixture is not a v1 pairing');
+  assert.ok(!validateStatus(validStatusV2).ok, 'the v2 status fixture is not a v1 status');
+
+  // Accept: a well-formed v2 interior.
+  assert.ok(acceptsPairing(validPairingV2), 'envelope 3 accepts a valid pairing v2 interior');
+  assert.ok(acceptsStatus(validStatusV2), 'envelope 3 accepts a valid status v2 interior');
+
+  // Reject: empty object — the old `type: object` accepted this; v2 does not.
+  assert.ok(!acceptsPairing({}), 'envelope 3 rejects an empty pairing interior');
+  assert.ok(!acceptsStatus({}), 'envelope 3 rejects an empty status interior');
+
+  // Reject: a v1 interior (schemaVersion 1 and the v1 field set) — the envelope
+  // determines v2 exactly, so a down-version block cannot smuggle in.
+  const v1Pairing = {
+    schemaVersion: 1,
+    executor: { requested: 'anthropic:balanced', resolved: 'anthropic:sonnet', actual: 'anthropic:sonnet' },
+    auditor: { requested: 'openai:balanced', resolved: 'openai:gpt-5.4', actual: 'openai:gpt-5.4' },
+    independence: 'cross_vendor',
+  };
+  const v1Status = { schemaVersion: 1, execution: 'completed', verification: 'passed', audit: 'independent_clean', publication: 'not_published' };
+  assert.ok(!acceptsPairing(v1Pairing), 'envelope 3 rejects a v1 pairing interior');
+  assert.ok(!acceptsStatus(v1Status), 'envelope 3 rejects a v1 status interior');
+
+  // Reject: v2-shaped but invalid — wrong enum, missing seat field, bad
+  // fingerprint pattern, an unknown extra field, a non-v2 audit value.
+  assert.ok(!acceptsPairing({ ...validPairingV2, independence: 'totally_independent' }), 'a bogus independence value is refused');
+  const { training_org, ...seatMissingOrg } = validPairingV2.executor;
+  assert.ok(!acceptsPairing({ ...validPairingV2, executor: seatMissingOrg }), 'a seat missing a required v2 field is refused');
+  assert.ok(!acceptsPairing({
+    ...validPairingV2,
+    executor: { ...validPairingV2.executor, qualification: { fingerprint: 'qual2:zzz', gate_scope: 'full', contract_version: null } },
+  }), 'a qualification fingerprint off the qual1|builtin1 pattern is refused');
+  assert.ok(!acceptsPairing({ ...validPairingV2, surprise: true }), 'an unknown pairing field is refused');
+  assert.ok(!acceptsStatus({ ...validStatusV2, audit: 'not_a_real_dimension' }), 'a non-v2 audit value is refused');
+  assert.ok(!acceptsStatus({ ...validStatusV2, headline: 'verified' }), 'a persisted headline in the status interior is refused');
+
+  // The resolver actually reached the published v2 files, not an inline copy.
+  assert.equal(registry['https://camus.sh/schemas/pairing-manifest/v2'].properties.schemaVersion.const, 2, 'pairing v2 file resolved');
+  assert.equal(registry['https://camus.sh/schemas/status/v2'].properties.schemaVersion.const, 2, 'status v2 file resolved');
 }
 
 // --- canonicalization + artifact identity ------------------------------------
