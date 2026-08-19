@@ -11,12 +11,13 @@
 // `backends` in the file. A seat without a backend field means the legacy
 // pairing, so pre-seats files keep working unchanged.
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { isIP } from 'node:net';
-import { deriveLineageSource } from './identity.mjs';
+import { deriveLineageSource, executorOrgFamily, originConfidence } from './identity.mjs';
+import { initGrandfather, consult } from './grandfather.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // The tracked file is a PUBLIC FALLBACK, not mutable operator state. Settings
@@ -314,10 +315,61 @@ function validateConnectionBackend(name, entry, connection) {
   };
 }
 
+const IDENTITY_DECLARATIONS = ['trainingOrg', 'modelFamily', 'derivedFrom'];
+
+// The one-edit confirmation path: a pre-existing bare-baseUrl custom backend that
+// has since ADDED the complete trainingOrg/modelFamily/derivedFrom declarations
+// upgrades in place. Its legacy surface (provider, apiKeyEnv, models, seats) still
+// validates under the pre-connection validator, and its lineage is derived PER
+// MODEL through the deterministic anonymous migrated connection — so the transport
+// becomes that connection's classified kind and the identity upgrades accordingly.
+// Partial declarations refuse via requiredDeclaration below; they never half-load.
+function validateConfirmedLegacyEntry(name, entry, connection) {
+  const legacy = validateLegacyCompatEntry(name, entry);
+  const trainingOrg = requiredDeclaration(entry.trainingOrg, `backends.${name}.trainingOrg`);
+  const modelFamily = requiredDeclaration(entry.modelFamily, `backends.${name}.modelFamily`);
+  if (!Object.hasOwn(entry, 'derivedFrom')) {
+    throw new Error(`models.json is missing backends.${name}.derivedFrom — declare a model-family name or null`);
+  }
+  if (entry.derivedFrom !== null && (typeof entry.derivedFrom !== 'string' || !entry.derivedFrom)) {
+    throw new Error(`backends.${name}.derivedFrom must be a non-empty model-family name or null`);
+  }
+  if (entry.protocol !== undefined && entry.protocol !== 'chat_completions') {
+    throw new Error(`backends.${name}.protocol must be "chat_completions" until another protocol adapter ships`);
+  }
+  const declared = { org: trainingOrg, family: modelFamily, derivedFrom: entry.derivedFrom ?? null };
+  const configuredLineage = entry.lineage && typeof entry.lineage === 'object' ? entry.lineage : null;
+  if (configuredLineage && Object.hasOwn(configuredLineage, 'source')) declared.source = configuredLineage.source;
+  const endpointHost = normalizedHost(new URL(connection.baseUrl).hostname);
+  const lineageSources = Object.fromEntries(entry.models.map((modelId) => [
+    modelId,
+    deriveLineageSource({ connectionKind: connection.kind, endpointHost, modelId, declared }),
+  ]));
+  return {
+    ...legacy,
+    connection: connection.name,
+    connectionDetails: { ...connection },
+    anonymousConnection: true,
+    transport: connection.kind,
+    protocol: 'chat_completions',
+    trainingOrg,
+    modelFamily,
+    derivedFrom: entry.derivedFrom ?? null,
+    inferenceOperator: entry.inferenceOperator ?? 'unknown',
+    lineageSources,
+  };
+}
+
 // An openai_compat entry is a decision someone wrote down, so a malformed one
 // refuses to load rather than half-working. The API key itself never lives in
 // config — only the NAME of the env var that holds it.
 function validateCompatEntry(name, entry, connections) {
+  if (entry?.lineage && typeof entry.lineage === 'object' && Object.hasOwn(entry.lineage, 'source')) {
+    // Route every config shape through the same identity-owned refusal. A
+    // legacy entry must not bypass the rule merely because it has not added
+    // the rest of the confirmation declarations yet.
+    deriveLineageSource({ declared: { source: entry.lineage.source } });
+  }
   if (entry?.connection !== undefined) {
     const connectionName = required(entry.connection, `backends.${name}.connection`);
     const connection = Object.hasOwn(connections, connectionName) ? connections[connectionName] : undefined;
@@ -328,6 +380,13 @@ function validateCompatEntry(name, entry, connections) {
   }
   const legacy = validateLegacyCompatEntry(name, entry);
   const connection = connections[anonymousConnectionName(name)];
+  // A bare-baseUrl entry that has added ANY lineage declaration is a confirmation
+  // attempt: validate the COMPLETE set (partial refuses) and upgrade its identity.
+  // A truly undeclared entry stays legacy — unknown identity, free-text provider
+  // retained only as a label, never mined for origin/operator.
+  if (entry && IDENTITY_DECLARATIONS.some((key) => Object.hasOwn(entry, key))) {
+    return validateConfirmedLegacyEntry(name, entry, connection);
+  }
   return { ...legacy, connection: connection.name, connectionDetails: { ...connection }, anonymousConnection: true };
 }
 
@@ -379,6 +438,11 @@ export function listBackends(file = readFile()) {
   for (const [name, entry] of Object.entries(file.backends ?? {})) {
     out[name] = validateCompatEntry(name, entry, connections);
   }
+  // This is the single production load boundary for configurable backends.
+  // Validate first so a malformed entry can never earn a snapshot merely by
+  // being present. Every consumer (getModels, seatCatalog, doctor, adapter
+  // resolution, and direct callers) crosses this enforcement step.
+  enforceGrandfatherOnLoad(file);
   return out;
 }
 
@@ -387,6 +451,120 @@ function backendOf(name, backends, seatName) {
   if (!backend) throw new Error(`models.json names unknown backend "${name}" for ${seatName} — declare it under backends or pick a built-in`);
   if (!backend.seats.includes(seatName)) throw new Error(`backend "${name}" does not offer the ${seatName} seat`);
   return backend;
+}
+
+const UNKNOWN_IDENTITY = Object.freeze({
+  executor: 'http_client',
+  transport: 'unknown',
+  // The shipped configurable adapter is mechanically chat-completions. Origin
+  // and transport stay unknown; the wire protocol does not become unknowable.
+  protocol: 'chat_completions',
+  trainingOrg: 'unknown',
+  modelFamily: 'unknown',
+  inferenceOperator: 'unknown',
+});
+
+// The orthogonal identity facts a seat carries, computed PER MODEL. lineage.source
+// is DERIVED (never read from config): built-ins run it through deriveLineageSource
+// with their executor kind and the vendor_managed transport, connection-bearing and
+// confirmed-legacy backends carry a per-model lineageSources map, and a bare
+// pre-existing custom backend is unknown across the board. originConfidence is then
+// derived mechanically from that source — no expectation is ever a frozen literal.
+export function seatIdentityFacts(backend, model) {
+  // Built-in CLI backends: vendor-managed session, registry-backed org/family.
+  if (backend.name === 'claude' || backend.name === 'codex') {
+    const executorKind = backend.kind; // claude_cli / codex_cli
+    const orgFamily = executorOrgFamily(executorKind) || {};
+    const source = deriveLineageSource({ executorKind, transport: 'vendor_managed' });
+    return {
+      executor: executorKind,
+      transport: 'vendor_managed',
+      connection: null,
+      protocol: 'vendor_session',
+      trainingOrg: orgFamily.org ?? 'unknown',
+      modelFamily: orgFamily.family ?? 'unknown',
+      inferenceOperator: backend.provider, // anthropic / openai
+      lineage: { source, derivedFrom: null },
+      originConfidence: originConfidence(source),
+    };
+  }
+  // openai_compat with declared lineage (explicit connection OR confirmed legacy):
+  // its transport, protocol, and per-model lineage source are already resolved.
+  if (backend.trainingOrg !== undefined) {
+    const source = backend.lineageSources?.[model] ?? 'unknown';
+    return {
+      executor: 'http_client',
+      transport: backend.transport ?? 'unknown',
+      connection: backend.connection ?? null,
+      protocol: backend.protocol ?? 'chat_completions',
+      trainingOrg: backend.trainingOrg,
+      modelFamily: backend.modelFamily,
+      inferenceOperator: backend.inferenceOperator ?? 'unknown',
+      lineage: { source, derivedFrom: backend.derivedFrom ?? null },
+      originConfidence: originConfidence(source),
+    };
+  }
+  // A pre-existing custom backend with a bare baseUrl and no declarations: nothing
+  // is inferred from its provider or model strings. It may still name the anonymous
+  // migrated connection internally. The legacy_http kind is the one exception to
+  // transport-unknown: the RFC requires that risk label on every identity it touches.
+  return {
+    ...UNKNOWN_IDENTITY,
+    transport: backend.connectionDetails?.kind === 'legacy_http' ? 'legacy_http' : 'unknown',
+    connection: backend.connection ?? null,
+    lineage: { source: 'unknown', derivedFrom: null },
+    originConfidence: originConfidence('unknown'),
+  };
+}
+
+// ---- grandfather production wiring (RFC §7) --------------------------------
+// The load path resolves the sidecar location exactly as grandfather.mjs does —
+// STUDIO_GRANDFATHER_DIR or ~/.camus/studio — and reads no credentials.
+function grandfatherDir() {
+  return process.env.STUDIO_GRANDFATHER_DIR || join(homedir(), '.camus', 'studio');
+}
+
+// Every backend whose EFFECTIVE normalized connection kind is legacy_http, as the
+// { backendName, url } shape the sidecar records. Pure discovery: parseConnections
+// stays side-effect-free and this reads only the already-normalized kinds.
+export function discoverLegacyHttpBackends(file = readFile()) {
+  const connections = parseConnections(file);
+  const out = [];
+  for (const [name, entry] of Object.entries(file.backends ?? {})) {
+    let connection;
+    if (entry?.connection !== undefined) {
+      connection = Object.hasOwn(connections, entry.connection) ? connections[entry.connection] : undefined;
+    } else if (entry?.baseUrl !== undefined) {
+      connection = connections[anonymousConnectionName(name)];
+    }
+    if (connection && connection.kind === 'legacy_http') {
+      out.push({ backendName: name, url: connection.baseUrl });
+    }
+  }
+  return out;
+}
+
+// The real config-load grandfather step. On the FIRST load (neither artifact
+// exists) it snapshots every discovered legacy_http entry exactly once — even an
+// empty inventory, so a machine with no legacy entries can never later
+// bulk-grandfather a freshly pasted one. With the marker present it never
+// inventories; with records present but the marker absent it inventories nothing
+// and lets consult finish crash recovery from the existing records. Then every
+// effective legacy_http backend is consulted, and the first refusal is thrown
+// UNCHANGED so its three upgrade paths and confirmLegacy action stay visible.
+export function enforceGrandfatherOnLoad(file = readFile()) {
+  const legacyEntries = discoverLegacyHttpBackends(file);
+  const dir = grandfatherDir();
+  const hasRecords = existsSync(join(dir, 'grandfather.json'));
+  const hasMarker = existsSync(join(dir, 'grandfather.initialized'));
+  if (!hasRecords && !hasMarker) {
+    initGrandfather({ legacyEntries }); // exactly once, before any consult
+  }
+  for (const entry of legacyEntries) {
+    const result = consult(entry);
+    if (!result.ok) throw new Error(result.message);
+  }
+  return legacyEntries;
 }
 
 export function getModels() {
@@ -422,17 +600,22 @@ export function getModels() {
   const reviewerEnv = reviewerBackend.name === 'codex' ? process.env.CODEX_MODEL : undefined;
   const effortEnv = reviewerBackend.name === 'codex' ? process.env.CODEX_EFFORT : undefined;
 
+  const makerModel = makerEnv || required(file.maker?.model, 'maker.model');
+  const reviewerModel = reviewerEnv || required(file.reviewer?.model, 'reviewer.model');
   return {
     maker: {
       backend: makerBackend.name,
       provider: makerBackend.provider,
-      model: makerEnv || required(file.maker?.model, 'maker.model'),
+      model: makerModel,
       source: makerEnv ? 'env:CLAUDE_MODEL' : decisionSource,
+      // Orthogonal identity facts, preserving every legacy key above.
+      ...seatIdentityFacts(makerBackend, makerModel),
     },
     reviewer: {
       backend: reviewerBackend.name,
       provider: reviewerBackend.provider,
-      model: reviewerEnv || required(file.reviewer?.model, 'reviewer.model'),
+      model: reviewerModel,
+      ...seatIdentityFacts(reviewerBackend, reviewerModel),
       // Effort is a requested knob only where the backend honors one (codex
       // today). Elsewhere it is null — a fabricated tier is not a decision.
       effort: reviewerBackend.effort ? (effortEnv || file.reviewer?.effort || 'medium') : null,
@@ -625,7 +808,7 @@ export function seatCatalog() {
         : backend.name === 'codex' ? codex.source
           : decision.source;
       for (const model of models) {
-        out.push({ backend: backend.name, provider: backend.provider, model, source, effort: backend.effort });
+        out.push({ backend: backend.name, provider: backend.provider, model, source, effort: backend.effort, ...seatIdentityFacts(backend, model) });
       }
     }
     return out;

@@ -1,0 +1,46 @@
+{
+  "getModels": {
+    "maker": {
+      "backend": "claude",
+      "provider": "anthropic",
+      "model": "sonnet",
+      "source": "STUDIO_MODELS_FILE"
+    },
+    "reviewer": {
+      "backend": "codex",
+      "provider": "openai",
+      "model": "gpt-5.4-mini",
+      "effort": "low",
+      "modelSource": "STUDIO_MODELS_FILE",
+      "effortSource": "STUDIO_MODELS_FILE"
+    },
+    "loop": {
+      "roundCap": 2,
+      "source": "STUDIO_MODELS_FILE"
+    }
+  },
+  "seatCatalog": {
+    "maker": [
+      { "backend": "claude", "provider": "anthropic", "model": "haiku", "source": "builtin_alias", "effort": false },
+      { "backend": "claude", "provider": "anthropic", "model": "sonnet", "source": "builtin_alias", "effort": false },
+      { "backend": "claude", "provider": "anthropic", "model": "opus", "source": "builtin_alias", "effort": false },
+      { "backend": "codex", "provider": "openai", "model": "gpt-5.4-mini", "source": "codex_cache", "effort": true },
+      { "backend": "codex", "provider": "openai", "model": "gpt-5.4", "source": "codex_cache", "effort": true },
+      { "backend": "kimi", "provider": "moonshot", "model": "kimi-k2", "source": "STUDIO_MODELS_FILE", "effort": false }
+    ],
+    "reviewer": [
+      { "backend": "claude", "provider": "anthropic", "model": "haiku", "source": "builtin_alias", "effort": false },
+      { "backend": "claude", "provider": "anthropic", "model": "sonnet", "source": "builtin_alias", "effort": false },
+      { "backend": "claude", "provider": "anthropic", "model": "opus", "source": "builtin_alias", "effort": false },
+      { "backend": "codex", "provider": "openai", "model": "gpt-5.4-mini", "source": "codex_cache", "effort": true },
+      { "backend": "codex", "provider": "openai", "model": "gpt-5.4", "source": "codex_cache", "effort": true },
+      { "backend": "kimi", "provider": "moonshot", "model": "kimi-k2", "source": "STUDIO_MODELS_FILE", "effort": false }
+    ],
+    "reviewerSource": "codex_cache",
+    "backends": [
+      { "name": "claude", "kind": "claude_cli", "provider": "anthropic", "seats": ["maker", "reviewer"], "effort": false },
+      { "name": "codex", "kind": "codex_cli", "provider": "openai", "seats": ["maker", "reviewer"], "effort": true },
+      { "name": "kimi", "kind": "openai_compat", "provider": "moonshot", "seats": ["maker", "reviewer"], "effort": false }
+    ]
+  }
+}
