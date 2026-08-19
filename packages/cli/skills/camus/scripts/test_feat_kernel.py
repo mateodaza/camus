@@ -721,7 +721,8 @@ def test_direct_maker_usage_keeps_units_separate_and_is_idempotent():
         "cacheReadInputTokens": 500, "outputTokens": 40,
         "costUsd": 1.25, "durationMs": 2000, "turns": 3, "calls": 1,
     }
-    assert recorded["budgetUsage"]["tokens"] == 0, "unlike direct metrics never enter legacy token budget"
+    assert recorded["budgetUsage"]["tokens"] == 0, "unlike direct metrics never enter legacy token usage"
+    assert recorded["budgetUsage"]["directOutputTokens"] == 40, "direct output has its own budget metric"
     node = K._validated_run(world["feat_id"], world["base"])["nodes"][0]
     receipt = node["directMakerUsage"]["receipts"][0]
     assert receipt["modelRequested"] == "claude-opus-4-8"
@@ -737,6 +738,14 @@ def test_direct_maker_usage_keeps_units_separate_and_is_idempotent():
     assert replay["budgetUsage"] == recorded["budgetUsage"]
     node = K._validated_run(world["feat_id"], world["base"])["nodes"][0]
     assert len(node["directMakerUsage"]["receipts"]) == 1
+
+    state_path = os.path.join(world["base"], "feats", world["feat_id"] + ".json")
+    state = json.load(open(state_path, encoding="utf-8"))
+    state["kernel"]["budgets"]["tokens"] = 40
+    _write(state_path, state)
+    stopped = K._envelope(K._validated_run(world["feat_id"], world["base"]), repo=world["repo"], now=105)
+    assert stopped["action"] == "stop"
+    assert stopped["reason"] == "direct output-token budget exhausted (40/40)"
 
 
 def test_direct_maker_usage_refuses_unbound_model_without_state_mutation():

@@ -218,7 +218,9 @@ required before first use.
 - A post-review commit cannot retain a review-clean `done` verdict; fixed-unreviewed provenance is
   preserved through acceptance and merge.
 - Token metrics retain their source/unit name; runtime total tokens and transcript output tokens
-  are never silently mixed.
+  are never silently mixed. The configured token ceiling is checked independently against legacy
+  workflow-total tokens and direct-maker output tokens; neither metric can hide spend in the
+  other, and the two are never added into a fictitious total.
 - Grading follows a cheapest-reliable ladder: deterministic code checks establish schemas, exact
   values, presence, provenance, Git custody, and test outcomes; an independent different-model
   judge handles semantic correctness under a constrained rubric, and equal maker/reviewer model

@@ -250,11 +250,32 @@ def _budgets(run, overrides=None):
 def _usage(state):
     value = _kernel(state).get("usage")
     value = value if isinstance(value, dict) else {}
-    return {
+    usage = {
         "startedAt": value.get("startedAt"),
         "tokens": max(0, int(value.get("tokens") or 0)),
         "retries": max(0, int(value.get("retries") or 0)),
     }
+    # Direct maker output is a different metric from claude_workflow_totalTokens.
+    # Derive it from the kernel-owned receipts instead of trusting a mutable rollup,
+    # and expose it only when present so legacy envelope bytes stay unchanged.
+    direct_output = 0
+    direct_receipts = 0
+    for node in state.get("tasks", []):
+        direct = node.get("directMakerUsage") if isinstance(node, dict) else None
+        receipts = direct.get("receipts") if isinstance(direct, dict) else None
+        if receipts is None:
+            continue
+        if not isinstance(receipts, list):
+            raise Refusal("direct maker usage receipts are malformed")
+        for receipt in receipts:
+            output = receipt.get("usage", {}).get("outputTokens") if isinstance(receipt, dict) else None
+            if isinstance(output, bool) or not isinstance(output, int) or output < 0:
+                raise Refusal("direct maker output-token receipt is malformed")
+            direct_output += output
+            direct_receipts += 1
+    if direct_receipts:
+        usage["directOutputTokens"] = direct_output
+    return usage
 
 
 def _seats(run, overrides=None):
@@ -290,6 +311,11 @@ def _budget_stop(budgets, usage, now=None):
     now = int(time.time()) if now is None else int(now)
     if budgets.get("tokens") is not None and usage["tokens"] >= budgets["tokens"]:
         return "token budget exhausted (%d/%d)" % (usage["tokens"], budgets["tokens"])
+    # The numeric ceiling applies independently to direct output tokens. Never add
+    # them to workflow-total tokens: the upstream units have different meanings.
+    direct_output = usage.get("directOutputTokens", 0)
+    if budgets.get("tokens") is not None and direct_output >= budgets["tokens"]:
+        return "direct output-token budget exhausted (%d/%d)" % (direct_output, budgets["tokens"])
     if budgets.get("retries") is not None and usage["retries"] >= budgets["retries"]:
         return "retry budget exhausted (%d/%d)" % (usage["retries"], budgets["retries"])
     started = usage.get("startedAt")
