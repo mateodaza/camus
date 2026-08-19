@@ -57,6 +57,19 @@ def test_corrupt_state_file_degrades_to_null_fields():
     assert f["title"] is None and f["status"] is None, f
 
 
+def test_non_state_json_artifacts_are_not_reported_as_feats():
+    home = tempfile.mkdtemp(prefix="camus_fs_")
+    os.makedirs(os.path.join(home, "feats"))
+    with open(os.path.join(home, "feats", "real-abc123.json"), "w") as fh:
+        json.dump({"feat": "Real", "status": "running"}, fh)
+    with open(os.path.join(home, "feats", "real-abc123.args.json"), "w") as fh:
+        json.dump({"feat": "Real", "tasks": ["large contract"]}, fh)
+    with open(os.path.join(home, "feats", "real-abc123.status.json"), "w") as fh:
+        json.dump({"phase": "review"}, fh)
+    ids = [f["featId"] for f in json.loads(_run(home))["feats"]]
+    assert ids == ["real-abc123"], ids
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

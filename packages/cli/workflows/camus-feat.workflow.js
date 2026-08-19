@@ -716,6 +716,10 @@ if (prior && Array.isArray(prior.tasks)) {
       && (p.provenStatus === 'done' || p.provenStatus === 'done_with_findings')
     if (p && (p.status === 'ready_to_merge' || provenButUnmerged)) {
       PROVEN_READY.add(node.taskId)
+      // Keep the serialized lane truthful too. PROVEN_READY controls dispatch below, but any
+      // pre-task halt (fork/posture/env) persists state before dispatch; leaving this as the fresh
+      // default `pending` erases the proof from status and blocks `camus land` recovery.
+      node.status = 'ready_to_merge'
       // Carry the crash-window stash (audit P1 2026-06-11) so the post-auto-land status can be
       // restored to the loop's REAL verdict — land mode itself only ever says plain done.
       if (p.provenStatus) node.provenStatus = p.provenStatus

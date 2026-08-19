@@ -25,6 +25,11 @@ feats_dir = os.path.join(camus_home, "feats")
 
 out = []
 for path in sorted(glob.glob(os.path.join(feats_dir, "*.json"))):
+    # The feats directory also contains canonical-args and Studio status artifacts. They are not
+    # run-state files; treating `<feat>.args.json` as `<feat>.args` creates a guaranteed false fork
+    # for every compact checkpoint because that object also has a `feat` title.
+    if path.endswith(".args.json") or path.endswith(".status.json"):
+        continue
     feat_id = os.path.splitext(os.path.basename(path))[0]
     title = None
     status = None
