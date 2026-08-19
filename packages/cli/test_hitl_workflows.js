@@ -2461,6 +2461,23 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const onFeat = await runFeat({ feat: 'F', tasks: ['only task'] },
       { ...featBase, preflight: { clean: true, base: 'camus/feat-old', dirtyFiles: 0, stateRaw: '' } }, loopDone)
     ok('F44 base is a camus/feat-* branch → needs_human', onFeat.res && onFeat.res.status === 'needs_human' && onFeat.res.stage === 'base_is_feat_branch', onFeat.res && (onFeat.res.status + '/' + onFeat.res.stage))
+    const tid = taskIdOf('F', ['only task'], 'only task')
+    const fid = featIdOf('F', ['only task'])
+    const prior = { featId: fid, status: 'running', posture: 'oneshot',
+      tasks: [{ taskId: tid, brief: 'only task', dependsOn: [], status: 'ready_to_merge',
+        branch: `camus/feat/${fid}/${tid}`, loopStatus: 'done_with_findings',
+        provenStatus: 'done_with_findings', provenCommit: h40('proof'), decisions: [{ what: 'accepted', why: 'evidence' }] }],
+      events: [{ seq: 7, msg: 'proof persisted' }], eventSeq: 7 }
+    const preserved = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, preflight: { clean: true, base: 'camus/feat-old', dirtyFiles: 0,
+        stateRaw: JSON.stringify(prior), argsPresent: false } }, loopDone)
+    ok('F44 early base guard preserves ready_to_merge proof instead of clobbering it pending',
+      preserved.stateJSON.tasks[0].status === 'ready_to_merge'
+        && preserved.stateJSON.tasks[0].provenStatus === 'done_with_findings'
+        && preserved.stateJSON.tasks[0].provenCommit === h40('proof'), J(preserved.stateJSON.tasks[0]))
+    ok('F44 early guard preserves prior decisions/events in state and report',
+      preserved.stateJSON.eventSeq === 7 && preserved.res.tasks[0].status === 'ready_to_merge'
+        && preserved.res.tasks[0].decisions[0].what === 'accepted', J(preserved.res.tasks[0]))
     const bypass = await runFeat({ feat: 'F', tasks: ['only task'], allowFeatBase: true },
       { ...featBase, preflight: { clean: true, base: 'camus/feat-old', dirtyFiles: 0, stateRaw: '' } }, loopDone)
     ok('F44 allowFeatBase:true bypasses (proceeds)', bypass.res && bypass.res.status === 'done', bypass.res && bypass.res.status)
