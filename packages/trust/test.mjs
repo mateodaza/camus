@@ -267,10 +267,13 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
     review_scope: 'full',
   };
   const validStatusV2 = { schemaVersion: 2, execution: 'completed', verification: 'passed', audit: 'declared_clean', publication: 'not_published' };
-  // Sanity: the fixtures are real v2 instances the shipped v1 validators reject,
-  // so acceptance below is the envelope binding to v2, not a v1 coincidence.
-  assert.ok(!validatePairingManifest(validPairingV2).ok, 'the v2 pairing fixture is not a v1 pairing');
-  assert.ok(!validateStatus(validStatusV2).ok, 'the v2 status fixture is not a v1 status');
+  // Sanity: these fixtures validate as genuine v2 instances (the runtime v2
+  // validators accept them), and their v2-only facts have no home under
+  // schemaVersion 1 — so acceptance below is the envelope binding to v2, not a
+  // v1 coincidence.
+  assert.ok(validatePairingManifest(validPairingV2).ok, 'the v2 pairing fixture validates as pairing v2');
+  assert.ok(validateStatus(validStatusV2).ok, 'the v2 status fixture validates as status v2');
+  assert.ok(!validateStatus({ ...validStatusV2, schemaVersion: 1 }).ok, 'declared_clean has no home in a v1 status block');
 
   // Accept: a well-formed v2 interior.
   assert.ok(acceptsPairing(validPairingV2), 'envelope 3 accepts a valid pairing v2 interior');
@@ -681,7 +684,7 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
     transport: 'direct_https',
     connection: null,
     origin_confidence: 'verified_operator',
-    qualification: { fingerprint: `builtin1:${'a'.repeat(64)}`, gate_scope: 'full', contract_version: null },
+    qualification: { fingerprint: `qual1:${'a'.repeat(64)}`, gate_scope: 'full', contract_version: null },
   });
   const envelope3 = {
     ...envelope2,
@@ -697,9 +700,13 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
       shared_gateway: null,
       review_scope: 'full',
     },
-    // status v2: the declared_clean audit value is v2-only (v1 stops at the six
-    // pre-declared values).
-    statuses: { schemaVersion: 2, execution: 'completed', verification: 'passed', audit: 'declared_clean', publication: 'not_published' },
+    // status v2: an independent_clean audit under a genuine 3/2/2 envelope. Both
+    // seats are verified_operator on different training orgs over direct_https
+    // with probe-earned qual1 fingerprints, so this fixture stays valid once the
+    // Task 6 semantic guards (declared_* origin↔audit, builtin1 selection) land.
+    // The audit value is legal in v1 too; the interior is v2 by its schemaVersion
+    // label and the pairing's sealed seat fields, not by a v2-only audit value.
+    statuses: { schemaVersion: 2, execution: 'completed', verification: 'passed', audit: 'independent_clean', publication: 'not_published' },
   };
 
   // Prove the fixture is 3/2/2, not 3/1/1: the envelope is v3 while its interior
@@ -708,9 +715,14 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
   assert.equal(envelope3.schemaVersion, 3, 'envelope 3 is version 3');
   assert.equal(envelope3.pairing.schemaVersion, 2, 'envelope 3 carries a pairing-manifest v2 interior');
   assert.equal(envelope3.statuses.schemaVersion, 2, 'envelope 3 carries a status v2 interior');
-  assert.ok(!validatePairingManifest(envelope3.pairing).ok, 'the v3 pairing interior is a real v2 (the shipped v1 validator refuses it)');
-  assert.ok(!validateStatus(envelope3.statuses).ok, 'the v3 status interior is a real v2 (declared_clean is v2-only)');
-  assert.equal(envelope3.statuses.audit, 'declared_clean', 'the v2-only declared_clean audit value is present');
+  assert.ok(validatePairingManifest(envelope3.pairing).ok, 'the v3 pairing interior validates as pairing v2');
+  assert.ok(validateStatus(envelope3.statuses).ok, 'the v3 status interior validates as status v2');
+  // independent_clean is legal in both v1 and v2, so the status block relabeled
+  // v1 still validates — the interior's v2-ness rests on the genuine v2-only
+  // pairing seat fields the shipped v1 pairing shape never carried, not on the
+  // audit value.
+  assert.ok(validateStatus({ ...envelope3.statuses, schemaVersion: 1 }).ok, 'independent_clean is a shared v1/v2 audit value');
+  assert.equal(envelope3.statuses.audit, 'independent_clean', 'the status interior carries a clean independent audit');
   assert.equal(envelope3.pairing.review_scope, 'full', 'the v2-only review_scope field is present');
   assert.ok('training_org' in envelope3.pairing.executor && 'qualification' in envelope3.pairing.executor, 'the sealed seat identity fields are present');
 
@@ -743,19 +755,20 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
   const v3ReceiptId = computeReceiptId({ ...envelope3, artifact_id: v3ArtifactId });
   for (const [label, mutate] of [
     ['a nested sealed-seat field (training_org)', (e) => ({ ...e, pairing: { ...e.pairing, executor: { ...e.pairing.executor, training_org: 'unknown' } } })],
-    ['a nested qualification fingerprint', (e) => ({ ...e, pairing: { ...e.pairing, executor: { ...e.pairing.executor, qualification: { ...e.pairing.executor.qualification, fingerprint: `builtin1:${'b'.repeat(64)}` } } } })],
+    ['a nested qualification fingerprint', (e) => ({ ...e, pairing: { ...e.pairing, executor: { ...e.pairing.executor, qualification: { ...e.pairing.executor.qualification, fingerprint: `qual1:${'b'.repeat(64)}` } } } })],
     ['the v2-only review_scope', (e) => ({ ...e, pairing: { ...e.pairing, review_scope: 'light' } })],
-    ['the v2-only declared audit value', (e) => ({ ...e, statuses: { ...e.statuses, audit: 'declared_findings' } })],
+    ['the audit value inside the opaque v2 status block', (e) => ({ ...e, statuses: { ...e.statuses, audit: 'independent_findings' } })],
   ]) {
     const mutated = mutate(envelope3);
     assert.equal(computeArtifactId(mutated), v3ArtifactId, `${label}: artifact_id is unchanged — a v2 receipt field is not artifact meaning`);
     assert.notEqual(computeReceiptId({ ...mutated, artifact_id: v3ArtifactId }), v3ReceiptId, `${label}: receipt_id changes — the v2-only nested field is hashed opaquely (RFC §10.8.1)`);
   }
 
-  // v3 is not validatable yet (no producer emits it; validate.mjs still refuses
-  // it), so the cross-version divergence is asserted with computeArtifactId
-  // DIRECTLY rather than through a sealed-and-validated pack.
-  assert.ok(!validateEvidencePack(seal(envelope3)).ok, 'envelope 3 is a reader only — the shipped validator still refuses it');
+  // validate.mjs now accepts the 3/2/2 tuple (§10.8.4), so this genuine
+  // envelope-3 pack seals and validates. The cross-version artifact_id
+  // divergence is still asserted with computeArtifactId DIRECTLY, since it is a
+  // hashing fact independent of validation.
+  assert.ok(validateEvidencePack(seal(envelope3)).ok, JSON.stringify(validateEvidencePack(seal(envelope3))));
   assert.notEqual(
     computeArtifactId(envelope2),
     v3ArtifactId,
@@ -826,6 +839,292 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
   assert.ok(validateBenchmarkRecord(record).ok, 'the committed sample validates');
   assert.ok(!validateBenchmarkRecord({ ...record, is_clean_control: true }).ok,
     'a clean control with confirmed findings is a contradiction');
+}
+
+// --- §10.8.4 cross-version validator matrix at the pack boundary --------------
+// validate.mjs accepts EXACTLY three envelope/pairing/status tuples — 1/1/1,
+// 2/1/1, 3/2/2 — and refuses every other, future, mixed, missing, and
+// half-upgraded tuple, fail-closed (never fail-forward). Every refusal below
+// carries a break-on-purpose control: the base pack accepts, and the single
+// field the guard owns is what flips it to a refusal — so the refusal is the
+// intended guard firing, not an unrelated error such as a stale hash. Packs are
+// resealed with canonical.mjs AFTER each mutation, so identity always matches the
+// mutated content and the SHAPE guard is what fails.
+{
+  const hex = (c) => c.repeat(64);
+  // A qual1 fingerprint for a configurable, probe-earned backend, assembled from
+  // fragments so no scannable token literal lives in the file.
+  const qual1 = (c) => ['qual1', hex(c)].join(':');
+
+  // A genuine, semantically FUTURE-PROOF cross_vendor seat: hosted operators on
+  // DIFFERENT training orgs, verified_operator origin, a probe-earned qual1
+  // fingerprint whose gate_scope matches the round's review_scope. Nothing here
+  // leans on the Task-6 semantic guards (rule 7, audit↔pairing, builtin1
+  // selection, review_scope↔gate_scope), so this fixture stays valid once they
+  // land — it is refused today only by shape, never by those semantics.
+  const seat = (o) => ({
+    requested: `${o.provider}:balanced`,
+    resolved: `${o.provider}:${o.model}`,
+    actual: `${o.provider}:${o.model}`,
+    reported: `${o.provider}:${o.model}`,
+    actual_evidence: 'observed_api_response',
+    executor_kind: 'http_client',
+    training_org: o.org,
+    model_family: o.family,
+    lineage: { source: 'registry', derived_from: null },
+    inference_operator: o.operator,
+    transport: 'direct_https',
+    connection: o.connection,
+    origin_confidence: 'verified_operator',
+    qualification: { fingerprint: qual1(o.fp), gate_scope: 'full', contract_version: 'review-contract-1' },
+  });
+
+  // Fresh builders per call — mutations never share state across cases.
+  const build1 = () => ({
+    schemaVersion: 1,
+    goal: 'guard empty input',
+    acceptance_contract: 'greet() throws on empty; test proves it',
+    artifact: { kind: 'code', head: hex('a').slice(0, 40) },
+    verification: { checks: [{ id: 'tests', status: 'pass' }] },
+    pairing: {
+      schemaVersion: 1,
+      executor: { requested: 'anthropic:balanced', resolved: 'anthropic:sonnet', actual: 'anthropic:sonnet' },
+      auditor: { requested: 'openai:balanced', resolved: 'openai:gpt-5.4', actual: 'openai:gpt-5.4' },
+      independence: 'cross_vendor',
+    },
+    statuses: { schemaVersion: 1, execution: 'completed', verification: 'passed', audit: 'independent_clean', publication: 'not_published' },
+    human_decisions: [],
+    economics: [],
+    created_at: 1,
+  });
+  const build2 = () => {
+    const b = build1();
+    b.schemaVersion = 2;
+    b.artifact = { ...b.artifact, contract_coverage: [{ id: 'C1', text: 'greet throws on empty', decision: 'met' }] };
+    return b;
+  };
+  const build3 = () => ({
+    schemaVersion: 3,
+    goal: 'harden the token parser against empty input',
+    acceptance_contract: 'parse() throws on empty; a test proves it; no TODOs remain',
+    artifact: {
+      kind: 'code',
+      repo: null,
+      head: hex('a').slice(0, 40),
+      diff_hash: 'sha256:' + hex('1'),
+      changed_files: ['src/parse.ts'],
+      deliverable_hash: null,
+      claims: null,
+      contract_coverage: [{ id: 'C1', text: 'parse() throws on empty input', decision: 'met' }],
+    },
+    verification: { checks: [{ id: 'tests', status: 'pass' }] },
+    pairing: {
+      schemaVersion: 2,
+      executor: seat({ provider: 'dashscope', model: 'qwen3-coder', org: 'alibaba', family: 'qwen', operator: 'dashscope', connection: 'dashscope_intl', fp: 'a' }),
+      auditor: seat({ provider: 'xai', model: 'grok-build', org: 'xai', family: 'grok', operator: 'xai', connection: 'xai_api', fp: 'b' }),
+      independence: 'cross_vendor',
+      shared_gateway: null,
+      review_scope: 'full',
+    },
+    statuses: { schemaVersion: 2, execution: 'completed', verification: 'passed', audit: 'independent_clean', publication: 'not_published' },
+    human_decisions: [],
+    economics: [],
+    created_at: 1,
+  });
+
+  const refuses = (pack, rx, msg) => {
+    const r = validateEvidencePack(pack);
+    assert.ok(!r.ok, `${msg}: expected a refusal, got ok`);
+    assert.match(r.error, rx, `${msg}: the guard that fired was — ${r.error}`);
+  };
+
+  // --- the three accepted tuples, exhaustively (existing v1/v2 fixtures too) ---
+  for (const [label, build] of [['1/1/1', build1], ['2/1/1', build2], ['3/2/2', build3]]) {
+    const sealed = seal(build());
+    const v = validateEvidencePack(sealed);
+    assert.ok(v.ok, `${label} accepts: ${JSON.stringify(v)}`);
+    assert.equal(sealed.pairing.schemaVersion, label === '3/2/2' ? 2 : 1, `${label} pairing version`);
+    assert.equal(sealed.statuses.schemaVersion, label === '3/2/2' ? 2 : 1, `${label} status version`);
+  }
+  const good3 = seal(build3());
+  assert.equal(good3.schemaVersion, 3, 'the 3/2/2 accept fixture is a genuine envelope 3');
+
+  // --- future versions fail closed, never forward ------------------------------
+  // Envelope 4 is refused at the version gate before any interior runs; it cannot
+  // even be sealed (canonical.mjs reads only 1/2/3), so it is passed unsealed.
+  refuses({ ...build3(), schemaVersion: 4, artifact_id: 'sha256:' + hex('0'), receipt_id: 'sha256:' + hex('0') },
+    /schemaVersion must be 1, 2, or 3/, 'future envelope 4');
+  refuses(seal({ ...build3(), pairing: { ...build3().pairing, schemaVersion: 3 } }), /pairing\.schemaVersion/, 'future pairing 3 inside envelope 3');
+  refuses(seal({ ...build3(), statuses: { ...build3().statuses, schemaVersion: 3 } }), /statuses\.schemaVersion/, 'future statuses 3 inside envelope 3');
+
+  // --- mixed tuples: an envelope admits exactly its published interior ----------
+  refuses(seal({ ...build3(), pairing: build1().pairing }), /pairing\.schemaVersion/, 'mixed 3/1/2');
+  refuses(seal({ ...build3(), statuses: build1().statuses }), /statuses\.schemaVersion/, 'mixed 3/2/1');
+  // Envelope 3 with BOTH interiors down-versioned to v1 — the pairing gate fires
+  // first, so a fully legacy interior can never ride inside a v3 envelope.
+  refuses(seal({ ...build3(), pairing: build1().pairing, statuses: build1().statuses }), /pairing\.schemaVersion/, 'mixed 3/1/1');
+  refuses(seal({ ...build1(), pairing: build3().pairing }), /pairing\.schemaVersion/, 'mixed 1/2/1');
+  refuses(seal({ ...build1(), statuses: build3().statuses }), /statuses\.schemaVersion/, 'mixed 1/1/2');
+  refuses(seal({ ...build2(), pairing: build3().pairing }), /pairing\.schemaVersion/, 'mixed 2/2/1');
+
+  // --- missing interior version -------------------------------------------------
+  {
+    const noVer = build3();
+    delete noVer.pairing.schemaVersion;
+    refuses(seal(noVer), /pairing\.schemaVersion/, 'missing pairing schemaVersion');
+    const noStatusVer = build3();
+    delete noStatusVer.statuses.schemaVersion;
+    refuses(seal(noStatusVer), /statuses\.schemaVersion/, 'missing statuses schemaVersion');
+  }
+
+  // --- half-upgraded legacy envelopes ------------------------------------------
+  // A v1-versioned pairing that grew a v2-only field, on a v1/v2 envelope. The
+  // pack boundary refuses ANY v2-only pairing field — top-level shared_gateway/
+  // review_scope AND nested executor/auditor seat fields (lineage/qualification
+  // descendants ride along with their parent) — even though the pairing version
+  // still reads 1. Every case reseals AFTER the mutation, so the SHAPE guard is
+  // what fires, never a stale hash.
+  {
+    // controls: the same envelopes with a clean v1 pairing accept.
+    assert.ok(validateEvidencePack(seal(build1())).ok, 'control: env1 base accepts');
+    assert.ok(validateEvidencePack(seal(build2())).ok, 'control: env2 base accepts');
+    const half2 = build2();
+    half2.pairing = { ...half2.pairing, review_scope: 'full' };
+    refuses(seal(half2), /half-upgraded|review_scope/, 'env2 pairing carrying v2-only review_scope');
+    const half1 = build1();
+    half1.pairing = { ...half1.pairing, shared_gateway: 'openrouter' };
+    refuses(seal(half1), /half-upgraded|shared_gateway/, 'env1 pairing carrying v2-only shared_gateway');
+
+    // Nested v2-only seat parents on the executor or auditor are refused too, on
+    // BOTH envelope 1 and envelope 2. Each mutation grafts one v2-only seat field
+    // onto an otherwise-legal v1 role identity, then reseals.
+    const nestedMutations = [
+      ['executor.training_org', (b) => { b.pairing.executor = { ...b.pairing.executor, training_org: 'anthropic' }; }],
+      ['auditor.origin_confidence', (b) => { b.pairing.auditor = { ...b.pairing.auditor, origin_confidence: 'verified_operator' }; }],
+      ['executor.lineage (descendants ride along)', (b) => { b.pairing.executor = { ...b.pairing.executor, lineage: { source: 'registry', derived_from: null } }; }],
+      ['auditor.qualification (descendants ride along)', (b) => { b.pairing.auditor = { ...b.pairing.auditor, qualification: { fingerprint: `qual1:${hex('a')}`, gate_scope: 'full', contract_version: null } }; }],
+      ['executor.transport', (b) => { b.pairing.executor = { ...b.pairing.executor, transport: 'direct_https' }; }],
+    ];
+    for (const [label, build] of [['env1', build1], ['env2', build2]]) {
+      for (const [field, mutate] of nestedMutations) {
+        const pack = build();
+        mutate(pack);
+        refuses(seal(pack), /half-upgraded|executor|auditor/, `${label} pairing carrying nested v2-only ${field}`);
+      }
+    }
+  }
+
+  // --- envelopes 1 AND 2 reject the v2-only declared_* audit values ------------
+  // Both envelopes pin a status schemaVersion 1 interior, whose audit floor stops
+  // at the six pre-declared values; declared_clean/declared_findings are v2-only
+  // and refuse on either envelope. Each case reseals after the mutation, with a
+  // legal-audit control so the guard under test is declared_* rejection.
+  {
+    for (const [label, build] of [['env1', build1], ['env2', build2]]) {
+      const legal = build();
+      legal.statuses = { ...legal.statuses, audit: 'independent_findings' };
+      assert.ok(validateEvidencePack(seal(legal)).ok, `control: ${label} legal v1 audit value accepts`);
+      for (const declared of ['declared_clean', 'declared_findings']) {
+        const bad = build();
+        bad.statuses = { ...bad.statuses, audit: declared };
+        refuses(seal(bad), /statuses\.audit/, `${label} rejects the v2-only audit value ${declared}`);
+      }
+    }
+  }
+
+  // --- v2 pairing: missing required seat / pairing fields ----------------------
+  {
+    const missOrg = build3();
+    delete missOrg.pairing.executor.training_org;
+    refuses(seal(missOrg), /executor: missing required field\(s\): training_org/, 'v2 seat missing training_org');
+    const missQual = build3();
+    delete missQual.pairing.auditor.qualification;
+    refuses(seal(missQual), /auditor: missing required field\(s\): qualification/, 'v2 seat missing qualification (always non-null)');
+    const missLineageKey = build3();
+    delete missLineageKey.pairing.executor.lineage.derived_from;
+    refuses(seal(missLineageKey), /lineage/, 'v2 seat lineage missing derived_from');
+    // v3-missing-v2-field: the pairing block itself missing a v2-only field.
+    const missScope = build3();
+    delete missScope.pairing.review_scope;
+    refuses(seal(missScope), /review_scope/, 'v3 pairing missing review_scope');
+    const missGateway = build3();
+    delete missGateway.pairing.shared_gateway;
+    refuses(seal(missGateway), /shared_gateway/, 'v3 pairing missing shared_gateway');
+    // and the v3 artifact missing its required coverage state.
+    const missCoverage = build3();
+    delete missCoverage.artifact.contract_coverage;
+    refuses(seal(missCoverage), /contract_coverage/, 'v3 artifact missing contract_coverage');
+  }
+
+  // --- v2 pairing: bad enum membership -----------------------------------------
+  {
+    // control: a different LEGAL enum value accepts — the guard is enum membership.
+    const legalTransport = build3();
+    legalTransport.pairing.executor.transport = 'ssh_tunnel';
+    assert.ok(validateEvidencePack(seal(legalTransport)).ok, 'control: a legal transport enum accepts');
+    const badTransport = build3();
+    badTransport.pairing.executor.transport = 'carrier_pigeon';
+    refuses(seal(badTransport), /transport/, 'v2 seat bad transport enum');
+    const badIndep = build3();
+    badIndep.pairing.independence = 'totally_independent';
+    refuses(seal(badIndep), /independence/, 'v2 bad independence enum');
+    const badEvidence = build3();
+    badEvidence.pairing.executor.actual_evidence = 'vibes';
+    refuses(seal(badEvidence), /actual_evidence/, 'v2 seat bad actual_evidence enum');
+    const badLineage = build3();
+    badLineage.pairing.auditor.lineage.source = 'hearsay';
+    refuses(seal(badLineage), /lineage\.source/, 'v2 seat bad lineage.source enum');
+    const badConfidence = build3();
+    badConfidence.pairing.executor.origin_confidence = 'trust_me';
+    refuses(seal(badConfidence), /origin_confidence/, 'v2 seat bad origin_confidence enum');
+    const badScope = build3();
+    badScope.pairing.review_scope = 'exhaustive';
+    refuses(seal(badScope), /review_scope/, 'v2 bad review_scope enum');
+    const badGateScope = build3();
+    badGateScope.pairing.executor.qualification.gate_scope = 'partial';
+    refuses(seal(badGateScope), /gate_scope/, 'v2 seat bad qualification.gate_scope enum');
+    const badFingerprint = build3();
+    badFingerprint.pairing.auditor.qualification.fingerprint = 'qual2:' + hex('a');
+    refuses(seal(badFingerprint), /fingerprint/, 'v2 qualification fingerprint off the qual1|builtin1 namespace');
+  }
+
+  // --- v2 pairing: wrong nullability -------------------------------------------
+  {
+    // control: the fields typed string|null accept null, and derived_from accepts
+    // a family string — nullability is enforced exactly, not loosely.
+    const nullable = build3();
+    nullable.pairing.shared_gateway = null;
+    nullable.pairing.executor.reported = null;
+    nullable.pairing.executor.connection = null;
+    nullable.pairing.auditor.qualification.contract_version = null;
+    nullable.pairing.executor.lineage.derived_from = 'gpt';
+    assert.ok(validateEvidencePack(seal(nullable)).ok, 'control: the string|null fields accept null');
+    const badReported = build3();
+    badReported.pairing.executor.reported = 42;
+    refuses(seal(badReported), /reported/, 'v2 seat reported must be string|null, not a number');
+    const nullOrg = build3();
+    nullOrg.pairing.executor.training_org = null;
+    refuses(seal(nullOrg), /training_org/, 'v2 seat training_org is non-nullable');
+    const badGateway = build3();
+    badGateway.pairing.shared_gateway = 5;
+    refuses(seal(badGateway), /shared_gateway/, 'v2 shared_gateway must be string|null, not a number');
+    const badDerived = build3();
+    badDerived.pairing.executor.lineage.derived_from = 7;
+    refuses(seal(badDerived), /derived_from/, 'v2 lineage.derived_from must be string|null');
+    const badContractVer = build3();
+    badContractVer.pairing.auditor.qualification.contract_version = 9;
+    refuses(seal(badContractVer), /contract_version/, 'v2 qualification.contract_version must be string|null');
+  }
+
+  // --- unknown fields never enter silently -------------------------------------
+  {
+    const extraSeatField = build3();
+    extraSeatField.pairing.executor.surprise = true;
+    refuses(seal(extraSeatField), /executor.*unknown fields: surprise/, 'v2 seat unknown field refused');
+    const extraPairingField = build3();
+    extraPairingField.pairing.bonus = 1;
+    refuses(seal(extraPairingField), /pairing.*unknown fields: bonus/, 'v2 pairing unknown field refused');
+  }
 }
 
 // --- ingester over a fixture reviews dir ---------------------------------------
