@@ -87,15 +87,29 @@ function pick(obj, { take, ignore = [] }, path) {
 
 export const ARTIFACT_PROJECTION_VERSION = 2;
 
+// Envelope schemaVersions this library can PROJECT (i.e. read). Envelope 3 is a
+// reader-only version (RFC §10.8.1): no producer emits it yet, and validate.mjs
+// deliberately still refuses it, so v3 identities are computed here directly.
+// Envelopes 1 and 2 keep their exact shipped canonical forms — byte-frozen and
+// proven by the golden regression suite.
+const READABLE_PACK_VERSIONS = [1, 2, 3];
+
 export function artifactProjection(pack) {
-  if (![1, 2].includes(pack?.schemaVersion)) throw new TypeError(`artifactProjection: unsupported evidence-pack schemaVersion ${pack?.schemaVersion}`);
+  if (!READABLE_PACK_VERSIONS.includes(pack?.schemaVersion)) throw new TypeError(`artifactProjection: unsupported evidence-pack schemaVersion ${pack?.schemaVersion}`);
+  // Envelope 3 reuses the version-2 artifact sub-projection VERBATIM:
+  // contract_coverage, the claims/coverage mapping, and projectionVersion 2. The
+  // envelope `schemaVersion` stays inside the projection (pick copies it below),
+  // so identical artifact content under envelope 2 versus 3 intentionally hashes
+  // to DIFFERENT artifact_ids — identities are never normalized across envelope
+  // versions (RFC §10.8.1: the 2→3 divergence is an accepted, tested contract).
+  const usesV2Artifact = pack.schemaVersion === 2 || pack.schemaVersion === 3;
   const p = pick(pack, {
     take: ['schemaVersion', 'goal', 'acceptance_contract', 'artifact'],
     ignore: ['artifact_id', 'receipt_id', 'verification', 'session_log', 'pairing', 'statuses', 'human_decisions', 'economics', 'created_at'],
   }, 'artifactProjection(pack)');
 
   const a = pick(p.artifact, {
-    take: pack.schemaVersion === 2
+    take: usesV2Artifact
       ? ['kind', 'repo', 'head', 'diff_hash', 'changed_files', 'deliverable_hash', 'claims', 'contract_coverage']
       : ['kind', 'repo', 'head', 'diff_hash', 'changed_files', 'deliverable_hash', 'claims'],
     ignore: [],
@@ -106,12 +120,12 @@ export function artifactProjection(pack) {
       pick(c, { take: ['claim', 'marker', 'url', 'evidence_hash', 'retrieved_at'], ignore: ['decision'] }, `artifactProjection(claims[${i}])`),
     );
   }
-  if (pack.schemaVersion === 2 && Array.isArray(a.contract_coverage)) {
+  if (usesV2Artifact && Array.isArray(a.contract_coverage)) {
     a.contract_coverage = a.contract_coverage.map((c, i) =>
       pick(c, { take: ['id', 'text'], ignore: ['decision'] }, `artifactProjection(contract_coverage[${i}])`),
     );
   }
-  const projectionVersion = pack.schemaVersion === 2 ? ARTIFACT_PROJECTION_VERSION : 1;
+  const projectionVersion = usesV2Artifact ? ARTIFACT_PROJECTION_VERSION : 1;
   return { projectionVersion, ...p, artifact: a };
 }
 
@@ -126,10 +140,17 @@ export function computeArtifactId(pack) {
 export const RECEIPT_PROJECTION_VERSION = 2;
 
 export function receiptProjection(pack) {
-  if (![1, 2].includes(pack?.schemaVersion)) throw new TypeError(`receiptProjection: unsupported evidence-pack schemaVersion ${pack?.schemaVersion}`);
+  if (!READABLE_PACK_VERSIONS.includes(pack?.schemaVersion)) throw new TypeError(`receiptProjection: unsupported evidence-pack schemaVersion ${pack?.schemaVersion}`);
   if (!/^sha256:[0-9a-f]{64}$/.test(pack?.artifact_id ?? '')) {
     throw new TypeError('receiptProjection: pack.artifact_id must be set first — a receipt binds to an artifact');
   }
+  // pick() copies `pairing` (and `statuses`) OPAQUELY — one whole-object copy,
+  // not a per-field sub-projection — so canonicalString then hashes the entire
+  // nested block as-is. That is exactly why envelope 3's richer pairing (the
+  // pairing v2 seatIdentitySealed records, review_scope, etc.) enters receipt_id
+  // WITHOUT any per-field canonical change here: new nested pairing/status
+  // fields are hashed the moment they arrive, by the same opaque copy that has
+  // always carried pairing whole (RFC §10.8.1).
   const p = pick(pack, {
     take: ['schemaVersion', 'artifact_id', 'pairing', 'verification', 'human_decisions', 'economics', 'statuses', 'session_log'],
     ignore: ['receipt_id', 'goal', 'acceptance_contract', 'artifact', 'created_at'],
@@ -141,6 +162,9 @@ export function receiptProjection(pack) {
   const claimDecisions = Array.isArray(claims)
     ? claims.map((c) => ({ marker: c.marker, decision: c.decision ?? null }))
     : null;
+  // Envelope 1 is byte-frozen at receipt projection version 1. Envelopes 2 and 3
+  // share the v2 receipt branch below: RECEIPT_PROJECTION_VERSION and the v2
+  // claim_decisions/coverage_decisions behavior, unchanged.
   if (pack.schemaVersion === 1) {
     return { projectionVersion: 1, ...p, claim_decisions: claimDecisions };
   }

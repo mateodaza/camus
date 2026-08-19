@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DIMENSIONS, HEADLINES, deriveHeadline, allCombinations, validStatus, DECLARED_CROSS_VENDOR_REVIEWED_DISPLAY } from './lib/status.mjs';
-import { canonicalize, canonicalString, computeArtifactId, computeReceiptId, artifactMatches, receiptMatches, seal, artifactProjection } from './lib/canonical.mjs';
+import { canonicalize, canonicalString, computeArtifactId, computeReceiptId, artifactMatches, receiptMatches, seal, artifactProjection, receiptProjection } from './lib/canonical.mjs';
 import { computeExperimentId, experimentMatches, sealExperiment } from './lib/experiment.mjs';
 import { scrubSecrets, scrubPaths, redactFinding } from './lib/redact.mjs';
 import { validateStatus, validatePairingManifest, validateEvidencePack, validateBenchmarkRecord, validateHumanDecision, validateEconomics, validateExperimentRecord } from './lib/validate.mjs';
@@ -586,6 +586,185 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
     /unknown field/,
     'v1 refuses the v2 field rather than silently changing its hash contract',
   );
+}
+
+// --- §10.8.1/§10.8.5: envelope 3 is a READER; envelopes 1 & 2 stay byte-frozen -
+// These IDs were sealed with the shipped canonical library BEFORE v3 reader
+// support landed and are pinned as literals on purpose: a regression that shifts
+// any v1/v2 canonical byte moves a hash and fails here, instead of silently
+// re-deriving a new "golden" value. Never regenerate these in place.
+{
+  const GOLDEN_V1_ARTIFACT_ID = 'sha256:acd203be0535fc503b3b8f95b9174715a8dbdc773fa69354613c9c22ec8fec66';
+  const GOLDEN_V1_RECEIPT_ID = 'sha256:106325fc9e9ecadec99d63191cff0b5fada26efe5b90a90cad9534376bff46a1';
+  const GOLDEN_V2_ARTIFACT_ID = 'sha256:913443ec0dcede1d4bc9ff13b10bd64bdceecb0cc443772917f07db045b84255';
+  const GOLDEN_V2_RECEIPT_ID = 'sha256:338324d5bbab75eea6ab06ba6616e93d1137d673730939969a39f66580bc2f56';
+
+  // The golden envelope-1 fixture — reconstructed byte-for-byte from the shape
+  // the "two identities" suite above seals.
+  const goldenPairing = {
+    schemaVersion: 1,
+    executor: { requested: 'anthropic:balanced', resolved: 'anthropic:sonnet', actual: 'anthropic:sonnet' },
+    auditor: { requested: 'openai:balanced', resolved: 'openai:gpt-5.4', actual: 'openai:gpt-5.4' },
+    independence: 'cross_vendor',
+  };
+  const envelope1 = {
+    schemaVersion: 1,
+    goal: 'memo on community vs paid growth',
+    acceptance_contract: 'every stat cited to a live URL; no promissory phrasing',
+    artifact: {
+      kind: 'research',
+      deliverable_hash: 'sha256:' + 'a'.repeat(64),
+      claims: [{ claim: 'retention differs by cohort origin', marker: '[1]', url: 'https://example.com/r', evidence_hash: null, retrieved_at: 1, decision: 'supported' }],
+    },
+    verification: { checks: [{ id: 'links', status: 'pass' }] },
+    pairing: goldenPairing,
+    statuses: { schemaVersion: 1, execution: 'completed', verification: 'passed', audit: 'independent_clean', publication: 'not_published' },
+    human_decisions: [{ schemaVersion: 1, kind: 'decision', question: 'audience?', answer: 'web3 marketers', at: 1 }],
+    economics: [],
+    created_at: 1,
+  };
+  // The golden envelope-2 fixture: same artifact content plus v2's extracted
+  // contract coverage.
+  const envelope2 = {
+    ...envelope1,
+    schemaVersion: 2,
+    artifact: { ...envelope1.artifact, contract_coverage: [{ id: 'C1', text: 'every stat cited to a live URL', decision: 'met' }] },
+  };
+
+  // Frozen literals re-derive exactly — v1 and v2 canonical forms are untouched
+  // by v3 reader support.
+  const sealed1 = seal(envelope1);
+  const sealed2 = seal(envelope2);
+  assert.equal(sealed1.artifact_id, GOLDEN_V1_ARTIFACT_ID, 'v1 artifact_id is byte-frozen');
+  assert.equal(sealed1.receipt_id, GOLDEN_V1_RECEIPT_ID, 'v1 receipt_id is byte-frozen');
+  assert.equal(sealed2.artifact_id, GOLDEN_V2_ARTIFACT_ID, 'v2 artifact_id is byte-frozen');
+  assert.equal(sealed2.receipt_id, GOLDEN_V2_RECEIPT_ID, 'v2 receipt_id is byte-frozen');
+  // computeArtifactId/computeReceiptId re-derive the same literals directly.
+  assert.equal(computeArtifactId(envelope1), GOLDEN_V1_ARTIFACT_ID, 'v1 computeArtifactId re-derives the frozen literal');
+  assert.equal(computeReceiptId({ ...envelope1, artifact_id: GOLDEN_V1_ARTIFACT_ID }), GOLDEN_V1_RECEIPT_ID, 'v1 computeReceiptId re-derives the frozen literal');
+  assert.equal(computeArtifactId(envelope2), GOLDEN_V2_ARTIFACT_ID, 'v2 computeArtifactId re-derives the frozen literal');
+  assert.equal(computeReceiptId({ ...envelope2, artifact_id: GOLDEN_V2_ARTIFACT_ID }), GOLDEN_V2_RECEIPT_ID, 'v2 computeReceiptId re-derives the frozen literal');
+  // Both golden fixtures still validate under the shipped validator.
+  assert.ok(validateEvidencePack(sealed1).ok, JSON.stringify(validateEvidencePack(sealed1)));
+  assert.ok(validateEvidencePack(sealed2).ok, JSON.stringify(validateEvidencePack(sealed2)));
+
+  // Pin the v2 canonical PRINTED field order: the exact serialized bytes, so a
+  // key-order or projection-shape drift fails on the string, not only the hash.
+  assert.equal(
+    canonicalString(artifactProjection(envelope2)),
+    '{"acceptance_contract":"every stat cited to a live URL; no promissory phrasing","artifact":{"claims":[{"claim":"retention differs by cohort origin","evidence_hash":null,"marker":"[1]","retrieved_at":1,"url":"https://example.com/r"}],"contract_coverage":[{"id":"C1","text":"every stat cited to a live URL"}],"deliverable_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","kind":"research"},"goal":"memo on community vs paid growth","projectionVersion":2,"schemaVersion":2}',
+    'v2 artifact projection canonical field order is pinned',
+  );
+  assert.equal(
+    canonicalString(receiptProjection(sealed2)),
+    '{"artifact_id":"sha256:913443ec0dcede1d4bc9ff13b10bd64bdceecb0cc443772917f07db045b84255","claim_decisions":[{"decision":"supported","marker":"[1]"}],"coverage_decisions":[{"decision":"met","id":"C1"}],"economics":[],"human_decisions":[{"answer":"web3 marketers","at":1,"kind":"decision","question":"audience?","schemaVersion":1}],"pairing":{"auditor":{"actual":"openai:gpt-5.4","requested":"openai:balanced","resolved":"openai:gpt-5.4"},"executor":{"actual":"anthropic:sonnet","requested":"anthropic:balanced","resolved":"anthropic:sonnet"},"independence":"cross_vendor","schemaVersion":1},"projectionVersion":2,"schemaVersion":2,"statuses":{"audit":"independent_clean","execution":"completed","publication":"not_published","schemaVersion":1,"verification":"passed"},"verification":{"checks":[{"id":"links","status":"pass"}]}}',
+    'v2 receipt projection canonical field order is pinned',
+  );
+
+  // Envelope 3 is a READER-only version and a GENUINE 3/2/2 pack: the published
+  // envelope-3 contract determines pairing-manifest v2 and status v2 interiors
+  // (RFC §10.8.1). Its artifact content is BYTE-IDENTICAL to envelope2 — same
+  // goal, acceptance_contract, and artifact block — so the artifact_id
+  // divergence asserted below is purely the envelope version, never a content
+  // edit. The v2 pairing/status only ever live receipt-side.
+  const seatV2 = (provider, org, family) => ({
+    requested: `${provider}:balanced`,
+    resolved: `${provider}:m`,
+    actual: `${provider}:m`,
+    reported: null,
+    actual_evidence: 'observed_api_response',
+    executor_kind: 'http_client',
+    training_org: org,
+    model_family: family,
+    lineage: { source: 'registry', derived_from: null },
+    inference_operator: provider,
+    transport: 'direct_https',
+    connection: null,
+    origin_confidence: 'verified_operator',
+    qualification: { fingerprint: `builtin1:${'a'.repeat(64)}`, gate_scope: 'full', contract_version: null },
+  });
+  const envelope3 = {
+    ...envelope2,
+    schemaVersion: 3,
+    // pairing-manifest v2: both seats carry the sealed identity fields v1 never
+    // had (training_org, model_family, lineage, transport, origin_confidence,
+    // qualification, …) plus the v2-only shared_gateway/review_scope.
+    pairing: {
+      schemaVersion: 2,
+      executor: seatV2('anthropic', 'anthropic', 'claude'),
+      auditor: seatV2('openai', 'openai', 'gpt'),
+      independence: 'cross_vendor',
+      shared_gateway: null,
+      review_scope: 'full',
+    },
+    // status v2: the declared_clean audit value is v2-only (v1 stops at the six
+    // pre-declared values).
+    statuses: { schemaVersion: 2, execution: 'completed', verification: 'passed', audit: 'declared_clean', publication: 'not_published' },
+  };
+
+  // Prove the fixture is 3/2/2, not 3/1/1: the envelope is v3 while its interior
+  // pairing/status blocks are genuine v2 instances the SHIPPED v1 validators
+  // reject — so these are real v2 interiors, not v1 blocks wearing a v2 label.
+  assert.equal(envelope3.schemaVersion, 3, 'envelope 3 is version 3');
+  assert.equal(envelope3.pairing.schemaVersion, 2, 'envelope 3 carries a pairing-manifest v2 interior');
+  assert.equal(envelope3.statuses.schemaVersion, 2, 'envelope 3 carries a status v2 interior');
+  assert.ok(!validatePairingManifest(envelope3.pairing).ok, 'the v3 pairing interior is a real v2 (the shipped v1 validator refuses it)');
+  assert.ok(!validateStatus(envelope3.statuses).ok, 'the v3 status interior is a real v2 (declared_clean is v2-only)');
+  assert.equal(envelope3.statuses.audit, 'declared_clean', 'the v2-only declared_clean audit value is present');
+  assert.equal(envelope3.pairing.review_scope, 'full', 'the v2-only review_scope field is present');
+  assert.ok('training_org' in envelope3.pairing.executor && 'qualification' in envelope3.pairing.executor, 'the sealed seat identity fields are present');
+
+  // Dual-read: v3 reuses the v2 sub-projections (projectionVersion 2 on both
+  // sides, the v2 coverage-aware artifact and coverage_decisions receipt branch).
+  const v3ArtifactId = computeArtifactId(envelope3);
+  const v3Receipt = receiptProjection({ ...envelope3, artifact_id: v3ArtifactId });
+  assert.equal(artifactProjection(envelope3).projectionVersion, 2, 'v3 reads through the v2 artifact projection');
+  assert.equal(artifactProjection(envelope3).schemaVersion, 3, 'the envelope version stays in the projection — not normalized away');
+  assert.equal(v3Receipt.projectionVersion, 2, 'v3 reads through the v2 receipt projection');
+  assert.ok('coverage_decisions' in v3Receipt, 'v3 carries the v2 coverage_decisions receipt behavior');
+  // receiptProjection copied the WHOLE v2 pairing/status blocks opaquely — the
+  // v2-only nested fields ride into receipt_id by that copy, no per-field change.
+  assert.equal(v3Receipt.pairing.schemaVersion, 2, 'the receipt projection carried the v2 pairing interior whole');
+  assert.equal(v3Receipt.statuses.schemaVersion, 2, 'the receipt projection carried the v2 status interior whole');
+  assert.equal(v3Receipt.pairing.executor.training_org, 'anthropic', 'a v2-only nested seat field is present in the receipt projection');
+
+  // The artifact projection genuinely ignores the whole v2 pairing/status: an
+  // envelope3 with the v1 blocks restored has the SAME artifact_id, so the
+  // divergence from envelope2 below is the envelope version alone.
+  assert.equal(
+    computeArtifactId({ ...envelope3, pairing: goldenPairing, statuses: envelope1.statuses }),
+    v3ArtifactId,
+    'the v2 pairing/status blocks never touch artifact identity',
+  );
+
+  // A v2-ONLY nested RECEIPT field changes receipt_id WITHOUT changing
+  // artifact_id — the opaque pairing/status copy hashes these fields the moment
+  // they arrive, and they are absent from the artifact side entirely.
+  const v3ReceiptId = computeReceiptId({ ...envelope3, artifact_id: v3ArtifactId });
+  for (const [label, mutate] of [
+    ['a nested sealed-seat field (training_org)', (e) => ({ ...e, pairing: { ...e.pairing, executor: { ...e.pairing.executor, training_org: 'unknown' } } })],
+    ['a nested qualification fingerprint', (e) => ({ ...e, pairing: { ...e.pairing, executor: { ...e.pairing.executor, qualification: { ...e.pairing.executor.qualification, fingerprint: `builtin1:${'b'.repeat(64)}` } } } })],
+    ['the v2-only review_scope', (e) => ({ ...e, pairing: { ...e.pairing, review_scope: 'light' } })],
+    ['the v2-only declared audit value', (e) => ({ ...e, statuses: { ...e.statuses, audit: 'declared_findings' } })],
+  ]) {
+    const mutated = mutate(envelope3);
+    assert.equal(computeArtifactId(mutated), v3ArtifactId, `${label}: artifact_id is unchanged — a v2 receipt field is not artifact meaning`);
+    assert.notEqual(computeReceiptId({ ...mutated, artifact_id: v3ArtifactId }), v3ReceiptId, `${label}: receipt_id changes — the v2-only nested field is hashed opaquely (RFC §10.8.1)`);
+  }
+
+  // v3 is not validatable yet (no producer emits it; validate.mjs still refuses
+  // it), so the cross-version divergence is asserted with computeArtifactId
+  // DIRECTLY rather than through a sealed-and-validated pack.
+  assert.ok(!validateEvidencePack(seal(envelope3)).ok, 'envelope 3 is a reader only — the shipped validator still refuses it');
+  assert.notEqual(
+    computeArtifactId(envelope2),
+    v3ArtifactId,
+    'identical artifact content under envelope 2 vs 3 seals DIFFERENT artifact_ids — envelope version is never normalized (RFC §10.8.1)',
+  );
+  // The frozen v1 guarantee, stated explicitly: teaching the reader v3 did not
+  // move the byte-frozen v1 identity by even one hash.
+  assert.equal(computeArtifactId(envelope1), GOLDEN_V1_ARTIFACT_ID, 'dual-read support leaves the frozen v1 artifact identity unchanged');
+  assert.equal(computeReceiptId({ ...envelope1, artifact_id: GOLDEN_V1_ARTIFACT_ID }), GOLDEN_V1_RECEIPT_ID, 'dual-read support leaves the frozen v1 receipt identity unchanged');
 }
 
 // --- redaction ----------------------------------------------------------------
