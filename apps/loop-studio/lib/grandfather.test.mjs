@@ -89,9 +89,11 @@ test('init writes records then marker, 0600, and is a no-op on re-run', () => {
   // marker over the record verifies with the on-disk salt
   const salt = readSalt(p);
   assert.equal(markerFor(salt, data.records[0]), data.records[0].marker);
-  // marker file's releaseVersion matches the records file (written from it)
+  // marker metadata matches the records file (also true after crash recovery)
   const mk = JSON.parse(readFileSync(p.marker, 'utf8'));
+  assert.equal(mk.initializedAt, data.initializedAt);
   assert.equal(mk.releaseVersion, data.releaseVersion);
+  assert.equal(mode(p.salt), 0o600);
 
   // idempotent: a second init NEVER re-snapshots, even with new entries
   const before = readFileSync(p.json, 'utf8');
@@ -196,6 +198,11 @@ test('crash recovery finishes the marker only; crash-window entry stays refused'
   assert.equal(rec.action, 'recovered');
   assert.equal(readJson(p2).records.length, 1, 'recovery never sweeps in new entries');
   assert.equal(existsSync(p2.marker), true);
+  assert.equal(
+    JSON.parse(readFileSync(p2.marker, 'utf8')).initializedAt,
+    readJson(p2).initializedAt,
+    'recovery preserves the original initialization timestamp'
+  );
   assert.equal(consult(PASTED).ok, false, 'crash-window entry still refused after recovery');
 
   // break-on-purpose companion: the ONLY escape is an explicit confirmation.
@@ -238,12 +245,12 @@ test('confirmLegacy is the only post-marker mint path; entry refuses, then loads
   const why = 'internal LM Studio host, approved by ops';
   const res = confirmLegacy(LMSTUDIO.backendName, LMSTUDIO.url, why);
   assert.equal(res.ok, true);
-  assert.equal(res.record.source, 'confirmation');
+  assert.equal(res.record.source, 'operator_confirmation');
   assert.equal(res.record.why, why);
 
   const loaded = consult(LMSTUDIO);
   assert.equal(loaded.ok, true);
-  assert.equal(loaded.record.source, 'confirmation');
+  assert.equal(loaded.record.source, 'operator_confirmation');
   assert.equal(loaded.record.why, why);
   // append, not replace
   assert.equal(readJson(p).records.length, 2);
@@ -261,13 +268,18 @@ test('editing a record source or why breaks its marker (both inside the HMAC)', 
     // tamper with provenance WITHOUT recomputing the marker
     const d = JSON.parse(good);
     const rec = d.records.find((r) => r.backendName === LMSTUDIO.backendName);
+    const originalMarker = rec.marker;
     if (field === 'source') rec.source = 'snapshot';
     else rec.why = 'a different reason than was confirmed';
+    assert.notEqual(markerFor(readSalt(p), rec), originalMarker, `${field} changes the HMAC input`);
     writeJson(p, d);
 
     const r = consult(LMSTUDIO);
     assert.equal(r.ok, false, `${field} edit refuses`);
-    assert.equal(r.state, 'HMAC-broken', `${field} edit breaks the marker`);
+    assert.ok(
+      r.state === 'HMAC-broken' || r.state === 'unparseable',
+      `${field} edit fails schema or HMAC validation`
+    );
 
     // break-on-purpose companion: restore the untampered record -> it loads.
     writeFileSync(p.json, good, { mode: 0o600 });
@@ -310,7 +322,7 @@ test('confirmLegacy recovers per-entry from a corrupt records file (marker prese
   // records file seeded with this explicit confirmation.
   const res = confirmLegacy(OLLAMA.backendName, OLLAMA.url, 'ops re-confirmed after sidecar corruption');
   assert.equal(res.ok, true);
-  assert.equal(res.record.source, 'confirmation');
+  assert.equal(res.record.source, 'operator_confirmation');
 
   const loaded = consult(OLLAMA);
   assert.equal(loaded.ok, true, 'loads after per-entry recovery from a corrupt state');
@@ -333,14 +345,71 @@ test('a record whose why straddles SEP cannot be re-split into source without br
   // marker. Under a plain join this produced an identical HMAC input; it must not.
   const d = JSON.parse(good);
   const rec = d.records.find((r) => r.backendName === LMSTUDIO.backendName);
-  rec.source = 'confirmation' + SEP + 'left';
+  const originalMarker = rec.marker;
+  rec.source = 'operator_confirmation' + SEP + 'left';
   rec.why = 'right';
+  assert.notEqual(markerFor(readSalt(p), rec), originalMarker, 'shift changes canonical HMAC input');
   writeJson(p, d);
   assert.equal(consult(LMSTUDIO).ok, false, 'the shifted record does not validate');
 
   // break-on-purpose companion: restore the untampered record -> it loads.
   writeFileSync(p.json, good, { mode: 0o600 });
   assert.equal(consult(LMSTUDIO).ok, true, 'loads after restore');
+});
+
+// ---- 10. malformed local trust state and inputs fail closed ----------------
+
+test('malformed salt, records, and API inputs cannot mint or load trust', () => {
+  const p = freshEnv();
+  initGrandfather({ legacyEntries: [OLLAMA] });
+
+  writeFileSync(p.salt, 'not-a-32-byte-hex-salt', { mode: 0o600 });
+  assert.throws(() => consult(OLLAMA), /machine salt is invalid/i);
+
+  // A fresh fixture proves malformed public inputs fail before any record is minted.
+  freshEnv();
+  assert.throws(
+    () => initGrandfather({ legacyEntries: [{ backendName: '', url: OLLAMA.url }] }),
+    /backendName and url/
+  );
+
+  const p3 = freshEnv();
+  initGrandfather({ legacyEntries: [OLLAMA] });
+  assert.throws(() => confirmLegacy('', OLLAMA.url, 'reason'), /backendName and url/);
+  assert.throws(() => consult({ backendName: OLLAMA.backendName, url: '' }), /backendName and url/);
+
+  const malformed = readJson(p3);
+  malformed.records[0].why = 'snapshot reasons are forbidden';
+  malformed.records[0].marker = markerFor(readSalt(p3), malformed.records[0]);
+  writeJson(p3, malformed);
+  const refused = consult(OLLAMA);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.state, 'unparseable');
+});
+
+test('a missing persisted salt refuses without silently minting a replacement', () => {
+  const p = freshEnv();
+  initGrandfather({ legacyEntries: [OLLAMA] });
+  rmSync(p.salt);
+
+  // Restart initialization is a true no-op and must not create a new key that
+  // makes the existing HMACs permanently look tampered.
+  assert.equal(initGrandfather({ legacyEntries: [OLLAMA] }).action, 'noop');
+  assert.equal(existsSync(p.salt), false, 'no-op initialization does not replace the salt');
+  assert.throws(() => consult(OLLAMA), /machine salt is missing/i);
+  assert.equal(existsSync(p.salt), false, 'failed consultation does not replace the salt');
+});
+
+test('invalid crash-window records retain their exact refusal state', () => {
+  const p = freshEnv();
+  initGrandfather({ legacyEntries: [OLLAMA] });
+  rmSync(p.marker);
+  writeFileSync(p.json, '{ truncated', { mode: 0o600 });
+
+  const refused = consult(OLLAMA);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.state, 'unparseable');
+  assert.equal(existsSync(p.marker), false, 'invalid records never finish the marker');
 });
 
 // ---- teardown --------------------------------------------------------------
