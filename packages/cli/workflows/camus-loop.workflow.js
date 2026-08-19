@@ -151,6 +151,7 @@ const _ID_OK = /^[A-Za-z0-9/_-]+$/
 const BRANCH_PREFIX = (args && typeof args === 'object' && args.branchPrefix) || 'camus/'
 const FEAT_ID_SALT = (args && typeof args === 'object' && args.idSalt) || ''
 const STANDALONE_ID_SALT = (args && typeof args === 'object' && args.identitySalt) || ''
+const TRACE_ID = (args && typeof args === 'object' && typeof args.traceId === 'string') ? args.traceId : ''
 if (FEAT_ID_SALT && STANDALONE_ID_SALT) {
   return { status: 'aborted', stage: 'args',
     note: 'Pass either idSalt (feat-owned) or identitySalt (standalone custody), never both.' }
@@ -159,9 +160,10 @@ const IDENTITY_SALT = FEAT_ID_SALT || STANDALONE_ID_SALT
 const FEAT_SCOPED = Boolean(FEAT_ID_SALT)
 if ((args && typeof args === 'object' && args.branchPrefix && !_ID_OK.test(String(args.branchPrefix)))
     || (FEAT_ID_SALT && !_ID_OK.test(String(FEAT_ID_SALT)))
-    || (STANDALONE_ID_SALT && !_ID_OK.test(String(STANDALONE_ID_SALT)))) {
+    || (STANDALONE_ID_SALT && !_ID_OK.test(String(STANDALONE_ID_SALT)))
+    || (TRACE_ID && !/^[A-Za-z0-9:._/-]+$/.test(TRACE_ID))) {
   return { status: 'aborted', stage: 'args',
-    note: 'branchPrefix / idSalt / identitySalt may contain only letters, digits, and / _ - (they become a git branch name and a shell path). Refusing a value with other characters.' }
+    note: 'branchPrefix / idSalt / identitySalt / traceId contain characters outside their strict safe sets. Refusing a value that could become an unsafe branch, path, or receipt identity.' }
 }
 // HITL: policy governs when the loop PAUSES to ask a human vs. acting and LOGGING the decision.
 //   autonomous       — never ask; every notable call is recorded in `decisions`, human reviews at merge.
@@ -280,7 +282,9 @@ const HB_TOUCH = IDENTITY_SALT ? `touch "$HOME/.camus/feats/${IDENTITY_SALT}.hb"
 // RUN_ID is derived from the identity and the task, never from wall clock, so the
 // nonce is stable across resumes (Date is banned in this script) and is a value
 // this WORKFLOW computes — not one a thin runner can supply, retype, or drop.
-const GATE_NONCE = `${IDENTITY_SALT || 'camus'}:${RUN_ID}`
+// Hybrid-kernel runs bind the reviewer to the kernel attempt AND the deterministic task id.
+// Legacy/direct callers omit traceId and keep the byte-stable historical nonce.
+const GATE_NONCE = TRACE_ID ? `${TRACE_ID}:${RUN_ID}` : `${IDENTITY_SALT || 'camus'}:${RUN_ID}`
 // The reviewer identity the CALLER decided (Studio passes its run-start snapshot).
 // This script cannot read the environment, so an identity it must verify has to
 // arrive as an argument. Absent (a direct camus-loop call), the model/backend
