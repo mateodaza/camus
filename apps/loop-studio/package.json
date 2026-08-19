@@ -11,7 +11,7 @@
     "start": "node server.mjs",
     "rehearse": "ENGINE=mock node server.mjs",
     "doctor": "node server.mjs --doctor",
-    "test": "node verify.test.mjs && node api.test.mjs && node halt.test.mjs && node anchor.test.mjs && node igniter-guard.test.mjs && node resume.test.mjs && node custody.test.mjs",
+    "test": "node verify.test.mjs && node api.test.mjs && node halt.test.mjs && node anchor.test.mjs && node igniter-guard.test.mjs && node resume.test.mjs && node custody.test.mjs && node lib/identity.test.mjs",
     "test:verify": "node verify.test.mjs"
   },
   "bin": {
