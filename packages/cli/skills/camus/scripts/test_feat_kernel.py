@@ -167,6 +167,69 @@ def _accept_fixture(result_status="verify_inconclusive"):
     }
 
 
+def _direct_fixture(findings=None):
+    findings = findings or []
+    base = tempfile.mkdtemp(prefix="camus_kernel_direct_")
+    repo = _repo()
+    feat_id, args, state = _fixture(
+        base, tasks=["implement the direct task contract"], statuses=["pending"],
+        extra_args={"targetPath": repo},
+    )
+    node = state["tasks"][0]
+    _git(repo, "branch", state["featBranch"])
+    _git(repo, "checkout", "-q", state["featBranch"])
+    state["kernel"] = {
+        "schemaVersion": 1,
+        "traceId": feat_id + ":a1",
+        "attempt": 1,
+        "phase": "ready",
+        "activeTaskId": node["taskId"],
+        "repoHead": _git(repo, "rev-parse", "HEAD"),
+        "budgets": {"wallSeconds": 1000, "tokens": 5000, "retries": 2},
+        "seats": {
+            "makerModel": "claude-opus-4-8", "reviewerBackend": "codex",
+            "reviewerModel": "gpt-5.6-sol", "reviewerEffort": "high",
+        },
+        "usage": {"startedAt": 100, "tokens": 0, "retries": 0},
+    }
+    _write(os.path.join(base, "feats", feat_id + ".json"), state)
+    K.dispatch_task(feat_id, repo=repo, base=base, now=101)
+    opened = K.open_task(feat_id, node["taskId"], repo=repo, base=base, now=102)
+    worktree = opened["worktree"]
+    with open(os.path.join(worktree, "direct.txt"), "w", encoding="utf-8") as fh:
+        fh.write("candidate\n")
+    receipt_path = os.path.join(base, "reviews", os.path.basename(worktree) + "-r1.json")
+    _write(receipt_path, {
+        "ran": True,
+        "codex_exit": 0,
+        "worktree": worktree,
+        "worktree_canonical": worktree,
+        "codex_parsed": {
+            "overall_correctness": "patch is incorrect" if findings else "patch is correct",
+            "findings": findings,
+        },
+        "binding": {
+            "bound": True,
+            "gate_nonce": "%s:%s" % (feat_id + ":a1", node["taskId"].rsplit("-", 1)[-1]),
+            "round_actual": 1,
+            "effort_actual": "high",
+            "reviewer_model": "gpt-5.6-sol",
+            "reviewer_backend": "codex",
+        },
+    })
+    verdict = {
+        "ran": True,
+        "clean": not findings,
+        "blocking": findings,
+        "nonblocking": [],
+    }
+    return {
+        "base": base, "repo": repo, "feat_id": feat_id, "args": args,
+        "state": state, "node": node, "worktree": worktree, "verdict": verdict,
+        "receipt_path": receipt_path,
+    }
+
+
 def test_next_is_compact_and_contract_is_materialized_only_on_demand():
     base = tempfile.mkdtemp(prefix="camus_kernel_")
     hidden = "FULL_CONTRACT_ONLY_AFTER_SELECTION"
@@ -587,6 +650,122 @@ def test_accept_refuses_headless_green_without_mutating_state():
         except K.Refusal as exc:
             assert "not bound" in str(exc)
     assert open(state_path, encoding="utf-8").read() == before
+
+
+def test_direct_lane_opens_reviews_seals_and_lands_without_model_relays():
+    world = _direct_fixture()
+    with mock.patch.object(K, "_run_direct_review", return_value=world["verdict"]):
+        reviewed = K.review_task(
+            world["feat_id"], world["node"]["taskId"],
+            repo=world["repo"], base=world["base"], now=103,
+        )
+    assert reviewed["action"] == "seal" and reviewed["clean"] is True
+
+    def green(_run, worktree, _timeout):
+        return {
+            "pass": True, "tampered": False, "failures": [],
+            "head": _git(worktree, "rev-parse", "HEAD"),
+        }
+
+    with mock.patch.object(K, "_run_verify", side_effect=green):
+        sealed = K.seal_task(
+            world["feat_id"], world["node"]["taskId"],
+            repo=world["repo"], base=world["base"], now=104,
+        )
+    assert sealed["provenStatus"] == "done"
+    landed = K.land_task(
+        world["feat_id"], world["node"]["taskId"],
+        repo=world["repo"], base=world["base"], now=105,
+    )
+    assert landed["landed"]["status"] == "done"
+    assert _git(world["repo"], "merge-base", "--is-ancestor", sealed["commit"], world["state"]["featBranch"]) == ""
+
+
+def test_direct_clean_review_refuses_a_late_untracked_file():
+    world = _direct_fixture()
+    with mock.patch.object(K, "_run_direct_review", return_value=world["verdict"]):
+        K.review_task(
+            world["feat_id"], world["node"]["taskId"],
+            repo=world["repo"], base=world["base"], now=103,
+        )
+    with open(os.path.join(world["worktree"], "late.txt"), "w", encoding="utf-8") as fh:
+        fh.write("not reviewed\n")
+    state_path = os.path.join(world["base"], "feats", world["feat_id"] + ".json")
+    before = open(state_path, encoding="utf-8").read()
+    with mock.patch.object(K, "_run_verify") as verify:
+        try:
+            K.seal_task(
+                world["feat_id"], world["node"]["taskId"],
+                repo=world["repo"], base=world["base"], now=104,
+            )
+            assert False, "late untracked content retained clean-review standing"
+        except K.Refusal as exc:
+            assert "changed after its clean review" in str(exc)
+    assert not verify.called
+    assert open(state_path, encoding="utf-8").read() == before
+
+
+def test_direct_fixed_candidate_preserves_blocking_findings():
+    findings = [{
+        "priority": 1, "title": "real defect", "body": "fix the candidate",
+        "code_location": "direct.txt:1", "confidence_score": 0.98,
+    }]
+    world = _direct_fixture(findings=findings)
+    with mock.patch.object(K, "_run_direct_review", return_value=world["verdict"]):
+        reviewed = K.review_task(
+            world["feat_id"], world["node"]["taskId"],
+            repo=world["repo"], base=world["base"], now=103,
+        )
+    assert reviewed["action"] == "fix_then_seal"
+    with open(os.path.join(world["worktree"], "direct.txt"), "a", encoding="utf-8") as fh:
+        fh.write("fixed\n")
+
+    def green(_run, worktree, _timeout):
+        return {
+            "pass": True, "tampered": False, "failures": [],
+            "head": _git(worktree, "rev-parse", "HEAD"),
+        }
+
+    with mock.patch.object(K, "_run_verify", side_effect=green):
+        sealed = K.seal_task(
+            world["feat_id"], world["node"]["taskId"], fixed_unreviewed=True,
+            repo=world["repo"], base=world["base"], now=104,
+        )
+    assert sealed["provenStatus"] == "done_with_findings"
+    node = K._validated_run(world["feat_id"], world["base"])["nodes"][0]
+    assert node["deferredFindings"] == findings
+
+
+def test_direct_seal_retries_verification_without_a_second_commit():
+    world = _direct_fixture()
+    with mock.patch.object(K, "_run_direct_review", return_value=world["verdict"]):
+        K.review_task(
+            world["feat_id"], world["node"]["taskId"],
+            repo=world["repo"], base=world["base"], now=103,
+        )
+    with mock.patch.object(K, "_run_verify", return_value={
+        "pass": False, "tampered": False, "failures": [{"name": "fixture"}],
+        "head": None,
+    }):
+        stopped = K.seal_task(
+            world["feat_id"], world["node"]["taskId"],
+            repo=world["repo"], base=world["base"], now=104,
+        )
+    assert stopped["action"] == "stop"
+    sealed_commit = stopped["commit"]
+    failed = K._validated_run(world["feat_id"], world["base"])["state"]
+    assert failed["kernel"]["phase"] == "task_verify_failed"
+
+    green = {
+        "pass": True, "tampered": False, "failures": [], "head": sealed_commit,
+    }
+    with mock.patch.object(K, "_run_verify", return_value=green):
+        recovered = K.seal_task(
+            world["feat_id"], world["node"]["taskId"],
+            repo=world["repo"], base=world["base"], now=105,
+        )
+    assert recovered["commit"] == sealed_commit
+    assert _git(world["worktree"], "rev-list", "--count", "%s..HEAD" % world["state"]["kernel"]["repoHead"]) == "1"
 
 
 if __name__ == "__main__":

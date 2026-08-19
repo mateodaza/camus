@@ -154,6 +154,19 @@ fresh deterministic verify whose `head` must equal the accepted commit. Only the
 `accept`, invokes `merge.sh`, independently revalidates the durable merge receipt and Git ancestry,
 then restores `done` or `done_with_findings`. A mechanical merge can never upgrade review standing.
 
+The direct lane removes the legacy thin-agent relays without removing the gates:
+
+- `kernel open` creates or reattaches the deterministic task worktree.
+- The orchestrator dispatches exactly one maker in that worktree.
+- `kernel review` invokes the pinned independent reviewer directly, binds its receipt to the trace,
+  and returns either `seal` or `fix_then_seal`.
+- After an optional single maker fix, `kernel seal` binds an unchanged clean candidate or preserves
+  `fixed_unreviewed`, commits through `commit.sh`, and runs fresh HEAD-bound verification.
+- `kernel land` performs the final model-free merge.
+
+This is the preferred v0 path. The full `camus-loop` adapter remains available for rollback and
+compatibility, but it is no longer required to execute a hybrid-kernel task.
+
 ## Persistent state
 
 Kernel metadata is additive under the existing feature state:

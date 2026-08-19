@@ -35,6 +35,15 @@ Commands:
       Merge only an accepted task through merge.sh, validate its merge receipt + Git ancestry,
       and restore the accepted done/done_with_findings status without laundering provenance.
 
+  feat_kernel.py open FEAT_ID TASK_ID
+      Materialize the deterministic task worktree for a direct hybrid run.
+
+  feat_kernel.py review FEAT_ID TASK_ID
+      Run the bound independent reviewer directly, without a model relay.
+
+  feat_kernel.py seal FEAT_ID TASK_ID [--fixed-unreviewed]
+      Commit and verify the reviewed candidate, preserving clean or fixed-unreviewed standing.
+
 State is still the existing ~/.camus/feats/<id>.json contract. Kernel-owned metadata lives under
 state.kernel, so old readers ignore it and old runs remain migratable. A per-feat flock serializes
 mutations; writes are fsync + replace. No model writes or reformats either state or canonical args.
@@ -64,6 +73,7 @@ VERIFY_UNSAFE = ("$", "`", '"', "\\", "\n", "\r")
 HEX_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 REVIEWED_STATUSES = ("done", "done_with_findings", "verify_inconclusive")
 SEAT_VALUE_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+DIRECT_REVIEW_AWAITS = 20
 
 
 class Refusal(Exception):
@@ -460,6 +470,63 @@ def _sha256_file(path):
         raise Refusal("could not hash evidence file %s: %s" % (path, exc))
 
 
+def _json_command(argv, cwd, env=None, timeout=120, label="command"):
+    try:
+        result = subprocess.run(
+            argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Refusal("could not execute %s: %s" % (label, exc))
+    raw = (result.stdout or "").strip()
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        raise Refusal("%s returned non-JSON output: %s" % (label, (raw or result.stderr)[-500:]))
+    if not isinstance(value, dict):
+        raise Refusal("%s returned a non-object JSON contract" % label)
+    return value
+
+
+def _candidate_fingerprint(worktree):
+    """Bind the exact HEAD + working-tree candidate after review made new files visible."""
+    # Normalize new files into intent-to-add entries exactly as review.sh does. Without this,
+    # the same bytes have two representations (untracked before review, diff-visible after it),
+    # making a stable before/after-review binding impossible.
+    _git_ok(worktree, "add", "-N", ".")
+    head = _git_ok(worktree, "rev-parse", "HEAD")
+    try:
+        diff = subprocess.run(
+            ["git", "-C", worktree, "diff", "--binary", "--no-renames", "HEAD", "--", "."],
+            capture_output=True, timeout=60,
+        )
+        untracked = subprocess.run(
+            ["git", "-C", worktree, "ls-files", "--others", "--exclude-standard", "-z"],
+            capture_output=True, timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Refusal("could not fingerprint task candidate: %s" % exc)
+    if diff.returncode != 0 or untracked.returncode != 0:
+        error = diff.stderr if diff.returncode != 0 else untracked.stderr
+        raise Refusal("could not fingerprint task candidate: %s" % error[-500:].decode("utf-8", "replace"))
+    digest = hashlib.sha256(head.encode("ascii") + b"\0diff\0" + diff.stdout)
+    for raw_path in sorted(path for path in untracked.stdout.split(b"\0") if path):
+        path = os.fsdecode(raw_path)
+        absolute = os.path.join(worktree, path)
+        try:
+            if os.path.islink(absolute):
+                content = b"symlink\0" + os.fsencode(os.readlink(absolute))
+            elif os.path.isfile(absolute):
+                with open(absolute, "rb") as fh:
+                    content = b"file\0" + fh.read()
+            else:
+                raise Refusal("untracked candidate path is not a regular file/symlink: %s" % path)
+        except OSError as exc:
+            raise Refusal("could not fingerprint untracked candidate path %s: %s" % (path, exc))
+        digest.update(b"\0untracked\0" + str(len(raw_path)).encode("ascii") + b":" + raw_path)
+        digest.update(b"\0" + str(len(content)).encode("ascii") + b":" + content)
+    return "candidate1:" + digest.hexdigest()
+
+
 def _workflow_result(path, run, node):
     """Validate one Claude workflow task-output receipt without trusting its prose summary.
 
@@ -502,10 +569,9 @@ def _workflow_result(path, run, node):
     }
 
 
-def _validated_task_checkout(repo, node, result, final_commit=None):
-    worktree = result.get("worktree")
+def _validated_worktree(repo, node, worktree, require_clean=False):
     if not isinstance(worktree, str) or not os.path.isabs(worktree):
-        raise Refusal("workflow result has no absolute task worktree")
+        raise Refusal("task has no absolute worktree")
     worktree = os.path.realpath(worktree)
     top = os.path.realpath(_git_ok(worktree, "rev-parse", "--show-toplevel"))
     if top != worktree:
@@ -515,26 +581,30 @@ def _validated_task_checkout(repo, node, result, final_commit=None):
     if task_common != repo_common:
         raise Refusal("workflow task checkout belongs to a different repository")
     if _git_ok(worktree, "branch", "--show-current") != node.get("branch"):
-        raise Refusal("workflow task checkout is on the wrong branch")
+        raise Refusal("task worktree is on the wrong branch")
     head = _git_ok(worktree, "rev-parse", "HEAD")
+    if require_clean and _git_ok(worktree, "status", "--porcelain", "--untracked-files=all"):
+        raise Refusal("task checkout is dirty; refusing acceptance")
+    return worktree, head
+
+
+def _validated_task_checkout(repo, node, result, final_commit=None):
+    worktree, head = _validated_worktree(repo, node, result.get("worktree"), require_clean=True)
     expected = final_commit or head
     if not isinstance(expected, str) or not HEX_SHA_RE.fullmatch(expected):
         raise Refusal("accepted task commit must be a full lowercase Git SHA")
     if head != expected:
         raise Refusal("task checkout HEAD %s does not match accepted commit %s" % (head, expected))
-    if _git_ok(worktree, "status", "--porcelain", "--untracked-files=all"):
-        raise Refusal("task checkout is dirty; refusing acceptance")
     return worktree, head
 
 
-def _review_receipt_evidence(run, node, workflow, explicit=None):
-    result = workflow["result"]
-    round_no = result.get("reviewerRound")
-    if isinstance(round_no, bool) or not isinstance(round_no, int) or round_no != result.get("rounds"):
-        raise Refusal("workflow reviewer round disagrees with the completed round count")
+def _validate_review_receipt(run, node, worktree, round_no, backend, model, effort,
+                             expected_blocking=None, explicit=None, allow_legacy=False):
+    if isinstance(round_no, bool) or not isinstance(round_no, int) or round_no < 1:
+        raise Refusal("reviewer round is invalid")
     default = os.path.join(
         run["base"], "reviews",
-        os.path.basename(os.path.realpath(result["worktree"])) + "-r%d.json" % round_no,
+        os.path.basename(os.path.realpath(worktree)) + "-r%d.json" % round_no,
     )
     path = os.path.realpath(explicit or default)
     review = _read_json(path)
@@ -546,29 +616,27 @@ def _review_receipt_evidence(run, node, workflow, explicit=None):
         raise Refusal("review receipt binding is not accepted")
     expected = {
         "round_actual": round_no,
-        "effort_actual": result.get("reviewerEffort"),
-        "reviewer_model": result.get("reviewerModel"),
-        "reviewer_backend": result.get("reviewerBackend"),
+        "effort_actual": effort,
+        "reviewer_model": model,
+        "reviewer_backend": backend,
     }
     for key, value in expected.items():
         if binding.get(key) != value:
             raise Refusal("review receipt %s does not match the workflow result" % key)
     receipt_worktree = review.get("worktree_canonical") or review.get("worktree")
-    if not isinstance(receipt_worktree, str) or os.path.realpath(receipt_worktree) != os.path.realpath(result["worktree"]):
-        raise Refusal("review receipt worktree does not match the workflow result")
-    if (
-        result.get("reviewerModelStatus") != "recorded"
-        or not all(isinstance(result.get(key), str) and result.get(key) for key in (
-            "reviewerBackend", "reviewerModel", "reviewerEffort",
-        ))
-    ):
-        raise Refusal("workflow result has no concrete recorded reviewer identity")
+    if not isinstance(receipt_worktree, str) or os.path.realpath(receipt_worktree) != os.path.realpath(worktree):
+        raise Refusal("review receipt worktree does not match the task worktree")
+    if not all(isinstance(value, str) and value for value in (backend, model, effort)):
+        raise Refusal("review has no concrete reviewer identity")
     run_id = node.get("taskId", "").rsplit("-", 1)[-1]
     trace_id = _kernel(run["state"]).get("traceId")
     exact_nonce = "%s:%s" % (trace_id, run_id) if isinstance(trace_id, str) else None
     legacy_nonce = "%s:%s" % (run["state"]["featId"], run_id)
     nonce = binding.get("gate_nonce")
-    if nonce not in tuple(v for v in (exact_nonce, legacy_nonce) if v):
+    accepted_nonces = [exact_nonce]
+    if allow_legacy:
+        accepted_nonces.append(legacy_nonce)
+    if nonce not in tuple(v for v in accepted_nonces if v):
         raise Refusal("review receipt nonce does not bind to this kernel trace/task")
     if (
         isinstance(binding.get("round_actual"), bool)
@@ -586,12 +654,12 @@ def _review_receipt_evidence(run, node, workflow, explicit=None):
             % (normalized_review.get("error") or "unknown reviewer schema error")
         )
     receipt_findings = normalized_review["blocking"]
-    result_findings = result.get("findings")
-    result_findings = result_findings if isinstance(result_findings, list) else []
-    keys = ("priority", "title", "body", "code_location", "confidence_score")
-    normalized = lambda item: {key: item.get(key) for key in keys} if isinstance(item, dict) else None
-    if [normalized(f) for f in result_findings] != [normalized(f) for f in receipt_findings]:
-        raise Refusal("workflow findings do not match the independent review receipt")
+    if expected_blocking is not None:
+        expected_blocking = expected_blocking if isinstance(expected_blocking, list) else []
+        keys = ("priority", "title", "body", "code_location", "confidence_score")
+        normalized = lambda item: {key: item.get(key) for key in keys} if isinstance(item, dict) else None
+        if [normalized(f) for f in expected_blocking] != [normalized(f) for f in receipt_findings]:
+            raise Refusal("reported findings do not match the independent review receipt")
     return {
         "path": path,
         "sha256": _sha256_file(path),
@@ -604,6 +672,25 @@ def _review_receipt_evidence(run, node, workflow, explicit=None):
         "parsed": parsed,
         "normalized": normalized_review,
     }
+
+
+def _review_receipt_evidence(run, node, workflow, explicit=None):
+    result = workflow["result"]
+    round_no = result.get("reviewerRound")
+    if isinstance(round_no, bool) or not isinstance(round_no, int) or round_no != result.get("rounds"):
+        raise Refusal("workflow reviewer round disagrees with the completed round count")
+    if (
+        result.get("reviewerModelStatus") != "recorded"
+        or not all(isinstance(result.get(key), str) and result.get(key) for key in (
+            "reviewerBackend", "reviewerModel", "reviewerEffort",
+        ))
+    ):
+        raise Refusal("workflow result has no concrete recorded reviewer identity")
+    return _validate_review_receipt(
+        run, node, result.get("worktree"), round_no,
+        result.get("reviewerBackend"), result.get("reviewerModel"), result.get("reviewerEffort"),
+        expected_blocking=result.get("findings"), explicit=explicit, allow_legacy=True,
+    )
 
 
 def prepare(feat_id, repo=None, wall_seconds=None, token_budget=None, retry_budget=None,
@@ -832,6 +919,384 @@ def record_usage(feat_id, tokens=None, retries=None, phase=None, base=None, now=
         state["kernel"] = kernel
         _atomic_write(run["statePath"], state)
         return _envelope(_validated_run(feat_id, base), now=now)
+
+
+def _direct_task(run, task_id):
+    kernel = _kernel(run["state"])
+    if kernel.get("activeTaskId") != task_id:
+        raise Refusal("kernel trace is bound to a different active task")
+    node = next((item for item in run["nodes"] if item.get("taskId") == task_id), None)
+    if node is None or node.get("status") != "running":
+        raise Refusal("direct task is not running")
+    return kernel, node
+
+
+def _worktree_destination(run, repo, node):
+    try:
+        result = subprocess.run(
+            ["cksum"], input=repo + "\n", capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Refusal("could not derive deterministic worktree home: %s" % exc)
+    checksum = (result.stdout or "").split()
+    if result.returncode != 0 or not checksum or not checksum[0].isdigit():
+        raise Refusal("could not derive deterministic worktree home")
+    parent = "%s-%s" % (os.path.basename(repo), checksum[0])
+    return os.path.join(run["base"], "worktrees", parent, "camus-wt-" + node["taskId"])
+
+
+def open_task(feat_id, task_id, repo=None, base=None, now=None):
+    """Create or reattach the deterministic direct-hybrid task worktree."""
+    now = int(time.time()) if now is None else int(now)
+    base = base or camus_home()
+    with _locked(os.path.join(base, "feats"), feat_id):
+        run = _validated_run(feat_id, base)
+        repo = _resolve_repo(run, repo)
+        kernel, node = _direct_task(run, task_id)
+        if kernel.get("phase") not in ("task_running", "task_open"):
+            raise Refusal("kernel is not at a direct-open phase")
+        if _git_ok(repo, "branch", "--show-current") != run["state"].get("featBranch"):
+            raise Refusal("feature checkout moved before direct task open")
+        if _git_ok(repo, "rev-parse", "HEAD") != kernel.get("repoHead"):
+            raise Refusal("feature HEAD moved before direct task open; prepare again")
+        if _git_ok(repo, "status", "--porcelain", "--untracked-files=all"):
+            raise Refusal("repository is dirty before direct task open")
+        dest = _worktree_destination(run, repo, node)
+        prior = node.get("worktree")
+        if prior and os.path.realpath(prior) != os.path.realpath(dest):
+            raise Refusal("task is already bound to a different worktree")
+        env = os.environ.copy()
+        env["CAMUS_REPO_ROOT"] = repo
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wt.sh")
+        result = _json_command(
+            ["bash", script, "ensure", node["branch"], dest], repo, env=env,
+            label="deterministic worktree open",
+        )
+        if result.get("ok") is not True or not isinstance(result.get("path"), str):
+            raise Refusal("deterministic worktree open refused: %s" % result.get("error"))
+        worktree, head = _validated_worktree(repo, node, result["path"])
+        if os.path.realpath(worktree) != os.path.realpath(dest):
+            raise Refusal("worktree gate returned a path outside the deterministic destination")
+        if _git(repo, "merge-base", "--is-ancestor", kernel.get("repoHead", ""), head)[0] != 0:
+            raise Refusal("task worktree does not descend from the prepared feature HEAD")
+        node["worktree"] = worktree
+        node["directBaseCommit"] = kernel.get("repoHead")
+        kernel["phase"] = "task_open"
+        kernel["taskWorktree"] = worktree
+        kernel["updatedAt"] = now
+        run["state"]["kernel"] = kernel
+        run["state"]["stage"] = "kernel_task_open"
+        marker = "Kernel %s opened direct worktree for %s" % (kernel.get("traceId"), task_id)
+        if not any(isinstance(event, dict) and event.get("msg") == marker for event in run["state"].get("events", [])):
+            _append_event(run["state"], marker)
+        _atomic_write(run["statePath"], run["state"])
+        payload = task_payload(_validated_run(feat_id, base), task_id, repo=repo)
+        payload.update({
+            "action": "run_maker", "worktree": worktree, "branch": node["branch"],
+            "reviewNonce": "%s:%s" % (kernel.get("traceId"), task_id.rsplit("-", 1)[-1]),
+        })
+        return payload
+
+
+def _run_direct_review(run, repo, node, worktree, backend, model, effort, round_no=1):
+    scripts = os.path.dirname(os.path.abspath(__file__))
+    nonce = "%s:%s" % (_kernel(run["state"])["traceId"], node["taskId"].rsplit("-", 1)[-1])
+    env = os.environ.copy()
+    env.update({
+        "CAMUS_REVIEW_DIR": os.path.join(run["base"], "reviews"),
+        "CAMUS_REPO_ROOT": repo,
+        "CAMUS_REVIEWER": backend,
+        "CAMUS_REVIEW_BACKEND": backend,
+        "CAMUS_CODEX_MODEL": model,
+        "CAMUS_GATE_NONCE": nonce,
+        "CAMUS_REVIEW_ROUND": str(round_no),
+        "CAMUS_REVIEW_EFFORT": effort,
+    })
+    request = _json_command([
+        sys.executable, os.path.join(scripts, "review_request.py"), "write",
+        "--worktree", worktree, "--round", str(round_no), "--effort", effort,
+        "--nonce", nonce, "--model", model, "--backend", backend,
+    ], repo, env=env, label="direct review request")
+    if request.get("ok") is not True:
+        raise Refusal("direct review request refused: %s" % request.get("error"))
+    review_script = os.path.join(scripts, "review.sh")
+    spec = run["specs"][run["nodes"].index(node)]
+    verdict = _json_command(
+        ["bash", review_script, worktree, spec, str(round_no), effort, "light"],
+        repo, env=env, timeout=180, label="direct independent review",
+    )
+    awaits = 0
+    while verdict.get("pending") is True and awaits < DIRECT_REVIEW_AWAITS:
+        handle = verdict.get("handle")
+        if not isinstance(handle, str) or not os.path.isabs(handle):
+            raise Refusal("direct reviewer returned an invalid pending handle")
+        verdict = _json_command(
+            ["bash", review_script, "await", handle], repo, env=env, timeout=180,
+            label="direct independent review await",
+        )
+        awaits += 1
+    if verdict.get("pending") is True:
+        raise Refusal("direct reviewer remained pending after %d bounded awaits" % DIRECT_REVIEW_AWAITS)
+    if verdict.get("ran") is not True:
+        raise Refusal("direct reviewer produced no usable verdict: %s" % (
+            verdict.get("error") or verdict.get("infra_error") or verdict.get("log_tail") or "unknown error"
+        ))
+    return verdict
+
+
+def review_task(feat_id, task_id, repo=None, base=None, now=None):
+    """Run one direct, trace-bound independent review with no model relay."""
+    now = int(time.time()) if now is None else int(now)
+    base = base or camus_home()
+    feats_dir = os.path.join(base, "feats")
+    with _locked(feats_dir, feat_id):
+        run = _validated_run(feat_id, base)
+        repo = _resolve_repo(run, repo)
+        kernel, node = _direct_task(run, task_id)
+        if kernel.get("phase") not in ("task_open", "task_reviewing", "task_reviewed", "task_verify_failed"):
+            raise Refusal("kernel is not at a direct-review phase")
+        worktree, _head = _validated_worktree(repo, node, node.get("worktree"))
+        if not _git_ok(worktree, "status", "--porcelain", "--untracked-files=all"):
+            raise Refusal("direct maker produced no candidate diff to review")
+        seats = _seats(run)
+        backend, model, effort = (
+            seats.get("reviewerBackend"), seats.get("reviewerModel"), seats.get("reviewerEffort")
+        )
+        if not all(isinstance(value, str) and value for value in (backend, model, effort)):
+            raise Refusal("direct review requires pinned backend, model, and effort")
+        candidate_before = _candidate_fingerprint(worktree)
+        if kernel.get("phase") == "task_reviewing":
+            round_no = kernel.get("directReviewRound")
+            if isinstance(round_no, bool) or not isinstance(round_no, int) or round_no < 1:
+                raise Refusal("in-flight direct review has no valid round")
+        else:
+            prior_round = node.get("reviewerRound")
+            prior_round = prior_round if isinstance(prior_round, int) and not isinstance(prior_round, bool) else 0
+            round_no = prior_round + 1
+        kernel["phase"] = "task_reviewing"
+        kernel["directReviewRound"] = round_no
+        kernel["updatedAt"] = now
+        run["state"]["kernel"] = kernel
+        run["state"]["stage"] = "kernel_task_reviewing"
+        _atomic_write(run["statePath"], run["state"])
+
+    verdict = _run_direct_review(run, repo, node, worktree, backend, model, effort, round_no=round_no)
+
+    with _locked(feats_dir, feat_id):
+        run = _validated_run(feat_id, base)
+        kernel, node = _direct_task(run, task_id)
+        if kernel.get("phase") not in ("task_reviewing", "task_reviewed"):
+            raise Refusal("kernel phase changed while the direct reviewer was running")
+        worktree, head = _validated_worktree(repo, node, node.get("worktree"))
+        review = _validate_review_receipt(
+            run, node, worktree, round_no, backend, model, effort,
+            expected_blocking=verdict.get("blocking"), allow_legacy=False,
+        )
+        if verdict.get("clean") is not review["normalized"].get("clean"):
+            raise Refusal("reviewer stdout disagrees with its durable receipt")
+        candidate_fp = _candidate_fingerprint(worktree)
+        if candidate_fp != candidate_before:
+            raise Refusal("task candidate changed while the independent reviewer was running")
+        node["directReview"] = {
+            "head": head,
+            "candidateFingerprint": candidate_fp,
+            "clean": review["normalized"]["clean"],
+            "blocking": review["normalized"]["blocking"],
+            "nonblocking": review["normalized"]["nonblocking"],
+            "receiptPath": review["path"],
+            "receiptSha256": review["sha256"],
+            "nonce": review["nonce"],
+            "backend": review["backend"],
+            "model": review["model"],
+            "effort": review["effort"],
+            "round": review["round"],
+            "reviewedAt": now,
+        }
+        node["reviewerBackend"] = review["backend"]
+        node["reviewerModel"] = review["model"]
+        node["reviewerEffort"] = review["effort"]
+        node["reviewerRound"] = review["round"]
+        kernel["phase"] = "task_reviewed"
+        kernel["updatedAt"] = now
+        run["state"]["kernel"] = kernel
+        run["state"]["stage"] = "kernel_task_reviewed"
+        _append_event(run["state"], "Kernel %s recorded direct %s review for %s" % (
+            kernel.get("traceId"), "clean" if review["normalized"]["clean"] else "blocking", task_id,
+        ))
+        _atomic_write(run["statePath"], run["state"])
+        return {
+            "schemaVersion": SCHEMA_VERSION,
+            "traceId": kernel.get("traceId"),
+            "action": "seal" if review["normalized"]["clean"] else "fix_then_seal",
+            "taskId": task_id,
+            "worktree": worktree,
+            "reviewer": {key: review[key] for key in ("backend", "model", "effort", "round")},
+            "clean": review["normalized"]["clean"],
+            "blocking": review["normalized"]["blocking"],
+            "nonblocking": review["normalized"]["nonblocking"],
+        }
+
+
+def seal_task(feat_id, task_id, fixed_unreviewed=False, repo=None, verify_timeout=3600,
+              base=None, now=None):
+    """Deterministically commit and verify a direct-reviewed candidate."""
+    now = int(time.time()) if now is None else int(now)
+    base = base or camus_home()
+    with _locked(os.path.join(base, "feats"), feat_id):
+        run = _validated_run(feat_id, base)
+        repo = _resolve_repo(run, repo)
+        kernel, node = _direct_task(run, task_id)
+        if kernel.get("phase") not in ("task_reviewed", "task_sealing", "task_verify_failed"):
+            raise Refusal("kernel is not at the direct seal phase")
+        if _git_ok(repo, "branch", "--show-current") != run["state"].get("featBranch"):
+            raise Refusal("feature checkout moved before direct seal")
+        if _git_ok(repo, "rev-parse", "HEAD") != kernel.get("repoHead"):
+            raise Refusal("feature HEAD moved before direct seal")
+        if _git_ok(repo, "status", "--porcelain", "--untracked-files=all"):
+            raise Refusal("main feature checkout is dirty; possible maker containment breach")
+        worktree, live_head = _validated_worktree(repo, node, node.get("worktree"))
+        direct = node.get("directReview")
+        if not isinstance(direct, dict) or not isinstance(direct.get("head"), str):
+            raise Refusal("direct review is missing its task HEAD binding")
+        review = _validate_review_receipt(
+            run, node, worktree, direct.get("round"), direct.get("backend"),
+            direct.get("model"), direct.get("effort"),
+            expected_blocking=direct.get("blocking"), explicit=direct.get("receiptPath"),
+            allow_legacy=False,
+        )
+        if review["sha256"] != direct.get("receiptSha256"):
+            raise Refusal("direct review receipt changed after the review boundary")
+        blocking = review["normalized"]["blocking"]
+        seal_intent = node.get("directSeal")
+        replaying_seal = kernel.get("phase") in ("task_sealing", "task_verify_failed")
+        if replaying_seal:
+            if not isinstance(seal_intent, dict):
+                raise Refusal("interrupted direct seal has no durable intent")
+            proven_status = seal_intent.get("provenStatus")
+            current_fp = seal_intent.get("candidateFingerprint")
+            if proven_status not in ("done", "done_with_findings") or not isinstance(current_fp, str):
+                raise Refusal("interrupted direct seal intent is malformed")
+            if fixed_unreviewed != (proven_status == "done_with_findings"):
+                raise Refusal("seal replay must preserve its original provenance mode")
+            if live_head == direct.get("head"):
+                # Crash occurred before commit.sh moved HEAD; the candidate must still be exact.
+                if _candidate_fingerprint(worktree) != current_fp:
+                    raise Refusal("candidate changed after the interrupted seal checkpoint")
+            else:
+                parent = _git_ok(worktree, "rev-parse", live_head + "^")
+                subject = _git_ok(worktree, "show", "-s", "--format=%s", live_head)
+                if parent != direct.get("head") or subject != "chore(camus): %s" % task_id[:52]:
+                    raise Refusal("task HEAD moved outside the interrupted deterministic seal")
+                if _git_ok(worktree, "status", "--porcelain", "--untracked-files=all"):
+                    raise Refusal("sealed task commit has additional unreviewed changes")
+        else:
+            if live_head != direct.get("head"):
+                raise Refusal("direct review is bound to another task HEAD")
+            current_fp = _candidate_fingerprint(worktree)
+            if fixed_unreviewed:
+                if not blocking:
+                    raise Refusal("fixed-unreviewed seal requires preserved blocking findings")
+                proven_status = "done_with_findings"
+            else:
+                if blocking or direct.get("clean") is not True:
+                    raise Refusal("blocking review requires a fix and --fixed-unreviewed provenance")
+                if current_fp != direct.get("candidateFingerprint"):
+                    raise Refusal("candidate changed after its clean review")
+                proven_status = "done"
+            if not _git_ok(worktree, "status", "--porcelain", "--untracked-files=all"):
+                raise Refusal("direct candidate has no changes to seal")
+            node["directSeal"] = {
+                "reviewHead": direct.get("head"),
+                "candidateFingerprint": current_fp,
+                "provenStatus": proven_status,
+                "startedAt": now,
+            }
+            kernel["phase"] = "task_sealing"
+            kernel["updatedAt"] = now
+            run["state"]["kernel"] = kernel
+            run["state"]["stage"] = "kernel_task_sealing"
+            _atomic_write(run["statePath"], run["state"])
+
+        if live_head == direct.get("head"):
+            commit = _json_command([
+                "bash", os.path.join(os.path.dirname(os.path.abspath(__file__)), "commit.sh"),
+                worktree, "chore(camus): %s" % task_id[:52],
+            ], repo, env=dict(os.environ, CAMUS_REPO_ROOT=repo), label="direct deterministic commit")
+            if commit.get("committed") is not True or not isinstance(commit.get("sha"), str) \
+                    or not HEX_SHA_RE.fullmatch(commit["sha"]):
+                raise Refusal("direct commit did not seal a new full-SHA candidate: %s" % commit.get("reason"))
+            head = _git_ok(worktree, "rev-parse", "HEAD")
+            if head != commit["sha"]:
+                raise Refusal("direct commit output disagrees with task HEAD")
+        else:
+            head = live_head
+        verification = _run_verify(run, worktree, verify_timeout)
+        if verification.get("pass") is not True or verification.get("tampered") is True:
+            node["directSeal"]["verification"] = verification
+            kernel["phase"] = "task_verify_failed"
+            kernel["updatedAt"] = now
+            run["state"]["kernel"] = kernel
+            run["state"]["stage"] = "kernel_task_verify_failed"
+            _atomic_write(run["statePath"], run["state"])
+            return {
+                "schemaVersion": SCHEMA_VERSION,
+                "traceId": kernel.get("traceId"),
+                "action": "stop",
+                "reason": "direct sealed candidate did not pass deterministic verification",
+                "taskId": task_id,
+                "commit": head,
+                "verification": verification,
+                "resume": "fix the task worktree and run kernel review again, or rerun seal if the verifier was transient",
+            }
+        if verification.get("head") != head:
+            raise Refusal("direct verification is not bound to the sealed commit")
+        node["status"] = "ready_to_merge"
+        node["loopStatus"] = "direct_hybrid"
+        node["provenStatus"] = proven_status
+        node["provenCommit"] = head
+        node["rounds"] = review["round"]
+        if blocking:
+            node["findingsDeferred"] = len(blocking)
+            node["deferredFindings"] = blocking
+        node["kernelEvidence"] = {
+            "mode": "direct_hybrid",
+            "reviewReceipt": {
+                "path": review["path"], "sha256": review["sha256"], "nonce": review["nonce"],
+            },
+            "reviewedCandidateFingerprint": direct.get("candidateFingerprint"),
+            "sealedCandidateFingerprint": current_fp,
+            "acceptedCommit": head,
+            "verification": verification,
+            "acceptedAt": now,
+        }
+        decisions = node.get("decisions") if isinstance(node.get("decisions"), list) else []
+        node["decisions"] = decisions
+        decisions.append({
+            "what": "kernel sealed direct candidate as %s at %s" % (proven_status, head),
+            "why": "independent review receipt, candidate binding, deterministic commit, and HEAD-bound verification agree",
+            "alternative": "refuse or preserve fixed-unreviewed findings when clean review is not proven",
+        })
+        kernel["phase"] = "accepted"
+        kernel["acceptedTaskId"] = task_id
+        kernel["acceptedCommit"] = head
+        kernel["updatedAt"] = now
+        run["state"]["kernel"] = kernel
+        run["state"]["stage"] = "kernel_ready_to_merge"
+        _append_event(run["state"], "Kernel %s sealed direct %s as %s at %s" % (
+            kernel.get("traceId"), task_id, proven_status, head,
+        ))
+        _atomic_write(run["statePath"], run["state"])
+        return {
+            "schemaVersion": SCHEMA_VERSION,
+            "traceId": kernel.get("traceId"),
+            "action": "land_task",
+            "taskId": task_id,
+            "status": "ready_to_merge",
+            "provenStatus": proven_status,
+            "commit": head,
+            "reviewer": {key: review[key] for key in ("backend", "model", "effort", "round")},
+            "verification": verification,
+        }
 
 
 def accept_task(feat_id, task_id, result_file, final_commit=None, review_receipt=None,
@@ -1105,6 +1570,19 @@ def _parser():
     p.add_argument("task_id")
     p.add_argument("--repo", default=None)
     p.add_argument("--dir", dest="base", default=None, help=argparse.SUPPRESS)
+    for name in ("open", "review"):
+        p = sub.add_parser(name)
+        p.add_argument("feat_id")
+        p.add_argument("task_id")
+        p.add_argument("--repo", default=None)
+        p.add_argument("--dir", dest="base", default=None, help=argparse.SUPPRESS)
+    p = sub.add_parser("seal")
+    p.add_argument("feat_id")
+    p.add_argument("task_id")
+    p.add_argument("--fixed-unreviewed", action="store_true")
+    p.add_argument("--repo", default=None)
+    p.add_argument("--verify-timeout", type=int, default=3600)
+    p.add_argument("--dir", dest="base", default=None, help=argparse.SUPPRESS)
     return parser
 
 
@@ -1133,6 +1611,19 @@ def main(argv=None):
         elif options.command == "land":
             value = land_task(
                 options.feat_id, options.task_id, repo=options.repo, base=options.base,
+            )
+        elif options.command == "open":
+            value = open_task(
+                options.feat_id, options.task_id, repo=options.repo, base=options.base,
+            )
+        elif options.command == "review":
+            value = review_task(
+                options.feat_id, options.task_id, repo=options.repo, base=options.base,
+            )
+        elif options.command == "seal":
+            value = seal_task(
+                options.feat_id, options.task_id, fixed_unreviewed=options.fixed_unreviewed,
+                repo=options.repo, verify_timeout=options.verify_timeout, base=options.base,
             )
         elif options.command == "dispatch":
             value = dispatch_task(

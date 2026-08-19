@@ -73,6 +73,12 @@ usage: npx camus-cli <command>
                                                   validate result/reviewer/Git/verify evidence
                        kernel land <featId> <taskId>
                                                   merge an accepted task without a model turn
+                       kernel open <featId> <taskId>
+                                                  create/reattach the direct task worktree
+                       kernel review <featId> <taskId>
+                                                  run one bound reviewer with no model relay
+                       kernel seal <featId> <taskId> [--fixed-unreviewed]
+                                                  deterministic commit + HEAD-bound verify
   resume       list interrupted feat runs (canonical resumeArgs, JSON)
   retro        read-only run-history analytics over ~/.camus/reports: per-feat lines,
                  aggregates (status/posture mix, rounds, token p50/p90), evidence-gated
