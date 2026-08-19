@@ -2039,6 +2039,31 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       fallback.calls.filter((c) => c === 'args').length === 1, fallback.calls.join(','))
   }
 
+  // F60 (dogfood large-plan transport 2026-08-19): the caller can cross the slash-command
+  // boundary with a small feat id; the workflow itself loads the validated canonical task list.
+  {
+    const canonical = { argsVersion: 1, feat: 'F', tasks: ['only task'], policy: 'autonomous', posture: 'full' }
+    const fid = featIdOf(canonical.feat, canonical.tasks)
+    const loaded = await runFeat({ resumeFeatId: fid, posture: 'oneshot' },
+      { ...featBase, 'args-load': { raw: JSON.stringify(canonical) } },
+      [{ status: 'done', branch: 'b', decisions: [] }])
+    ok('F60 compact resumeFeatId loads the full canonical task list', loaded.workflowCalls === 1
+      && loaded.loopArgs[0].task === 'only task', J(loaded.loopArgs[0]))
+    ok('F60 explicit invocation fields override loaded defaults', loaded.loopArgs[0].posture === 'oneshot'
+      && loaded.argsJSON.posture === 'oneshot', J(loaded.argsJSON))
+    ok('F60 loader routes through the validated mechanical helper',
+      /resume_args\.py/.test(loaded.prompts['args-load'] || '') && (loaded.prompts['args-load'] || '').includes(fid),
+    loaded.prompts['args-load'])
+    let unsafe = null
+    try { await runFeat({ resumeFeatId: '../escape' }, featBase, []) }
+    catch (e) { unsafe = String((e && e.message) || e) }
+    ok('F60 unsafe resumeFeatId refuses before any file read', !!unsafe && /lowercase alphanumeric/.test(unsafe), unsafe)
+    let malformed = null
+    try { await runFeat({ resumeFeatId: fid }, { ...featBase, 'args-load': { raw: '{bad' } }, []) }
+    catch (e) { malformed = String((e && e.message) || e) }
+    ok('F60 malformed loader output fails loud', !!malformed && /could not load validated canonical args/.test(malformed), malformed)
+  }
+
   // F8: worktree cleanup contract — the headline "no more camus-wt-* litter" feature.
   {
     const tid = taskIdOf('F', ['only task'], 'only task')
