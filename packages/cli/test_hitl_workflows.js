@@ -42,6 +42,7 @@ function makeAgent(scripts, calls, capture) {
       capture.state = p   // the persist prompt embeds the state JSON (last write wins)
       ;(capture.states = capture.states || []).push(p)   // …and EVERY persist, for intermediate-state assertions
     }
+    if (capture && label === 'args') capture.args = p
     const s = (label in scripts) ? scripts[label] : scripts[key(label)]
     const out = typeof s === 'function' ? s(p, opts) : s
     // A REAL reviewer publishes the binding of the invocation it actually ran
@@ -110,6 +111,7 @@ async function runFeat(args, scripts, loopResults, budget) {
     res, calls, loopArgs, workflowCalls: li,
     stateJSON: capture.state ? extractBraces(capture.state) : null,
     stateJSONs: (capture.states || []).map(extractBraces).filter(Boolean),
+    argsJSON: capture.args ? extractBraces(capture.args) : null,
     prompts: capture.prompts || {},
   }
 }
@@ -998,7 +1000,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // harness mirrors that by deriving the receipt stub from the same object as the relay stub.
   const featMerge = { merged: true, committed: true, alreadyUpToDate: false, before: 'aaa', after: 'bbb', priorMergeCommit: null }
   const featBase = {
-    preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: '' },
+    preflight: { clean: true, base: 'main', dirtyFiles: 0, stateRaw: '', argsPresent: false },
     'fork-scan': J({ feats: [] }),          // no in-progress twin feat (0.2.7 item 8); fail-open if absent
     'parent-tree': J({ ran: true, dirty: false, paths: '' }), // clean main checkout at each task boundary (0.2.7 finding B)
     'steer': J({ read: true, note: null }), // steer_read.py sentinel: no note (0.2.7 item 7)
@@ -1022,7 +1024,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       }
       return out.join('\n')
     },
-    report: { written: true }, state: { written: true },
+    args: { written: true }, report: { written: true }, state: { written: true },
   }
   {
     const { res } = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
@@ -1103,7 +1105,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F18 ceiling halts needs_human at the boundary', over.res && over.res.status === 'needs_human' && over.res.stage === 'budget', over.res && (over.res.status + '/' + over.res.stage))
     ok('F18 no loop dispatched past the cap', over.workflowCalls === 0, String(over.workflowCalls))
     ok('F18 spent vs budget surfaced for the human', over.res && over.res.spentTokens === 90000 && over.res.budgetTokens === 50000, over.res && JSON.stringify([over.res.spentTokens, over.res.budgetTokens]))
-    ok('F18 resumeArgs persists budgetTokens', !!over.stateJSON && over.stateJSON.resumeArgs.budgetTokens === 50000, over.stateJSON && JSON.stringify(over.stateJSON.resumeArgs))
+    ok('F18 resume args sidecar persists budgetTokens', !!over.argsJSON && over.argsJSON.budgetTokens === 50000, over.argsJSON && JSON.stringify(over.argsJSON))
     const under = await runFeat({ feat: bFeat, tasks: bTasks, budgetTokens: 200000 }, featR,
       [{ status: 'done', branch: `camus/feat/${bid}/${b2}`, decisions: [] }])
     ok('F18b under budget → the next task runs', under.workflowCalls === 1 && under.res && under.res.status === 'done', under.res && under.res.status)
@@ -1111,11 +1113,11 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // F21 (VELOCITY §3 rule 1): an EXPLICIT posture is used verbatim — no recommendation agent,
   // forwarded to every loop, persisted, loud in the report, carried in resumeArgs.
   {
-    const { res, calls, loopArgs, stateJSON } = await runFeat({ feat: 'F', tasks: ['only task'], posture: 'oneshot' }, featBase,
+    const { res, calls, loopArgs, stateJSON, argsJSON } = await runFeat({ feat: 'F', tasks: ['only task'], posture: 'oneshot' }, featBase,
       [{ status: 'done', branch: 'b', decisions: [] }])
     ok('F21 explicit posture → forwarded, no rec agent', !!loopArgs[0] && loopArgs[0].posture === 'oneshot' && !calls.includes('posture-rec'), JSON.stringify(loopArgs[0] && loopArgs[0].posture))
     ok('F21 posture persisted + in the report header', !!stateJSON && stateJSON.posture === 'oneshot' && res.posture === 'oneshot')
-    ok('F21 resumeArgs carries the EXPLICIT posture', !!stateJSON && stateJSON.resumeArgs.posture === 'oneshot')
+    ok('F21 resume args sidecar carries the EXPLICIT posture', !!argsJSON && argsJSON.posture === 'oneshot')
   }
   {
     let threw = null
@@ -1457,7 +1459,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F13a downgrade is LOUD in the run log', !!fresh.stateJSON && (fresh.stateJSON.events || []).some((e) => /land requested but prior state is NOT needs_decision/.test(e.msg || '')))
     // …(b) and the canonical resumeArgs still carries the land list verbatim (audit P1: dropping it
     // on resume would re-enter the full loop — the exact run-5 failure mode).
-    ok('F13b resumeArgs persists land', !!fresh.stateJSON && JSON.stringify((fresh.stateJSON.resumeArgs || {}).land) === JSON.stringify([tid]), JSON.stringify(fresh.stateJSON && fresh.stateJSON.resumeArgs && fresh.stateJSON.resumeArgs.land))
+    ok('F13b resume args sidecar persists land', !!fresh.argsJSON && JSON.stringify((fresh.argsJSON || {}).land) === JSON.stringify([tid]), JSON.stringify(fresh.argsJSON && fresh.argsJSON.land))
     // (c) Run 1 halts verify-clean → persisted as needs_decision (the PROOF — since the
     // park-first reorder, with the PARKED sha riding the same persist)…
     const r1 = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
@@ -2001,10 +2003,40 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   {
     const on = await runFeat({ feat: 'F', tasks: ['only task'], steer: true }, featBase,
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
-    ok('F54 steer:true persists in resumeArgs', !!on.stateJSON && on.stateJSON.resumeArgs.steer === true, on.stateJSON && J(on.stateJSON.resumeArgs))
+    ok('F54 steer:true persists in resume args sidecar', !!on.argsJSON && on.argsJSON.steer === true, on.argsJSON && J(on.argsJSON))
     const off = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
-    ok('F54 default run carries no steer in resumeArgs', !!off.stateJSON && !('steer' in off.stateJSON.resumeArgs), off.stateJSON && J(off.stateJSON.resumeArgs))
+    ok('F54 default run carries no steer in resume args sidecar', !!off.argsJSON && !('steer' in off.argsJSON), off.argsJSON && J(off.argsJSON))
+  }
+
+  // F55 (dogfood throughput 2026-08-19): a large immutable task contract is written once, while
+  // every changing checkpoint/report stays compact. Failure to confirm the sidecar falls back to
+  // inline canonical args so persistence optimization can never make a run unresumable.
+  {
+    const huge = 'Implement the bounded contract. ' + 'RFC acceptance detail '.repeat(1200)
+    const compact = await runFeat({ feat: 'Large', tasks: [huge], posture: 'oneshot' }, featBase,
+      [{ status: 'verify_failed', task: huge, blocking: [{ priority: 1, title: 'red' }], decisions: [] }])
+    ok('F55 immutable args written exactly once', compact.calls.filter((c) => c === 'args').length === 1, compact.calls.join(','))
+    ok('F55 checkpoint references args and omits duplicated contracts', !!compact.stateJSON
+      && !('resumeArgs' in compact.stateJSON) && !!compact.stateJSON.resumeArgsRef
+      && !('spec' in compact.stateJSON.tasks[0]) && compact.stateJSON.tasks[0].brief.length <= 161,
+    compact.stateJSON && J(compact.stateJSON.tasks[0]))
+    ok('F55 changing checkpoint remains small', JSON.stringify(compact.stateJSON).length < 12000,
+      String(JSON.stringify(compact.stateJSON).length))
+    ok('F55 report compacts task and loop-result contracts', !!compact.res
+      && !('spec' in compact.res.tasks[0]) && !('task' in compact.res.loopResult)
+      && compact.res.loopResult.taskBrief.length <= 161, compact.res && J(compact.res.loopResult))
+    ok('F55 terminal state precedes report with no redundant trailing state write',
+      compact.calls.lastIndexOf('state') < compact.calls.lastIndexOf('report'), compact.calls.slice(-5).join(','))
+
+    const fallback = await runFeat({ feat: 'Fallback', tasks: [huge], posture: 'oneshot' },
+      { ...featBase, args: { written: false } },
+      [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
+    ok('F55 sidecar refusal falls back to inline canonical args', !!fallback.stateJSON
+      && fallback.stateJSON.resumeArgs && fallback.stateJSON.resumeArgs.tasks[0] === huge.trim(),
+    fallback.stateJSON && Object.keys(fallback.stateJSON).join(','))
+    ok('F55 a refused sidecar is attempted once, not at every checkpoint',
+      fallback.calls.filter((c) => c === 'args').length === 1, fallback.calls.join(','))
   }
 
   // F8: worktree cleanup contract — the headline "no more camus-wt-* litter" feature.

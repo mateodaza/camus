@@ -3,9 +3,9 @@
     python3 test_resume_scan.py      # stdlib runner (bottom)
     python3 -m pytest -q
 
-Covers: only a STALE running feat with canonical resumeArgs is resumable; a FRESH running feat is
-not (still live); every terminal status is excluded; old-format / malformed-task states are
-rejected whole; the emitted entry reproduces the full original args + featId.
+Covers: only a STALE running feat with canonical inline or sidecar args is resumable; a FRESH
+running feat is not (still live); every terminal status is excluded; malformed or incoherent
+states are rejected whole; the emitted entry reproduces the full original args + featId.
 """
 import json
 import os
@@ -23,7 +23,7 @@ def running_state(tasks=None, **arg_extra):
     t = tasks if tasks is not None else ["task a", "task b"]
     args = {"argsVersion": 1, "feat": "My Feat", "tasks": t, "policy": "ask_on_ambiguity"}
     args.update(arg_extra)
-    return {"status": "running", "featId": "my-feat-abc123", "resumeArgs": args,
+    return {"status": "running", "featId": R._feat_id(args), "resumeArgs": args,
             "tasks": [{"spec": s} for s in t if isinstance(s, str)]}
 
 
@@ -73,7 +73,36 @@ def test_entry_reproduces_full_args():
     assert e["model"] == "fable" and e["modelTier"] == "complex"
     assert e["skipPlan"] is True and e["targetPath"] == "."
     assert e["answers"] == {"t-1": "do X"}
-    assert e["featId"] == "my-feat-abc123"   # included for the scheduler, ignored by the runner
+    assert e["featId"] == s["featId"]   # included for the scheduler, ignored by the runner
+
+
+def test_compact_sidecar_reproduces_full_args():
+    d = tempfile.mkdtemp(prefix="camus_rs_")
+    s = running_state(model="gpt", posture="oneshot")
+    args = s.pop("resumeArgs")
+    ref = s["featId"] + ".args.json"
+    s.update({"resumeArgsRef": ref, "resumeArgsHash": R._args_hash(args)})
+    _write(d, ref, args)
+    e = R.resumable_entry(s, STALE, THRESH, d)
+    assert e is not None and e["model"] == "gpt" and e["posture"] == "oneshot"
+
+
+def test_args_hash_matches_js_unicode_vector():
+    args = {"argsVersion": 1, "feat": "Café 🐕", "tasks": ["模型", "ssh"],
+            "policy": "ask_on_ambiguity"}
+    assert R._args_hash(args) == "fnv1a32:vgba1b"
+
+
+def test_compact_sidecar_rejects_hash_mismatch_and_traversal():
+    d = tempfile.mkdtemp(prefix="camus_rs_")
+    s = running_state()
+    args = s.pop("resumeArgs")
+    ref = s["featId"] + ".args.json"
+    _write(d, ref, args)
+    s.update({"resumeArgsRef": ref, "resumeArgsHash": "fnv1a32:wrong"})
+    assert R.resumable_entry(s, STALE, THRESH, d) is None
+    s.update({"resumeArgsRef": "../" + ref, "resumeArgsHash": R._args_hash(args)})
+    assert R.resumable_entry(s, STALE, THRESH, d) is None
 
 
 # --- P2b: malformed task list rejects the WHOLE state ------------------------
@@ -88,6 +117,12 @@ def test_blank_or_nonstring_task_rejects_whole_state():
 def test_missing_feat_title_skipped():
     s = running_state()
     del s["resumeArgs"]["feat"]
+    assert R.resumable_entry(s, STALE, THRESH) is None
+
+
+def test_mismatched_feat_identity_skipped():
+    s = running_state()
+    s["featId"] = "another-feat-deadbe"
     assert R.resumable_entry(s, STALE, THRESH) is None
 
 
@@ -121,6 +156,19 @@ def test_scan_returns_only_stale_running():
     _write(d, "junk.json", "{not json", age=STALE, now=now)
     res = R.scan(d, now=now, stale_sec=THRESH)
     assert len(res) == 1 and res[0]["feat"] == "My Feat"
+
+
+def test_scan_accepts_compact_state_and_ignores_args_artifact():
+    now = 1_000_000
+    d = tempfile.mkdtemp(prefix="camus_rs_")
+    s = running_state(model="gpt")
+    args = s.pop("resumeArgs")
+    ref = s["featId"] + ".args.json"
+    s.update({"resumeArgsRef": ref, "resumeArgsHash": R._args_hash(args)})
+    _write(d, ref, args, age=STALE, now=now)
+    _write(d, "state.json", s, age=STALE, now=now)
+    res = R.scan(d, now=now, stale_sec=THRESH)
+    assert len(res) == 1 and res[0]["tasks"] == ["task a", "task b"]
 
 
 def test_scan_missing_dir_returns_empty():
