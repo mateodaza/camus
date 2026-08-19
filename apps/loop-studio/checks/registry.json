@@ -1,0 +1,19 @@
+{
+  "endpoints": [
+    { "host": "api.x.ai", "modelIdPattern": "^grok", "org": "xai", "family": "grok" },
+    { "host": "dashscope.aliyuncs.com", "modelIdPattern": "^qwen", "org": "alibaba", "family": "qwen" },
+    { "host": "api.moonshot.ai", "modelIdPattern": "^kimi", "org": "moonshot", "family": "kimi" }
+  ],
+  "executors": {
+    "claude_cli": { "org": "anthropic", "family": "claude" },
+    "codex_cli": { "org": "openai", "family": "gpt" }
+  },
+  "families": {
+    "gpt": "openai",
+    "gpt_oss": "openai",
+    "claude": "anthropic",
+    "grok": "xai",
+    "qwen": "alibaba",
+    "kimi": "moonshot"
+  }
+}
