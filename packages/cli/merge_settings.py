@@ -9,7 +9,8 @@ The profile is deliberately NARROW (per the 2026-06-09 cross-vendor review):
      and `camus/feat...` branches, writes run state under ~/.camus, runs its own gate scripts;
      it does NOT push/deploy/migrate/publish — human merge & publish stay the boundary).
   3. permissions.allow += narrow rules for ONLY the installed gate scripts (review.sh,
-     codex_review.sh, verify.sh, prep.sh, commit.sh, env_check.py). NOT broad `Bash(git:*)` /
+     codex_review.sh, verify.sh, prep.sh, commit.sh, env_check.py, feat_kernel.py). NOT broad
+     `Bash(git:*)` /
      `Bash(pnpm:*)` — auto mode already auto-approves local working-dir edits + declared dep
      installs, and broad shell/PM rules are either risky or dropped in auto mode (narrow rules
      carry over).
@@ -102,6 +103,9 @@ _GATE_SCRIPTS = [
     ("python3", "resume_args.py"), # validated read-only large-plan transport: a compact
                                     # resumeFeatId loads canonical args without asking the slash
                                     # command mediator to retranscribe a multi-kilobyte task list.
+    ("python3", "feat_kernel.py"), # hybrid control plane: validates canonical state/contracts,
+                                    # owns checkout/env/verify/receipt recovery + typed next action;
+                                    # the model receives only the selected task contract.
     ("python3", "steer_read.py"), # mechanical steer-note read+sentinel (field soak 2026-06-13 item
                                   # 7; read/consume SPLIT, re-soak 2026-06-14 finding A): {read,note}
                                   # so an agent failure is distinguishable from a present bad note (the
