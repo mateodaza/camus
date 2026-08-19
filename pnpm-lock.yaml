@@ -37,6 +37,8 @@ importers:
 
   packages/cli: {}
 
+  packages/trust: {}
+
 packages:
 
   '@emnapi/runtime@1.11.0':

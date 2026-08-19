@@ -25,8 +25,8 @@ SAFE-to-auto-resume rule (ALL must hold):
   - the state file has been idle >= CAMUS_RESUME_STALE_SEC (default 1800s) — a still-LIVE run touches
     its state file as it advances, so a fresh mtime means "don't restart it" (avoids launching a
     second copy that would collide on the same branch/worktree), AND
-  - a canonical `resumeArgs` (argsVersion 1) is present with a non-empty list of non-empty task
-    strings — otherwise the original invocation can't be faithfully reproduced.
+  - canonical args (argsVersion 1) are either present inline (legacy/fallback) or in the state's
+    exact sibling `resumeArgsRef`; referenced bytes must match `resumeArgsHash`, schema, and featId.
   (A lease/heartbeat would be more robust than mtime; left as a future hardening.)
 
 Terminal / NOT auto-resumable (a deliberate stop — a human decides next):
@@ -36,6 +36,7 @@ Terminal / NOT auto-resumable (a deliberate stop — a human decides next):
 """
 import json
 import os
+import re
 import sys
 import time
 
@@ -83,7 +84,64 @@ def _read_feat(path):
     return obj if isinstance(obj, dict) else None
 
 
-def resumable_entry(obj, age_sec, stale_sec):
+def _base36(n):
+    chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+    if n == 0:
+        return "0"
+    out = ""
+    while n:
+        n, rem = divmod(n, 36)
+        out = chars[rem] + out
+    return out
+
+
+def _fnv1a_js(text):
+    """Mirror the workflow's JS FNV-1a over UTF-16 code units."""
+    encoded = text.encode("utf-16-le", "surrogatepass")
+    h = 0x811C9DC5
+    for i in range(0, len(encoded), 2):
+        h ^= encoded[i] | (encoded[i + 1] << 8)
+        h = (h * 0x01000193) & 0xFFFFFFFF
+    return _base36(h)
+
+
+def _args_hash(args):
+    """Mirror JS fnv1a(JSON.stringify(args))."""
+    canonical = json.dumps(args, ensure_ascii=False, separators=(",", ":"))
+    return "fnv1a32:" + _fnv1a_js(canonical)
+
+
+def _feat_id(args):
+    feat = args.get("feat") if isinstance(args, dict) else None
+    tasks = args.get("tasks") if isinstance(args, dict) else None
+    if not isinstance(feat, str) or not feat.strip() or not isinstance(tasks, list):
+        return None
+    if not tasks or not all(isinstance(t, str) and t.strip() for t in tasks):
+        return None
+    slug = re.sub(r"[^a-z0-9]+", "-", feat.lower()).strip("-")[:24] or "task"
+    digest = _fnv1a_js(feat + "\n---\n" + "\n".join(tasks))[:6]
+    return "%s-%s" % (slug, digest)
+
+
+def _canonical_args(obj, feats_dir=None):
+    """Read inline legacy args or a validated exact sibling sidecar. Fail closed on any mismatch."""
+    inline = obj.get("resumeArgs")
+    if isinstance(inline, dict):
+        return inline
+    feat_id = obj.get("featId")
+    ref = obj.get("resumeArgsRef")
+    expected_hash = obj.get("resumeArgsHash")
+    expected_ref = "%s.args.json" % feat_id if feat_id else None
+    if not feats_dir or not feat_id or ref != expected_ref or not isinstance(expected_hash, str):
+        return None
+    # Exact basename equality above excludes absolute paths, traversal, and cross-feat references.
+    args = _read_feat(os.path.join(feats_dir, ref))
+    if not isinstance(args, dict) or _args_hash(args) != expected_hash:
+        return None
+    return args
+
+
+def resumable_entry(obj, age_sec, stale_sec, feats_dir=None):
     """Map a feat-state object to the EXACT resume args, or None if it's not safe to auto-resume.
     `age_sec` = seconds since the state file was last written (None if unknown)."""
     if not isinstance(obj, dict):
@@ -95,9 +153,9 @@ def resumable_entry(obj, age_sec, stale_sec):
     if age_sec is None or age_sec < stale_sec:
         return None
     feat_id = obj.get("featId")
-    args = obj.get("resumeArgs")
-    # P1: require the canonical resumeArgs (the FULL original invocation). A state without it was
-    # written by an older format and cannot be faithfully resumed — skip rather than resume wrongly.
+    args = _canonical_args(obj, feats_dir)
+    # P1: require canonical full args. Inline is the legacy/failure fallback; compact states point
+    # to an immutable sibling sidecar. Missing or incoherent bytes are skipped, never guessed.
     if not feat_id or not isinstance(args, dict) or args.get("argsVersion") != SUPPORTED_ARGS_VERSION:
         return None
     feat = args.get("feat")
@@ -107,6 +165,10 @@ def resumable_entry(obj, age_sec, stale_sec):
     # P2b: reject the WHOLE state if ANY task is malformed. A filtered/truncated task list would
     # recompute a DIFFERENT featId in the runner and resume a DIFFERENT feat. All-or-nothing.
     if not all(isinstance(t, str) and t.strip() for t in tasks):
+        return None
+    # The scheduler's featId is ignored by the workflow; verify identity here so a stale or
+    # mis-associated sidecar cannot silently launch a different feat under the old state's label.
+    if _feat_id(args) != feat_id:
         return None
     entry = dict(args)          # emit the canonical args verbatim (the thing you pass to the workflow)
     entry["featId"] = feat_id   # for the scheduler's logging/dedup; ignored by the runner
@@ -135,7 +197,7 @@ def scan(feats_dir, now=None, stale_sec=None):
             age = now - os.path.getmtime(path)
         except OSError:
             age = None
-        entry = resumable_entry(obj, age, stale_sec)
+        entry = resumable_entry(obj, age, stale_sec, feats_dir)
         if entry is not None:
             out.append(entry)
     return out

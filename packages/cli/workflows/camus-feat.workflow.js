@@ -205,6 +205,8 @@ function taskIdentity(task) {
 // state (Codex review note 2026-06-09). The frozen gate (skill/workflow) still lives in ~/.claude;
 // only mutable RUN state moved out.
 const STATE_PATH = `~/.camus/feats/${featId}.json`
+const ARGS_REF = `${featId}.args.json`
+const ARGS_PATH = `~/.camus/feats/${ARGS_REF}`
 const REPORT_PATH = `~/.camus/reports/${featId}.json`
 
 // LINEAR DAG: every node carries dependsOn:[] (always empty in M1; lets M2 add edges
@@ -242,6 +244,14 @@ const resumeArgs = {
   // bleed into the persisted canonical args).
   ...(Object.keys(ANSWERS).length ? { answers: { ...ANSWERS } } : {}),
 }
+// Canonical args can dwarf the changing run state (large RFC task lists routinely exceed 40 KB).
+// Write them once per distinct invocation in a sibling sidecar, then checkpoint only a
+// deterministic reference. FNV is a corruption/coherence check, not an authenticity boundary —
+// both files live in the same operator-owned directory. resume_scan.py validates the reference,
+// hash, schema, and feat identity before using it. Legacy inline resumeArgs remain readable.
+const resumeArgsHash = `fnv1a32:${fnv1a(JSON.stringify(resumeArgs))}`
+let argsSidecarAttempted = false
+let argsSidecarReady = false
 const state = {
   // `feat` (the title) is persisted so a watchdog/resumer can reconstruct the original args from
   // state alone: featId is a one-way deterministic hash of FEAT+tasks, so without the title the
@@ -264,6 +274,17 @@ function brief(spec, max = 90) {
   const dot = t.indexOf('. ')
   const cut = (dot > 12 && dot < max) ? dot : max
   return t.length > cut ? t.slice(0, cut).replace(/[\s,;(]+$/, '') + '…' : t
+}
+
+function compactTask(t) {
+  const { spec, ...rest } = t
+  return { ...rest, brief: brief(spec, 160) }
+}
+
+function compactLoopResult(result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result
+  const { task, ...rest } = result
+  return task == null ? result : { ...rest, taskBrief: brief(task, 160) }
 }
 // A step-worthy event: lands in the progress UI (log) AND in the persisted run log (status.py).
 // Persisted on the NEXT persistState call — the FIRST one fires when task 1 starts, so
@@ -333,12 +354,13 @@ const POSTURE_REC_SCHEMA = {
 }
 const PREFLIGHT_SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['clean', 'base', 'dirtyFiles', 'stateRaw'],
+  required: ['clean', 'base', 'dirtyFiles', 'stateRaw', 'argsPresent'],
   properties: {
     clean: { type: 'boolean', description: 'true ONLY if `git status --porcelain` printed nothing' },
     base: { type: 'string', description: 'current branch name (the base the feat is cut from)' },
     dirtyFiles: { type: 'number', description: 'count of porcelain lines' },
     stateRaw: { type: 'string', description: 'exact contents of the prior feat state file, or "" if absent' },
+    argsPresent: { type: 'boolean', description: 'true only when the referenced resume-args sibling exists' },
   },
 }
 const FEATBRANCH_SCHEMA = {
@@ -387,11 +409,47 @@ const CLEANUP_SCHEMA = {
 }
 
 // ── State + report persistence (agents do all file I/O; script supplies bytes) ─
+async function ensureResumeArgsSidecar() {
+  if (argsSidecarReady || argsSidecarAttempted) return argsSidecarReady
+  argsSidecarAttempted = true
+  try {
+    const saved = await agent(
+      `Persist canonical Camus feat resume args. Create the directory ~/.camus/feats if it does not exist, then write the following EXACT JSON (verbatim, byte-for-byte — do NOT reformat, summarize, or add anything) to ${ARGS_PATH} :
+
+${JSON.stringify(resumeArgs, null, 2)}
+
+Return {written:true} once that file is on disk with exactly that content.`,
+      { model: MODEL_RUNNER, phase: 'Preflight', label: 'args', schema: WRITTEN_SCHEMA }
+    )
+    argsSidecarReady = !!(saved && saved.written === true)
+  } catch (e) {
+    argsSidecarReady = false
+    log(`Resume-args sidecar write failed; retaining inline args in checkpoints (${String((e && e.message) || e)}).`)
+  }
+  if (!argsSidecarReady) log('Resume-args sidecar was not confirmed; retaining inline args in checkpoints.')
+  return argsSidecarReady
+}
+
+function stateSnapshot() {
+  const { resumeArgs: _inlineArgs, tasks, ...rest } = state
+  return {
+    ...rest,
+    ...(argsSidecarReady
+      ? { resumeArgsRef: ARGS_REF, resumeArgsHash }
+      : { resumeArgs }),
+    // The canonical task contracts already live in resumeArgs. Dynamic checkpoints only need the
+    // stable task identity plus a readable headline and changing execution fields.
+    tasks: tasks.map(compactTask),
+  }
+}
+
 async function persistState(phaseName) {
+  await ensureResumeArgsSidecar()
+  const snapshot = stateSnapshot()
   await agent(
     `Persist Camus feat state. Create the directory ~/.camus/feats if it does not exist, then write the following EXACT JSON (verbatim, byte-for-byte — do NOT reformat, summarize, or add anything) to ${STATE_PATH} :
 
-${JSON.stringify(state, null, 2)}
+${JSON.stringify(snapshot, null, 2)}
 
 Return {written:true} once that file is on disk with exactly that content.`,
     { model: MODEL_RUNNER, phase: phaseName, label: 'state', schema: WRITTEN_SCHEMA }
@@ -439,11 +497,17 @@ async function finalize(status, extra = {}) {
   // right resume shape per stage (posture | budget | steer | task).
   if (typeof extra.question === 'string' && extra.question) state.question = extra.question
   if (typeof extra.stage === 'string' && extra.stage) state.stage = extra.stage
+  // Persist the terminal state BEFORE the report. If report writing is interrupted, status/watch
+  // must not claim the run is still active (the old report→state order produced exactly that split).
+  await persistState('Report')
+  const reportExtra = extra && extra.loopResult
+    ? { ...extra, loopResult: compactLoopResult(extra.loopResult) }
+    : extra
   const report = {
     featId, feat: FEAT, featBranch, base: state.base, status,
     env: state.env, baseline: state.baseline, envRecheck: state.envRecheck, integration: state.integration,
     tasks: state.tasks.map((t) => ({
-      taskId: t.taskId, spec: t.spec, dependsOn: t.dependsOn, status: t.status, branch: t.branch, loopStatus: t.loopStatus,
+      taskId: t.taskId, brief: brief(t.spec, 160), dependsOn: t.dependsOn, status: t.status, branch: t.branch, loopStatus: t.loopStatus,
       decisions: t.decisions || [],
       // OPTIONAL loop telemetry — only emitted when the loop reported it (Feature 3).
       ...(t.tier != null ? { tier: t.tier } : {}),
@@ -471,7 +535,8 @@ async function finalize(status, extra = {}) {
     // loop's reported branch diverged from the deterministic one (P3 follow-up).
     merged: state.tasks.filter((t) => t.status === 'done' || t.status === 'done_with_findings').map((t) => t.mergedBranch || t.branch),
     featBranchToReview: featBranch,
-    ...extra,
+    ...(argsSidecarReady ? { resumeArgsRef: ARGS_REF, resumeArgsHash } : {}),
+    ...reportExtra,
   }
   await agent(
     `Write the Camus feat REPORT. Create the directory ~/.camus/reports if it does not exist, then write the following EXACT JSON (verbatim, byte-for-byte) to ${REPORT_PATH} :
@@ -481,7 +546,6 @@ ${JSON.stringify(report, null, 2)}
 Return {written:true}.`,
     { model: MODEL_RUNNER, phase: 'Report', label: 'report', schema: WRITTEN_SCHEMA }
   )
-  await persistState('Report')
   return report
 }
 
@@ -494,7 +558,8 @@ const pf = await agent(
 1b. \`git rev-parse --verify -q HEAD >/dev/null\` — if THIS fails (a repo with ZERO commits), return base: "UNBORN" (clean: false, dirtyFiles: 0) and skip step 2.
 2. \`git status --porcelain --ignore-submodules=all\`  -> clean is true ONLY if this prints NOTHING; dirtyFiles = number of lines
 3. \`cat ${STATE_PATH} 2>/dev/null || true\` -> stateRaw = the exact file contents, or "" if the file does not exist
-Return {clean, base, dirtyFiles, stateRaw}.`,
+4. \`test -f ${ARGS_PATH}\` -> argsPresent = true only when it exits 0 (do NOT read the file)
+Return {clean, base, dirtyFiles, stateRaw, argsPresent}.`,
   { model: MODEL_RUNNER, phase: 'Preflight', label: 'preflight', schema: PREFLIGHT_SCHEMA }
 )
 if (!pf) return finalize('infra_error', { stage: 'preflight', note: 'preflight agent returned nothing' })
@@ -561,6 +626,13 @@ const PROVEN_DECISION = new Set()
 // re-enter review for nothing and collide on the existing branch/worktree.
 const PROVEN_READY = new Set()
 const prior = pf.stateRaw ? extractJsonObject(pf.stateRaw) : null
+// A compact prior state plus an existing sidecar proves that this invocation already sealed args.
+// Avoid paying another large write on every manual resume. The scanner independently verifies the
+// sidecar bytes before auto-resuming; a missing/corrupt sidecar therefore fails closed there.
+if (prior && prior.resumeArgsRef === ARGS_REF && prior.resumeArgsHash === resumeArgsHash && pf.argsPresent === true) {
+  argsSidecarAttempted = true
+  argsSidecarReady = true
+}
 if (prior && Array.isArray(prior.tasks)) {
   // Carry forward BOTH done AND noop. A done task is merged into the feat branch (persisted in git);
   // a noop task contributed nothing but its deterministic branch/worktree name is already taken —
