@@ -11,8 +11,8 @@
     "start": "node server.mjs",
     "rehearse": "ENGINE=mock node server.mjs",
     "doctor": "node server.mjs --doctor",
-    "test": "node verify.test.mjs && node api.test.mjs && node halt.test.mjs && node anchor.test.mjs && node igniter-guard.test.mjs && node resume.test.mjs && node custody.test.mjs && node lib/identity.test.mjs && node lib/grandfather.test.mjs && node connections.test.mjs",
-    "test:verify": "node verify.test.mjs"
+    "test": "node --require ./test-env.cjs verify.test.mjs && node --require ./test-env.cjs api.test.mjs && node --require ./test-env.cjs halt.test.mjs && node --require ./test-env.cjs anchor.test.mjs && node --require ./test-env.cjs igniter-guard.test.mjs && node --require ./test-env.cjs resume.test.mjs && node --require ./test-env.cjs custody.test.mjs && node --require ./test-env.cjs lib/identity.test.mjs && node --require ./test-env.cjs lib/grandfather.test.mjs && node --require ./test-env.cjs connections.test.mjs && node --require ./test-env.cjs catalog-grandfather.test.mjs",
+    "test:verify": "node --require ./test-env.cjs verify.test.mjs"
   },
   "bin": {
     "camus-loop-studio": "./server.mjs"
