@@ -1,7 +1,7 @@
 export const meta = {
   name: 'camus-feat',
   description: 'Run an ordered task list as ONE feature through the Camus M1 gate: preflight → feat branch → env+baseline → per-task v2-lite loop (merge on done) → env re-check + integration verify → report. Linear only (no DAG/parallel/bisection).',
-  whenToUse: 'Drive a small ordered feat (2–3 tasks in M1) through v2-overnight M1. args = { feat: "<title>", tasks: ["task 1", "task 2", ...], targetPath?, policy?, answers?, posture? }. policy ∈ autonomous|ask_on_ambiguity(default)|ask_on_major controls when a task PAUSES for a human (status needs_human); on a resume after a pause, answers={ "<taskId>": "..." } threads the decision back in. posture ∈ full(default)|oneshot — review cadence (VELOCITY §1): absent, a classifier recommends and asking policies confirm a speed posture ONCE; oneshot tasks report done_with_findings, never review-clean. Reuses camus-loop per task with feat-scoped branch identity. Launch FROM the target repo (cwd = repo root). Run `npx camus-cli check` (or `bash install.sh --check` from the package) yourself first — gate-freshness is a human step.',
+  whenToUse: 'Drive a small ordered feat (2–3 tasks in M1) through v2-overnight M1. args = { feat: "<title>", tasks: ["task 1", "task 2", ...], targetPath?, policy?, answers?, posture? }; for an existing large plan, { resumeFeatId: "<id>", posture? } mechanically loads its validated canonical args without retranscribing the task list. policy ∈ autonomous|ask_on_ambiguity(default)|ask_on_major controls when a task PAUSES for a human (status needs_human); on a resume after a pause, answers={ "<taskId>": "..." } threads the decision back in. posture ∈ full(default)|oneshot — review cadence (VELOCITY §1): absent, a classifier recommends and asking policies confirm a speed posture ONCE; oneshot tasks report done_with_findings, never review-clean. Reuses camus-loop per task with feat-scoped branch identity. Launch FROM the target repo (cwd = repo root). Run `npx camus-cli check` (or `bash install.sh --check` from the package) yourself first — gate-freshness is a human step.',
   phases: [
     { title: 'Preflight',    detail: 'Agent confirms the base working tree is CLEAN and reads any prior feat state (resume). Dirty → stop.' },
     { title: 'Feat branch',  detail: 'Agent cuts (or, on resume, checks out) camus/feat-<featId> from the current base branch.' },
@@ -43,6 +43,32 @@ turn this green — it only destroys the evidence a human needs.`
 // trading this loud error for silent arg mangling. The error teaches instead.
 let A = args
 if (typeof A === 'string') { try { A = JSON.parse(A) } catch (_) { /* leave as string -> fails below */ } }
+// LARGE-PLAN TRANSPORT (dogfood 2026-08-19): the slash-command mediator dropped a 12-task,
+// 42 KB task array while translating `/camus-feat`, then spent minutes trying to reconstruct it.
+// A small resumeFeatId crosses that LLM boundary reliably; a mechanical helper validates and reads
+// the canonical args sidecar, after which explicit fields on this invocation (e.g. posture) win.
+// The workflow still receives the complete task contracts before computing identity or dispatching.
+if (A && typeof A === 'object' && !Array.isArray(A) && A.resumeFeatId != null) {
+  const resumeFeatId = String(A.resumeFeatId)
+  if (!/^[a-z0-9][a-z0-9-]{0,127}$/.test(resumeFeatId)) {
+    throw new Error('camus-feat: resumeFeatId must be a lowercase alphanumeric/hyphen feat id')
+  }
+  const loaded = await agent(
+    `THIN canonical-args loader. Run EXACTLY this one command and return its stdout VERBATIM as {raw}:\n  python3 ${SKILL}/resume_args.py ${JSON.stringify(resumeFeatId)}\nDo not inspect, summarize, or modify the JSON.`,
+    { model: MODEL_RUNNER, phase: 'Preflight', label: 'args-load', schema: {
+      type: 'object', additionalProperties: false, required: ['raw'],
+      properties: { raw: { type: 'string', description: 'exact stdout from resume_args.py' } },
+    } }
+  )
+  let loadedArgs = null
+  try { loadedArgs = JSON.parse(loaded && loaded.raw) } catch (_) { /* loud refusal below */ }
+  if (!loadedArgs || typeof loadedArgs !== 'object' || Array.isArray(loadedArgs)) {
+    throw new Error(`camus-feat: could not load validated canonical args for resumeFeatId ${resumeFeatId}`)
+  }
+  const overrides = { ...A }
+  delete overrides.resumeFeatId
+  A = { ...loadedArgs, ...overrides }
+}
 if (!A || typeof A !== 'object' || Array.isArray(A)) {
   throw new Error('camus-feat: args must be an object { feat, tasks: [...] }'
     + (typeof args === 'string'

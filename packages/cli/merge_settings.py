@@ -99,6 +99,9 @@ _GATE_SCRIPTS = [
                                   # preflight can spot a same-title/different-id in-progress feat.
                                   # Read-only (no git, no egress); allowlisted so its thin runner
                                   # doesn't re-prompt in auto mode.
+    ("python3", "resume_args.py"), # validated read-only large-plan transport: a compact
+                                    # resumeFeatId loads canonical args without asking the slash
+                                    # command mediator to retranscribe a multi-kilobyte task list.
     ("python3", "steer_read.py"), # mechanical steer-note read+sentinel (field soak 2026-06-13 item
                                   # 7; read/consume SPLIT, re-soak 2026-06-14 finding A): {read,note}
                                   # so an agent failure is distinguishable from a present bad note (the
