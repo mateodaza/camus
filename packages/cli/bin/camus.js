@@ -66,6 +66,7 @@ usage: npx camus-cli <command>
   kernel [...]       deterministic hybrid control plane (models choose; code enforces):
                        kernel next <featId>       compact read-only next-action envelope
                        kernel task <featId>       materialize only the selected task contract
+                       kernel dispatch <featId>   atomically mark selected task running + emit it
                        kernel prepare <featId>    checkout + env + baseline + receipt recovery
                        kernel usage <featId> ...  checkpoint monotonic tokens/retries/phase
   resume       list interrupted feat runs (canonical resumeArgs, JSON)

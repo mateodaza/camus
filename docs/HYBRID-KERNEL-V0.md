@@ -101,6 +101,11 @@ transition is evidenced.
 a requested task that differs from the kernel selection. Sibling context is compact briefs, not
 their contracts.
 
+`camus kernel dispatch <featId> [taskId]` is the model-call boundary. Under the feature lock it
+rechecks budgets and selection, atomically moves that task to `running`, binds the trace to it, and
+emits its loop arguments. Repeating the same dispatch is idempotent; another task or trace refuses.
+This removes the crash window between a read-only selection and an unrecorded model launch.
+
 `camus kernel prepare <featId>` is the mutating phase boundary. In order, it:
 
 1. Locks the feature.

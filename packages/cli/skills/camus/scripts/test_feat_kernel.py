@@ -243,6 +243,60 @@ def test_prepare_refuses_dirty_repo_before_checkout_or_state_write():
     assert _git(repo, "branch", "--show-current") == "main"
 
 
+def test_dispatch_atomically_marks_running_and_replays_without_duplicate_event():
+    base = tempfile.mkdtemp(prefix="camus_kernel_")
+    repo = _repo()
+    feat_id, _args, state = _fixture(
+        base, tasks=["run me"], statuses=["pending"], extra_args={"targetPath": repo}
+    )
+    state["kernel"] = {
+        "schemaVersion": 1,
+        "traceId": feat_id + ":a1",
+        "attempt": 1,
+        "phase": "ready",
+        "activeTaskId": state["tasks"][0]["taskId"],
+        "repoHead": _git(repo, "rev-parse", "HEAD"),
+        "budgets": {"wallSeconds": 1000, "tokens": 100, "retries": 2},
+        "usage": {"startedAt": 100, "tokens": 0, "retries": 0},
+    }
+    _write(os.path.join(base, "feats", feat_id + ".json"), state)
+    first = K.dispatch_task(feat_id, repo=repo, base=base, now=101)
+    second = K.dispatch_task(feat_id, repo=repo, base=base, now=102)
+    assert first["dispatched"] is True and first["replayed"] is False
+    assert second["dispatched"] is True and second["replayed"] is True
+    persisted = K._validated_run(feat_id, base)["state"]
+    assert persisted["tasks"][0]["status"] == "running"
+    assert persisted["kernel"]["phase"] == "task_running"
+    assert [event["msg"] for event in persisted["events"]].count(
+        "Kernel %s:a1 dispatched %s" % (feat_id, state["tasks"][0]["taskId"])
+    ) == 1
+
+
+def test_dispatch_refuses_after_budget_exhaustion():
+    base = tempfile.mkdtemp(prefix="camus_kernel_")
+    repo = _repo()
+    feat_id, _args, state = _fixture(
+        base, tasks=["run me"], statuses=["pending"], extra_args={"targetPath": repo}
+    )
+    state["kernel"] = {
+        "schemaVersion": 1,
+        "traceId": feat_id + ":a1",
+        "attempt": 1,
+        "phase": "ready",
+        "activeTaskId": state["tasks"][0]["taskId"],
+        "repoHead": _git(repo, "rev-parse", "HEAD"),
+        "budgets": {"wallSeconds": None, "tokens": 10, "retries": 2},
+        "usage": {"startedAt": 100, "tokens": 10, "retries": 0},
+    }
+    _write(os.path.join(base, "feats", feat_id + ".json"), state)
+    try:
+        K.dispatch_task(feat_id, repo=repo, base=base, now=101)
+        assert False, "dispatch crossed an exhausted budget"
+    except K.Refusal as exc:
+        assert "token budget exhausted" in str(exc)
+    assert K._validated_run(feat_id, base)["nodes"][0]["status"] == "pending"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

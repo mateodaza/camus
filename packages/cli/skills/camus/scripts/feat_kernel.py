@@ -15,6 +15,10 @@ Commands:
       Read-only. Materialize the selected task's camus-loop args only when the orchestrator is
       ready to dispatch it. This is the sole large-payload boundary.
 
+  feat_kernel.py dispatch FEAT_ID [TASK_ID] [--repo PATH]
+      Atomically move the selected task to running and emit its loop args. Replays for the same
+      trace/task are idempotent; another task or exhausted budget refuses.
+
   feat_kernel.py prepare FEAT_ID [--repo PATH] [budgets...]
       Mutating, idempotent phase boundary. Refuse a dirty tree; check out the recorded feat branch;
       recover any crash-after-merge receipts; run env + deterministic baseline verification; write
@@ -536,6 +540,46 @@ def task_payload(run, task_id=None, repo=None):
     return payload
 
 
+def dispatch_task(feat_id, task_id=None, repo=None, base=None, now=None):
+    """Atomically bind the current trace to one task before its model call begins."""
+    now = int(time.time()) if now is None else int(now)
+    base = base or camus_home()
+    feats_dir = os.path.join(base, "feats")
+    with _locked(feats_dir, feat_id):
+        run = _validated_run(feat_id, base)
+        repo = _resolve_repo(run, repo)
+        kernel = _kernel(run["state"])
+        if not kernel or kernel.get("phase") not in ("ready", "task_running"):
+            raise Refusal("kernel is not prepared at a dispatchable phase")
+        envelope = _envelope(run, repo=repo, now=now)
+        if envelope.get("action") != "run_task":
+            raise Refusal("kernel cannot dispatch: %s" % envelope.get("reason"))
+        selected = envelope["task"]["id"]
+        if task_id and task_id != selected:
+            raise Refusal("requested task is not the kernel-selected next task")
+        if kernel.get("activeTaskId") != selected:
+            raise Refusal("prepared trace is bound to a different task")
+        node = next((item for item in run["nodes"] if item.get("taskId") == selected), None)
+        if node is None or node.get("status") not in ("pending", "running"):
+            raise Refusal("selected task is not dispatchable")
+        replay = node.get("status") == "running" and kernel.get("phase") == "task_running"
+        node["status"] = "running"
+        kernel["phase"] = "task_running"
+        kernel["dispatchedAt"] = kernel.get("dispatchedAt") if replay else now
+        kernel["updatedAt"] = now
+        run["state"]["kernel"] = kernel
+        run["state"]["status"] = "running"
+        run["state"]["stage"] = "kernel_task"
+        if not replay:
+            _append_event(run["state"], "Kernel %s dispatched %s" % (kernel.get("traceId"), selected))
+        _atomic_write(run["statePath"], run["state"])
+        persisted = _validated_run(feat_id, base)
+        payload = task_payload(persisted, selected, repo=repo)
+        payload["dispatched"] = True
+        payload["replayed"] = replay
+        return payload
+
+
 def record_usage(feat_id, tokens=None, retries=None, phase=None, base=None, now=None):
     now = int(time.time()) if now is None else int(now)
     base = base or camus_home()
@@ -571,10 +615,10 @@ def _emit(value):
 def _parser():
     parser = argparse.ArgumentParser(description="Camus deterministic hybrid feature kernel")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("next", "task"):
+    for name in ("next", "task", "dispatch"):
         p = sub.add_parser(name)
         p.add_argument("feat_id")
-        if name == "task":
+        if name in ("task", "dispatch"):
             p.add_argument("task_id", nargs="?")
         p.add_argument("--repo", default=None)
         p.add_argument("--dir", dest="base", default=None, help=argparse.SUPPRESS)
@@ -609,12 +653,16 @@ def main(argv=None):
                 options.feat_id, tokens=options.tokens, retries=options.retries,
                 phase=options.phase, base=options.base,
             )
+        elif options.command == "dispatch":
+            value = dispatch_task(
+                options.feat_id, options.task_id, repo=options.repo, base=options.base,
+            )
         else:
             run = _validated_run(options.feat_id, options.base)
             repo = _resolve_repo(run, options.repo)
             if options.command == "next":
                 value = _envelope(run, repo=repo)
-            else:
+            else:  # task
                 value = task_payload(run, options.task_id, repo=repo)
         _emit(value)
         return 0
