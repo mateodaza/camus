@@ -27,6 +27,14 @@ Commands:
   feat_kernel.py usage FEAT_ID [--tokens N] [--retries N] [--phase NAME]
       Atomically checkpoint monotonic usage without changing a task verdict.
 
+  feat_kernel.py accept FEAT_ID TASK_ID --result-file PATH [--commit SHA]
+      Validate the workflow receipt, independent reviewer receipt, task checkout, and a fresh
+      deterministic HEAD-bound verify; checkpoint honest provenance as ready_to_merge.
+
+  feat_kernel.py land FEAT_ID TASK_ID
+      Merge only an accepted task through merge.sh, validate its merge receipt + Git ancestry,
+      and restore the accepted done/done_with_findings status without laundering provenance.
+
 State is still the existing ~/.camus/feats/<id>.json contract. Kernel-owned metadata lives under
 state.kernel, so old readers ignore it and old runs remain migratable. A per-feat flock serializes
 mutations; writes are fsync + replace. No model writes or reformats either state or canonical args.
@@ -34,6 +42,7 @@ mutations; writes are fsync + replace. No model writes or reformats either state
 import argparse
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -42,6 +51,7 @@ import sys
 import tempfile
 import time
 
+import adapter
 import env_check
 import resume_scan
 
@@ -51,6 +61,9 @@ FEAT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,127}$")
 COMPLETE_TASK_STATUSES = ("done", "done_with_findings", "noop")
 RECOVERABLE_MERGE_STATUSES = ("ready_to_merge", "merge_failed")
 VERIFY_UNSAFE = ("$", "`", '"', "\\", "\n", "\r")
+HEX_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+REVIEWED_STATUSES = ("done", "done_with_findings", "verify_inconclusive")
+SEAT_VALUE_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 
 
 class Refusal(Exception):
@@ -230,6 +243,32 @@ def _usage(state):
     }
 
 
+def _seats(run, overrides=None):
+    overrides = overrides or {}
+    prior = _kernel(run["state"]).get("seats")
+    prior = prior if isinstance(prior, dict) else {}
+
+    def choose(name, fallback=None):
+        value = overrides.get(name)
+        if value is None:
+            value = prior.get(name, fallback)
+        if value is None or value == "":
+            return None
+        if not isinstance(value, str) or not SEAT_VALUE_RE.fullmatch(value):
+            raise Refusal("%s seat value is invalid" % name)
+        return value
+
+    effort = choose("reviewerEffort")
+    if effort is not None and effort not in ("low", "medium", "high", "xhigh"):
+        raise Refusal("reviewer effort must be low|medium|high|xhigh")
+    return {
+        "makerModel": choose("makerModel", run["args"].get("model")),
+        "reviewerBackend": choose("reviewerBackend"),
+        "reviewerModel": choose("reviewerModel"),
+        "reviewerEffort": effort,
+    }
+
+
 def _budget_stop(budgets, usage, now=None):
     now = int(time.time()) if now is None else int(now)
     if budgets.get("tokens") is not None and usage["tokens"] >= budgets["tokens"]:
@@ -296,6 +335,7 @@ def _envelope(run, repo=None, now=None):
             "total": len(nodes),
         },
         "budgets": budgets,
+        "seats": _seats(run),
         "usage": usage,
     }
     if repo:
@@ -412,7 +452,162 @@ def _run_verify(run, repo, timeout):
     return value
 
 
+def _sha256_file(path):
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except OSError as exc:
+        raise Refusal("could not hash evidence file %s: %s" % (path, exc))
+
+
+def _workflow_result(path, run, node):
+    """Validate one Claude workflow task-output receipt without trusting its prose summary.
+
+    The top-level `totalTokens` is the runtime's own total-token metric. It is intentionally not
+    relabeled as output tokens: transcript output-token sums answer a different cost question.
+    """
+    receipt = _read_json(path)
+    result = receipt.get("result")
+    if not isinstance(result, dict):
+        raise Refusal("workflow result receipt has no result object")
+    if result.get("status") not in REVIEWED_STATUSES:
+        raise Refusal("workflow result status %r is not accept-eligible" % result.get("status"))
+    if result.get("task") != run["specs"][run["nodes"].index(node)]:
+        raise Refusal("workflow result task does not match the canonical selected contract")
+    if result.get("branch") != node.get("branch"):
+        raise Refusal("workflow result branch does not match the selected task branch")
+    tokens = receipt.get("totalTokens")
+    if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
+        raise Refusal("workflow result has no valid totalTokens metric")
+    rounds = result.get("rounds")
+    if isinstance(rounds, bool) or not isinstance(rounds, int) or rounds < 1:
+        raise Refusal("workflow result has no valid completed review round")
+    progress = receipt.get("workflowProgress")
+    progress = progress if isinstance(progress, list) else []
+    retries = 0
+    for item in progress:
+        if not isinstance(item, dict) or item.get("type") != "workflow_agent":
+            continue
+        attempt = item.get("attempt", 1)
+        if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+            raise Refusal("workflow progress has an invalid agent attempt")
+        retries += attempt - 1
+    return {
+        "receipt": receipt,
+        "result": result,
+        "totalTokens": tokens,
+        "runtimeRetries": retries,
+        "sha256": _sha256_file(path),
+        "path": os.path.realpath(path),
+    }
+
+
+def _validated_task_checkout(repo, node, result, final_commit=None):
+    worktree = result.get("worktree")
+    if not isinstance(worktree, str) or not os.path.isabs(worktree):
+        raise Refusal("workflow result has no absolute task worktree")
+    worktree = os.path.realpath(worktree)
+    top = os.path.realpath(_git_ok(worktree, "rev-parse", "--show-toplevel"))
+    if top != worktree:
+        raise Refusal("workflow task checkout is not a Git toplevel")
+    repo_common = os.path.realpath(_git_ok(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    task_common = os.path.realpath(_git_ok(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    if task_common != repo_common:
+        raise Refusal("workflow task checkout belongs to a different repository")
+    if _git_ok(worktree, "branch", "--show-current") != node.get("branch"):
+        raise Refusal("workflow task checkout is on the wrong branch")
+    head = _git_ok(worktree, "rev-parse", "HEAD")
+    expected = final_commit or head
+    if not isinstance(expected, str) or not HEX_SHA_RE.fullmatch(expected):
+        raise Refusal("accepted task commit must be a full lowercase Git SHA")
+    if head != expected:
+        raise Refusal("task checkout HEAD %s does not match accepted commit %s" % (head, expected))
+    if _git_ok(worktree, "status", "--porcelain", "--untracked-files=all"):
+        raise Refusal("task checkout is dirty; refusing acceptance")
+    return worktree, head
+
+
+def _review_receipt_evidence(run, node, workflow, explicit=None):
+    result = workflow["result"]
+    round_no = result.get("reviewerRound")
+    if isinstance(round_no, bool) or not isinstance(round_no, int) or round_no != result.get("rounds"):
+        raise Refusal("workflow reviewer round disagrees with the completed round count")
+    default = os.path.join(
+        run["base"], "reviews",
+        os.path.basename(os.path.realpath(result["worktree"])) + "-r%d.json" % round_no,
+    )
+    path = os.path.realpath(explicit or default)
+    review = _read_json(path)
+    binding = review.get("binding")
+    codex_exit = review.get("codex_exit")
+    if review.get("ran") is not True or isinstance(codex_exit, bool) or codex_exit != 0 or not isinstance(binding, dict):
+        raise Refusal("review receipt does not prove a completed reviewer run")
+    if binding.get("bound") is not True:
+        raise Refusal("review receipt binding is not accepted")
+    expected = {
+        "round_actual": round_no,
+        "effort_actual": result.get("reviewerEffort"),
+        "reviewer_model": result.get("reviewerModel"),
+        "reviewer_backend": result.get("reviewerBackend"),
+    }
+    for key, value in expected.items():
+        if binding.get(key) != value:
+            raise Refusal("review receipt %s does not match the workflow result" % key)
+    receipt_worktree = review.get("worktree_canonical") or review.get("worktree")
+    if not isinstance(receipt_worktree, str) or os.path.realpath(receipt_worktree) != os.path.realpath(result["worktree"]):
+        raise Refusal("review receipt worktree does not match the workflow result")
+    if (
+        result.get("reviewerModelStatus") != "recorded"
+        or not all(isinstance(result.get(key), str) and result.get(key) for key in (
+            "reviewerBackend", "reviewerModel", "reviewerEffort",
+        ))
+    ):
+        raise Refusal("workflow result has no concrete recorded reviewer identity")
+    run_id = node.get("taskId", "").rsplit("-", 1)[-1]
+    trace_id = _kernel(run["state"]).get("traceId")
+    exact_nonce = "%s:%s" % (trace_id, run_id) if isinstance(trace_id, str) else None
+    legacy_nonce = "%s:%s" % (run["state"]["featId"], run_id)
+    nonce = binding.get("gate_nonce")
+    if nonce not in tuple(v for v in (exact_nonce, legacy_nonce) if v):
+        raise Refusal("review receipt nonce does not bind to this kernel trace/task")
+    if (
+        isinstance(binding.get("round_actual"), bool)
+        or not isinstance(binding.get("round_actual"), int)
+    ):
+        raise Refusal("review receipt has no valid actual round")
+    parsed = review.get("codex_parsed")
+    normalized_review = adapter.normalize_codex(
+        json.dumps(parsed, ensure_ascii=False) if isinstance(parsed, dict) else None,
+        codex_exit,
+    )
+    if normalized_review.get("ran") is not True:
+        raise Refusal(
+            "review receipt verdict is not schema-valid: %s"
+            % (normalized_review.get("error") or "unknown reviewer schema error")
+        )
+    receipt_findings = normalized_review["blocking"]
+    result_findings = result.get("findings")
+    result_findings = result_findings if isinstance(result_findings, list) else []
+    keys = ("priority", "title", "body", "code_location", "confidence_score")
+    normalized = lambda item: {key: item.get(key) for key in keys} if isinstance(item, dict) else None
+    if [normalized(f) for f in result_findings] != [normalized(f) for f in receipt_findings]:
+        raise Refusal("workflow findings do not match the independent review receipt")
+    return {
+        "path": path,
+        "sha256": _sha256_file(path),
+        "nonce": nonce,
+        "traceBinding": "exact" if exact_nonce and nonce == exact_nonce else "legacy_task_nonce",
+        "backend": binding.get("reviewer_backend"),
+        "model": binding.get("reviewer_model"),
+        "effort": binding.get("effort_actual"),
+        "round": binding.get("round_actual"),
+        "parsed": parsed,
+        "normalized": normalized_review,
+    }
+
+
 def prepare(feat_id, repo=None, wall_seconds=None, token_budget=None, retry_budget=None,
+            maker_model=None, reviewer_backend=None, reviewer_model=None, reviewer_effort=None,
             verify_timeout=3600, now=None, base=None):
     now = int(time.time()) if now is None else int(now)
     base = base or camus_home()
@@ -452,6 +647,12 @@ def prepare(feat_id, repo=None, wall_seconds=None, token_budget=None, retry_budg
             "tokens": token_budget,
             "retries": retry_budget,
         })
+        seats = _seats(run, {
+            "makerModel": maker_model,
+            "reviewerBackend": reviewer_backend,
+            "reviewerModel": reviewer_model,
+            "reviewerEffort": reviewer_effort,
+        })
         usage = _usage(state)
         index, blocked = _selected_index(run)
         active = run["nodes"][index].get("taskId") if index is not None else None
@@ -472,6 +673,7 @@ def prepare(feat_id, repo=None, wall_seconds=None, token_budget=None, retry_budg
             "activeTaskId": active,
             "repoHead": actual_head,
             "budgets": budgets,
+            "seats": seats,
             "usage": usage,
             "recoveredReceipts": recovered,
         }
@@ -519,6 +721,7 @@ def task_payload(run, task_id=None, repo=None):
         "taskId": node["taskId"],
         "loopArgs": {
             "task": spec,
+            "traceId": _kernel(run["state"]).get("traceId") or "%s:a0" % run["state"]["featId"],
             "branchPrefix": "camus/feat/%s/" % run["state"]["featId"],
             "idSalt": run["state"]["featId"],
             "policy": args.get("policy") or "ask_on_ambiguity",
@@ -528,6 +731,16 @@ def task_payload(run, task_id=None, repo=None):
     for key in ("model", "modelTier", "roundCap", "verifyCmd", "posture", "targetPath"):
         if key in args:
             payload["loopArgs"][key] = args[key]
+    seats = _seats(run)
+    if seats.get("makerModel"):
+        payload["loopArgs"]["model"] = seats["makerModel"]
+    for seat_key, loop_key in (
+        ("reviewerBackend", "reviewerBackend"),
+        ("reviewerModel", "reviewerModel"),
+        ("reviewerEffort", "reviewerEffort"),
+    ):
+        if seats.get(seat_key):
+            payload["loopArgs"][loop_key] = seats[seat_key]
     env_state = run["state"].get("env")
     env_facts = env_state.get("facts") if isinstance(env_state, dict) else None
     if isinstance(env_facts, list) and env_facts:
@@ -575,6 +788,10 @@ def dispatch_task(feat_id, task_id=None, repo=None, base=None, now=None):
         node["status"] = "running"
         kernel["phase"] = "task_running"
         kernel["dispatchedAt"] = kernel.get("dispatchedAt") if replay else now
+        if not replay:
+            usage = _usage(run["state"])
+            kernel["taskUsageStartTokens"] = usage["tokens"]
+            kernel["taskUsageStartRetries"] = usage["retries"]
         kernel["updatedAt"] = now
         run["state"]["kernel"] = kernel
         run["state"]["status"] = "running"
@@ -617,6 +834,231 @@ def record_usage(feat_id, tokens=None, retries=None, phase=None, base=None, now=
         return _envelope(_validated_run(feat_id, base), now=now)
 
 
+def accept_task(feat_id, task_id, result_file, final_commit=None, review_receipt=None,
+                repo=None, verify_timeout=3600, base=None, now=None):
+    """Convert a model/workflow claim into ready_to_merge only after local evidence agrees."""
+    now = int(time.time()) if now is None else int(now)
+    base = base or camus_home()
+    feats_dir = os.path.join(base, "feats")
+    with _locked(feats_dir, feat_id):
+        run = _validated_run(feat_id, base)
+        repo = _resolve_repo(run, repo)
+        kernel = _kernel(run["state"])
+        if kernel.get("phase") not in ("task_running", "task_candidate", "accepted"):
+            raise Refusal("kernel is not at an accept-eligible task phase")
+        if kernel.get("activeTaskId") != task_id:
+            raise Refusal("kernel trace is bound to a different active task")
+        node = next((item for item in run["nodes"] if item.get("taskId") == task_id), None)
+        if node is None or node.get("status") not in ("running", "ready_to_merge"):
+            raise Refusal("selected task is not running/ready_to_merge")
+
+        workflow = _workflow_result(result_file, run, node)
+        result = workflow["result"]
+        result_commit = result.get("commit_sha") or result.get("parkedSha")
+        if not isinstance(result_commit, str) or not HEX_SHA_RE.fullmatch(result_commit):
+            raise Refusal("workflow result has no full commit SHA")
+        final_commit = final_commit or result_commit
+        worktree, head = _validated_task_checkout(repo, node, result, final_commit=final_commit)
+        if _git(repo, "cat-file", "-e", result_commit + "^{commit}")[0] != 0:
+            raise Refusal("workflow result commit does not exist")
+        if _git(repo, "merge-base", "--is-ancestor", result_commit, head)[0] != 0:
+            raise Refusal("accepted commit is not a descendant of the workflow's sealed commit")
+        feat_branch = run["state"].get("featBranch")
+        if _git(repo, "merge-base", "--is-ancestor", feat_branch, head)[0] != 0:
+            raise Refusal("accepted task commit does not descend from the feature branch")
+        if _git(repo, "merge-base", "--is-ancestor", head, feat_branch)[0] == 0:
+            raise Refusal("accepted task commit is already on the feature branch")
+
+        review = _review_receipt_evidence(run, node, workflow, explicit=review_receipt)
+        result_status = result.get("status")
+        blocking_findings = review["normalized"]["blocking"]
+        clean_candidate = result_status == "done" or (
+            result_status == "verify_inconclusive" and not blocking_findings
+        )
+        if clean_candidate:
+            if blocking_findings:
+                raise Refusal("workflow claims a clean candidate but its reviewer has blocking findings")
+            if head != result_commit:
+                raise Refusal("post-review commits cannot retain a review-clean done verdict")
+            proven_status = "done"
+        else:
+            if result.get("resolution") != "fixed_unreviewed" or result.get("reviewedAfterFix") is not False:
+                raise Refusal("non-clean workflow result lacks fixed_unreviewed provenance")
+            if not result.get("findings"):
+                raise Refusal("done_with_findings result has no preserved reviewer findings")
+            proven_status = "done_with_findings"
+
+        verification = _run_verify(run, worktree, verify_timeout)
+        if verification.get("pass") is not True:
+            raise Refusal("accepted task verification is not green")
+        if verification.get("tampered") is True:
+            raise Refusal("accepted task verification reports tampering")
+        if verification.get("head") != head:
+            raise Refusal("accepted task verification is not bound to the accepted commit")
+
+        state = run["state"]
+        usage = _usage(state)
+        task_start = kernel.get("taskUsageStartTokens")
+        if not isinstance(task_start, int) or task_start < 0:
+            # Compatibility for the first canary, whose usage was recorded manually before
+            # result ingestion existed. Never decrease an already-recorded total.
+            task_start = max(0, usage["tokens"] - workflow["totalTokens"])
+        measured_total = task_start + workflow["totalTokens"]
+        if usage["tokens"] not in (task_start, measured_total) and usage["tokens"] > measured_total:
+            raise Refusal("existing token usage cannot be reconciled with the workflow receipt")
+        usage["tokens"] = max(usage["tokens"], measured_total)
+        usage["retries"] = max(usage["retries"], int(kernel.get("taskUsageStartRetries") or 0) + workflow["runtimeRetries"])
+
+        node["status"] = "ready_to_merge"
+        node["loopStatus"] = result_status
+        node["provenStatus"] = proven_status
+        node["provenCommit"] = head
+        node["tokens"] = workflow["totalTokens"]
+        node["tokenMetric"] = "claude_workflow_totalTokens"
+        node["rounds"] = result.get("rounds")
+        node["reviewerBackend"] = review["backend"]
+        node["reviewerModel"] = review["model"]
+        node["reviewerEffort"] = review["effort"]
+        node["reviewerRound"] = review["round"]
+        findings = result.get("findings") if isinstance(result.get("findings"), list) else []
+        if findings:
+            node["findingsDeferred"] = len(findings)
+            node["deferredFindings"] = findings
+        decisions = node.get("decisions")
+        if not isinstance(decisions, list):
+            decisions = []
+            node["decisions"] = decisions
+        acceptance_marker = "kernel accepted %s at %s" % (proven_status, head)
+        if not any(isinstance(item, dict) and item.get("what") == acceptance_marker for item in decisions):
+            decisions.append({
+                "what": acceptance_marker,
+                "why": "workflow receipt, independent reviewer binding, Git custody, and fresh HEAD-bound deterministic verification agree",
+                "alternative": "refuse acceptance when any evidence source conflicts or is missing",
+            })
+        prior_evidence = node.get("kernelEvidence")
+        prior_accepted_at = prior_evidence.get("acceptedAt") if isinstance(prior_evidence, dict) else None
+        node["kernelEvidence"] = {
+            "workflowResult": {"path": workflow["path"], "sha256": workflow["sha256"]},
+            "reviewReceipt": {
+                "path": review["path"], "sha256": review["sha256"],
+                "nonce": review["nonce"], "traceBinding": review["traceBinding"],
+            },
+            "workflowCommit": result_commit,
+            "acceptedCommit": head,
+            "verification": verification,
+            "acceptedAt": prior_accepted_at if isinstance(prior_accepted_at, int) else now,
+        }
+        kernel["phase"] = "accepted"
+        kernel["usage"] = usage
+        kernel["acceptedTaskId"] = task_id
+        kernel["acceptedCommit"] = head
+        kernel["updatedAt"] = now
+        state["kernel"] = kernel
+        state["status"] = "running"
+        state["stage"] = "kernel_ready_to_merge"
+        acceptance_event = "Kernel %s accepted %s as %s at %s" % (
+            kernel.get("traceId"), task_id, proven_status, head,
+        )
+        if not any(isinstance(event, dict) and event.get("msg") == acceptance_event for event in state.get("events", [])):
+            _append_event(state, acceptance_event)
+        _atomic_write(run["statePath"], state)
+        return {
+            "schemaVersion": SCHEMA_VERSION,
+            "traceId": kernel.get("traceId"),
+            "action": "land_task",
+            "taskId": task_id,
+            "status": "ready_to_merge",
+            "provenStatus": proven_status,
+            "commit": head,
+            "usage": usage,
+            "tokenMetric": "claude_workflow_totalTokens",
+            "reviewer": {key: review[key] for key in ("backend", "model", "effort", "round", "traceBinding")},
+            "verification": verification,
+        }
+
+
+def _run_merge(run, repo, node):
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "merge.sh")
+    message = "camus(feat): merge %s" % node["taskId"]
+    env = os.environ.copy()
+    env["CAMUS_MERGE_DIR"] = os.path.join(run["base"], "merges")
+    try:
+        result = subprocess.run(
+            ["bash", script, run["state"]["featBranch"], node["branch"], message],
+            cwd=repo, env=env, capture_output=True, text=True, timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Refusal("could not execute deterministic merge: %s" % exc)
+    raw = (result.stdout or "").strip()
+    try:
+        receipt = json.loads(raw)
+    except ValueError:
+        raise Refusal("merge.sh returned non-JSON output: %s" % (raw or result.stderr)[-500:])
+    if not isinstance(receipt, dict) or receipt.get("merged") is not True:
+        raise Refusal("merge.sh refused: %s" % (receipt.get("error") if isinstance(receipt, dict) else raw))
+    return receipt
+
+
+def land_task(feat_id, task_id, repo=None, base=None, now=None):
+    """Land an accepted task; no model is involved in this transition."""
+    now = int(time.time()) if now is None else int(now)
+    base = base or camus_home()
+    feats_dir = os.path.join(base, "feats")
+    with _locked(feats_dir, feat_id):
+        run = _validated_run(feat_id, base)
+        repo = _resolve_repo(run, repo)
+        kernel = _kernel(run["state"])
+        node = next((item for item in run["nodes"] if item.get("taskId") == task_id), None)
+        if node is None or node.get("status") != "ready_to_merge":
+            raise Refusal("task is not accepted/ready_to_merge")
+        if kernel.get("acceptedTaskId") != task_id or kernel.get("acceptedCommit") != node.get("provenCommit"):
+            raise Refusal("kernel acceptance does not bind this task/commit")
+        if node.get("provenStatus") not in ("done", "done_with_findings"):
+            raise Refusal("accepted task has no restorable proven status")
+        if _git_ok(repo, "status", "--porcelain", "--untracked-files=all"):
+            raise Refusal("repository is dirty; refusing deterministic land")
+        receipt = _run_merge(run, repo, node)
+        # merge.sh writes its durable receipt before returning. Re-read and independently
+        # validate the exact evidence instead of trusting the subprocess object above.
+        evidence = _receipt_evidence(run, repo, node)
+        reported_evidence = (
+            receipt.get("priorMergeCommit")
+            if receipt.get("alreadyUpToDate") is True
+            else receipt.get("after")
+        )
+        if not evidence or evidence != reported_evidence:
+            raise Refusal("merge receipt evidence disagrees with merge.sh output")
+        node["status"] = node["provenStatus"]
+        node["loopStatus"] = "kernel_landed"
+        node["reconciledSha"] = evidence
+        node["mergedBranch"] = node.get("branch")
+        decisions = node.get("decisions") if isinstance(node.get("decisions"), list) else []
+        node["decisions"] = decisions
+        decisions.append({
+            "what": "kernel landed accepted task at merge commit %s" % evidence,
+            "why": "merge.sh receipt and Git ancestry bind the accepted task branch to the feature branch",
+            "alternative": "leave ready_to_merge when merge proof is missing or contradictory",
+        })
+        state = run["state"]
+        kernel["phase"] = "ready"
+        kernel["repoHead"] = _git_ok(repo, "rev-parse", "HEAD")
+        kernel["acceptedTaskId"] = None
+        kernel["acceptedCommit"] = None
+        kernel["updatedAt"] = now
+        state["kernel"] = kernel
+        state["status"] = "running"
+        state["stage"] = "kernel_landed"
+        index, _blocked = _selected_index(run)
+        kernel["activeTaskId"] = run["nodes"][index]["taskId"] if index is not None else None
+        _append_event(state, "Kernel %s landed %s as %s at %s" % (
+            kernel.get("traceId"), task_id, node["status"], evidence,
+        ))
+        _atomic_write(run["statePath"], state)
+        out = _envelope(_validated_run(feat_id, base), repo=repo, now=now)
+        out["landed"] = {"taskId": task_id, "status": node["status"], "mergeCommit": evidence}
+        return out
+
+
 def _emit(value):
     print(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
 
@@ -637,6 +1079,10 @@ def _parser():
     p.add_argument("--wall-seconds", type=int, default=None)
     p.add_argument("--token-budget", type=int, default=None)
     p.add_argument("--retry-budget", type=int, default=None)
+    p.add_argument("--maker-model", default=None)
+    p.add_argument("--reviewer-backend", default=None)
+    p.add_argument("--reviewer-model", default=None)
+    p.add_argument("--reviewer-effort", default=None)
     p.add_argument("--verify-timeout", type=int, default=3600)
     p.add_argument("--dir", dest="base", default=None, help=argparse.SUPPRESS)
     p = sub.add_parser("usage")
@@ -644,6 +1090,20 @@ def _parser():
     p.add_argument("--tokens", type=int, default=None)
     p.add_argument("--retries", type=int, default=None)
     p.add_argument("--phase", default=None)
+    p.add_argument("--dir", dest="base", default=None, help=argparse.SUPPRESS)
+    p = sub.add_parser("accept")
+    p.add_argument("feat_id")
+    p.add_argument("task_id")
+    p.add_argument("--result-file", required=True)
+    p.add_argument("--commit", default=None)
+    p.add_argument("--review-receipt", default=None)
+    p.add_argument("--repo", default=None)
+    p.add_argument("--verify-timeout", type=int, default=3600)
+    p.add_argument("--dir", dest="base", default=None, help=argparse.SUPPRESS)
+    p = sub.add_parser("land")
+    p.add_argument("feat_id")
+    p.add_argument("task_id")
+    p.add_argument("--repo", default=None)
     p.add_argument("--dir", dest="base", default=None, help=argparse.SUPPRESS)
     return parser
 
@@ -655,12 +1115,24 @@ def main(argv=None):
             value = prepare(
                 options.feat_id, repo=options.repo, wall_seconds=options.wall_seconds,
                 token_budget=options.token_budget, retry_budget=options.retry_budget,
+                maker_model=options.maker_model, reviewer_backend=options.reviewer_backend,
+                reviewer_model=options.reviewer_model, reviewer_effort=options.reviewer_effort,
                 verify_timeout=options.verify_timeout, base=options.base,
             )
         elif options.command == "usage":
             value = record_usage(
                 options.feat_id, tokens=options.tokens, retries=options.retries,
                 phase=options.phase, base=options.base,
+            )
+        elif options.command == "accept":
+            value = accept_task(
+                options.feat_id, options.task_id, options.result_file,
+                final_commit=options.commit, review_receipt=options.review_receipt,
+                repo=options.repo, verify_timeout=options.verify_timeout, base=options.base,
+            )
+        elif options.command == "land":
+            value = land_task(
+                options.feat_id, options.task_id, repo=options.repo, base=options.base,
             )
         elif options.command == "dispatch":
             value = dispatch_task(

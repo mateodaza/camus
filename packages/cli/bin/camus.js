@@ -69,6 +69,10 @@ usage: npx camus-cli <command>
                        kernel dispatch <featId>   atomically mark selected task running + emit it
                        kernel prepare <featId>    checkout + env + baseline + receipt recovery
                        kernel usage <featId> ...  checkpoint monotonic tokens/retries/phase
+                       kernel accept <featId> <taskId> --result-file <path>
+                                                  validate result/reviewer/Git/verify evidence
+                       kernel land <featId> <taskId>
+                                                  merge an accepted task without a model turn
   resume       list interrupted feat runs (canonical resumeArgs, JSON)
   retro        read-only run-history analytics over ~/.camus/reports: per-feat lines,
                  aggregates (status/posture mix, rounds, token p50/p90), evidence-gated

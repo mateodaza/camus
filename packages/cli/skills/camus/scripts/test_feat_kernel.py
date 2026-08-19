@@ -78,6 +78,95 @@ def _repo():
     return repo
 
 
+def _accept_fixture(result_status="verify_inconclusive"):
+    base = tempfile.mkdtemp(prefix="camus_kernel_")
+    repo = _repo()
+    feat_id, args, state = _fixture(
+        base, tasks=["accept this exact contract"], statuses=["running"],
+        extra_args={"targetPath": repo},
+    )
+    node = state["tasks"][0]
+    _git(repo, "branch", state["featBranch"])
+    wt = tempfile.mkdtemp(prefix="camus_kernel_wt_parent_")
+    os.rmdir(wt)
+    _git(repo, "worktree", "add", "-qb", node["branch"], wt, state["featBranch"])
+    with open(os.path.join(wt, "task.txt"), "w", encoding="utf-8") as fh:
+        fh.write("accepted\n")
+    _git(wt, "add", "task.txt")
+    _git(wt, "commit", "-qm", "candidate")
+    commit = _git(wt, "rev-parse", "HEAD")
+    run_id = node["taskId"].rsplit("-", 1)[-1]
+    trace_id = feat_id + ":a1"
+    state["kernel"] = {
+        "schemaVersion": 1,
+        "traceId": trace_id,
+        "attempt": 1,
+        "phase": "task_running",
+        "activeTaskId": node["taskId"],
+        "repoHead": _git(repo, "rev-parse", state["featBranch"]),
+        "budgets": {"wallSeconds": 1000, "tokens": 5000, "retries": 2},
+        "usage": {"startedAt": 100, "tokens": 0, "retries": 0},
+        "taskUsageStartTokens": 0,
+        "taskUsageStartRetries": 0,
+    }
+    _write(os.path.join(base, "feats", feat_id + ".json"), state)
+    findings = [{
+        "priority": 1,
+        "title": "bounded finding",
+        "body": "a real contract defect",
+        "code_location": "task.txt:1",
+        "confidence_score": 0.99,
+    }]
+    result = {
+        "status": result_status,
+        "task": args["tasks"][0],
+        "worktree": wt,
+        "branch": node["branch"],
+        "rounds": 1,
+        "findings": [{**findings[0], "claimedResolution": "fixed once"}],
+        "resolution": "fixed_unreviewed",
+        "reviewedAfterFix": False,
+        "reviewerBackend": "codex",
+        "reviewerModel": "gpt-5.6-sol",
+        "reviewerEffort": "high",
+        "reviewerRound": 1,
+        "reviewerModelStatus": "recorded",
+        "commit_sha": commit,
+    }
+    output_path = os.path.join(base, "workflow.output.json")
+    _write(output_path, {
+        "summary": "fixture",
+        "result": result,
+        "workflowProgress": [{"type": "workflow_agent", "attempt": 1}],
+        "totalTokens": 1234,
+        "totalToolCalls": 3,
+    })
+    receipt_path = os.path.join(base, "reviews", os.path.basename(wt) + "-r1.json")
+    _write(receipt_path, {
+        "ran": True,
+        "codex_exit": 0,
+        "worktree": wt,
+        "worktree_canonical": wt,
+        "codex_parsed": {
+            "overall_correctness": "patch is incorrect",
+            "findings": findings,
+        },
+        "binding": {
+            "bound": True,
+            "gate_nonce": "%s:%s" % (trace_id, run_id),
+            "round_actual": 1,
+            "effort_actual": "high",
+            "reviewer_model": "gpt-5.6-sol",
+            "reviewer_backend": "codex",
+        },
+    })
+    return {
+        "base": base, "repo": repo, "feat_id": feat_id, "args": args, "state": state,
+        "node": node, "worktree": wt, "commit": commit, "result_path": output_path,
+        "receipt_path": receipt_path,
+    }
+
+
 def test_next_is_compact_and_contract_is_materialized_only_on_demand():
     base = tempfile.mkdtemp(prefix="camus_kernel_")
     hidden = "FULL_CONTRACT_ONLY_AFTER_SELECTION"
@@ -92,6 +181,7 @@ def test_next_is_compact_and_contract_is_materialized_only_on_demand():
     payload = K.task_payload(run, repo="/repo")
     assert payload["loopArgs"]["task"] == args["tasks"][1]
     assert payload["loopArgs"]["idSalt"] == feat_id
+    assert payload["loopArgs"]["traceId"] == feat_id + ":a0"
     assert payload["loopArgs"]["branchPrefix"] == "camus/feat/%s/" % feat_id
 
 
@@ -192,7 +282,9 @@ def test_prepare_is_idempotent_and_writes_one_trace_attempt():
          mock.patch.object(K.env_check, "collect_facts", return_value=["fixture fact"]), \
          mock.patch.object(K, "_run_verify", return_value=green):
         first = K.prepare(feat_id, repo=repo, wall_seconds=1000, token_budget=100,
-                          retry_budget=2, base=base, now=100)
+                          retry_budget=2, maker_model="claude-opus-4-8",
+                          reviewer_backend="codex", reviewer_model="gpt-5.6-sol",
+                          reviewer_effort="high", base=base, now=100)
         second = K.prepare(feat_id, repo=repo, wall_seconds=1000, token_budget=100,
                            retry_budget=2, base=base, now=101)
     assert first["traceId"] == second["traceId"] == feat_id + ":a1"
@@ -203,7 +295,15 @@ def test_prepare_is_idempotent_and_writes_one_trace_attempt():
     assert persisted["kernel"]["budgets"] == {
         "wallSeconds": 1000, "tokens": 100, "retries": 2,
     }
-    assert K.task_payload(K._validated_run(feat_id, base))["loopArgs"]["envFacts"] == "- fixture fact"
+    assert persisted["kernel"]["seats"] == {
+        "makerModel": "claude-opus-4-8", "reviewerBackend": "codex",
+        "reviewerModel": "gpt-5.6-sol", "reviewerEffort": "high",
+    }
+    loop_args = K.task_payload(K._validated_run(feat_id, base))["loopArgs"]
+    assert loop_args["envFacts"] == "- fixture fact"
+    assert loop_args["model"] == "claude-opus-4-8"
+    assert loop_args["reviewerModel"] == "gpt-5.6-sol"
+    assert loop_args["reviewerEffort"] == "high"
 
 
 def test_prepare_refuses_green_verification_bound_to_another_head():
@@ -323,6 +423,170 @@ def test_dispatch_refuses_if_checkout_moved_after_prepare():
     except K.Refusal as exc:
         assert "checkout moved" in str(exc)
     assert K._validated_run(feat_id, base)["nodes"][0]["status"] == "pending"
+
+
+def test_accept_ingests_runtime_metric_and_preserves_review_provenance_then_lands():
+    world = _accept_fixture()
+    green = {
+        "pass": True, "tampered": False, "failures": [],
+        "head": world["commit"], "checks": [{"name": "fixture"}],
+    }
+    with mock.patch.object(K, "_run_verify", return_value=green):
+        accepted = K.accept_task(
+            world["feat_id"], world["node"]["taskId"], world["result_path"],
+            repo=world["repo"], base=world["base"], now=200,
+        )
+    assert accepted["action"] == "land_task"
+    assert accepted["provenStatus"] == "done_with_findings"
+    assert accepted["usage"]["tokens"] == 1234
+    assert accepted["tokenMetric"] == "claude_workflow_totalTokens"
+    assert accepted["reviewer"] == {
+        "backend": "codex", "model": "gpt-5.6-sol", "effort": "high", "round": 1,
+        "traceBinding": "exact",
+    }
+    pending = K._validated_run(world["feat_id"], world["base"])["nodes"][0]
+    assert pending["status"] == "ready_to_merge"
+    assert pending["provenStatus"] == "done_with_findings"
+    assert pending["kernelEvidence"]["verification"]["head"] == world["commit"]
+
+    # A crash/replay at the accept boundary revalidates evidence but does not duplicate audit rows.
+    with mock.patch.object(K, "_run_verify", return_value=green):
+        replayed = K.accept_task(
+            world["feat_id"], world["node"]["taskId"], world["result_path"],
+            repo=world["repo"], base=world["base"], now=999,
+        )
+    assert replayed["action"] == "land_task"
+    replay_state = K._validated_run(world["feat_id"], world["base"])["state"]
+    marker = "kernel accepted done_with_findings at %s" % world["commit"]
+    assert [d.get("what") for d in replay_state["tasks"][0]["decisions"]].count(marker) == 1
+    assert sum(" accepted " in e.get("msg", "") for e in replay_state["events"]) == 1
+    assert replay_state["tasks"][0]["kernelEvidence"]["acceptedAt"] == 200
+
+    landed = K.land_task(
+        world["feat_id"], world["node"]["taskId"],
+        repo=world["repo"], base=world["base"], now=201,
+    )
+    assert landed["landed"]["status"] == "done_with_findings"
+    assert landed["action"] == "integrate"
+    final = K._validated_run(world["feat_id"], world["base"])["nodes"][0]
+    assert final["status"] == "done_with_findings"
+    assert final["loopStatus"] == "kernel_landed"
+    assert _git(world["repo"], "merge-base", "--is-ancestor", world["commit"], world["state"]["featBranch"]) == ""
+
+
+def test_accept_refuses_result_finding_drift_without_mutating_state():
+    world = _accept_fixture()
+    result = json.load(open(world["result_path"], encoding="utf-8"))
+    result["result"]["findings"][0]["body"] = "laundered reviewer wording"
+    _write(world["result_path"], result)
+    state_path = os.path.join(world["base"], "feats", world["feat_id"] + ".json")
+    before = open(state_path, encoding="utf-8").read()
+    with mock.patch.object(K, "_run_verify") as verify:
+        try:
+            K.accept_task(
+                world["feat_id"], world["node"]["taskId"], world["result_path"],
+                repo=world["repo"], base=world["base"], now=200,
+            )
+            assert False, "drifted findings accepted"
+        except K.Refusal as exc:
+            assert "findings" in str(exc)
+    assert not verify.called
+    assert open(state_path, encoding="utf-8").read() == before
+
+
+def test_accept_treats_p3_only_review_as_nonblocking_not_fixed_unreviewed():
+    world = _accept_fixture(result_status="done")
+    output = json.load(open(world["result_path"], encoding="utf-8"))
+    output["result"]["findings"] = []
+    output["result"].pop("resolution")
+    output["result"].pop("reviewedAfterFix")
+    _write(world["result_path"], output)
+    review = json.load(open(world["receipt_path"], encoding="utf-8"))
+    review["codex_parsed"]["overall_correctness"] = "patch is correct"
+    review["codex_parsed"]["findings"] = [{
+        "priority": 3, "title": "nit", "body": "nonblocking",
+        "code_location": "task.txt:1", "confidence_score": 0.8,
+    }]
+    _write(world["receipt_path"], review)
+    green = {"pass": True, "tampered": False, "head": world["commit"], "failures": []}
+    with mock.patch.object(K, "_run_verify", return_value=green):
+        accepted = K.accept_task(
+            world["feat_id"], world["node"]["taskId"], world["result_path"],
+            repo=world["repo"], base=world["base"], now=200,
+        )
+    assert accepted["provenStatus"] == "done"
+    assert K._validated_run(world["feat_id"], world["base"])["nodes"][0]["status"] == "ready_to_merge"
+
+
+def test_accept_refuses_malformed_reviewer_finding_instead_of_dropping_it():
+    world = _accept_fixture(result_status="done")
+    output = json.load(open(world["result_path"], encoding="utf-8"))
+    output["result"]["findings"] = []
+    output["result"].pop("resolution")
+    output["result"].pop("reviewedAfterFix")
+    _write(world["result_path"], output)
+    review = json.load(open(world["receipt_path"], encoding="utf-8"))
+    review["codex_parsed"]["findings"] = [{
+        "priority": "P1", "title": "schema drift", "body": "must not disappear",
+        "code_location": "task.txt:1", "confidence_score": 0.9,
+    }]
+    _write(world["receipt_path"], review)
+    state_path = os.path.join(world["base"], "feats", world["feat_id"] + ".json")
+    before = open(state_path, encoding="utf-8").read()
+    with mock.patch.object(K, "_run_verify") as verify:
+        try:
+            K.accept_task(
+                world["feat_id"], world["node"]["taskId"], world["result_path"],
+                repo=world["repo"], base=world["base"], now=200,
+            )
+            assert False, "malformed reviewer finding was silently dropped"
+        except K.Refusal as exc:
+            assert "schema-valid" in str(exc)
+    assert not verify.called
+    assert open(state_path, encoding="utf-8").read() == before
+
+
+def test_land_recovers_when_merge_completed_before_state_checkpoint():
+    world = _accept_fixture()
+    green = {
+        "pass": True, "tampered": False, "failures": [],
+        "head": world["commit"], "checks": [{"name": "fixture"}],
+    }
+    with mock.patch.object(K, "_run_verify", return_value=green):
+        K.accept_task(
+            world["feat_id"], world["node"]["taskId"], world["result_path"],
+            repo=world["repo"], base=world["base"], now=200,
+        )
+    accepted_run = K._validated_run(world["feat_id"], world["base"])
+    first_receipt = K._run_merge(accepted_run, world["repo"], accepted_run["nodes"][0])
+    assert first_receipt["committed"] is True
+
+    # Simulate a crash before the state checkpoint: land replays the merge, receives
+    # alreadyUpToDate, and must compare the durable priorMergeCommit rather than current HEAD.
+    landed = K.land_task(
+        world["feat_id"], world["node"]["taskId"],
+        repo=world["repo"], base=world["base"], now=201,
+    )
+    assert landed["landed"]["status"] == "done_with_findings"
+    assert landed["landed"]["mergeCommit"] == first_receipt["after"]
+
+
+def test_accept_refuses_headless_green_without_mutating_state():
+    world = _accept_fixture()
+    state_path = os.path.join(world["base"], "feats", world["feat_id"] + ".json")
+    before = open(state_path, encoding="utf-8").read()
+    with mock.patch.object(K, "_run_verify", return_value={
+        "pass": True, "tampered": False, "head": None, "failures": [],
+    }):
+        try:
+            K.accept_task(
+                world["feat_id"], world["node"]["taskId"], world["result_path"],
+                repo=world["repo"], base=world["base"], now=200,
+            )
+            assert False, "headless green accepted"
+        except K.Refusal as exc:
+            assert "not bound" in str(exc)
+    assert open(state_path, encoding="utf-8").read() == before
 
 
 if __name__ == "__main__":
