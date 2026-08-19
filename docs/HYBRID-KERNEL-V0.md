@@ -103,7 +103,8 @@ their contracts.
 
 `camus kernel dispatch <featId> [taskId]` is the model-call boundary. Under the feature lock it
 rechecks budgets and selection, atomically moves that task to `running`, binds the trace to it, and
-emits its loop arguments. Repeating the same dispatch is idempotent; another task or trace refuses.
+requires the checkout to remain clean on the prepared feature branch and HEAD, and emits its loop
+arguments. Repeating the same dispatch is idempotent; another task or trace refuses.
 This removes the crash window between a read-only selection and an unrecorded model launch.
 
 `camus kernel prepare <featId>` is the mutating phase boundary. In order, it:
@@ -159,6 +160,7 @@ required before first use.
 - Task identity is recomputed from canonical args and must match state before any mutation.
 - Usage counters are monotonic; budget exhaustion cannot be overridden by the orchestrator.
 - Kernel prepare never operates on a dirty tree and never checks out an arbitrary branch.
+- Dispatch refuses if branch, HEAD, or cleanliness changed after prepare.
 - The kernel does not push, publish, deploy, merge to main, or perform external side effects.
 
 ## Migration and rollback

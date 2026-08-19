@@ -559,6 +559,15 @@ def dispatch_task(feat_id, task_id=None, repo=None, base=None, now=None):
             raise Refusal("requested task is not the kernel-selected next task")
         if kernel.get("activeTaskId") != selected:
             raise Refusal("prepared trace is bound to a different task")
+        feat_branch = run["state"].get("featBranch")
+        current_branch = _git_ok(repo, "branch", "--show-current")
+        if current_branch != feat_branch:
+            raise Refusal("checkout moved after prepare; expected feature branch %s" % feat_branch)
+        current_head = _git_ok(repo, "rev-parse", "HEAD")
+        if current_head != kernel.get("repoHead"):
+            raise Refusal("feature HEAD moved after prepare; run kernel prepare again")
+        if _git_ok(repo, "status", "--porcelain", "--untracked-files=all"):
+            raise Refusal("repository became dirty after prepare; refusing dispatch")
         node = next((item for item in run["nodes"] if item.get("taskId") == selected), None)
         if node is None or node.get("status") not in ("pending", "running"):
             raise Refusal("selected task is not dispatchable")

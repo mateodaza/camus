@@ -260,6 +260,8 @@ def test_dispatch_atomically_marks_running_and_replays_without_duplicate_event()
         "usage": {"startedAt": 100, "tokens": 0, "retries": 0},
     }
     _write(os.path.join(base, "feats", feat_id + ".json"), state)
+    _git(repo, "branch", state["featBranch"])
+    _git(repo, "checkout", "-q", state["featBranch"])
     first = K.dispatch_task(feat_id, repo=repo, base=base, now=101)
     second = K.dispatch_task(feat_id, repo=repo, base=base, now=102)
     assert first["dispatched"] is True and first["replayed"] is False
@@ -294,6 +296,32 @@ def test_dispatch_refuses_after_budget_exhaustion():
         assert False, "dispatch crossed an exhausted budget"
     except K.Refusal as exc:
         assert "token budget exhausted" in str(exc)
+    assert K._validated_run(feat_id, base)["nodes"][0]["status"] == "pending"
+
+
+def test_dispatch_refuses_if_checkout_moved_after_prepare():
+    base = tempfile.mkdtemp(prefix="camus_kernel_")
+    repo = _repo()
+    feat_id, _args, state = _fixture(
+        base, tasks=["run me"], statuses=["pending"], extra_args={"targetPath": repo}
+    )
+    _git(repo, "branch", state["featBranch"])
+    state["kernel"] = {
+        "schemaVersion": 1,
+        "traceId": feat_id + ":a1",
+        "attempt": 1,
+        "phase": "ready",
+        "activeTaskId": state["tasks"][0]["taskId"],
+        "repoHead": _git(repo, "rev-parse", "HEAD"),
+        "budgets": {"wallSeconds": 1000, "tokens": 100, "retries": 2},
+        "usage": {"startedAt": 100, "tokens": 0, "retries": 0},
+    }
+    _write(os.path.join(base, "feats", feat_id + ".json"), state)
+    try:
+        K.dispatch_task(feat_id, repo=repo, base=base, now=101)
+        assert False, "dispatch accepted the base branch after feature prepare"
+    except K.Refusal as exc:
+        assert "checkout moved" in str(exc)
     assert K._validated_run(feat_id, base)["nodes"][0]["status"] == "pending"
 
 
