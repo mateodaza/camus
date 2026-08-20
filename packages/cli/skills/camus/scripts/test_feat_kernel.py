@@ -230,6 +230,43 @@ def _direct_fixture(findings=None):
     }
 
 
+def _integration_fixture(statuses=None, advance_head=False):
+    base = tempfile.mkdtemp(prefix="camus_kernel_integrate_")
+    repo = _repo()
+    statuses = statuses or ["done", "done_with_findings"]
+    feat_id, args, state = _fixture(
+        base, statuses=statuses, extra_args={"targetPath": repo},
+    )
+    _git(repo, "branch", state["featBranch"])
+    _git(repo, "checkout", "-q", state["featBranch"])
+    proven_head = _git(repo, "rev-parse", "HEAD")
+    for node, status in zip(state["tasks"], statuses):
+        node["provenStatus"] = "done_with_findings" if status == "done_with_findings" else "done"
+        node["reconciledSha"] = proven_head
+    state["status"] = "running"
+    state["stage"] = "kernel_landed"
+    state["kernel"] = {
+        "schemaVersion": 1,
+        "traceId": feat_id + ":a1",
+        "attempt": 1,
+        "phase": "ready",
+        "activeTaskId": None,
+        "repoHead": proven_head,
+        "budgets": {"wallSeconds": 1000, "tokens": 5000, "retries": 2},
+        "usage": {"startedAt": 100, "tokens": 100, "retries": 0},
+    }
+    if advance_head:
+        with open(os.path.join(repo, "integration-fix.txt"), "w", encoding="utf-8") as fh:
+            fh.write("bounded integration repair\n")
+        _git(repo, "add", "integration-fix.txt")
+        _git(repo, "commit", "-qm", "integration repair")
+    _write(os.path.join(base, "feats", feat_id + ".json"), state)
+    return {
+        "base": base, "repo": repo, "feat_id": feat_id, "state": state,
+        "proven_head": proven_head, "head": _git(repo, "rev-parse", "HEAD"),
+    }
+
+
 def test_next_is_compact_and_contract_is_materialized_only_on_demand():
     base = tempfile.mkdtemp(prefix="camus_kernel_")
     hidden = "FULL_CONTRACT_ONLY_AFTER_SELECTION"
@@ -891,6 +928,130 @@ def test_direct_seal_retries_verification_without_a_second_commit():
         )
     assert recovered["commit"] == sealed_commit
     assert _git(world["worktree"], "rev-list", "--count", "%s..HEAD" % world["state"]["kernel"]["repoHead"]) == "1"
+
+
+def test_integrate_closes_the_exact_descendant_head_and_replays_idempotently():
+    world = _integration_fixture(advance_head=True)
+    green = {
+        "pass": True, "inconclusive": False, "tampered": False,
+        "failures": [], "head": world["head"],
+    }
+    with (
+        mock.patch.object(K, "_receipt_evidence", return_value=world["proven_head"]) as receipts,
+        mock.patch.object(K.env_check, "check_env", return_value=[]),
+        mock.patch.object(K.env_check, "collect_facts", return_value=["fixture ready"]),
+        mock.patch.object(K, "_run_verify", return_value=green) as verify,
+    ):
+        result = K.integrate_feature(
+            world["feat_id"], repo=world["repo"], base=world["base"], now=200,
+        )
+    assert result["action"] == "feature_complete"
+    assert result["status"] == "done_with_findings"
+    assert result["head"] == world["head"] and result["mainMerged"] is False
+    assert receipts.call_count == 2 and verify.call_count == 1
+    state = K._validated_run(world["feat_id"], world["base"])["state"]
+    assert state["status"] == "done_with_findings"
+    assert state["kernel"]["phase"] == "integrated"
+    assert state["kernel"]["integrationHead"] == world["head"]
+    assert state["integration"]["head"] == world["head"]
+    assert set(state["integrationMergeEvidence"]) == {
+        node["taskId"] for node in state["tasks"]
+    }
+
+    with mock.patch.object(K, "_run_verify") as replay_verify:
+        replay = K.integrate_feature(
+            world["feat_id"], repo=world["repo"], base=world["base"], now=201,
+        )
+    assert replay["idempotent"] is True
+    assert replay["head"] == world["head"]
+    assert not replay_verify.called, "same-head replay must not rerun the expensive verifier"
+
+
+def test_integrate_preserves_noop_status_without_inventing_plain_done():
+    world = _integration_fixture(statuses=["done", "noop"])
+    green = {
+        "pass": True, "inconclusive": False, "tampered": False,
+        "failures": [], "head": world["head"],
+    }
+    with (
+        mock.patch.object(K, "_receipt_evidence", return_value=world["proven_head"]),
+        mock.patch.object(K.env_check, "check_env", return_value=[]),
+        mock.patch.object(K.env_check, "collect_facts", return_value=[]),
+        mock.patch.object(K, "_run_verify", return_value=green),
+    ):
+        result = K.integrate_feature(
+            world["feat_id"], repo=world["repo"], base=world["base"], now=200,
+        )
+    assert result["status"] == "done_with_noops"
+
+
+def test_integrate_refusals_leave_state_unchanged():
+    cases = []
+
+    dirty = _integration_fixture()
+    with open(os.path.join(dirty["repo"], "dirty.txt"), "w", encoding="utf-8") as fh:
+        fh.write("untracked\n")
+    cases.append((dirty, {}, "dirty"))
+
+    missing = _integration_fixture()
+    cases.append((missing, {"receipt": None}, "no durable merge receipt"))
+
+    headless = _integration_fixture()
+    cases.append((headless, {"verify_head": "0" * 40}, "not bound"))
+
+    incomplete = _integration_fixture(statuses=["done", "pending"])
+    cases.append((incomplete, {}, "every task"))
+
+    for world, behavior, expected in cases:
+        state_path = os.path.join(world["base"], "feats", world["feat_id"] + ".json")
+        before = open(state_path, encoding="utf-8").read()
+        green = {
+            "pass": True, "inconclusive": False, "tampered": False,
+            "failures": [], "head": behavior.get("verify_head", world["head"]),
+        }
+        receipt = behavior.get("receipt", world["proven_head"])
+        with (
+            mock.patch.object(K, "_receipt_evidence", return_value=receipt),
+            mock.patch.object(K.env_check, "check_env", return_value=[]),
+            mock.patch.object(K.env_check, "collect_facts", return_value=[]),
+            mock.patch.object(K, "_run_verify", return_value=green),
+        ):
+            try:
+                K.integrate_feature(
+                    world["feat_id"], repo=world["repo"], base=world["base"], now=200,
+                )
+                assert False, "integration refusal case was accepted"
+            except K.Refusal as exc:
+                assert expected in str(exc), str(exc)
+        assert open(state_path, encoding="utf-8").read() == before
+
+
+def test_integrate_refuses_budget_exhaustion_and_non_descendant_tip():
+    budget = _integration_fixture()
+    state_path = os.path.join(budget["base"], "feats", budget["feat_id"] + ".json")
+    state = json.load(open(state_path, encoding="utf-8"))
+    state["kernel"]["budgets"]["tokens"] = 100
+    _write(state_path, state)
+    try:
+        K.integrate_feature(
+            budget["feat_id"], repo=budget["repo"], base=budget["base"], now=200,
+        )
+        assert False, "budget-exhausted integration was accepted"
+    except K.Refusal as exc:
+        assert "budget exhausted" in str(exc)
+
+    moved = _integration_fixture()
+    state_path = os.path.join(moved["base"], "feats", moved["feat_id"] + ".json")
+    state = json.load(open(state_path, encoding="utf-8"))
+    state["kernel"]["repoHead"] = "0" * 40
+    _write(state_path, state)
+    try:
+        K.integrate_feature(
+            moved["feat_id"], repo=moved["repo"], base=moved["base"], now=200,
+        )
+        assert False, "non-descendant integration tip was accepted"
+    except K.Refusal as exc:
+        assert "no longer descends" in str(exc)
 
 
 if __name__ == "__main__":

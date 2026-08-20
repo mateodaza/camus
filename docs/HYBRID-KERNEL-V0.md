@@ -154,6 +154,14 @@ fresh deterministic verify whose `head` must equal the accepted commit. Only the
 `accept`, invokes `merge.sh`, independently revalidates the durable merge receipt and Git ancestry,
 then restores `done` or `done_with_findings`. A mechanical merge can never upgrade review standing.
 
+`camus kernel integrate <featId>` is the model-free feature boundary. It requires every task to be
+terminal, the recorded feature branch to be checked out and clean, the prior kernel HEAD to remain
+an ancestor, and every durable task merge receipt to agree with Git ancestry. It rechecks budgets
+and the environment, runs one fresh deterministic verification, and requires an untampered green
+bound to the unchanged feature HEAD. Only then does it atomically persist terminal feature status.
+An integration-only repair may advance the clean feature branch, but the command records and proves
+that exact descendant HEAD. Replaying the same proof is idempotent. It never merges to main.
+
 The direct lane removes the legacy thin-agent relays without removing the gates:
 
 - `kernel open` creates or reattaches the deterministic task worktree.
@@ -254,6 +262,10 @@ maintain two permanent engines while there are no external users.
 - Workflow-result finding drift, reviewer-binding drift, task/branch drift, dirty custody, and a
   headless/mismatched green all refuse before state mutation.
 - Accepted `done_with_findings` lands without becoming plain `done`.
+- Integration refuses a dirty tree, missing/mismatched task receipt, non-descendant feature tip,
+  exhausted budget, red/inconclusive/tampered result, or green bound to another HEAD.
+- Integration preserves `done_with_findings`, records the exact feature HEAD, and replays that same
+  terminal proof without rerunning verification.
 - Full CLI, trust, and Studio suites remain green.
 - RFC Task 2 completes with at least 50% less feature-orchestration time/output than Task 1 while
   retaining independent review and deterministic verification.

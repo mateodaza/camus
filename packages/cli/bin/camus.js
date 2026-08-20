@@ -73,6 +73,7 @@ usage: npx camus-cli <command>
                                                   validate result/reviewer/Git/verify evidence
                        kernel land <featId> <taskId>
                                                   merge an accepted task without a model turn
+                       kernel integrate <featId>  env/receipt recheck + final HEAD-bound verify
                        kernel open <featId> <taskId>
                                                   create/reattach the direct task worktree
                        kernel maker-usage <featId> <taskId> --result-file <path>

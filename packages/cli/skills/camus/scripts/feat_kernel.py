@@ -35,6 +35,10 @@ Commands:
       Merge only an accepted task through merge.sh, validate its merge receipt + Git ancestry,
       and restore the accepted done/done_with_findings status without laundering provenance.
 
+  feat_kernel.py integrate FEAT_ID [--repo PATH]
+      Recheck budgets, environment, every task merge receipt, and the clean feature HEAD; run one
+      final HEAD-bound verification and atomically close the feature without merging to main.
+
   feat_kernel.py open FEAT_ID TASK_ID
       Materialize the deterministic task worktree for a direct hybrid run.
 
@@ -1703,6 +1707,136 @@ def land_task(feat_id, task_id, repo=None, base=None, now=None):
         return out
 
 
+def _integration_result(run, head, final_status, verification, idempotent=False):
+    counts = {
+        "done": sum(1 for node in run["nodes"] if node.get("status") == "done"),
+        "doneWithFindings": sum(
+            1 for node in run["nodes"] if node.get("status") == "done_with_findings"
+        ),
+        "noop": sum(1 for node in run["nodes"] if node.get("status") == "noop"),
+    }
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "traceId": _kernel(run["state"]).get("traceId"),
+        "action": "feature_complete",
+        "featureId": run["state"]["featId"],
+        "branch": run["state"].get("featBranch"),
+        "status": final_status,
+        "head": head,
+        "tasks": counts,
+        "verification": verification,
+        "idempotent": idempotent,
+        "mainMerged": False,
+    }
+
+
+def integrate_feature(feat_id, repo=None, verify_timeout=3600, base=None, now=None):
+    """Earn terminal feature status from receipts + a fresh feature-HEAD verification."""
+    now = int(time.time()) if now is None else int(now)
+    base = base or camus_home()
+    feats_dir = os.path.join(base, "feats")
+    with _locked(feats_dir, feat_id):
+        run = _validated_run(feat_id, base)
+        repo = _resolve_repo(run, repo)
+        state = run["state"]
+        kernel = _kernel(state)
+        feat_branch = state.get("featBranch")
+        if not isinstance(feat_branch, str) or not feat_branch.startswith("camus/feat-"):
+            raise Refusal("state has no valid feature branch")
+        if _git_ok(repo, "branch", "--show-current") != feat_branch:
+            raise Refusal("integration requires the recorded feature branch to be checked out")
+        if _git_ok(repo, "status", "--porcelain", "--untracked-files=all"):
+            raise Refusal("repository is dirty; refusing feature integration")
+        if any(node.get("status") not in COMPLETE_TASK_STATUSES for node in run["nodes"]):
+            raise Refusal("feature integration requires every task to be terminal")
+
+        head = _git_ok(repo, "rev-parse", "HEAD")
+        existing = state.get("integration")
+        if kernel.get("phase") == "integrated" or state.get("status") in (
+            "done", "done_with_findings", "done_with_noops",
+        ):
+            if (
+                isinstance(existing, dict)
+                and existing.get("pass") is True
+                and existing.get("tampered") is not True
+                and existing.get("head") == head
+                and kernel.get("integrationHead") == head
+            ):
+                return _integration_result(
+                    run, head, state.get("status"), existing, idempotent=True,
+                )
+            raise Refusal("terminal feature integration evidence does not bind the current HEAD")
+
+        if kernel.get("phase") != "ready":
+            raise Refusal("kernel is not at the integration-ready phase")
+        stop = _budget_stop(_budgets(run), _usage(state), now=now)
+        if stop:
+            raise Refusal(stop)
+        prior_head = kernel.get("repoHead")
+        if not isinstance(prior_head, str) or not HEX_SHA_RE.fullmatch(prior_head):
+            raise Refusal("kernel has no valid pre-integration HEAD")
+        if _git(repo, "merge-base", "--is-ancestor", prior_head, head)[0] != 0:
+            raise Refusal("feature HEAD no longer descends from the kernel-proven task tip")
+
+        merge_evidence = {}
+        for node in run["nodes"]:
+            evidence = _receipt_evidence(run, repo, node)
+            if not evidence:
+                raise Refusal("task %s has no durable merge receipt" % node.get("taskId"))
+            if _git(repo, "merge-base", "--is-ancestor", evidence, head)[0] != 0:
+                raise Refusal("task %s merge evidence is not on the integration HEAD" % node.get("taskId"))
+            merge_evidence[node["taskId"]] = evidence
+
+        issues = env_check.check_env(repo)
+        if issues:
+            raise Refusal("integration environment not ready: " + "; ".join(issues))
+        verification = _run_verify(run, repo, verify_timeout)
+        if verification.get("pass") is not True or verification.get("inconclusive") is True:
+            raise Refusal(
+                "feature integration verification is not green: %s"
+                % json.dumps(verification.get("failures"), ensure_ascii=False)[:1000]
+            )
+        if verification.get("tampered") is True:
+            raise Refusal("feature integration verification reports tampering")
+        if verification.get("head") != head:
+            raise Refusal("feature integration verification is not bound to the integration HEAD")
+        if _git_ok(repo, "rev-parse", "HEAD") != head:
+            raise Refusal("feature HEAD moved during integration verification")
+        if _git_ok(repo, "status", "--porcelain", "--untracked-files=all"):
+            raise Refusal("repository became dirty during integration verification")
+
+        has_findings = any(node.get("status") == "done_with_findings" for node in run["nodes"])
+        has_noops = any(node.get("status") == "noop" for node in run["nodes"])
+        final_status = "done_with_findings" if has_findings else (
+            "done_with_noops" if has_noops else "done"
+        )
+        state["envRecheck"] = {
+            "ready": True,
+            "issues": [],
+            "facts": env_check.collect_facts(),
+            "when": "kernel_integration",
+        }
+        state["integration"] = verification
+        state["integrationMergeEvidence"] = merge_evidence
+        state["status"] = final_status
+        state["stage"] = "kernel_integrated"
+        kernel["phase"] = "integrated"
+        kernel["activeTaskId"] = None
+        kernel["repoHead"] = head
+        kernel["integrationHead"] = head
+        kernel["integratedAt"] = now
+        kernel["updatedAt"] = now
+        state["kernel"] = kernel
+        _append_event(state, "Kernel %s integrated %s at %s" % (
+            kernel.get("traceId"), final_status, head,
+        ))
+        _atomic_write(run["statePath"], state)
+        persisted = _validated_run(feat_id, base)
+        return _integration_result(
+            persisted, head, final_status, persisted["state"]["integration"],
+        )
+
+
 def _emit(value):
     print(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
 
@@ -1748,6 +1882,11 @@ def _parser():
     p.add_argument("feat_id")
     p.add_argument("task_id")
     p.add_argument("--repo", default=None)
+    p.add_argument("--dir", dest="base", default=None, help=argparse.SUPPRESS)
+    p = sub.add_parser("integrate")
+    p.add_argument("feat_id")
+    p.add_argument("--repo", default=None)
+    p.add_argument("--verify-timeout", type=int, default=3600)
     p.add_argument("--dir", dest="base", default=None, help=argparse.SUPPRESS)
     for name in ("open", "review"):
         p = sub.add_parser(name)
@@ -1797,6 +1936,11 @@ def main(argv=None):
         elif options.command == "land":
             value = land_task(
                 options.feat_id, options.task_id, repo=options.repo, base=options.base,
+            )
+        elif options.command == "integrate":
+            value = integrate_feature(
+                options.feat_id, repo=options.repo,
+                verify_timeout=options.verify_timeout, base=options.base,
             )
         elif options.command == "open":
             value = open_task(
