@@ -431,6 +431,15 @@ function readFile() {
   return readDecision().file;
 }
 
+// The normalized connection vocabulary for the current decision file — the same
+// projection parseConnections yields, read SIDE-EFFECT-FREE (no grandfather
+// consult), so /api/config and doctor can enumerate connections even when a
+// not-yet-grandfathered legacy_http backend would refuse to load. Carries only
+// endpoint facts (name, kind, baseUrl, anonymous) — never a credential value.
+export function listConnections(file = readFile()) {
+  return parseConnections(file);
+}
+
 // Every backend a seat may name: built-ins plus the file's opt-in entries.
 export function listBackends(file = readFile()) {
   const connections = parseConnections(file);
@@ -828,7 +837,16 @@ export function seatCatalog() {
     maker: entriesFor('maker'),
     reviewer: entriesFor('reviewer'),
     reviewerSource: codex.source,
-    backends: Object.values(backends).map((b) => ({ name: b.name, kind: b.kind, provider: b.provider, seats: b.seats, effort: b.effort })),
+    // The env-var NAME that holds each backend's key — never the value. A keyless
+    // openai_compat entry already normalized to the CAMUS_NO_AUTH placeholder name
+    // at load; a vendor-managed built-in has no env var (null). connection/transport
+    // ride along so a reader can compose per-connection identity without a second call.
+    backends: Object.values(backends).map((b) => ({
+      name: b.name, kind: b.kind, provider: b.provider, seats: b.seats, effort: b.effort,
+      apiKeyEnv: b.apiKeyEnv ?? null,
+      connection: b.connection ?? null,
+      transport: b.transport ?? null,
+    })),
   };
 }
 

@@ -4,10 +4,11 @@
 // app does not debug PATHs.
 
 import { execFile } from 'node:child_process';
+import { connect as netConnect } from 'node:net';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { getModels, modelsSummary, seatCatalog, listBackends } from './models.mjs';
+import { getModels, modelsSummary, seatCatalog, listBackends, listConnections } from './models.mjs';
 import { CLAUDE_HIVEMIND_DISPLAY, hivemindStatus } from './adapters/hivemind.mjs';
 import { gateInstalled } from './code-lane.mjs';
 
@@ -117,6 +118,17 @@ export const hivemindListingHasEndpoint = (raw, endpoint) => {
 
 export const managedConnectorIsConnected = (raw) => /Status:\s*[^\n]*Connected/i.test(String(raw || ''));
 
+// Pure normalization for the TCP half of a loopback doctor probe. WHATWG URL
+// keeps brackets around IPv6 literals in Node, while net.connect needs the bare
+// address. Protocol defaults matter for portless baseUrl declarations.
+export function loopbackTcpTarget(baseUrl) {
+  const url = new URL(baseUrl);
+  const host = url.hostname.startsWith('[') && url.hostname.endsWith(']')
+    ? url.hostname.slice(1, -1)
+    : url.hostname;
+  return { host, port: Number(url.port || (url.protocol === 'https:' ? 443 : 80)) };
+}
+
 // deep=true adds the slow managed-connector health round-trip.
 export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   const checks = [];
@@ -188,6 +200,123 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
     { auth: codexAuthed, ...(codexUsed ? {} : { optional: true }) },
   );
 
+  // The seat catalog, resolved ONCE and shared by the connection lineage checks
+  // below and the catalog check further down. A malformed decision file leaves it
+  // null; every consumer degrades to the reported error rather than throwing.
+  let seats = null;
+  let seatsError = null;
+  try { seats = seatCatalog(); } catch (err) { seatsError = err; }
+
+  // ---- Per-connection checks (RFC §11.2, §19.2) --------------------------
+  // These run BEFORE the per-backend checks. Connections are enumerated
+  // SIDE-EFFECT-FREE (no grandfather consult), so even a not-yet-grandfathered
+  // legacy_http entry surfaces its upgrade paths here instead of only exploding
+  // the models check. Reachability is DEEP-only and sends NO key: a resolved HTTP
+  // response (any status, even 401) proves the endpoint answered; only a
+  // DNS/TLS/connection failure reads unreachable. A connection's identity is its
+  // endpoint and kind — never a credential value.
+  const tcpReachable = (host, port, timeout = 1500) => new Promise((resolveTcp) => {
+    const socket = netConnect({ host, port });
+    const finish = (ok) => { socket.destroy(); resolveTcp(ok); };
+    socket.setTimeout(timeout);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+  });
+  const endpointAnswers = (baseUrl) =>
+    fetch(`${baseUrl}/models`, { signal: AbortSignal.timeout(5000) }).then(() => true, () => false);
+  let connections = {};
+  try { connections = listConnections(); } catch { /* malformed file: the models/catalog checks report it */ }
+  for (const [name, conn] of Object.entries(connections)) {
+    const url = new URL(conn.baseUrl);
+    const label = `Connection "${name}"${conn.anonymous ? ' (migrated)' : ''}`;
+    if (conn.kind === 'loopback') {
+      // URL.hostname retains brackets for IPv6 literals in Node. net.connect
+      // needs the bare address, and a missing explicit port follows the URL
+      // protocol rather than assuming HTTP for an accepted HTTPS declaration.
+      const { host: tcpHost, port: tcpPort } = loopbackTcpTarget(conn.baseUrl);
+      const configRef = conn.anonymous && name.startsWith('$legacy:')
+        ? `backends.${name.slice('$legacy:'.length)}.baseUrl`
+        : `connections.${name}`;
+      let tcp = null;
+      let reach = null; // null = not probed (deep only)
+      if (deep) {
+        tcp = await tcpReachable(tcpHost, tcpPort);
+        if (tcp) reach = await endpointAnswers(conn.baseUrl);
+      }
+      add(
+        `connection-${name}`, `${label} (loopback)`,
+        tcp === false ? false : reach !== false,
+        `${conn.baseUrl}${!deep ? ' · declared (run --doctor for a live probe)'
+          : tcp === false ? ' · TCP refused'
+          : reach === false ? ' · port open, /models did not answer'
+          : ' · reachable'}`,
+        tcp === false
+          ? `start the local server at ${url.origin}, or fix ${configRef}`
+          : reach === false
+            ? `make ${conn.baseUrl}/models answer, or fix the base path in ${configRef}`
+            : null,
+        { optional: true, connection: name },
+      );
+    } else if (conn.kind === 'direct_https') {
+      let reach = null;
+      if (deep) reach = await endpointAnswers(conn.baseUrl);
+      add(
+        `connection-${name}`, `${label} (direct_https)`,
+        reach !== false,
+        `${conn.baseUrl}${!deep ? ' · declared (run --doctor for a live probe)'
+          : reach === false ? ' · DNS/TLS or endpoint unreachable' : ' · DNS/TLS ok, endpoint answered'}`,
+        reach === false ? `confirm ${url.hostname} resolves and serves HTTPS, or fix connections.${name}.baseUrl` : null,
+        { optional: true, connection: name },
+      );
+    } else if (conn.kind === 'legacy_http') {
+      // Plaintext or non-public HTTP. Grandfathered entries still run; a new one
+      // is refused. Surface the exact three upgrade paths (the grandfather refusal
+      // wording) so the fix is copyable.
+      add(
+        `connection-${name}`, `${label} (legacy_http)`, false,
+        `${conn.baseUrl} · plaintext or non-public HTTP; grandfathered entries still run, new ones are refused`,
+        'Upgrade paths: (1) move the service to loopback (127.0.0.1), (2) front it with an ssh_tunnel connection, or (3) put it behind a real HTTPS endpoint. Or confirm it explicitly with confirmLegacy.',
+        { optional: true, connection: name },
+      );
+    }
+  }
+
+  // Unconfirmed-lineage and registry-staleness prompts, judged against DECLARED
+  // config only — never the network. Both read the lineage source that was
+  // derived at load from the config declarations + the tracked registry, one
+  // entry for every declared model in every configurable backend.
+  const entriesByBackend = new Map();
+  for (const entry of [...(seats?.maker ?? []), ...(seats?.reviewer ?? [])]) {
+    if (entry.backend === 'claude' || entry.backend === 'codex') continue;
+    if (!entriesByBackend.has(entry.backend)) entriesByBackend.set(entry.backend, new Map());
+    entriesByBackend.get(entry.backend).set(entry.model, entry);
+  }
+  for (const [backend, byModel] of entriesByBackend) {
+    const entries = [...byModel.values()];
+    const unknownModels = entries.filter((entry) => entry.lineage?.source === 'unknown').map((entry) => entry.model);
+    if (unknownModels.length) {
+      add(
+        `lineage-${backend}`, `Lineage for "${backend}"`, false,
+        `origin unconfirmed for ${unknownModels.join(', ')} (training org / model family undeclared); its pairings seal advisory, never verified`,
+        `declare backends.${backend}.trainingOrg, .modelFamily, and .derivedFrom in models.json to confirm its lineage`,
+        { optional: true },
+      );
+    }
+    const staleModels = entries
+      .filter((entry) => entry.transport === 'direct_https' && entry.lineage?.source !== 'registry')
+      .map((entry) => entry.model);
+    if (staleModels.length) {
+      const representative = entries.find((entry) => staleModels.includes(entry.model));
+      add(
+        `registry-${backend}`, `Registry coverage for "${backend}"`, false,
+        `${representative.trainingOrg}/${representative.modelFamily} models ${staleModels.join(', ')} are operator-declared; checks/registry.json has no matching endpoint row, so their lineage stays operator_declared, not registry`,
+        `add an endpoint row for this host to checks/registry.json to verify the origin, or keep it operator-declared`,
+        { optional: true, advisory: true },
+      );
+    }
+  }
+
   // Opt-in openai_compat backends: each declared entry gets its own check.
   // Required exactly when a seat decision names it; the key itself is only
   // ever read from the environment, never printed.
@@ -251,9 +380,9 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   // The seat catalog, as the pickers and the run-request validator see it —
   // the doctor states what may sit in each seat so a decision is checkable
   // before anything runs. Advisory: an empty compat list is a config question,
-  // never a gate on the runs the current decisions describe.
-  try {
-    const seats = seatCatalog();
+  // never a gate on the runs the current decisions describe. Reuses the seat
+  // catalog resolved once above (`seats`/`seatsError`).
+  if (seats) {
     const summarize = (entries) => {
       const byBackend = new Map();
       for (const entry of entries) {
@@ -266,8 +395,8 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
     add('catalog', 'Seat catalog', true,
       `maker: ${summarize(seats.maker)}; reviewer: ${summarize(seats.reviewer)} — reviewer list ${seats.reviewerSource === 'codex_cache' ? 'CLI-verified from the codex cache' : 'a conservative fallback'}`,
       null, { advisory: true, seats });
-  } catch (err) {
-    add('catalog', 'Seat catalog', false, err.message, 'fix the active local model decision file (or the tracked defaults if no local file exists)', { advisory: true });
+  } else {
+    add('catalog', 'Seat catalog', false, seatsError.message, 'fix the active local model decision file (or the tracked defaults if no local file exists)', { advisory: true });
   }
   if (hm.mode === 'claude' && deep) {
     // Probe ONLY the managed connector. `mcp list` health-checks every local
