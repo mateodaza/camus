@@ -160,7 +160,10 @@ an ancestor, and every durable task merge receipt to agree with Git ancestry. It
 and the environment, runs one fresh deterministic verification, and requires an untampered green
 bound to the unchanged feature HEAD. Only then does it atomically persist terminal feature status.
 An integration-only repair may advance the clean feature branch, but the command records and proves
-that exact descendant HEAD. Replaying the same proof is idempotent. It never merges to main.
+that exact descendant HEAD. It refreshes the human-facing report from the terminal state; replaying
+the same proof is idempotent and repairs a missing or stale report without rerunning verification.
+A later clean descendant integration repair may re-earn proof, with the previous receipt retained
+in integration history; divergent or rewound tips refuse. It never merges to main.
 
 The direct lane removes the legacy thin-agent relays without removing the gates:
 
@@ -265,7 +268,7 @@ maintain two permanent engines while there are no external users.
 - Integration refuses a dirty tree, missing/mismatched task receipt, non-descendant feature tip,
   exhausted budget, red/inconclusive/tampered result, or green bound to another HEAD.
 - Integration preserves `done_with_findings`, records the exact feature HEAD, and replays that same
-  terminal proof without rerunning verification.
+  terminal proof without rerunning verification; replay also repairs a stale report snapshot.
 - Full CLI, trust, and Studio suites remain green.
 - RFC Task 2 completes with at least 50% less feature-orchestration time/output than Task 1 while
   retaining independent review and deterministic verification.

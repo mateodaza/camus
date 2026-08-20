@@ -1730,6 +1730,56 @@ def _integration_result(run, head, final_status, verification, idempotent=False)
     }
 
 
+def _write_integration_report(run):
+    """Refresh the human-facing report from the exact terminal kernel state."""
+    state, args = run["state"], run["args"]
+    usage = _usage(state)
+    decisions = []
+    merged = []
+    for node in run["nodes"]:
+        if isinstance(node.get("mergedBranch"), str):
+            merged.append(node["mergedBranch"])
+        elif node.get("status") in COMPLETE_TASK_STATUSES and isinstance(node.get("branch"), str):
+            merged.append(node["branch"])
+        for decision in node.get("decisions") if isinstance(node.get("decisions"), list) else []:
+            if isinstance(decision, dict):
+                decisions.append({"taskId": node.get("taskId"), **decision})
+    report = {
+        "featId": state["featId"],
+        "feat": state.get("feat") or args.get("feat"),
+        "featBranch": state.get("featBranch"),
+        "featBranchToReview": state.get("featBranch"),
+        "base": state.get("base"),
+        "status": state.get("status"),
+        "stage": state.get("stage"),
+        "posture": args.get("posture"),
+        "resumeArgsRef": state.get("resumeArgsRef"),
+        "resumeArgsHash": state.get("resumeArgsHash"),
+        "env": state.get("env"),
+        "baseline": state.get("baseline"),
+        "envRecheck": state.get("envRecheck"),
+        "integration": state.get("integration"),
+        "integrationHistory": state.get("integrationHistory")
+            if isinstance(state.get("integrationHistory"), list) else [],
+        "integrationMergeEvidence": state.get("integrationMergeEvidence"),
+        "tasks": run["nodes"],
+        "merged": merged,
+        "decisions": decisions,
+        "events": state.get("events") if isinstance(state.get("events"), list) else [],
+        "totalOutputTokens": usage["tokens"],
+        "directMakerOutputTokens": usage.get("directOutputTokens"),
+        "kernel": _kernel(state),
+        "question": None,
+        "note": (
+            "Feature integration is deterministically green on the named feature HEAD; "
+            "main was not merged. Review findings remain fixed-unreviewed where recorded on tasks."
+        ),
+    }
+    path = os.path.join(run["base"], "reports", state["featId"] + ".json")
+    _atomic_write(path, report)
+    return path
+
+
 def integrate_feature(feat_id, repo=None, verify_timeout=3600, base=None, now=None):
     """Earn terminal feature status from receipts + a fresh feature-HEAD verification."""
     now = int(time.time()) if now is None else int(now)
@@ -1752,6 +1802,7 @@ def integrate_feature(feat_id, repo=None, verify_timeout=3600, base=None, now=No
 
         head = _git_ok(repo, "rev-parse", "HEAD")
         existing = state.get("integration")
+        reintegration = False
         if kernel.get("phase") == "integrated" or state.get("status") in (
             "done", "done_with_findings", "done_with_noops",
         ):
@@ -1762,17 +1813,30 @@ def integrate_feature(feat_id, repo=None, verify_timeout=3600, base=None, now=No
                 and existing.get("head") == head
                 and kernel.get("integrationHead") == head
             ):
+                _write_integration_report(run)
                 return _integration_result(
                     run, head, state.get("status"), existing, idempotent=True,
                 )
-            raise Refusal("terminal feature integration evidence does not bind the current HEAD")
+            prior_integration_head = kernel.get("integrationHead")
+            if not (
+                kernel.get("phase") == "integrated"
+                and isinstance(existing, dict)
+                and existing.get("pass") is True
+                and existing.get("tampered") is not True
+                and existing.get("head") == prior_integration_head
+                and isinstance(prior_integration_head, str)
+                and HEX_SHA_RE.fullmatch(prior_integration_head)
+                and _git(repo, "merge-base", "--is-ancestor", prior_integration_head, head)[0] == 0
+            ):
+                raise Refusal("terminal feature integration evidence does not bind a valid ancestor of the current HEAD")
+            reintegration = True
 
-        if kernel.get("phase") != "ready":
+        if kernel.get("phase") not in (("integrated",) if reintegration else ("ready",)):
             raise Refusal("kernel is not at the integration-ready phase")
         stop = _budget_stop(_budgets(run), _usage(state), now=now)
         if stop:
             raise Refusal(stop)
-        prior_head = kernel.get("repoHead")
+        prior_head = kernel.get("integrationHead") if reintegration else kernel.get("repoHead")
         if not isinstance(prior_head, str) or not HEX_SHA_RE.fullmatch(prior_head):
             raise Refusal("kernel has no valid pre-integration HEAD")
         if _git(repo, "merge-base", "--is-ancestor", prior_head, head)[0] != 0:
@@ -1816,6 +1880,15 @@ def integrate_feature(feat_id, repo=None, verify_timeout=3600, base=None, now=No
             "facts": env_check.collect_facts(),
             "when": "kernel_integration",
         }
+        if reintegration:
+            history = state.get("integrationHistory")
+            history = history if isinstance(history, list) else []
+            if not any(
+                isinstance(item, dict) and item.get("head") == existing.get("head")
+                for item in history
+            ):
+                history.append(existing)
+            state["integrationHistory"] = history
         state["integration"] = verification
         state["integrationMergeEvidence"] = merge_evidence
         state["status"] = final_status
@@ -1824,7 +1897,10 @@ def integrate_feature(feat_id, repo=None, verify_timeout=3600, base=None, now=No
         kernel["activeTaskId"] = None
         kernel["repoHead"] = head
         kernel["integrationHead"] = head
-        kernel["integratedAt"] = now
+        if not isinstance(kernel.get("integratedAt"), int):
+            kernel["integratedAt"] = now
+        if reintegration:
+            kernel["reintegratedAt"] = now
         kernel["updatedAt"] = now
         state["kernel"] = kernel
         _append_event(state, "Kernel %s integrated %s at %s" % (
@@ -1832,6 +1908,7 @@ def integrate_feature(feat_id, repo=None, verify_timeout=3600, base=None, now=No
         ))
         _atomic_write(run["statePath"], state)
         persisted = _validated_run(feat_id, base)
+        _write_integration_report(persisted)
         return _integration_result(
             persisted, head, final_status, persisted["state"]["integration"],
         )

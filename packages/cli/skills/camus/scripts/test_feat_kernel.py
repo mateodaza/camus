@@ -957,7 +957,13 @@ def test_integrate_closes_the_exact_descendant_head_and_replays_idempotently():
     assert set(state["integrationMergeEvidence"]) == {
         node["taskId"] for node in state["tasks"]
     }
+    report_path = os.path.join(world["base"], "reports", world["feat_id"] + ".json")
+    report = json.load(open(report_path, encoding="utf-8"))
+    assert report["status"] == "done_with_findings"
+    assert report["integration"]["head"] == world["head"]
+    assert [node["status"] for node in report["tasks"]] == ["done", "done_with_findings"]
 
+    _write(report_path, {"status": "needs_human", "tasks": []})
     with mock.patch.object(K, "_run_verify") as replay_verify:
         replay = K.integrate_feature(
             world["feat_id"], repo=world["repo"], base=world["base"], now=201,
@@ -965,6 +971,30 @@ def test_integrate_closes_the_exact_descendant_head_and_replays_idempotently():
     assert replay["idempotent"] is True
     assert replay["head"] == world["head"]
     assert not replay_verify.called, "same-head replay must not rerun the expensive verifier"
+    repaired_report = json.load(open(report_path, encoding="utf-8"))
+    assert repaired_report["status"] == "done_with_findings"
+    assert len(repaired_report["tasks"]) == 2, "idempotent replay repairs a stale report snapshot"
+
+    with open(os.path.join(world["repo"], "report-repair.txt"), "w", encoding="utf-8") as fh:
+        fh.write("integration-only repair\n")
+    _git(world["repo"], "add", "report-repair.txt")
+    _git(world["repo"], "commit", "-qm", "report repair")
+    repaired_head = _git(world["repo"], "rev-parse", "HEAD")
+    reintegration_green = {**green, "head": repaired_head}
+    with (
+        mock.patch.object(K, "_receipt_evidence", return_value=world["proven_head"]),
+        mock.patch.object(K.env_check, "check_env", return_value=[]),
+        mock.patch.object(K.env_check, "collect_facts", return_value=[]),
+        mock.patch.object(K, "_run_verify", return_value=reintegration_green) as reintegration_verify,
+    ):
+        reintegrated = K.integrate_feature(
+            world["feat_id"], repo=world["repo"], base=world["base"], now=202,
+        )
+    assert reintegrated["idempotent"] is False and reintegrated["head"] == repaired_head
+    assert reintegration_verify.call_count == 1
+    reintegrated_state = K._validated_run(world["feat_id"], world["base"])["state"]
+    assert reintegrated_state["integration"]["head"] == repaired_head
+    assert [item["head"] for item in reintegrated_state["integrationHistory"]] == [world["head"]]
 
 
 def test_integrate_preserves_noop_status_without_inventing_plain_done():
