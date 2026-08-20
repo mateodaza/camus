@@ -99,6 +99,10 @@ const identityKeys = new Set([
 const withoutIdentity = (entry) => Object.fromEntries(
   Object.entries(entry).filter(([key]) => !identityKeys.has(key)),
 );
+const task11BackendFields = new Set(['apiKeyEnv', 'connection', 'transport']);
+const withoutTask11BackendFields = (entry) => Object.fromEntries(
+  Object.entries(entry).filter(([key]) => !task11BackendFields.has(key)),
+);
 const legacySurface = (models, catalog) => ({
   getModels: {
     ...models,
@@ -109,6 +113,9 @@ const legacySurface = (models, catalog) => ({
     ...catalog,
     maker: catalog.maker.map(withoutIdentity),
     reviewer: catalog.reviewer.map(withoutIdentity),
+    // The historical golden stays byte-frozen. Task 11 deliberately adds these
+    // read-only consumer fields and asserts them below, outside the old surface.
+    backends: catalog.backends.map(withoutTask11BackendFields),
   },
 });
 
@@ -141,6 +148,15 @@ try {
     const seats = seatCatalog();
     const golden = JSON.parse(readFileSync(join(here, 'fixtures', 'pre-open-model-seats.golden.json'), 'utf8'));
     assert.deepEqual(legacySurface(m, seats), golden, 'the complete pre-Task-8 getModels/seatCatalog surface matches its golden');
+
+    const claudeBackend = seats.backends.find((entry) => entry.name === 'claude');
+    assert.deepEqual(pick(claudeBackend, ['apiKeyEnv', 'connection', 'transport']), {
+      apiKeyEnv: null, connection: null, transport: null,
+    }, 'vendor-managed built-ins expose no credential env var or configured connection');
+    const kimiBackend = seats.backends.find((entry) => entry.name === 'kimi');
+    assert.deepEqual(pick(kimiBackend, ['apiKeyEnv', 'connection', 'transport']), {
+      apiKeyEnv: 'CAMUS_TEST_MOONSHOT_KEY', connection: anonymousConnectionName('kimi'), transport: null,
+    }, 'a legacy configurable backend exposes only its env-var name and normalized connection name');
 
     // The golden above owns whole-output compatibility; these checks make the
     // dynamic identity expectations readable at the exact affected seats.

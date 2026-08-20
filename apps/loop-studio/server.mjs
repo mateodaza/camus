@@ -27,7 +27,7 @@ import { buildAuditReplayPack, createAuditReplayExperiment, finalizeAuditReplayE
 import { createParallelExperiment, finalizeParallelExperiment, knowledgeSnapshotMatches, markParallelArmRunning, outcomeFromArmReport, sealKnowledgeSnapshot } from './lib/comparison.mjs';
 import { validateExperimentRecord } from '../../packages/trust/lib/validate.mjs';
 import { deriveStatusDimensions, deriveHeadline } from './lib/status-dims.mjs';
-import { getModels, updateModels, modelsSummary, modelCatalog, seatCatalog, seatOffered, groundingNeedsClaudeMaker, gateModels, EFFORTS } from './lib/models.mjs';
+import { getModels, updateModels, modelsSummary, modelCatalog, seatCatalog, seatOffered, groundingNeedsClaudeMaker, gateModels, listConnections, EFFORTS } from './lib/models.mjs';
 import { confirmClaudeRoute } from './lib/grandfather.mjs';
 import { reviewPrompt } from './lib/prompts.mjs';
 
@@ -1199,9 +1199,13 @@ const server = http.createServer(async (req, res) => {
         // What the settings pickers may offer: the machine's real options,
         // with the current decision always present. `catalog` is the legacy
         // claude/codex shape Compare & Learn and audit replay still freeze;
-        // `seats` is the full backend-qualified catalog for seat selection.
+        // `seats` is the full backend-qualified catalog for seat selection; its
+        // per-backend entries carry the env-var NAME (never the value) and the
+        // identity facts each seat seals. `connections` is the normalized endpoint
+        // vocabulary (name, kind, baseUrl) — also values-never, per §11.2.
         catalog: modelCatalog(),
         seats: seatCatalog(),
+        connections: listConnections(),
         envOverrides: ['CLAUDE_MODEL', 'CODEX_MODEL', 'CODEX_EFFORT', 'ROUND_CAP'].filter((k) => process.env[k] !== undefined),
       });
     }
