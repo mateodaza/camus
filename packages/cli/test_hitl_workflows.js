@@ -2519,6 +2519,16 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F44 exact resume restores original mainline base in state/report',
       resumed.stateJSON.base === 'main' && resumed.res.base === 'main',
       J({ state: resumed.stateJSON.base, report: resumed.res.base }))
+    const legacySelf = { ...exactResume, base: `camus/feat-${fid}` }
+    const recovered = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, preflight: { clean: true, base: `camus/feat-${fid}`, dirtyFiles: 0,
+        stateRaw: JSON.stringify(legacySelf), argsPresent: false } }, loopDone)
+    ok('F44 legacy self-overwritten base + exact identity → resumes for migration recovery',
+      recovered.res && recovered.res.status === 'done',
+      recovered.res && (recovered.res.status + '/' + recovered.res.stage))
+    ok('F44 legacy recovery reports unknown base rather than inventing mainline provenance',
+      recovered.stateJSON.base === null && recovered.res.base === null,
+      J({ state: recovered.stateJSON.base, report: recovered.res.base }))
     const missingProof = await runFeat({ feat: 'F', tasks: ['only task'] },
       { ...featBase, preflight: { clean: true, base: `camus/feat-${fid}`, dirtyFiles: 0,
         stateRaw: '', argsPresent: false } }, loopDone)

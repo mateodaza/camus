@@ -664,12 +664,18 @@ if (pf.base === 'HEAD') {
 // feat identity BOTH equal the identity recomputed from this invocation; otherwise the original
 // anti-stacking refusal remains fail-closed. Restore the original mainline base for honest reports.
 const prior = pf.stateRaw ? extractJsonObject(pf.stateRaw) : null
+const priorBaseIsMainline = prior && typeof prior.base === 'string' && prior.base.length > 0
+  && !/^camus\/feat[-/]/.test(prior.base)
+// v0.4.0 briefly had the guard before checkpoint hydration, so its own false halt could persist
+// base=<this exact feat branch> over a previously-correct mainline base. Accept that ONE legacy
+// damaged shape only when every recomputed identity still matches; report base:null rather than
+// inventing a mainline. Any other feat-shaped prior base remains an attempted stack and refuses.
+const legacySelfCheckpoint = prior && prior.base === featBranch
 const exactFeatResume = pf.base === featBranch
   && prior && prior.featId === featId && prior.featBranch === featBranch
   && Array.isArray(prior.tasks)
-  && typeof prior.base === 'string' && prior.base.length > 0
-  && !/^camus\/feat[-/]/.test(prior.base)
-state.base = exactFeatResume ? prior.base : (pf.base || null)
+  && (priorBaseIsMainline || legacySelfCheckpoint)
+state.base = exactFeatResume ? (priorBaseIsMainline ? prior.base : null) : (pf.base || null)
 if (!pf.clean) {
   return finalize('dirty_tree', {
     note: `Base working tree has ${pf.dirtyFiles} uncommitted change(s). Commit or stash before running the feat — Camus will not run on a dirty tree. (If the lines name a SUBMODULE, the pointer is stale rather than edited: \`git submodule update --init\` clears it.)`,
