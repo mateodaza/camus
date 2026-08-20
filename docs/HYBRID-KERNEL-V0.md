@@ -1,6 +1,6 @@
 # Technical Specification: Hybrid Kernel v0
 
-**Status:** Implementation / dogfood
+**Status:** Shipped in Camus 0.4.0
 **Target release:** Camus 0.4.0
 **Date:** 2026-08-19
 
