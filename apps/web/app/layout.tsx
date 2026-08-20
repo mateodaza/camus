@@ -40,7 +40,7 @@ const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://camus.sh';
 
 const TITLE = 'Camus: independent review for AI work';
 const DESCRIPTION =
-  'One AI does the work. Another, from a different company, checks it against your acceptance contract. Tests, sources, human decisions, and a sealed receipt show what actually earned trust.';
+  'Models do the work and cross-vendor review. A deterministic local kernel binds the acceptance contract, tests, sources, human decisions, and exact-result receipt.';
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),

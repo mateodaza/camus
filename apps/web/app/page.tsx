@@ -30,10 +30,10 @@ export default function Home() {
             </div>
             <div className="hero-proof" aria-label="What Camus gives you">
               <b>public alpha 0.4.0</b>
+              <b>deterministic local control</b>
               <b>an independent second opinion</b>
-              <b>sources and tests attached</b>
-              <b>human decisions preserved</b>
-              <b>a receipt for the exact result</b>
+              <b>tests and sources attached</b>
+              <b>receipts bound to the exact result</b>
             </div>
           </div>
         </header>
@@ -149,8 +149,9 @@ receipt        0b8960d2e40d`}
               <p className="section-label">How Camus works</p>
               <h2 className="sec-h2">Four parts. One honest result.</h2>
               <p className="sec-sub">
-                Camus does not need to control every agent. It controls what the work
-                must satisfy, what was actually checked, and who gets to decide.
+                Models handle semantic work. A deterministic local kernel owns state,
+                budgets, Git custody, and evidence. No model gets to award itself trusted
+                standing.
               </p>
             </Reveal>
 
@@ -162,8 +163,8 @@ receipt        0b8960d2e40d`}
               </Reveal>
               <Reveal className="flow-step">
                 <span>2</span>
-                <h3>Let the executor work</h3>
-                <p>Use a single model or its native agents. Camus treats the whole system as the maker.</p>
+                <h3>Let the model orchestrate</h3>
+                <p>Use one model or its native agents. Camus treats the whole system as the maker.</p>
               </Reveal>
               <Reveal className="flow-step">
                 <span>3</span>
@@ -226,10 +227,10 @@ receipt        0b8960d2e40d`}
             <div className="direction-grid">
               <Reveal className="direction-card direction-card--now">
                 <p className="direction-tag">Available now</p>
-                <h3>Independent trust</h3>
+                <h3>Hybrid control, independent trust</h3>
                 <p>
-                  One executor, one cross-vendor auditor, deterministic checks, human
-                  checkpoints, and a sealed evidence pack for the exact result.
+                  Models plan, make, and review. The 0.4 kernel controls dispatch, budgets,
+                  Git, verification, recovery, and the sealed evidence for the exact result.
                 </p>
               </Reveal>
               <Reveal className="direction-card">
@@ -291,6 +292,7 @@ receipt        0b8960d2e40d`}
                 </p>
                 <ul>
                   <li>isolated worktrees and controlled merge</li>
+                  <li>deterministic feature state and bounded budgets</li>
                   <li>cross-vendor code review</li>
                   <li>HEAD-bound verification</li>
                   <li>crash-safe resume and named human halts</li>
