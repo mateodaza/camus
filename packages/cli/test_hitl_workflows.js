@@ -2510,6 +2510,22 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F44 early guard preserves prior decisions/events in state and report',
       preserved.stateJSON.eventSeq === 7 && preserved.res.tasks[0].status === 'ready_to_merge'
         && preserved.res.tasks[0].decisions[0].what === 'accepted', J(preserved.res.tasks[0]))
+    const exactResume = { ...prior, featBranch: `camus/feat-${fid}`, base: 'main' }
+    const resumed = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, preflight: { clean: true, base: `camus/feat-${fid}`, dirtyFiles: 0,
+        stateRaw: JSON.stringify(exactResume), argsPresent: false } }, loopDone)
+    ok('F44 exact feat branch + matching checkpoint → resumes instead of false stacking halt',
+      resumed.res && resumed.res.status === 'done', resumed.res && (resumed.res.status + '/' + resumed.res.stage))
+    ok('F44 exact resume restores original mainline base in state/report',
+      resumed.stateJSON.base === 'main' && resumed.res.base === 'main',
+      J({ state: resumed.stateJSON.base, report: resumed.res.base }))
+    const missingProof = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, preflight: { clean: true, base: `camus/feat-${fid}`, dirtyFiles: 0,
+        stateRaw: '', argsPresent: false } }, loopDone)
+    ok('F44 exact feat branch without matching checkpoint still refuses fail-closed',
+      missingProof.res && missingProof.res.status === 'needs_human'
+        && missingProof.res.stage === 'base_is_feat_branch',
+      missingProof.res && (missingProof.res.status + '/' + missingProof.res.stage))
     const bypass = await runFeat({ feat: 'F', tasks: ['only task'], allowFeatBase: true },
       { ...featBase, preflight: { clean: true, base: 'camus/feat-old', dirtyFiles: 0, stateRaw: '' } }, loopDone)
     ok('F44 allowFeatBase:true bypasses (proceeds)', bypass.res && bypass.res.status === 'done', bypass.res && bypass.res.status)

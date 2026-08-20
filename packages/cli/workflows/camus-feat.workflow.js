@@ -658,7 +658,18 @@ if (pf.base === 'HEAD') {
     note: 'HEAD is detached — the feat would be cut from the parked commit, not a branch. Check out the branch you mean to build on (e.g. `git checkout main`) and re-run.',
   })
 }
-state.base = pf.base || null
+// Parse the checkpoint before the feat-branch guard: a normal interrupted run leaves the parent
+// checkout ON its own deterministic feat branch. That is a resume, not an attempt to stack a new
+// feat on arbitrary unreviewed work. It is proven only when the live branch and the checkpoint's
+// feat identity BOTH equal the identity recomputed from this invocation; otherwise the original
+// anti-stacking refusal remains fail-closed. Restore the original mainline base for honest reports.
+const prior = pf.stateRaw ? extractJsonObject(pf.stateRaw) : null
+const exactFeatResume = pf.base === featBranch
+  && prior && prior.featId === featId && prior.featBranch === featBranch
+  && Array.isArray(prior.tasks)
+  && typeof prior.base === 'string' && prior.base.length > 0
+  && !/^camus\/feat[-/]/.test(prior.base)
+state.base = exactFeatResume ? prior.base : (pf.base || null)
 if (!pf.clean) {
   return finalize('dirty_tree', {
     note: `Base working tree has ${pf.dirtyFiles} uncommitted change(s). Commit or stash before running the feat — Camus will not run on a dirty tree. (If the lines name a SUBMODULE, the pointer is stale rather than edited: \`git submodule update --init\` clears it.)`,
@@ -669,7 +680,8 @@ if (!pf.clean) {
 // unreviewed work as the baseline (and baseline-verify passes because the prior feat's commits are
 // green). Same implicit-context family as the fork (finding 5): the base is the current branch,
 // and forking it forks identity. Halt with a converging next step rather than build on a phantom base.
-if (typeof pf.base === 'string' && /^camus\/feat[-/]/.test(pf.base) && A.allowFeatBase !== true) {
+if (typeof pf.base === 'string' && /^camus\/feat[-/]/.test(pf.base)
+  && !exactFeatResume && A.allowFeatBase !== true) {
   return finalize('needs_human', {
     stage: 'base_is_feat_branch', question: `Base branch "${pf.base}" is a camus feat branch, not a mainline.`,
     note: `The current branch is "${pf.base}" — a camus feat branch, not a mainline. Cutting this feat from it would inherit its unmerged (possibly unreviewed) work as your baseline. Almost always this means a prior run left you on a feat branch: \`git checkout main\` (or your mainline) and re-run the feat with the SAME args. If you GENUINELY mean to stack on it, re-run with allowFeatBase:true.`,
@@ -689,7 +701,6 @@ const PROVEN_DECISION = new Set()
 // FULLY proven, so they AUTO-land on resume (no land list needed): re-running the full loop would
 // re-enter review for nothing and collide on the existing branch/worktree.
 const PROVEN_READY = new Set()
-const prior = pf.stateRaw ? extractJsonObject(pf.stateRaw) : null
 // A compact prior state plus an existing sidecar proves that this invocation already sealed args.
 // Avoid paying another large write on every manual resume. The scanner independently verifies the
 // sidecar bytes before auto-resuming; a missing/corrupt sidecar therefore fails closed there.
