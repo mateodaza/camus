@@ -31,7 +31,7 @@ You need [Claude Code](https://code.claude.com) and the [Codex CLI](https://gith
 (`codex login`) — the cross-vendor pairing is the product, so both halves are required.
 
 ```bash
-npm i -g camus-cli@0.3.2
+npm i -g camus-cli@0.4.0
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 cd your-repo && claude
@@ -44,14 +44,14 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.3.2
+### Public alpha: 0.4.0
 
-Camus 0.3.2 closes the first public-alpha dogfood follow-up: every post-review terminal now
-reports receipt-bound reviewer provenance, Loop Studio publication requires explicit opt-in,
-and tracked model defaults no longer double as mutable operator state. It remains a 0.x tool:
-material trust failures should stop a run, and ordinary UX or efficiency findings should go
-to `camus retro` instead of derailing the solution. See the
-[0.3.2 release notes](docs/RELEASE-0.3.2.md).
+Camus 0.4.0 moves feature control into a deterministic local kernel: task dispatch, budgets,
+maker/reviewer evidence, model-free land, and final integration no longer need a model to relay
+operational facts. It also lands the identity, connection-migration, and sealed trust foundation
+for open-model seats. Qualified Grok/Kimi/Qwen/local seats, generic CLI backends, and managed SSH
+remain explicit later slices rather than being advertised early. See the
+[0.4.0 release notes](docs/RELEASE-0.4.0.md).
 
 ## Makes it work
 
@@ -132,7 +132,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.3.2
+npm i -g camus-cli@0.4.0
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```

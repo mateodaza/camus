@@ -63,6 +63,25 @@ usage: npx camus-cli <command>
                                                  unmerged commits on the task branch
                        options: --proven done|done_with_findings · --feat <id> · --repo <path>
                                · --reason "<why>"   — then re-run the feat with the SAME args
+  kernel [...]       deterministic hybrid control plane (models choose; code enforces):
+                       kernel next <featId>       compact read-only next-action envelope
+                       kernel task <featId>       materialize only the selected task contract
+                       kernel dispatch <featId>   atomically mark selected task running + emit it
+                       kernel prepare <featId>    checkout + env + baseline + receipt recovery
+                       kernel usage <featId> ...  checkpoint monotonic tokens/retries/phase
+                       kernel accept <featId> <taskId> --result-file <path>
+                                                  validate result/reviewer/Git/verify evidence
+                       kernel land <featId> <taskId>
+                                                  merge an accepted task without a model turn
+                       kernel integrate <featId>  env/receipt recheck + final HEAD-bound verify
+                       kernel open <featId> <taskId>
+                                                  create/reattach the direct task worktree
+                       kernel maker-usage <featId> <taskId> --result-file <path>
+                                                  bind direct maker metrics without mixing units
+                       kernel review <featId> <taskId>
+                                                  run one bound reviewer with no model relay
+                       kernel seal <featId> <taskId> [--fixed-unreviewed]
+                                                  deterministic commit + HEAD-bound verify
   resume       list interrupted feat runs (canonical resumeArgs, JSON)
   retro        read-only run-history analytics over ~/.camus/reports: per-feat lines,
                  aggregates (status/posture mix, rounds, token p50/p90), evidence-gated
@@ -116,6 +135,9 @@ switch (cmd) {
     break;
   case 'land':
     py('land.py', rest);
+    break;
+  case 'kernel':
+    py('feat_kernel.py', rest);
     break;
   case 'retro':
     py('retro.py', rest);

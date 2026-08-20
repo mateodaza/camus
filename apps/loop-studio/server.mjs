@@ -27,7 +27,8 @@ import { buildAuditReplayPack, createAuditReplayExperiment, finalizeAuditReplayE
 import { createParallelExperiment, finalizeParallelExperiment, knowledgeSnapshotMatches, markParallelArmRunning, outcomeFromArmReport, sealKnowledgeSnapshot } from './lib/comparison.mjs';
 import { validateExperimentRecord } from '../../packages/trust/lib/validate.mjs';
 import { deriveStatusDimensions, deriveHeadline } from './lib/status-dims.mjs';
-import { getModels, updateModels, modelsSummary, modelCatalog, seatCatalog, seatOffered, groundingNeedsClaudeMaker, gateModels, EFFORTS } from './lib/models.mjs';
+import { getModels, updateModels, modelsSummary, modelCatalog, seatCatalog, seatOffered, groundingNeedsClaudeMaker, gateModels, listConnections, EFFORTS } from './lib/models.mjs';
+import { confirmClaudeRoute } from './lib/grandfather.mjs';
 import { reviewPrompt } from './lib/prompts.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -43,6 +44,24 @@ const runs = new Map(); // id -> { run, events, subscribers, answer, abort }
 // ---------------------------------------------------------------------------
 // Doctor
 // ---------------------------------------------------------------------------
+
+const confirmClaudeRouteIndex = process.argv.indexOf('--confirm-claude-route');
+if (confirmClaudeRouteIndex !== -1) {
+  const why = process.argv[confirmClaudeRouteIndex + 1];
+  try {
+    // Load the real configuration first so §7 performs its one-time complete
+    // legacy inventory before this action appends anything to the shared,
+    // machine-bound confirmation store. The action must never initialize an
+    // empty sidecar that silently omits legacy entries from the same config.
+    getModels();
+    const result = confirmClaudeRoute(why);
+    console.log(`recorded Claude direct-route confirmation at ${result.record.recordedAt}`);
+    process.exit(0);
+  } catch (error) {
+    console.error(`could not confirm Claude's direct route: ${error.message || error}`);
+    process.exit(2);
+  }
+}
 
 if (process.argv.includes('--doctor')) {
   const { runDoctor } = await import('./lib/doctor.mjs');
@@ -68,6 +87,25 @@ function newId() {
 }
 
 const modelOfIdentity = (identity) => String(identity ?? '').split(':').slice(1).join(':');
+
+// Freeze the complete seat decision at run admission. Both direct runs and
+// comparison arms use this one projection so a child cannot lose the lineage,
+// transport, or operator facts that determined its review standing.
+const snapshotSeat = (entry, model) => ({
+  backend: entry.backend,
+  provider: entry.provider,
+  model,
+  executor: entry.executor,
+  transport: entry.transport,
+  connection: entry.connection ?? null,
+  protocol: entry.protocol,
+  trainingOrg: entry.trainingOrg,
+  modelFamily: entry.modelFamily,
+  inferenceOperator: entry.inferenceOperator,
+  lineage: { source: entry.lineage.source, derivedFrom: entry.lineage.derivedFrom ?? null },
+  originConfidence: entry.originConfidence,
+  ...(entry.qualification ? { qualification: { ...entry.qualification } } : {}),
+});
 
 const activeBuilds = new Set();
 
@@ -367,6 +405,8 @@ async function startRun({
         statuses,
         models: run.models,
         makerActualModels: result?.makerActualModels ?? [],
+        makerActualEvidence: result?.makerActualEvidence ?? null,
+        makerReportedModel: result?.makerReportedModel ?? null,
         simulated: ENGINE === 'mock',
         verifyCommand: verifyCmd ?? null,
         recoveryOf: result?.recoveryOf ?? null,
@@ -878,6 +918,12 @@ async function startParallelComparison({ goal, acceptanceContract, lane, depth, 
           };
         }
         const maker = arm.executor.resolved.split(':').slice(1).join(':');
+        const seats = seatCatalog();
+        const makerEntry = seats.maker.find((entry) => entry.backend === 'claude' && entry.model === maker);
+        const reviewerEntry = seats.reviewer.find((entry) => entry.backend === 'codex' && entry.model === reviewerModel);
+        if (!makerEntry || !reviewerEntry) {
+          throw new Error('parallel experiment manifest references a built-in seat that is no longer available');
+        }
         let complete;
         const completion = new Promise((resolve) => { complete = resolve; });
         try {
@@ -888,8 +934,8 @@ async function startParallelComparison({ goal, acceptanceContract, lane, depth, 
             depth,
             ground,
             modelsSnapshot: {
-              maker: { model: maker, source: 'parallel experiment manifest' },
-              reviewer: { model: reviewerModel, effort: reviewerEffort, modelSource: 'parallel experiment manifest', effortSource: 'parallel experiment manifest' },
+              maker: { ...snapshotSeat(makerEntry, maker), source: 'parallel experiment manifest' },
+              reviewer: { ...snapshotSeat(reviewerEntry, reviewerModel), effort: reviewerEffort, modelSource: 'parallel experiment manifest', effortSource: 'parallel experiment manifest' },
               loop: { ...modelsAtStart.loop },
             },
             frozenKnowledge: snapshot,
@@ -1153,9 +1199,13 @@ const server = http.createServer(async (req, res) => {
         // What the settings pickers may offer: the machine's real options,
         // with the current decision always present. `catalog` is the legacy
         // claude/codex shape Compare & Learn and audit replay still freeze;
-        // `seats` is the full backend-qualified catalog for seat selection.
+        // `seats` is the full backend-qualified catalog for seat selection; its
+        // per-backend entries carry the env-var NAME (never the value) and the
+        // identity facts each seat seals. `connections` is the normalized endpoint
+        // vocabulary (name, kind, baseUrl) — also values-never, per §11.2.
         catalog: modelCatalog(),
         seats: seatCatalog(),
+        connections: listConnections(),
         envOverrides: ['CLAUDE_MODEL', 'CODEX_MODEL', 'CODEX_EFFORT', 'ROUND_CAP'].filter((k) => process.env[k] !== undefined),
       });
     }
@@ -1313,8 +1363,8 @@ const server = http.createServer(async (req, res) => {
           : requestedEffort !== undefined ? 'run request'
             : standing.reviewer.backend === reviewerSeat.backend ? standing.reviewer.effortSource : 'seat default (medium)';
         modelsSnapshot = {
-          maker: { backend: makerSeat.backend, provider: makerEntry.provider, model: makerSeat.model, source: 'run request' },
-          reviewer: { backend: reviewerSeat.backend, provider: reviewerEntry.provider, model: reviewerSeat.model, effort, modelSource: 'run request', effortSource },
+          maker: { ...snapshotSeat(makerEntry, makerSeat.model), source: 'run request' },
+          reviewer: { ...snapshotSeat(reviewerEntry, reviewerSeat.model), effort, modelSource: 'run request', effortSource },
           loop: { ...standing.loop },
         };
       }
@@ -1417,8 +1467,8 @@ const server = http.createServer(async (req, res) => {
         }
         if (!sourceReport.evidencePack) return json(res, 400, { error: sourceReport.evidencePackError || 'the source run has no sealed evidence pack' });
         if (sourceReport.receiptsDegraded) return json(res, 400, { error: 'the source receipt is degraded; re-audit requires a complete source pack' });
-        if (sourceReport.evidencePack.schemaVersion !== 2 || sourceReport.evidencePack.artifact?.kind !== 'research') {
-          return json(res, 400, { error: 'audit-only replay currently supports research evidence-pack v2 artifacts' });
+        if (![2, 3].includes(sourceReport.evidencePack.schemaVersion) || sourceReport.evidencePack.artifact?.kind !== 'research') {
+          return json(res, 400, { error: 'audit-only replay supports research evidence-pack v2 or v3 artifacts' });
         }
         if (typeof sourceReport.deliverable !== 'string' || !sourceReport.deliverable.trim()) return json(res, 400, { error: 'the source report has no immutable deliverable to re-audit' });
         if (ENGINE !== 'mock' && (sourceReport.simulated === true || sourceReport.engine === 'mock')) return json(res, 400, { error: 'a live audit cannot promote a scripted rehearsal artifact; start from a live run' });

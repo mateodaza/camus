@@ -29,7 +29,7 @@ export default function Home() {
               <a className="cta-ghost" href="#proof">See a real catch ↓</a>
             </div>
             <div className="hero-proof" aria-label="What Camus gives you">
-              <b>public alpha 0.3.2</b>
+              <b>public alpha 0.4.0</b>
               <b>an independent second opinion</b>
               <b>sources and tests attached</b>
               <b>human decisions preserved</b>
@@ -322,7 +322,7 @@ receipt        0b8960d2e40d`}
             <Reveal>
               <div className="term">
                 <pre>
-{`$ npm i -g camus-cli@0.3.2
+{`$ npm i -g camus-cli@0.4.0
 $ camus install
 $ camus check
 

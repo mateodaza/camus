@@ -1,6 +1,6 @@
 # Camus quickstart for CodenameWukong
 
-Camus 0.3.2 supports configurable maker and reviewer seats in Loop Studio for written
+Camus 0.4.0 supports configurable maker and reviewer seats in Loop Studio for written
 and research work, including reversed Claude/Codex pairings and declared OpenAI-compatible
 backends. The direct code workflow—and Studio's Build lane—currently keep the trusted gate's
 Claude Code maker plus Codex CLI reviewer pairing. Another agent may supervise that code
@@ -11,7 +11,7 @@ workflow, but should not implement alongside Camus.
 Requirements: Node 18+, Claude Code signed in, Codex CLI signed in, and .NET 10.
 
 ```bash
-npm install -g camus-cli@0.3.2
+npm install -g camus-cli@0.4.0
 codex login
 camus install
 camus check
@@ -45,7 +45,7 @@ standing choices under `~/.camus/studio/models.json` and does not rewrite the tr
 defaults. Studio's **Build** lane still uses the direct trusted code gate—Claude Code makes
 the change and Codex CLI reviews it—although their models and reviewer effort are
 configurable. Reversing the provider roles applies to Studio's written and research lanes,
-not to Build in 0.3.2.
+not to Build in 0.4.0.
 
 For written and research lanes, completed artifacts stay local unless **Publish the
 completed artifact to Hivemind** is checked before launch. Accepting review findings does
@@ -168,7 +168,7 @@ camus retro
   implementation manually.
 - `verify_failed`: the candidate is not shippable.
 
-In 0.3.2, terminals reached after an accepted review receipt report that receipt's reviewer
+In 0.4.0, terminals reached after an accepted review receipt report that receipt's reviewer
 backend, model (or explicit `not_recorded`), effort, and round. Preserve those fields at
 handoff; never substitute the maker model when a reviewer model was not recorded.
 

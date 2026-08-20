@@ -13,12 +13,22 @@ function isObj(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
+// DIMENSIONS.audit is the v2 enum (it broadened to carry declared_*). A status
+// v1 block is a FROZEN published contract: its audit stays the six pre-declared
+// values, so a v1 pack can never smuggle a declared_* value (§10.8.2/§10.8.4).
+// This subset is local and frozen; it is the v1 audit floor, never re-derived
+// from the broadened DIMENSIONS.audit.
+const STATUS_V1_AUDIT = Object.freeze(['not_run', 'independent_clean', 'independent_findings', 'advisory_clean', 'advisory_findings', 'infra_failed']);
+
 export function validateStatus(s, path = 'status') {
   if (!isObj(s)) return err(path, 'must be an object');
-  if (s.schemaVersion !== 1) return err(path, 'schemaVersion must be 1');
-  for (const dim of ['execution', 'verification', 'audit', 'publication']) {
+  if (![1, 2].includes(s.schemaVersion)) return err(path, 'schemaVersion must be 1 or 2');
+  for (const dim of ['execution', 'verification', 'publication']) {
     if (!DIMENSIONS[dim].includes(s[dim])) return err(`${path}.${dim}`, `must be one of ${DIMENSIONS[dim].join('|')}`);
   }
+  // v2 accepts the full DIMENSIONS.audit; v1 stays on the frozen six.
+  const auditValues = s.schemaVersion === 2 ? DIMENSIONS.audit : STATUS_V1_AUDIT;
+  if (!auditValues.includes(s.audit)) return err(`${path}.audit`, `must be one of ${auditValues.join('|')}`);
   const extra = Object.keys(s).filter((k) => !['schemaVersion', 'execution', 'verification', 'audit', 'publication'].includes(k));
   if (extra.length) return err(path, `unknown fields: ${extra.join(', ')}`);
   return OK;
@@ -33,9 +43,104 @@ function validateRoleIdentity(r, path) {
   return OK;
 }
 
+// Pairing v2 shape (§10.8.1, pairing-manifest.v2.schema.json). This block owns
+// version/shape/enum/presence/nullability facts ONLY. It deliberately does NOT
+// implement rule 7 (independence↔identity/shared_gateway consistency), the
+// audit↔pairing cross-checks, builtin1 namespace selection, or the
+// review_scope↔gate_scope equality — those are Task 6 semantics.
+const SEAT_FIELDS = Object.freeze([
+  'requested', 'resolved', 'actual', 'reported', 'actual_evidence',
+  'executor_kind', 'training_org', 'model_family', 'lineage',
+  'inference_operator', 'transport', 'connection', 'origin_confidence',
+  'qualification',
+]);
+const SEAT_STRING_FIELDS = Object.freeze(['requested', 'resolved', 'actual', 'executor_kind', 'training_org', 'model_family', 'inference_operator']);
+const ACTUAL_EVIDENCE = Object.freeze(['observed_api_response', 'observed_cli_event', 'asserted_pin', 'mapped_by_operator_docs', 'none']);
+const LINEAGE_SOURCE = Object.freeze(['registry', 'operator_declared', 'unknown']);
+const SEAT_TRANSPORT = Object.freeze(['loopback', 'direct_https', 'ssh_tunnel', 'vendor_managed', 'legacy_http']);
+const ORIGIN_CONFIDENCE = Object.freeze(['verified_operator', 'operator_declared', 'unknown']);
+const GATE_SCOPE = Object.freeze(['full', 'light', null]);
+const QUAL_FINGERPRINT_RE = /^(?:qual1|builtin1):[0-9a-f]{64}$/;
+const PAIRING_V2_INDEPENDENCE = Object.freeze(['cross_vendor', 'cross_vendor_declared', 'same_vendor_advisory', 'none']);
+const REVIEW_SCOPE = Object.freeze(['full', 'light', null]);
+// v2-only pairing top-level fields; their presence on a v1/v2 envelope's pairing
+// is a half-upgrade the pack boundary refuses (§10.8.4).
+const PAIRING_V2_ONLY_FIELDS = Object.freeze(['shared_gateway', 'review_scope']);
+// v2-only seat parents: every sealed seat field a v1 role identity never had
+// (SEAT_FIELDS minus the three v1 role keys). A v1-versioned pairing that grows
+// ANY of these — including a lineage or qualification block whose descendants
+// ride along with the parent — is a half-upgrade the pack boundary refuses.
+const SEAT_V2_ONLY_FIELDS = Object.freeze(SEAT_FIELDS.filter((k) => !ROLE_KEYS.includes(k)));
+
+// Pack-boundary-only legacy half-upgrade detection (§10.8.4): a v1-versioned
+// pairing block that carries ANY v2-only field — top-level shared_gateway/
+// review_scope OR a nested executor/auditor seat field. This is deliberately
+// separate from the shipped v1 validatePairingManifest branch, which stays
+// unchanged: the refusal lives only at the evidence-pack envelope boundary.
+function detectLegacyPairingV2Fields(pairing) {
+  const found = PAIRING_V2_ONLY_FIELDS.filter((k) => k in pairing);
+  for (const role of ['executor', 'auditor']) {
+    const seat = pairing[role];
+    if (!isObj(seat)) continue;
+    for (const k of SEAT_V2_ONLY_FIELDS) if (k in seat) found.push(`${role}.${k}`);
+  }
+  return found;
+}
+
+const strOrNull = (v) => v === null || typeof v === 'string';
+
+function validateSeatIdentitySealed(seat, path) {
+  const shape = exactFields(seat, SEAT_FIELDS, path);
+  if (!shape.ok) return shape;
+  const missing = SEAT_FIELDS.filter((k) => !(k in seat));
+  if (missing.length) return err(path, `missing required field(s): ${missing.join(', ')}`);
+  for (const k of SEAT_STRING_FIELDS) {
+    if (typeof seat[k] !== 'string' || !seat[k]) return err(`${path}.${k}`, 'must be a non-empty string');
+  }
+  if (!strOrNull(seat.reported)) return err(`${path}.reported`, 'must be a string or null');
+  if (!ACTUAL_EVIDENCE.includes(seat.actual_evidence)) return err(`${path}.actual_evidence`, `must be one of ${ACTUAL_EVIDENCE.join('|')}`);
+  const lineage = seat.lineage;
+  const lineageShape = exactFields(lineage, ['source', 'derived_from'], `${path}.lineage`);
+  if (!lineageShape.ok) return lineageShape;
+  for (const k of ['source', 'derived_from']) if (!(k in lineage)) return err(`${path}.lineage`, `missing required field: ${k}`);
+  if (!LINEAGE_SOURCE.includes(lineage.source)) return err(`${path}.lineage.source`, `must be one of ${LINEAGE_SOURCE.join('|')}`);
+  if (!strOrNull(lineage.derived_from)) return err(`${path}.lineage.derived_from`, 'must be a string or null');
+  if (!SEAT_TRANSPORT.includes(seat.transport)) return err(`${path}.transport`, `must be one of ${SEAT_TRANSPORT.join('|')}`);
+  if (!strOrNull(seat.connection)) return err(`${path}.connection`, 'must be a string or null');
+  if (!ORIGIN_CONFIDENCE.includes(seat.origin_confidence)) return err(`${path}.origin_confidence`, `must be one of ${ORIGIN_CONFIDENCE.join('|')}`);
+  // qualification is ALWAYS present and non-null: a receipt names which admission
+  // evidence stood behind the seat.
+  const q = seat.qualification;
+  if (!isObj(q)) return err(`${path}.qualification`, 'must be a non-null object (always present)');
+  const qShape = exactFields(q, ['fingerprint', 'gate_scope', 'contract_version'], `${path}.qualification`);
+  if (!qShape.ok) return qShape;
+  for (const k of ['fingerprint', 'gate_scope', 'contract_version']) if (!(k in q)) return err(`${path}.qualification`, `missing required field: ${k}`);
+  if (typeof q.fingerprint !== 'string' || !QUAL_FINGERPRINT_RE.test(q.fingerprint)) return err(`${path}.qualification.fingerprint`, 'must match qual1:<hex64> or builtin1:<hex64>');
+  if (!GATE_SCOPE.includes(q.gate_scope)) return err(`${path}.qualification.gate_scope`, 'must be full | light | null');
+  if (!strOrNull(q.contract_version)) return err(`${path}.qualification.contract_version`, 'must be a string or null');
+  return OK;
+}
+
+function validatePairingManifestV2(m, path) {
+  const rootShape = exactFields(m, ['schemaVersion', 'executor', 'auditor', 'independence', 'shared_gateway', 'review_scope'], path);
+  if (!rootShape.ok) return rootShape;
+  for (const k of ['schemaVersion', 'executor', 'auditor', 'independence', 'shared_gateway', 'review_scope']) {
+    if (!(k in m)) return err(path, `missing required field: ${k}`);
+  }
+  for (const role of ['executor', 'auditor']) {
+    const r = validateSeatIdentitySealed(m[role], `${path}.${role}`);
+    if (!r.ok) return r;
+  }
+  if (!PAIRING_V2_INDEPENDENCE.includes(m.independence)) return err(`${path}.independence`, `must be one of ${PAIRING_V2_INDEPENDENCE.join('|')}`);
+  if (!strOrNull(m.shared_gateway)) return err(`${path}.shared_gateway`, 'must be a string or null');
+  if (!REVIEW_SCOPE.includes(m.review_scope)) return err(`${path}.review_scope`, 'must be full | light | null');
+  return OK;
+}
+
 export function validatePairingManifest(m, path = 'pairing') {
   if (!isObj(m)) return err(path, 'must be an object');
-  if (m.schemaVersion !== 1) return err(path, 'schemaVersion must be 1');
+  if (m.schemaVersion === 2) return validatePairingManifestV2(m, path);
+  if (m.schemaVersion !== 1) return err(path, 'schemaVersion must be 1 or 2');
   for (const role of ['executor', 'auditor']) {
     const r = validateRoleIdentity(m[role], `${path}.${role}`);
     if (!r.ok) return r;
@@ -49,6 +154,139 @@ export function validatePairingManifest(m, path = 'pairing') {
   if (m.independence === 'cross_vendor' && provider(m.executor.actual) === provider(m.auditor.actual)) {
     return err(`${path}.independence`, `cross_vendor claimed but both roles run ${provider(m.executor.actual)}`);
   }
+  return OK;
+}
+
+// --- §10.8.4 envelope-v3 semantic cross-checks --------------------------------
+// These four rules run ONLY for a genuine 3/2/2 pack, AFTER every mechanical
+// shape/enum/nullability check above has passed. They enforce the meaning the
+// shapes cannot: seal independence must agree with the seat identities (R1),
+// the audit standing must agree with the pairing independence (R2), a seat's
+// qualification namespace must match its backend + transport (R3), and the
+// round's review_scope must equal the auditor's gate_scope (R4). Producers are
+// unchanged; this is a reader-side refusal at the pack boundary.
+const isUnknown = (v) => v === 'unknown';
+// A seat's family-lineage set: its model_family PLUS its non-null derived_from.
+// Two seats share family lineage when these sets intersect.
+function familyLineageSet(seat) {
+  const set = new Set([seat.model_family]);
+  if (seat.lineage.derived_from !== null) set.add(seat.lineage.derived_from);
+  return set;
+}
+const setsIntersect = (a, b) => [...a].some((v) => b.has(v));
+// A nonempty gateway:<name> inference_operator yields its <name>; anything else
+// (bare provider, empty, malformed) yields null.
+function gatewayName(inferenceOperator) {
+  const m = /^gateway:(.+)$/.exec(inferenceOperator ?? '');
+  return m ? m[1] : null;
+}
+// A seat has "unknown lineage" when ANY of its identity signals is unknown.
+const seatHasUnknownLineage = (seat) =>
+  isUnknown(seat.training_org) || isUnknown(seat.model_family) || isUnknown(seat.lineage.source) || isUnknown(seat.origin_confidence);
+// RFC-derived mapping: a seat's lineage.source DETERMINES its origin_confidence
+// exactly. registry ⇒ verified_operator (a registry attested the origin),
+// operator_declared ⇒ operator_declared (the operator only asserted it), unknown
+// ⇒ unknown. Any other pairing is a forged upgrade — a seat wearing a confidence
+// its lineage never earned — and must refuse before an independence claim is
+// accepted. Fail toward the lower standing; never auto-correct.
+const LINEAGE_SOURCE_CONFIDENCE = Object.freeze({
+  registry: 'verified_operator',
+  operator_declared: 'operator_declared',
+  unknown: 'unknown',
+});
+// Sentinel actual providers that can never satisfy a cross_vendor independence
+// claim: an unrecorded or absent model run has no vendor to be cross of.
+const SENTINEL_PROVIDERS = Object.freeze(['unknown', 'none']);
+
+function validatePairingSemanticsV3(pairing, statuses, path) {
+  const pp = `${path}.pairing`;
+  const exec = pairing.executor;
+  const aud = pairing.auditor;
+  const indep = pairing.independence;
+
+  // R1(mapping) lineage.source ↔ origin_confidence, per seat. This runs FIRST —
+  // before any independence claim is weighed — so a forged registry/declared
+  // upgrade (or an unknown peer wearing an earned confidence) refuses at the seat
+  // rather than laundering into a cross_vendor* claim.
+  for (const [role, seat] of [['executor', exec], ['auditor', aud]]) {
+    const expected = LINEAGE_SOURCE_CONFIDENCE[seat.lineage.source];
+    if (seat.origin_confidence !== expected) {
+      return err(`${pp}.${role}.origin_confidence`, `lineage.source ${seat.lineage.source} requires origin_confidence ${expected}, not ${seat.origin_confidence}`);
+    }
+  }
+
+  // R1a shared_gateway ↔ inference_operator: exact name when both seats route
+  // through the same nonempty gateway:<name>, else null. No downgrade/adjust.
+  const gw = gatewayName(exec.inference_operator);
+  const bothSameGateway = gw !== null && gw === gatewayName(aud.inference_operator);
+  if (bothSameGateway) {
+    if (pairing.shared_gateway !== gw) return err(`${pp}.shared_gateway`, `must name the shared gateway '${gw}' exactly when both seats route through gateway:${gw}`);
+  } else if (pairing.shared_gateway !== null) {
+    return err(`${pp}.shared_gateway`, 'must be null unless both seats share one nonempty gateway:<name> inference_operator');
+  }
+
+  // R1b seal independence ↔ seat identities.
+  const orgDiffers = exec.training_org !== aud.training_org;
+  const noUnknownIdentity = !isUnknown(exec.training_org) && !isUnknown(aud.training_org)
+    && !isUnknown(exec.model_family) && !isUnknown(aud.model_family)
+    && !isUnknown(exec.lineage.source) && !isUnknown(aud.lineage.source);
+  const bothVerified = exec.origin_confidence === 'verified_operator' && aud.origin_confidence === 'verified_operator';
+  const familiesIntersect = setsIntersect(familyLineageSet(exec), familyLineageSet(aud));
+  if (indep === 'cross_vendor') {
+    // The shipped v1 actual-provider guard, preserved for pairing v2: parse each
+    // seat.actual's provider prefix exactly as the v1 rule does. cross_vendor is a
+    // lie when both actuals run the same provider, or when either is a sentinel
+    // (unknown/none) with no vendor to be cross of. This is IN ADDITION to the
+    // org/family/confidence rules below.
+    const execProvider = String(exec.actual).split(':')[0];
+    const audProvider = String(aud.actual).split(':')[0];
+    const sentinel = [execProvider, audProvider].find((p) => SENTINEL_PROVIDERS.includes(p));
+    if (sentinel !== undefined) return err(`${pp}.independence`, `cross_vendor requires a known actual provider on both seats, not the sentinel '${sentinel}'`);
+    if (execProvider === audProvider) return err(`${pp}.independence`, `cross_vendor claimed but both seats run actual provider ${execProvider}`);
+    if (!bothVerified) return err(`${pp}.independence`, 'cross_vendor requires both seats at verified_operator origin_confidence');
+    if (!noUnknownIdentity) return err(`${pp}.independence`, 'cross_vendor requires known training_org, model_family, and lineage.source on both seats');
+    if (!orgDiffers) return err(`${pp}.independence`, `cross_vendor requires different training_org, but both are ${exec.training_org}`);
+    if (familiesIntersect) return err(`${pp}.independence`, 'cross_vendor requires disjoint family-lineage sets, but the two seats share a family');
+  } else if (indep === 'cross_vendor_declared') {
+    if (!orgDiffers) return err(`${pp}.independence`, `cross_vendor_declared requires different training_org, but both are ${exec.training_org}`);
+    if (!noUnknownIdentity) return err(`${pp}.independence`, 'cross_vendor_declared requires known training_org, model_family, and lineage.source on both seats');
+    const anyDeclared = exec.origin_confidence === 'operator_declared' || aud.origin_confidence === 'operator_declared';
+    if (!anyDeclared) {
+      return err(`${pp}.independence`, bothVerified
+        ? 'both seats are fully verified; claim cross_vendor instead of cross_vendor_declared'
+        : 'cross_vendor_declared requires at least one seat at operator_declared origin_confidence');
+    }
+  }
+
+  // R2 audit standing ↔ pairing independence.
+  const audit = statuses.audit;
+  const anyUnknownLineage = seatHasUnknownLineage(exec) || seatHasUnknownLineage(aud);
+  if (audit === 'declared_clean' || audit === 'declared_findings') {
+    if (indep !== 'cross_vendor_declared') return err(`${path}.statuses.audit`, `${audit} requires independence cross_vendor_declared, not ${indep}`);
+  } else if (audit === 'independent_clean' || audit === 'independent_findings') {
+    if (indep !== 'cross_vendor' || !bothVerified) return err(`${path}.statuses.audit`, `${audit} requires cross_vendor with both seats verified_operator`);
+  } else if (audit === 'advisory_clean' || audit === 'advisory_findings') {
+    if (indep !== 'same_vendor_advisory' && !anyUnknownLineage) return err(`${path}.statuses.audit`, `${audit} requires same_vendor_advisory or at least one unknown-lineage seat`);
+  }
+
+  // R3 qualification namespace, applied independently to each seat. The built-in
+  // backend is decided SOLELY by the requested provider prefix (claude|codex),
+  // never executor_kind. builtin1 is legal iff built-in AND vendor_managed; every
+  // other seat requires qual1.
+  for (const [role, seat] of [['executor', exec], ['auditor', aud]]) {
+    const provider = seat.requested.split(':')[0];
+    const builtinBackend = provider === 'claude' || provider === 'codex';
+    const vendorManagedBuiltin = builtinBackend && seat.transport === 'vendor_managed';
+    const isBuiltinFingerprint = seat.qualification.fingerprint.startsWith('builtin1:');
+    if (vendorManagedBuiltin && !isBuiltinFingerprint) return err(`${pp}.${role}.qualification.fingerprint`, 'a vendor-managed built-in backend must carry a builtin1 fingerprint, not qual1');
+    if (!vendorManagedBuiltin && isBuiltinFingerprint) return err(`${pp}.${role}.qualification.fingerprint`, 'builtin1 is legal only for a vendor-managed built-in backend; this seat requires qual1');
+  }
+
+  // R4 review scope ↔ auditor gate_scope (exact equality, including null↔null).
+  if (pairing.review_scope !== aud.qualification.gate_scope) {
+    return err(`${pp}.review_scope`, `review_scope ${JSON.stringify(pairing.review_scope)} must equal the auditor gate_scope ${JSON.stringify(aud.qualification.gate_scope)}`);
+  }
+
   return OK;
 }
 
@@ -77,16 +315,34 @@ const PACK_FIELDS = ['schemaVersion', 'artifact_id', 'receipt_id', 'goal', 'acce
 
 export function validateEvidencePack(p, path = 'evidence_pack') {
   if (!isObj(p)) return err(path, 'must be an object');
-  if (![1, 2].includes(p.schemaVersion)) return err(path, 'schemaVersion must be 1 or 2');
+  if (![1, 2, 3].includes(p.schemaVersion)) return err(path, 'schemaVersion must be 1, 2, or 3');
   const unknown = Object.keys(p).filter((k) => !PACK_FIELDS.includes(k));
   if (unknown.length) return err(path, `unknown field(s): ${unknown.join(', ')} — schema v${p.schemaVersion} does not know them; nothing enters or escapes a hash silently`);
+  // §10.8.4 cross-version matrix: an envelope admits EXACTLY its published
+  // interior versions (1/1/1, 2/1/1, 3/2/2). Mixed, half-upgraded, missing, and
+  // future interior versions fail closed here, before any interior shape runs.
+  const expectedInteriorVersion = p.schemaVersion === 3 ? 2 : 1;
+  if (!isObj(p.pairing)) return err(`${path}.pairing`, 'must be an object');
+  if (!isObj(p.statuses)) return err(`${path}.statuses`, 'must be an object');
+  if (p.pairing.schemaVersion !== expectedInteriorVersion) return err(`${path}.pairing.schemaVersion`, `evidence-pack v${p.schemaVersion} requires pairing schemaVersion ${expectedInteriorVersion}`);
+  if (p.statuses.schemaVersion !== expectedInteriorVersion) return err(`${path}.statuses.schemaVersion`, `evidence-pack v${p.schemaVersion} requires statuses schemaVersion ${expectedInteriorVersion}`);
+  // Half-upgraded legacy envelope: a v1-versioned pairing block that carries ANY
+  // v2-only field — top-level shared_gateway/review_scope OR a nested
+  // executor/auditor seat field (lineage/qualification descendants ride along
+  // with their parent) — refuses even though its version reads 1 (§10.8.4).
+  if (p.schemaVersion !== 3) {
+    const v2Only = detectLegacyPairingV2Fields(p.pairing);
+    if (v2Only.length) return err(`${path}.pairing`, `evidence-pack v${p.schemaVersion} pairing cannot carry v2-only field(s): ${v2Only.join(', ')} (half-upgraded)`);
+  }
+  // Envelopes 2 and 3 share the coverage-aware artifact shape; envelope 1 does not.
+  const usesV2Artifact = p.schemaVersion === 2 || p.schemaVersion === 3;
   if (!/^sha256:[0-9a-f]{64}$/.test(p.artifact_id ?? '')) return err(`${path}.artifact_id`, 'must be sha256:<hex64>');
   if (!/^sha256:[0-9a-f]{64}$/.test(p.receipt_id ?? '')) return err(`${path}.receipt_id`, 'must be sha256:<hex64>');
   if (typeof p.goal !== 'string' || !p.goal) return err(`${path}.goal`, 'required');
   if (typeof p.acceptance_contract !== 'string' || !p.acceptance_contract) return err(`${path}.acceptance_contract`, 'required — audits bottleneck on it');
   if (!isObj(p.artifact) || !['code', 'research'].includes(p.artifact.kind)) return err(`${path}.artifact.kind`, 'must be code | research');
-  if (p.schemaVersion === 1 && 'contract_coverage' in p.artifact) {
-    return err(`${path}.artifact.contract_coverage`, 'requires evidence-pack schemaVersion 2');
+  if (!usesV2Artifact && 'contract_coverage' in p.artifact) {
+    return err(`${path}.artifact.contract_coverage`, 'requires evidence-pack schemaVersion 2 or 3');
   }
   if (p.artifact.claims !== null && p.artifact.claims !== undefined) {
     if (!Array.isArray(p.artifact.claims)) return err(`${path}.artifact.claims`, 'must be an array or null');
@@ -97,7 +353,7 @@ export function validateEvidencePack(p, path = 'evidence_pack') {
       const known = ['claim', 'marker', 'url', 'evidence_hash', 'retrieved_at', 'decision'];
       const extra = Object.keys(c).filter((k) => !known.includes(k));
       if (extra.length) return err(cp, `unknown fields: ${extra.join(', ')}`);
-      if (p.schemaVersion === 2) {
+      if (usesV2Artifact) {
         const missing = known.filter((k) => !(k in c));
         if (missing.length) return err(cp, `missing required fields: ${missing.join(', ')}`);
       }
@@ -111,8 +367,8 @@ export function validateEvidencePack(p, path = 'evidence_pack') {
       if (!['supported', 'unsupported', 'unchecked', null].includes(c.decision)) return err(`${cp}.decision`, 'must be supported | unsupported | unchecked | null');
     }
   }
-  if (p.schemaVersion === 2) {
-    if (!('contract_coverage' in p.artifact)) return err(`${path}.artifact.contract_coverage`, 'required in evidence-pack v2');
+  if (usesV2Artifact) {
+    if (!('contract_coverage' in p.artifact)) return err(`${path}.artifact.contract_coverage`, 'required in evidence-pack v2 or v3');
     const coverage = p.artifact.contract_coverage;
     if (coverage !== null && !Array.isArray(coverage)) return err(`${path}.artifact.contract_coverage`, 'must be an array or null');
     if (p.artifact.kind === 'research' && (!Array.isArray(coverage) || coverage.length === 0)) {
@@ -141,6 +397,11 @@ export function validateEvidencePack(p, path = 'evidence_pack') {
   if (!pm.ok) return pm;
   const st = validateStatus(p.statuses, `${path}.statuses`);
   if (!st.ok) return st;
+  // §10.8.4 envelope-v3 semantic cross-checks — only after the 3/2/2 shapes hold.
+  if (p.schemaVersion === 3) {
+    const sem = validatePairingSemanticsV3(p.pairing, p.statuses, path);
+    if (!sem.ok) return sem;
+  }
   if (p.schemaVersion === 2 && ['independent_clean', 'advisory_clean'].includes(p.statuses.audit)) {
     if (Array.isArray(p.artifact.claims) && p.artifact.claims.some((c) => c.decision !== 'supported')) {
       return err(`${path}.statuses.audit`, 'clean audit conflicts with unsupported or unchecked claim decisions');

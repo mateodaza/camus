@@ -1,0 +1,120 @@
+{
+  "$id": "https://camus.sh/schemas/evidence-pack/v3",
+  "title": "Sealed evidence pack v3",
+  "description": "Provider-independent audit artifact with two explicit identities. Envelope 3 carries the same top-level pack fields as v2, with the interior blocks bumped: pairing-manifest/v2 and status/v2. Artifact identity binds the contract, produced artifact, claim inputs, and extracted coverage criteria without judgments. Receipt identity binds pairing, verification, claim and coverage decisions, human decisions, economics, raw status dimensions, and session evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "artifact_id", "receipt_id", "goal",
+    "acceptance_contract", "artifact", "verification", "pairing",
+    "statuses", "human_decisions", "economics", "created_at"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 3 },
+    "artifact_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "receipt_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "goal": { "type": "string" },
+    "acceptance_contract": {
+      "type": "string",
+      "description": "The binding properties the work must satisfy. Deterministic criteria are derived from this text."
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "contract_coverage"],
+      "properties": {
+        "kind": { "enum": ["code", "research"] },
+        "repo": { "type": ["string", "null"] },
+        "head": {
+          "type": ["string", "null"],
+          "description": "Full commit SHA the verdict binds to for code."
+        },
+        "diff_hash": { "type": ["string", "null"] },
+        "changed_files": {
+          "type": ["array", "null"],
+          "items": { "type": "string" }
+        },
+        "deliverable_hash": {
+          "type": ["string", "null"],
+          "description": "Hash of the final research deliverable."
+        },
+        "claims": {
+          "type": ["array", "null"],
+          "description": "Claim-to-source ledger. Decisions are receipt judgment, not artifact meaning.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["claim", "marker", "url", "evidence_hash", "retrieved_at", "decision"],
+            "properties": {
+              "claim": { "type": "string" },
+              "marker": { "type": "string", "pattern": "^\\[(?:H)?[0-9]+\\]$" },
+              "url": { "type": ["string", "null"] },
+              "evidence_hash": { "type": ["string", "null"] },
+              "retrieved_at": { "type": ["integer", "null"] },
+              "decision": { "enum": ["supported", "unsupported", "unchecked"] }
+            }
+          }
+        },
+        "contract_coverage": {
+          "type": ["array", "null"],
+          "description": "Deterministically extracted acceptance criteria and the final-revision auditor decision. Null means this artifact kind does not yet emit structured coverage.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "text", "decision"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^C[1-9][0-9]*$" },
+              "text": { "type": "string" },
+              "decision": { "enum": ["met", "unmet", "unclear"] }
+            }
+          }
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checks"],
+      "properties": {
+        "command": { "type": ["string", "null"] },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "status"],
+            "properties": {
+              "id": { "type": "string" },
+              "status": { "enum": ["pass", "fail", "warn", "skip"] },
+              "detail": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "session_log": {
+      "type": ["array", "null"],
+      "items": { "type": "string" },
+      "description": "Relevant runtime evidence and hashes of assessment rationales."
+    },
+    "pairing": {
+      "description": "pairing-manifest/v2 instance — envelope 3 binds the interior exactly.",
+      "$ref": "https://camus.sh/schemas/pairing-manifest/v2"
+    },
+    "statuses": {
+      "description": "status/v2 raw dimensions — envelope 3 binds the interior exactly.",
+      "$ref": "https://camus.sh/schemas/status/v2"
+    },
+    "human_decisions": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "human-decision/v1 instances"
+    },
+    "economics": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "economics/v1 instances"
+    },
+    "created_at": { "type": "integer" }
+  }
+}

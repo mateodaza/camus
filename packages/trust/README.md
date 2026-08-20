@@ -14,4 +14,8 @@ npm test        # exhaustive derivation + canonicalization + validators + ingest
 npm run ingest  # curate the local review corpus (redacting); adjudication is the human's half
 ```
 
+## Published schemas
+
+[SCHEMAS.md](./SCHEMAS.md) is the register of the published wire contract: every schema file, which envelope binds which interior block versions (envelopes 1/2/3, pairing 1/2, statuses 1/2), the immutability rule with its one audit-replay production exception, and the accepted cross-version tuples.
+
 Deliberately absent, per the direction: provider adapters, model-picker UI, reverse pairing. Those wait until these artifacts exist so implementation details never define the protocol by accident.

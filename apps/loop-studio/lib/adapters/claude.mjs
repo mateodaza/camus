@@ -15,6 +15,51 @@ function fail(error) {
   return { ok: false, error, text: null, costUsd: 0 };
 }
 
+// Redirect-isolation contract for EVERY headless Claude spawn (maker AND
+// reviewer). A built-in claude seat is Camus's own decision, so the child must
+// NOT inherit ambient routing/credential redirection from the operator's shell.
+// We build a FRESH environment by DEFAULT-DENY: copy only a closed pass-set of
+// names, then always assert host ownership of routing + memory. This scrubbed
+// spawn is exactly what lets identity.mjs mark claude_cli redirect-isolation as
+// proven (Task 9) — the pre-flip adapter spawned with no `env` option, so an
+// inherited ANTHROPIC_BASE_URL could silently re-point the whole seat.
+//
+// Why a PASS-SET and not a denylist: a denylist has to enumerate every current
+// AND future redirect knob — ANTHROPIC_BASE_URL (request-routing override) and
+// ANTHROPIC_AUTH_TOKEN (gateway/proxy bearer auth) from
+// https://code.claude.com/docs/en/env-vars and https://code.claude.com/docs/en/team,
+// the whole *_BASE_URL / CLAUDE_CODE_USE_* provider family, ANTHROPIC_MODEL and
+// the ANTHROPIC_DEFAULT_*_MODEL variants, HTTP(S)_PROXY, CLAUDE_CONFIG_DIR — and
+// a single new CLI release adds one and silently re-opens the hole. Copying only
+// known-safe names closes them all by construction, so we never inspect or log
+// any value.
+//
+//   - ANTHROPIC_API_KEY is direct API-key auth; CLAUDE_CODE_OAUTH_TOKEN and its
+//     refresh/scopes companions are the documented automation credentials
+//     (https://code.claude.com/docs/en/env-vars). These are the seat's OWN auth
+//     and the ONLY credentials forwarded — never ANTHROPIC_AUTH_TOKEN, which
+//     points at a gateway/proxy.
+//   - CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=1 makes the embedding host (Camus)
+//     own routing/model selection; CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 prevents
+//     creating/loading auto memory. Both are ALWAYS overwritten to the literal
+//     "1" and NEVER inherited — a parent value must not be able to weaken them.
+const CLAUDE_ENV_PASS_SET = [
+  'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'LANG', 'LC_ALL', 'LC_CTYPE',
+  'ANTHROPIC_API_KEY',
+  'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_REFRESH_TOKEN', 'CLAUDE_CODE_OAUTH_SCOPES',
+];
+export function claudeDirectEnv(parentEnv = process.env) {
+  const out = {};
+  for (const name of CLAUDE_ENV_PASS_SET) {
+    const value = parentEnv[name];
+    if (value !== undefined) out[name] = value; // presence-gated copy; value never examined
+  }
+  // Host-owned constants: overwrite/add unconditionally, never inherit.
+  out.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST = '1';
+  out.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '1';
+  return out;
+}
+
 export function claudeToolSurface({ stage, hivemindEnabled = false, serverName = 'claude_ai_Hivemind_Staging', toolName, toolPolicy = 'research' }) {
   const builtins = stage === 'plan' || !['research', 'web_only'].includes(toolPolicy) ? '' : 'WebSearch,WebFetch';
   // Claude.ai connectors are deferred: ToolSearch must load the selected
@@ -89,19 +134,23 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
     // to call even though it was allowed (golden-run P1, 2026-07-14).
     '--tools', tools,
   ];
-  if (hm.enabled) {
-    // Managed Claude.ai connectors authenticate through Anthropic's proxy;
-    // re-adding the raw endpoint under a local alias does not inherit OAuth.
-    // An empty settings-source list excludes user/local/project MCP entries
-    // while Claude.ai connectors remain available. --tools still exposes only
-    // WebSearch/WebFetch/ToolSearch and the one selected Hivemind tool.
-    args.push('--setting-sources', '');
-  } else args.push('--strict-mcp-config');
+  // --setting-sources '' (empty user/project/local sources,
+  // https://code.claude.com/docs/en/cli-usage) is UNCONDITIONAL now: the seat
+  // never reads the operator's settings, whether or not Hivemind is on. When
+  // Hivemind is off we ALSO keep --strict-mcp-config to exclude any other MCP
+  // config; with Hivemind on, an empty settings-source list already excludes
+  // user/local/project MCP entries while Claude.ai connectors stay available,
+  // and --tools still exposes only WebSearch/WebFetch/ToolSearch and the one
+  // selected Hivemind tool. Managed Claude.ai connectors authenticate through
+  // Anthropic's proxy; re-adding the raw endpoint under a local alias does not
+  // inherit OAuth.
+  args.push('--setting-sources', '');
+  if (!hm.enabled) args.push('--strict-mcp-config');
   if (allowed) args.push('--allowedTools', allowed);
 
   const startedAt = Date.now();
   const { exitCode, stdout, stderr, resultEvent, hivemindQueries, hivemindQueryTexts, hivemindResults } = await new Promise((resolve) => {
-    const child = spawn('claude', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('claude', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: claudeDirectEnv() });
     let out = '';
     let err = '';
     let lineBuf = '';
@@ -214,6 +263,7 @@ export async function runClaudeReview({ prompt, model, cwd, signal, onTick, onSe
     '--max-turns', '1',
     '--model', model,
     '--tools', '', // the reviewer seat is toolless: judge the draft, touch nothing
+    '--setting-sources', '', // no user/project/local settings (cli-usage), same as the maker seat
     '--strict-mcp-config',
   ];
 
@@ -222,7 +272,7 @@ export async function runClaudeReview({ prompt, model, cwd, signal, onTick, onSe
   // thinking one — killed, and an infra error, never a wait until the hard cap.
   const idleKillMs = Number(process.env.REVIEW_IDLE_MS || 300_000);
   const { exitCode, stdout, stderr, resultEvent } = await new Promise((resolvePromise) => {
-    const child = spawn('claude', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('claude', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: claudeDirectEnv() });
     let out = '';
     let err = '';
     let lineBuf = '';

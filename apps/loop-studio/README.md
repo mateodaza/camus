@@ -64,6 +64,41 @@ No backend exists until someone writes one down; the key lives only in the named
 
 Both **codex** seats run a hardened subprocess: shell/exec, web search (which defaults to *on*), browser, apps, and plugins disabled by flag; no user config, rules, or MCP; ephemeral session; a scrubbed environment; and a fail-closed watch that refuses the call if any unexpected tool event appears. See [docs/MULTI-MODEL-SEATS.md](../../docs/MULTI-MODEL-SEATS.md#the-hardened-codex-profile-both-seats) for the flag table and the live controls behind each claim.
 
+### The extended `models.json` shape (open-model seats)
+
+Since the open-model-seats work ([docs/OPEN-MODEL-SEATS-RFC.md](../../docs/OPEN-MODEL-SEATS-RFC.md)) a backend reaches its endpoint through a named **connection**. Three connection kinds exist: `loopback` for a backend served on this machine, `direct_https` for a public HTTPS endpoint, and `legacy_http` for an endpoint outside those two safe classes, including plain HTTP and private/internal or literal-IP HTTPS. A `legacy_http` connection loads only when its machine-local grandfather record came from the one-time migration snapshot or an explicit, recorded operator confirmation; Camus never silently grants a new one.
+
+```jsonc
+{
+  "connections": {
+    "local_ollama": { "kind": "loopback", "port": 11434, "basePath": "/v1" },
+    "xai": { "kind": "direct_https", "baseUrl": "https://api.x.ai/v1" },
+    "old_gpu": { "kind": "legacy_http", "baseUrl": "http://192.168.1.40:11434/v1" }
+  },
+  "backends": {
+    "qwen_local": {
+      "kind": "openai_compat",
+      "provider": "alibaba",
+      "connection": "local_ollama",
+      "protocol": "chat_completions",
+      "trainingOrg": "alibaba",
+      "modelFamily": "qwen",
+      "derivedFrom": null,
+      "inferenceOperator": "self_hosted",
+      "auth": { "kind": "none" },
+      "models": ["qwen3-coder"],
+      "seats": ["maker", "reviewer"]
+    }
+  }
+}
+```
+
+A backend declares `trainingOrg`, `modelFamily`, and `derivedFrom`; Studio derives `lineage.source`, so writing that field in the file refuses instead of granting provenance. The built-in `claude` and `codex` backends use `vendor_managed`, while any pre-existing custom backend that only supplied a free-text `provider` stays `unknown` until it is described with a connection and the complete declarations.
+
+When you edit a connection-bearing entry, Studio dual-writes the full backend surface — every field the validator requires — so the entry loads cleanly on older code. For a keyless backend the dual-write includes `CAMUS_NO_AUTH` as the placeholder key-env name, so the entry still names an env var.
+
+Rollback is stated precisely in [§19.4](../../docs/OPEN-MODEL-SEATS-RFC.md): if you run older code against a config written by this version, every dual-written entry keeps **load isolation** — one entry never fails the others, so the rest of your backends keep working. A **keyed** entry additionally keeps **functional parity**: it runs as before. A **keyless** entry loads safely but has no parity claim; at call time, set `CAMUS_NO_AUTH` to any value so the keyless server can ignore the bearer header, or remove the entry.
+
 Useful env:
 
 | Var | Effect |
