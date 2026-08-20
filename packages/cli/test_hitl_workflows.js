@@ -1435,6 +1435,9 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F19 baseline verify heartbeats', (prompts['baseline-verify'] || '').includes(hb))
     ok('F19 merge heartbeats', (prompts['merge:' + tid] || '').includes(hb))
     ok('F19 integration verify heartbeats', (prompts['integration-verify'] || '').includes(hb))
+    ok('F19 feat baseline verify requests a 600000ms Bash-tool timeout', /timeout PARAMETER to 600000/.test(prompts['baseline-verify'] || ''))
+    ok('F19 feat integration verify requests a 600000ms Bash-tool timeout', /timeout PARAMETER to 600000/.test(prompts['integration-verify'] || ''))
+    ok('F19 verifier prompts forbid shell timeout wrappers', [prompts['baseline-verify'], prompts['integration-verify']].every((p) => /Do NOT wrap/.test(p || '') && /timeout.*gtimeout/.test(p || '')))
   }
   // F20 (audit P1 2026-06-11): a merged pause+answers note must NOT lose its payload — the
   // boundary check consumed the file, so the engine re-queues the remainder (minus pause)

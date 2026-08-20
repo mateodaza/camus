@@ -18,6 +18,10 @@ export const meta = {
 const SKILL = '"$HOME/.claude/skills/camus/scripts"'
 const ENV_CMD = `python3 ${SKILL}/env_check.py`     // [REPO] -> exit 0 ready, 1 prints what to fix
 const VERIFY_CMD = `bash ${SKILL}/verify.sh`         // [DIR]  -> {pass,failures,checks} JSON
+// Full repository verification can legitimately exceed Claude Code's 120s Bash default (Camus's
+// own git/process safety suite is ~4.5m on macOS). Feat baseline + integration runners must set
+// the TOOL timeout, never a shell wrapper, or healthy repos halt as env_not_ready before a task.
+const VERIFY_TIMEOUT_MS = 600000
 const MERGE_CMD = `bash ${SKILL}/merge.sh`           // <feat> <task> <msg> -> the merge contract JSON,
                                                      // computed in-script (hookless/unsigned inside the
                                                      // allowlisted script — run-5 classifier finding)
@@ -880,6 +884,7 @@ if (!state.env.ready) {
 // ── 4. BASELINE VERIFY — base must be green before any task ───────────────────
 const baseRaw = await agent(
   `THIN verifier. cd ${REPO_ARG}, then run EXACTLY:  ${HB_TOUCH}${VERIFY_ENV}${VERIFY_CMD} ${REPO_ARG}
+Set the Bash tool's timeout PARAMETER to ${VERIFY_TIMEOUT_MS} for this call. Do NOT wrap the command in shell \`timeout\`/\`gtimeout\`.
 Output the command's stdout VERBATIM as your entire reply (JSON {pass,failures,checks}). No fences, no commentary.
 ${VERIFY_OATH}`,
   { model: MODEL_RUNNER, phase: 'Env+Baseline', label: 'baseline-verify' }
@@ -1705,6 +1710,7 @@ if (!state.envRecheck.ready) {
 }
 const intRaw = await agent(
   `THIN verifier. cd ${REPO_ARG}, then run EXACTLY:  ${HB_TOUCH}${VERIFY_ENV}${VERIFY_CMD} ${REPO_ARG}
+Set the Bash tool's timeout PARAMETER to ${VERIFY_TIMEOUT_MS} for this call. Do NOT wrap the command in shell \`timeout\`/\`gtimeout\`.
 Output the command's stdout VERBATIM (JSON {pass,failures,checks}). No fences, no commentary.
 ${VERIFY_OATH}`,
   { model: MODEL_RUNNER, phase: 'Integration', label: 'integration-verify' }
