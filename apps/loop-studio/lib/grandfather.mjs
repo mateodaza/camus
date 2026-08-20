@@ -93,6 +93,31 @@ function atomicWrite(filePath, contents, mode) {
   closeSync(fd);
   renameSync(tmp, filePath); // atomic swap: readers see old or new, never a hybrid
   chmodSync(filePath, mode); // openSync mode is umask-masked; pin it exactly
+  // Durability across a crash: fsync(fd) before the rename only flushed the file
+  // BYTES. Flush the chmod'd inode metadata, then fsync the PARENT directory so the
+  // new/replaced directory entry itself reaches stable storage — without this a
+  // power loss after return can lose the dirent or resurrect the prior file.
+  fsyncPath(filePath);
+  fsyncPath(dir);
+}
+
+// Best-effort fsync of a path (file or directory). Directory fsync is how a rename
+// is made durable on POSIX; some filesystems reject a directory fsync, so a failure
+// is swallowed rather than corrupting the already-committed rename.
+function fsyncPath(p) {
+  let syncFd;
+  try {
+    syncFd = openSync(p, 'r');
+    fsyncSync(syncFd);
+  } catch {
+    // fsync unsupported on this path/filesystem — the rename still landed.
+  } finally {
+    if (syncFd !== undefined) {
+      try {
+        closeSync(syncFd);
+      } catch {}
+    }
+  }
 }
 
 // ---- per-machine salt ------------------------------------------------------
@@ -115,6 +140,27 @@ function readMachineSalt(p, { create = false } = {}) {
   const salt = randomBytes(32);
   atomicWrite(p.salt, salt.toString('hex'), FILE_MODE);
   return salt;
+}
+
+// ---- shared studio primitives ----------------------------------------------
+// capabilities.mjs (RFC §9.2) reuses the SAME machine-salt discipline and atomic
+// write path rather than minting a second salt or re-implementing durability.
+// The salt file location is the grandfather base (STUDIO_GRANDFATHER_DIR or
+// ~/.camus/studio/.machine-salt); create:true mints it 0600 on first probe.
+
+export const STUDIO_FILE_MODE = FILE_MODE;
+export const STUDIO_DIR_MODE = DIR_MODE;
+
+export function studioSaltPath() {
+  return paths().salt;
+}
+
+export function loadMachineSalt(opts = {}) {
+  return readMachineSalt(paths(), opts);
+}
+
+export function studioAtomicWrite(filePath, contents, mode = FILE_MODE) {
+  atomicWrite(filePath, contents, mode);
 }
 
 // ---- record markers --------------------------------------------------------
