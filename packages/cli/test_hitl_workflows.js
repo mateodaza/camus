@@ -2529,6 +2529,15 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F44 legacy recovery reports unknown base rather than inventing mainline provenance',
       recovered.stateJSON.base === null && recovered.res.base === null,
       J({ state: recovered.stateJSON.base, report: recovered.res.base }))
+    const recoveredAgain = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, preflight: { clean: true, base: `camus/feat-${fid}`, dirtyFiles: 0,
+        stateRaw: JSON.stringify(recovered.stateJSON), argsPresent: false } }, loopDone)
+    ok('F44 normalized base:null checkpoint remains resumable after another interruption',
+      recoveredAgain.res && recoveredAgain.res.status === 'done',
+      recoveredAgain.res && (recoveredAgain.res.status + '/' + recoveredAgain.res.stage))
+    ok('F44 repeated legacy resume keeps unknown base honest',
+      recoveredAgain.stateJSON.base === null && recoveredAgain.res.base === null,
+      J({ state: recoveredAgain.stateJSON.base, report: recoveredAgain.res.base }))
     const missingProof = await runFeat({ feat: 'F', tasks: ['only task'] },
       { ...featBase, preflight: { clean: true, base: `camus/feat-${fid}`, dirtyFiles: 0,
         stateRaw: '', argsPresent: false } }, loopDone)

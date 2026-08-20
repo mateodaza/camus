@@ -671,10 +671,14 @@ const priorBaseIsMainline = prior && typeof prior.base === 'string' && prior.bas
 // damaged shape only when every recomputed identity still matches; report base:null rather than
 // inventing a mainline. Any other feat-shaped prior base remains an attempted stack and refuses.
 const legacySelfCheckpoint = prior && prior.base === featBranch
+// Once the legacy self shape is recovered, its honest normalized checkpoint carries base:null.
+// That normalized state must itself remain resumable; otherwise the NEXT interruption wedges on
+// the same guard again. Exact feat identity still supplies the authorization — null supplies none.
+const legacyUnknownBase = prior && prior.base == null
 const exactFeatResume = pf.base === featBranch
   && prior && prior.featId === featId && prior.featBranch === featBranch
   && Array.isArray(prior.tasks)
-  && (priorBaseIsMainline || legacySelfCheckpoint)
+  && (priorBaseIsMainline || legacySelfCheckpoint || legacyUnknownBase)
 state.base = exactFeatResume ? (priorBaseIsMainline ? prior.base : null) : (pf.base || null)
 if (!pf.clean) {
   return finalize('dirty_tree', {
