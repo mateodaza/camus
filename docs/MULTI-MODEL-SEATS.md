@@ -270,3 +270,10 @@ observed.
   that is the contract working, not a bug to paper over.
 - Next slice (explicitly not started here): retrieval scope vs evidence scope
   in grounding (see SHANE-DEMO-BRIEF.md, the brand-voice refusal's root cause).
+
+## Addendum: open-model seats (slice A + B migration core)
+
+The connection-aware successor to this contract is
+[docs/OPEN-MODEL-SEATS-RFC.md](OPEN-MODEL-SEATS-RFC.md). Slice A plus the B
+migration core landed: identity records, pairing v2, status v2, envelope 3, and
+the loopback, direct_https, and legacy_http connection kinds.
