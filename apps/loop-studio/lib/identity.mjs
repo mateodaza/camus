@@ -23,14 +23,16 @@ function readRegistry() {
   return JSON.parse(readFileSync(registryPath(), 'utf8'));
 }
 
-// The ONLY isolation flag, a static per-executor constant (§9.1). codex_cli's
-// hardened spawn is proven isolated (scrubbed allowlist environment +
-// --ignore-user-config close every redirect surface, pinned by the hardened-seat
-// tests). claude_cli is NOT proven today: the adapter spawns with no `env`
-// option, so an inherited ANTHROPIC_BASE_URL could silently re-point it. Flipping
-// claude_cli to true is Task 9's job and ONLY a green isolation acceptance test
-// justifies it — never edit this table without that proof.
-const REDIRECT_ISOLATION = Object.freeze({ codex_cli: true, claude_cli: false });
+// The ONLY isolation flag, a static per-executor constant (§9.1). Both built-in
+// executors are now proven isolated. codex_cli's hardened spawn uses a scrubbed
+// allowlist environment + --ignore-user-config. claude_cli (Task 9) spawns BOTH
+// the maker and reviewer seats with claudeDirectEnv() — a fresh default-deny
+// environment that copies only a closed credential pass-set and always asserts
+// host-owned routing/memory — plus an unconditional empty --setting-sources, so
+// an inherited ANTHROPIC_BASE_URL (or any redirect var) can no longer re-point
+// it. That flip is justified by the green lib/adapters/claude.test.mjs isolation
+// acceptance test; never edit this table without such a proof.
+const REDIRECT_ISOLATION = Object.freeze({ codex_cli: true, claude_cli: true });
 export function redirectIsolationProven(executorKind) {
   return REDIRECT_ISOLATION[executorKind] === true;
 }
