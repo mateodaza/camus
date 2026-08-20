@@ -337,6 +337,24 @@ export function reviewEventFromGateReceipt(raw, round) {
   const parsed = objectFrom(envelope.codex_parsed)
     ?? objectFrom(envelope.codex_raw)
     ?? envelope;
+  const binding = objectFrom(envelope.binding);
+  const scopeCandidate = binding?.review_scope ?? binding?.scope ?? null;
+  const reviewScope = ['full', 'light'].includes(scopeCandidate) ? scopeCandidate : null;
+  const contractCandidate = binding?.contract_version ?? binding?.review_contract_version ?? null;
+  const reviewContractVersion = typeof contractCandidate === 'string' && contractCandidate.length > 0
+    ? contractCandidate
+    : null;
+  const rawQualification = objectFrom(binding?.qualification);
+  const qualification = rawQualification
+    && /^(?:qual1|builtin1):[0-9a-f]{64}$/.test(rawQualification.fingerprint ?? '')
+    && ['full', 'light', null].includes(rawQualification.gate_scope ?? null)
+    && (rawQualification.contract_version === null || typeof rawQualification.contract_version === 'string')
+    ? {
+        fingerprint: rawQualification.fingerprint,
+        gate_scope: rawQualification.gate_scope ?? null,
+        contract_version: rawQualification.contract_version ?? null,
+      }
+    : null;
   const rawVerdict = typeof parsed.overall_correctness === 'string' ? parsed.overall_correctness : null;
   const verdict = rawVerdict === 'patch is correct'
     ? 'APPROVED'
@@ -369,6 +387,13 @@ export function reviewEventFromGateReceipt(raw, round) {
     // substituted for the effort the gate really ran at (live smoke P1).
     reviewerModel: envelope.ran === true && typeof envelope.reviewer_model === 'string' && envelope.reviewer_model ? envelope.reviewer_model : null,
     reviewerEffort: envelope.ran === true && typeof envelope.reviewer_effort === 'string' && envelope.reviewer_effort ? envelope.reviewer_effort : null,
+    // Forward-compatible binding channel. Current gate receipts do not carry
+    // these Slice-F fields, so Studio keeps producing the frozen v2 envelope.
+    // Once the gate does carry them, normalization must not erase them before
+    // evidence-pack's independent scope/qualification cross-check.
+    review_scope: reviewScope,
+    review_contract_version: reviewContractVersion,
+    qualification,
   };
 }
 

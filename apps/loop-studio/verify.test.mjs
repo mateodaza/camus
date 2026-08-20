@@ -1321,6 +1321,26 @@ Members value practical progress over content volume [H1].
   // another. The evidence seals the ACTUAL effort the audit recorded — never the
   // snapshot's requested value, never a default.
   assert.equal(pinnedReview.reviewerEffort, 'medium', 'a review that ran carries the effort it actually ran at');
+  const boundQualification = { fingerprint: `builtin1:${'a'.repeat(64)}`, gate_scope: 'full', contract_version: 'review-contract-1' };
+  const boundReview = reviewEventFromGateReceipt({
+    ran: true,
+    reviewer_model: 'gpt-5.4',
+    reviewer_effort: 'high',
+    binding: {
+      review_scope: 'full',
+      contract_version: 'review-contract-1',
+      qualification: boundQualification,
+    },
+    codex_parsed: { overall_correctness: 'patch is correct', findings: [] },
+  }, 1);
+  assert.equal(boundReview.review_scope, 'full', 'the gate binding scope survives receipt normalization');
+  assert.equal(boundReview.review_contract_version, 'review-contract-1', 'the independently bound review-contract version survives');
+  assert.deepEqual(boundReview.qualification, boundQualification, 'the accepted qualification survives without being reconstructed');
+  const { deriveEvidence: deriveBoundEvidence } = await import('./lib/evidence.mjs');
+  const derivedBoundRound = deriveBoundEvidence([{ type: 'review', ...boundReview }]).rounds[0];
+  assert.equal(derivedBoundRound.review_scope, 'full', 'the production event-to-evidence builder keeps the independent scope channel');
+  assert.equal(derivedBoundRound.review_contract_version, 'review-contract-1', 'the production builder keeps the contract binding too');
+  assert.deepEqual(derivedBoundRound.qualification, boundQualification, 'the production builder does not wash the accepted qualification to null');
   const unranPin = reviewEventFromGateReceipt({ ran: false, reviewer_model: 'gpt-5.4', reviewer_effort: 'medium', codex_parsed: { overall_correctness: 'patch is correct', findings: [] } }, 1);
   assert.equal(unranPin.reviewerModel, null, 'a review that did not run never claims a reviewer identity');
   assert.equal(unranPin.reviewerEffort, null, 'a review that did not run never claims an effort either');
@@ -1815,6 +1835,7 @@ if (process.env.TEST_NETWORK === '1') {
 {
   const { buildEvidencePack, shortEvidenceId } = await import('./lib/evidence-pack.mjs');
   const { buildAuditReplayPack, createAuditReplayExperiment, finalizeAuditReplayExperiment, knowledgeSnapshotId } = await import('./lib/audit-replay.mjs');
+  const { seal } = await import('../../packages/trust/lib/canonical.mjs');
   const { validateEvidencePack, validateExperimentRecord } = await import('../../packages/trust/lib/validate.mjs');
   const base = {
     goal: 'Decide whether community or paid should lead the quarter.',
@@ -1840,12 +1861,30 @@ if (process.env.TEST_NETWORK === '1') {
   };
   const pack = buildEvidencePack(base);
   assert.equal(validateEvidencePack(pack).ok, true, 'Studio output validates as the published evidence-pack schema');
-  assert.equal(pack.schemaVersion, 2, 'structured acceptance coverage ships as evidence-pack v2, never as an in-place v1 mutation');
+  // The single semantically-destructive flip: the producer emits envelope 3 with
+  // its bound pairing v2 + status v2 interiors, asserted DIRECTLY on the returned
+  // object (never via a text grep, which cannot tell a producer emission from a
+  // frozen golden constant).
+  assert.equal(pack.schemaVersion, 3, 'structured acceptance coverage ships as evidence-pack v3, never as an in-place v2 mutation');
+  assert.equal(pack.pairing.schemaVersion, 2, 'envelope 3 carries a pairing-manifest v2 interior');
+  assert.equal(pack.statuses.schemaVersion, 2, 'envelope 3 carries a status v2 interior');
   assert.equal(pack.acceptance_contract, base.acceptanceContract, 'contract is explicit, never aliased from goal');
   assert.deepEqual(pack.artifact.contract_coverage.map((c) => [c.id, c.decision]), [['C1', 'met']], 'the final-revision coverage decision seals into the pack');
-  assert.equal(pack.pairing.executor.actual, 'anthropic:sonnet', 'pinned maker is recorded');
+  // The seats are seatIdentitySealed records now: requested/resolved name the
+  // seat DECISION (backend-prefixed for a built-in), actual the OBSERVED provider.
+  assert.equal(pack.pairing.executor.requested, 'claude:sonnet', 'the built-in maker decision names its backend');
+  assert.equal(pack.pairing.executor.actual, 'anthropic:sonnet', 'pinned maker is recorded, provider-qualified');
+  assert.equal(pack.pairing.executor.training_org, 'anthropic', 'the sealed maker carries its registry training org');
+  assert.equal(pack.pairing.executor.model_family, 'claude', 'the sealed maker carries its model family');
+  assert.equal(pack.pairing.executor.lineage.source, 'registry', 'the built-in maker lineage is registry-attested');
+  assert.equal(pack.pairing.executor.origin_confidence, 'verified_operator', 'a registry lineage earns verified_operator');
+  assert.ok(pack.pairing.executor.qualification.fingerprint.startsWith('builtin1:'), 'the vendor-managed built-in maker seals a builtin1 qualification');
+  assert.equal(pack.pairing.auditor.requested, 'codex:gpt-5.4', 'the built-in auditor decision names its backend');
   assert.equal(pack.pairing.auditor.actual, 'openai:gpt-5.4', 'auditor actual comes from the ran review');
-  assert.equal(pack.pairing.independence, 'cross_vendor', 'different recorded providers earn cross-vendor standing');
+  assert.equal(pack.pairing.auditor.training_org, 'openai', 'the sealed auditor carries its registry training org');
+  assert.ok(pack.pairing.auditor.qualification.fingerprint.startsWith('builtin1:'), 'the vendor-managed built-in auditor seals a builtin1 qualification');
+  assert.equal(pack.pairing.review_scope, null, 'a words-lane audit runs under no gate-scoped review');
+  assert.equal(pack.pairing.independence, 'cross_vendor', 'different training organizations earn cross-vendor standing');
   assert.equal(pack.economics.find((e) => e.role === 'auditor').effort, 'high', 'actual reviewer effort survives');
   assert.equal(pack.economics.every((e) => e.billing_mode === 'unknown' && e.estimated_cost_usd === null), true, 'billing and dollars stay unknown/null');
   assert.deepEqual(pack.verification.checks, [{ id: 'links', status: 'pass', detail: '4 URLs checked' }], 'deterministic checks survive');
@@ -1986,8 +2025,12 @@ Members asked for practical milestones [H1].
     },
   });
   assert.equal(validateEvidencePack(buildPack).ok, true, 'developer-role output validates as the same protocol pack');
+  assert.equal(buildPack.schemaVersion, 2, 'a build gate without Slice-F scope/contract binding stays on frozen envelope 2');
+  assert.equal(buildPack.pairing.schemaVersion, 1);
+  assert.equal(buildPack.statuses.schemaVersion, 1);
+  assert.ok(buildPack.session_log.some((line) => line.startsWith('compatibility envelope v2:')), 'the sealed receipt discloses why it did not grade itself up');
   assert.deepEqual(buildPack.artifact, { kind: 'code', repo: '/tmp/demo-repo', head: 'c92d002abc123', diff_hash: null, changed_files: null, deliverable_hash: null, claims: null, contract_coverage: null }, 'the build artifact is bound to the gate-branch head without inventing structured coverage the gate does not emit yet');
-  assert.equal(buildPack.pairing.executor.requested, 'anthropic:sonnet', 'the run-start maker decision survives');
+  assert.equal(buildPack.pairing.executor.requested, 'anthropic:sonnet', 'the frozen v1 pairing preserves its provider-prefixed identity semantics');
   assert.equal(buildPack.pairing.executor.actual, 'anthropic:opus', 'the gate-reported final model records escalation honestly');
   assert.equal(buildPack.pairing.auditor.actual, 'openai:gpt-5.4', 'the code auditor actual is sealed');
   assert.match(buildPack.verification.checks[0].detail, /c92d002abc123/, 'build verification stays bound to the audited commit');
@@ -2046,6 +2089,38 @@ Members asked for practical milestones [H1].
   assert.equal(replayPack.economics.find((item) => item.role === 'auditor').effort, null, 'requested effort is not promoted into an actual when the runtime does not report one');
   assert.ok(replayPack.session_log.includes(`audit replay experiment: ${experiment.experiment_id}`), 'the receipt binds the frozen experiment manifest');
   assert.ok(replayPack.session_log.some((line) => /^audit replay threshold T1: policy; line_hash=sha256:[0-9a-f]{64}; evidence_hash=sha256:[0-9a-f]{64}$/.test(line)), 'the replay receipt seals the threshold decision bound to its line');
+
+  const legacySource = seal({
+    schemaVersion: 2,
+    goal: pack.goal,
+    acceptance_contract: pack.acceptance_contract,
+    artifact: structuredClone(pack.artifact),
+    verification: structuredClone(pack.verification),
+    session_log: ['legacy envelope-2 source'],
+    pairing: {
+      schemaVersion: 1,
+      executor: { requested: 'anthropic:sonnet', resolved: 'anthropic:sonnet', actual: 'anthropic:sonnet' },
+      auditor: { requested: 'openai:gpt-5.4', resolved: 'openai:gpt-5.4', actual: 'openai:gpt-5.4' },
+      independence: 'cross_vendor',
+    },
+    statuses: { schemaVersion: 1, execution: 'completed', verification: 'passed', audit: 'independent_clean', publication: 'not_published' },
+    human_decisions: [],
+    economics: structuredClone(pack.economics),
+    created_at: 99,
+  });
+  assert.equal(validateEvidencePack(legacySource).ok, true, 'the explicit legacy source fixture is a valid frozen envelope 2');
+  const legacyExperiment = createAuditReplayExperiment({
+    sourceRunId: 'legacy-source-run', sourcePack: legacySource, sourceEvidence: base.evidence,
+    sourceDeliverable: base.deliverable, reviewerModel: 'gpt-5.6-sol', effort: 'xhigh', catalog, createdAt: 204,
+  });
+  const legacyReplay = buildAuditReplayPack({
+    sourcePack: legacySource, review: replayReview, reviewerModel: 'gpt-5.6-sol', effort: 'xhigh',
+    experimentId: legacyExperiment.experiment_id, createdAt: 205,
+  });
+  assert.equal(legacyReplay.schemaVersion, 2, 'an envelope-2 source still seals an envelope-2 replay');
+  assert.equal(legacyReplay.pairing.schemaVersion, 1);
+  assert.equal(legacyReplay.statuses.schemaVersion, 1);
+  assert.equal(legacyReplay.artifact_id, legacySource.artifact_id);
 
   const finalExperiment = finalizeAuditReplayExperiment(experiment, { pack: replayPack, review: replayReview });
   assert.equal(validateExperimentRecord(finalExperiment).ok, true, 'the completed arm validates');
@@ -2956,6 +3031,13 @@ Myosin Learns is a live session. A person decides when the evidence is enough.
   const cross = deriveStatusDimensions({ lane: 'freeform', status: 'done', evidence: roundsWith('cross_vendor') });
   assert.equal(cross.audit, 'independent_clean', 'a cross-vendor round keeps independent standing');
 
+  const declared = deriveStatusDimensions({ lane: 'freeform', status: 'done', evidence: roundsWith('cross_vendor_declared') });
+  assert.equal(declared.schemaVersion, 2, 'new Studio status dimensions are version 2');
+  assert.equal(declared.audit, 'declared_clean', 'operator-declared cross-organization lineage gets its own standing');
+  assert.equal(deriveHeadline({ ...declared, schemaVersion: undefined }), 'declared_cross_vendor_reviewed');
+  const declaredFindings = deriveStatusDimensions({ lane: 'freeform', status: 'done_with_findings', evidence: roundsWith('cross_vendor_declared', 'REVISE') });
+  assert.equal(declaredFindings.audit, 'declared_findings');
+
   // Live control for the legacy path: a round with NO independence fact (every
   // receipt sealed before seats existed) derives independent, as it always did.
   const legacy = deriveStatusDimensions({ lane: 'freeform', status: 'done', evidence: roundsWith(null) });
@@ -2973,13 +3055,21 @@ Myosin Learns is a live session. A person decides when the evidence is enough.
 {
   const { buildEvidencePack } = await import('./lib/evidence-pack.mjs');
   const { validateEvidencePack } = await import('../../packages/trust/lib/validate.mjs');
+  const kimiQualification = { fingerprint: `qual1:${'a'.repeat(64)}`, gate_scope: null, contract_version: null };
+  const kimiSeat = {
+    backend: 'kimi', provider: 'moonshot', model: 'kimi-k2', source: 'run request',
+    executor: 'http_client', transport: 'direct_https', connection: 'moonshot-hosted', protocol: 'chat_completions',
+    trainingOrg: 'moonshot', modelFamily: 'kimi', inferenceOperator: 'moonshot',
+    lineage: { source: 'registry', derivedFrom: null }, originConfidence: 'verified_operator',
+    qualification: kimiQualification,
+  };
   const base = {
     goal: 'Reversed-seat receipt.',
     acceptanceContract: 'Every material claim is traceable.',
     lane: 'freeform',
     deliverable: '# Note\n\nNo claims.\n',
     evidence: {
-      rounds: [{ rev: 1, verdict: 'APPROVED', reviewerModel: 'sonnet', reviewerEffort: null, reviewerIdentity: 'anthropic:claude-sonnet-4-6', independence: 'cross_vendor', findings: [], claimAssessments: [], coverageAssessments: [{ criterion_id: 'C1', decision: 'met', evidence: 'traceable' }] }],
+      rounds: [{ rev: 1, verdict: 'APPROVED', reviewerModel: 'sonnet', reviewerEffort: null, reviewerIdentity: 'anthropic:claude-sonnet-4-6', reviewerActualEvidence: 'observed_cli_event', reviewerReportedModel: 'claude-sonnet-4-6', independence: 'cross_vendor', findings: [], claimAssessments: [], coverageAssessments: [{ criterion_id: 'C1', decision: 'met', evidence: 'traceable' }] }],
       revisions: [{ rev: 1, chars: 20 }],
       verify: [{ pass: true, checks: [{ id: 'links', status: 'pass', detail: 'ok' }] }],
       humanDecisions: [],
@@ -2988,10 +3078,12 @@ Myosin Learns is a live session. A person decides when the evidence is enough.
     },
     statuses: { schemaVersion: 1, execution: 'completed', verification: 'passed', audit: 'independent_clean', publication: 'not_published' },
     models: {
-      maker: { backend: 'kimi', provider: 'moonshot', model: 'kimi-k2', source: 'run request' },
+      maker: kimiSeat,
       reviewer: { backend: 'claude', provider: 'anthropic', model: 'sonnet', effort: null, modelSource: 'run request', effortSource: 'not honored by this backend' },
     },
     makerActualModels: ['moonshot:kimi-served'],
+    makerActualEvidence: 'observed_api_response',
+    makerReportedModel: 'kimi-served',
     simulated: false,
     createdAt: 50,
   };
@@ -2999,11 +3091,66 @@ Myosin Learns is a live session. A person decides when the evidence is enough.
   assert.equal(validateEvidencePack(pack).ok, true, 'a reversed-seat pack validates against the trust schema');
   assert.equal(pack.pairing.executor.requested, 'moonshot:kimi-k2', 'requested executor carries the snapshot provider');
   assert.equal(pack.pairing.executor.actual, 'moonshot:kimi-served', 'actual executor is the recorded observation');
+  assert.equal(pack.pairing.executor.reported, 'kimi-served', 'the raw endpoint model report is sealed separately from the provider-qualified actual');
   assert.equal(pack.pairing.auditor.actual, 'anthropic:claude-sonnet-4-6', 'actual auditor comes from the round identity, not a hardcoded vendor');
+  assert.equal(pack.pairing.auditor.reported, 'claude-sonnet-4-6');
   assert.equal(pack.pairing.independence, 'cross_vendor', 'moonshot vs anthropic earns cross-vendor standing');
+  assert.deepEqual(pack.pairing.executor.qualification, kimiQualification, 'the configurable seat carries its accepted qual1 unchanged');
+  assert.equal(pack.pairing.executor.actual_evidence, 'observed_api_response');
+  assert.equal(pack.pairing.auditor.actual_evidence, 'observed_cli_event');
   assert.ok(pack.session_log.some((l) => l === 'executor seat: backend=kimi; decision source=run request'), 'the pairing source is custody-bound in the receipt');
   assert.ok(pack.session_log.some((l) => l === 'auditor seat: backend=claude; decision source=run request'), 'both seat decisions record their provenance');
   assert.equal(pack.economics.find((e) => e.role === 'auditor').effort, null, 'no fabricated effort tier for a backend without the knob');
+
+  const assertedOnly = buildEvidencePack({
+    ...base,
+    makerActualEvidence: null,
+    makerReportedModel: null,
+    evidence: {
+      ...base.evidence,
+      rounds: [{ ...base.evidence.rounds[0], reviewerActualEvidence: null, reviewerReportedModel: null }],
+    },
+  });
+  assert.equal(assertedOnly.schemaVersion, 2, 'configurable seats without stored observation metadata remain on the frozen compatibility envelope');
+  assert.equal(assertedOnly.pairing.schemaVersion, 1);
+  assert.equal(assertedOnly.statuses.schemaVersion, 1);
+  assert.equal(assertedOnly.pairing.executor.requested, 'moonshot:kimi-k2', 'the compatibility seat preserves the provider-qualified v1 identity');
+  assert.equal('qualification' in assertedOnly.pairing.executor, false, 'a v2 fallback never half-seals a qualification it could not support end to end');
+  assert.ok(assertedOnly.session_log.some((line) => line.startsWith('compatibility envelope v2:')), 'the downgrade reason is custody-bound');
+
+  const grokQualification = { fingerprint: `qual1:${'b'.repeat(64)}`, gate_scope: null, contract_version: null };
+  const gatewayPack = buildEvidencePack({
+    ...base,
+    statuses: { ...base.statuses, audit: 'declared_clean' },
+    models: {
+      maker: {
+        ...kimiSeat,
+        transport: 'direct_https',
+        inferenceOperator: 'gateway:marshall',
+        lineage: { source: 'operator_declared', derivedFrom: null },
+        originConfidence: 'operator_declared',
+      },
+      reviewer: {
+        backend: 'grok', provider: 'xai', model: 'grok-4', effort: null, modelSource: 'run request', effortSource: 'not honored by this backend',
+        executor: 'http_client', transport: 'direct_https', connection: 'xai-hosted',
+        trainingOrg: 'xai', modelFamily: 'grok', inferenceOperator: 'gateway:marshall',
+        lineage: { source: 'operator_declared', derivedFrom: null }, originConfidence: 'operator_declared',
+        qualification: grokQualification,
+      },
+    },
+    evidence: {
+      ...base.evidence,
+      rounds: [{
+        ...base.evidence.rounds[0],
+        reviewerModel: 'grok-4', reviewerIdentity: 'xai:grok-4', reviewerReportedModel: 'grok-4',
+        reviewerActualEvidence: 'observed_api_response', independence: 'cross_vendor_declared',
+        qualification: grokQualification,
+      }],
+    },
+  });
+  assert.equal(gatewayPack.pairing.independence, 'cross_vendor_declared');
+  assert.equal(gatewayPack.pairing.shared_gateway, 'marshall', 'the exact shared gateway name is sealed from both inference operators');
+  assert.equal(gatewayPack.statuses.audit, 'declared_clean');
 
   // Same-vendor pairing: advisory statuses map to same_vendor_advisory and validate.
   const sameVendor = buildEvidencePack({
@@ -3038,12 +3185,20 @@ Myosin Learns is a live session. A person decides when the evidence is enough.
   const prev = process.env.MOCK_OFFLINE;
   process.env.MOCK_OFFLINE = '1';
   const review = { ran: true, error: null, verdict: 'APPROVED', findings: [], blocking: [], nonblocking: [], questions: [], claimAssessments: [], coverageAssessments: [], reviewerModel: 'sonnet', reviewerEffort: null, reviewerIdentity: 'anthropic:claude-sonnet-4-6' };
-  const runOnce = async (makerActual) => {
+  const kimiQualification = { fingerprint: `qual1:${'c'.repeat(64)}`, gate_scope: null, contract_version: null };
+  const kimiSeat = {
+    backend: 'kimi', provider: 'moonshot', model: 'kimi-k2', source: 'run request',
+    executor: 'http_client', transport: 'direct_https', connection: 'moonshot-hosted',
+    trainingOrg: 'moonshot', modelFamily: 'kimi', inferenceOperator: 'moonshot',
+    lineage: { source: 'registry', derivedFrom: null }, originConfidence: 'verified_operator',
+    qualification: kimiQualification,
+  };
+  const runOnce = async (makerActual, makerSeat = kimiSeat, observed = true) => {
     const events = [];
     await runLoop({
       goal: 'g', lane: 'freeform', ground: false,
       models: {
-        maker: { backend: 'kimi', provider: 'moonshot', model: 'kimi-k2', source: 'run request' },
+        maker: makerSeat,
         reviewer: { backend: 'claude', provider: 'anthropic', model: 'sonnet', effort: null, modelSource: 'run request', effortSource: 'not honored by this backend' },
         loop: { roundCap: 1 },
       },
@@ -3051,7 +3206,10 @@ Myosin Learns is a live session. A person decides when the evidence is enough.
       emit: (type, data) => events.push({ type, ...data }),
       waitForAnswer: async () => 'ok',
       adapters: {
-        maker: async () => ({ ok: true, error: null, text: '## Notes\n\nA plain note.\n', costUsd: 0, modelActual: makerActual }),
+        maker: async () => ({
+          ok: true, error: null, text: '## Notes\n\nA plain note.\n', costUsd: 0, modelActual: makerActual,
+          ...(observed ? { modelActualEvidence: 'observed_api_response', modelReported: makerActual.split(':').slice(1).join(':') } : {}),
+        }),
         reviewer: async () => review,
       },
       hivemind: { searchKnowledge: async () => null, hivemindStatus: () => ({ mode: 'stub' }), publishArtifact: async () => null },
@@ -3064,7 +3222,24 @@ Myosin Learns is a live session. A person decides when the evidence is enough.
   assert.equal(crossEvent.independence, 'cross_vendor', 'moonshot maker vs anthropic reviewer records cross-vendor');
   assert.equal(crossEvent.reviewerBackend, 'claude', 'the reviewer backend is recorded');
   const sameEvent = await runOnce('anthropic:claude-sonnet-4-6');
-  assert.equal(sameEvent.independence, 'same_vendor', 'a same-provider observation records same_vendor — the fact follows the ACTUAL identities');
+  assert.equal(sameEvent.independence, 'cross_vendor', 'observed provider prefixes do not override the configured training-lineage fact');
+  const hostedClaudeSeat = {
+    backend: 'bedrock-claude', provider: 'aws', model: 'claude-sonnet', source: 'run request',
+    executor: 'http_client', transport: 'direct_https', connection: 'bedrock-hosted',
+    trainingOrg: 'anthropic', modelFamily: 'claude', inferenceOperator: 'aws',
+    lineage: { source: 'operator_declared', derivedFrom: null }, originConfidence: 'operator_declared',
+    qualification: { fingerprint: `qual1:${'d'.repeat(64)}`, gate_scope: null, contract_version: null },
+  };
+  const sameOrgEvent = await runOnce('aws:claude-sonnet', hostedClaudeSeat);
+  assert.equal(sameOrgEvent.independence, 'same_vendor', 'different provider labels stay advisory when the two seats share Anthropic training lineage');
+  const unobservedEvent = await runOnce('moonshot:kimi-served', kimiSeat, false);
+  assert.equal(unobservedEvent.independence, 'same_vendor', 'a qualified custom seat without observation metadata remains advisory instead of presenting stronger standing than its fallback receipt');
+  const unqualifiedSeat = { ...kimiSeat };
+  delete unqualifiedSeat.qualification;
+  const unqualifiedEvent = await runOnce('moonshot:kimi-served', unqualifiedSeat);
+  assert.ok(unqualifiedEvent, 'an unqualified configurable seat reaches review instead of failing before Plan/model spend');
+  assert.equal(unqualifiedEvent.independence, 'same_vendor', 'without accepted qualification the round fails toward advisory standing');
+  assert.match(unqualifiedEvent.qualification?.fingerprint ?? '', /^builtin1:/, 'the round carries only the reviewer built-in qualification; it never invents maker qual1 from configuration facts');
 
   // Grounded managed-connector run with a non-claude maker: the engine backstop
   // fails the run rather than silently retrieving through the wrong seat.
@@ -3072,7 +3247,7 @@ Myosin Learns is a live session. A person decides when the evidence is enough.
   const result = await runLoop({
     goal: 'g', lane: 'freeform', ground: true,
     models: {
-      maker: { backend: 'kimi', provider: 'moonshot', model: 'kimi-k2', source: 'run request' },
+      maker: kimiSeat,
       reviewer: { backend: 'claude', provider: 'anthropic', model: 'sonnet', effort: null },
       loop: { roundCap: 1 },
     },

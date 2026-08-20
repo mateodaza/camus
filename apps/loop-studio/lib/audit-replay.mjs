@@ -10,6 +10,7 @@ import { validateEvidencePack, validateExperimentRecord } from '../../../package
 import { claimAssessmentEvidenceHash } from './claims.mjs';
 import { coverageAssessmentEvidenceHash } from './contract.mjs';
 import { thresholdLineHash, thresholdEvidenceHash } from './verify.mjs';
+import { buildSeatIdentitySealed, deriveIndependence, qualificationForSeat, resolveSeatIdentityFacts } from './identity.mjs';
 
 const HASH_RE = /^sha256:[0-9a-f]{64}$/;
 const hash = (value) => `sha256:${createHash('sha256').update(canonicalString(value), 'utf8').digest('hex')}`;
@@ -55,8 +56,8 @@ export function knowledgeSnapshotId(evidence) {
 }
 
 export function createAuditReplayExperiment({ sourceRunId, sourcePack, sourceEvidence, sourceDeliverable, reviewerModel, effort, catalog, createdAt = Date.now() }) {
-  if (sourcePack?.schemaVersion !== 2 || sourcePack?.artifact?.kind !== 'research') {
-    throw new TypeError('audit-only replay currently requires a research evidence-pack v2');
+  if (![2, 3].includes(sourcePack?.schemaVersion) || sourcePack?.artifact?.kind !== 'research') {
+    throw new TypeError('audit-only replay requires a research evidence-pack v2 or v3');
   }
   const sourceValid = validateEvidencePack(sourcePack);
   if (!sourceValid.ok) throw new TypeError(`source evidence pack refused: ${sourceValid.error}`);
@@ -140,11 +141,53 @@ function auditState({ review, sourcePack, reviewerModel, simulated }) {
   };
 }
 
+function sealedSeatFacts(seat) {
+  return {
+    trainingOrg: seat.training_org,
+    modelFamily: seat.model_family,
+    lineage: { source: seat.lineage.source, derivedFrom: seat.lineage.derived_from },
+    originConfidence: seat.origin_confidence,
+  };
+}
+
+function reviewHasCaveats(review) {
+  return review.verdict !== 'APPROVED'
+    || (review.findings ?? []).length > 0
+    || (review.questions ?? []).length > 0
+    || (review.claimAssessments ?? []).some((item) => item.decision !== 'supported')
+    || (review.coverageAssessments ?? []).some((item) => item.decision !== 'met');
+}
+
+// Envelope 3 derives standing from sealed training lineage, not provider labels.
+// The legacy auditState above remains untouched for envelope 2 compatibility.
+function auditStateV3({ review, sourcePack, reviewerModel, simulated }) {
+  const actual = actualAuditor(review, reviewerModel, simulated);
+  if (simulated) return { audit: 'not_run', independence: 'none', actual };
+  if (!review?.ran) return { audit: 'infra_failed', independence: 'none', actual: null };
+  const reviewerFacts = resolveSeatIdentityFacts({ backend: 'codex', provider: 'openai', model: reviewerModel });
+  let independence = deriveIndependence({ maker: sealedSeatFacts(sourcePack.pairing.executor), reviewer: reviewerFacts });
+  // Preserve the published actual-provider guard: lineage cannot upgrade two
+  // equal or unrecorded provider observations into cross_vendor.
+  const sourceProvider = providerOf(sourcePack.pairing.executor.actual);
+  const reviewerProvider = providerOf(actual);
+  if (independence !== 'same_vendor'
+      && (!sourceProvider || !reviewerProvider || ['unknown', 'none'].includes(sourceProvider)
+        || ['unknown', 'none'].includes(reviewerProvider) || sourceProvider === reviewerProvider)) {
+    independence = 'same_vendor';
+  }
+  const suffix = reviewHasCaveats(review) ? 'findings' : 'clean';
+  const audit = independence === 'cross_vendor' ? `independent_${suffix}`
+    : independence === 'cross_vendor_declared' ? `declared_${suffix}`
+      : `advisory_${suffix}`;
+  return { audit, independence: independence === 'same_vendor' ? 'same_vendor_advisory' : independence, actual };
+}
+
 export function buildAuditReplayPack({ sourcePack, review, reviewerModel, effort, experimentId, auditAnswers = [], simulated = false, createdAt = Date.now() }) {
   if (!HASH_RE.test(experimentId ?? '')) throw new TypeError('audit replay requires a sealed experiment_id');
   const sourceValid = validateEvidencePack(sourcePack);
   if (!sourceValid.ok) throw new TypeError(`source evidence pack refused: ${sourceValid.error}`);
-  if (sourcePack.schemaVersion !== 2 || sourcePack.artifact.kind !== 'research') throw new TypeError('audit-only replay currently requires a research evidence-pack v2');
+  if (![2, 3].includes(sourcePack.schemaVersion) || sourcePack.artifact.kind !== 'research') throw new TypeError('audit-only replay requires a research evidence-pack v2 or v3');
+  const v3 = sourcePack.schemaVersion === 3;
 
   const claimDecisions = new Map((simulated || !review?.ran ? [] : review.claimAssessments ?? []).map((item) => [item.marker, item.decision]));
   const coverageDecisions = new Map((simulated || !review?.ran ? [] : review.coverageAssessments ?? []).map((item) => [item.criterion_id, item.decision]));
@@ -152,12 +195,34 @@ export function buildAuditReplayPack({ sourcePack, review, reviewerModel, effort
   artifact.claims = (artifact.claims ?? []).map((claim) => ({ ...claim, decision: claimDecisions.get(claim.marker) ?? 'unchecked' }));
   artifact.contract_coverage = (artifact.contract_coverage ?? []).map((criterion) => ({ ...criterion, decision: coverageDecisions.get(criterion.id) ?? 'unclear' }));
 
-  const state = auditState({ review, sourcePack, reviewerModel, simulated });
-  const auditorIdentity = {
-    requested: `openai:${reviewerModel}`,
-    resolved: `openai:${reviewerModel}`,
-    actual: state.actual ?? 'unknown:not-recorded',
-  };
+  const state = v3
+    ? auditStateV3({ review, sourcePack, reviewerModel, simulated })
+    : auditState({ review, sourcePack, reviewerModel, simulated });
+  const auditorIdentity = v3
+    ? (() => {
+        const facts = resolveSeatIdentityFacts({ backend: 'codex', provider: 'openai', model: reviewerModel });
+        return buildSeatIdentitySealed({
+          requested: `codex:${reviewerModel}`,
+          resolved: `codex:${reviewerModel}`,
+          actual: state.actual ?? 'unknown:not-recorded',
+          reported: null,
+          actualEvidence: simulated || !review?.ran ? 'none' : 'observed_cli_event',
+          executorKind: facts.executor,
+          trainingOrg: facts.trainingOrg,
+          modelFamily: facts.modelFamily,
+          lineage: facts.lineage,
+          inferenceOperator: facts.inferenceOperator,
+          transport: facts.transport,
+          connection: facts.connection,
+          originConfidence: facts.originConfidence,
+          qualification: qualificationForSeat({ backend: facts.backend, transport: facts.transport }),
+        });
+      })()
+    : {
+        requested: `openai:${reviewerModel}`,
+        resolved: `openai:${reviewerModel}`,
+        actual: state.actual ?? 'unknown:not-recorded',
+      };
   const claimSession = (simulated || !review?.ran ? [] : review.claimAssessments ?? []).map((item) =>
     `audit replay claim ${item.marker}: ${item.decision}; evidence_hash=${claimAssessmentEvidenceHash(item) ?? 'none'}`,
   );
@@ -188,13 +253,20 @@ export function buildAuditReplayPack({ sourcePack, review, reviewerModel, effort
         billing_mode: 'unknown', estimated_cost_usd: null, duration_ms: null,
       };
   const pack = {
-    schemaVersion: 2,
+    schemaVersion: sourcePack.schemaVersion,
     goal: sourcePack.goal,
     acceptance_contract: sourcePack.acceptance_contract,
     artifact,
     verification: clone(sourcePack.verification),
     session_log: sessionLog,
-    pairing: {
+    pairing: v3 ? {
+      schemaVersion: 2,
+      executor: clone(sourcePack.pairing.executor),
+      auditor: auditorIdentity,
+      independence: state.independence,
+      shared_gateway: null,
+      review_scope: null,
+    } : {
       schemaVersion: 1,
       executor: clone(sourcePack.pairing.executor),
       auditor: auditorIdentity,
@@ -216,7 +288,9 @@ export function buildAuditReplayPack({ sourcePack, review, reviewerModel, effort
       {
         schemaVersion: 1,
         role: 'auditor',
-        ...auditorIdentity,
+        requested: auditorIdentity.requested,
+        resolved: auditorIdentity.resolved,
+        actual: auditorIdentity.actual,
         effort: review?.ran ? (simulated ? 'scripted' : (review.effortActual ?? null)) : null,
         fallback: null,
         usage: usageOf(review),

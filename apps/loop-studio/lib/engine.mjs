@@ -7,6 +7,7 @@
 import { planPrompt, groundingPrompt, groundingRetryPrompt, makePrompt, reviewPrompt, fixPrompt } from './prompts.mjs';
 import { runVerify, extractThresholdLines, bindThresholdAssessments } from './verify.mjs';
 import { getModels } from './models.mjs';
+import { deriveIndependence, qualificationForSeat, resolveSeatIdentityFacts } from './identity.mjs';
 import { extractClaimCandidates } from './claims.mjs';
 import { extractContractCriteria } from './contract.mjs';
 import { knowledgeSnapshotMatches, sealKnowledgeSnapshot } from './comparison.mjs';
@@ -56,12 +57,13 @@ export async function runLoop(run, ctx) {
   // reviewed — so those defaults ARE what the snapshot meant, not a guess.
   const makerProvider = snapshot.maker?.provider || 'anthropic';
   const reviewerProvider = snapshot.reviewer?.provider || 'openai';
-  const providerOf = (identity) => String(identity ?? '').split(':')[0] || null;
   const answers = [];
   let costUsd = 0;
   let doneWithFindings = false;
   const makerUsage = [];
   const makerActualModels = [];
+  let makerActualEvidence = null;
+  let makerReportedModel = null;
 
   const stage = (name, status, extra = {}) => emit('stage', { name, status, ...extra });
   const log = (line) => emit('log', { line });
@@ -73,32 +75,66 @@ export async function runLoop(run, ctx) {
     // on Haiku before Sonnet). Keep that observed identity in stage usage and
     // the knowledge snapshot, but never promote it into the artifact executor.
     if (executor && actual && !makerActualModels.includes(actual)) makerActualModels.push(actual);
+    if (executor) {
+      makerActualEvidence = result.modelActualEvidence ?? null;
+      makerReportedModel = result.modelReported ?? null;
+    }
     makerUsage.push({
       stage: stageName,
       usage: result.usage ?? { input_tokens: null, cached_input_tokens: null, output_tokens: null },
       duration_ms: Number.isInteger(result.durationMs) ? result.durationMs : null,
       model_actual: actual,
+      actual_evidence: result.modelActualEvidence ?? null,
     });
     emit('maker_observation', makerUsage.at(-1));
   };
 
-  // The pairing facts each review round records: the reviewer's provider-
-  // qualified identity and whether the two seats share a provider at that
-  // moment (executor from the last recorded actual, reviewer from the
-  // adapter's observation or the declared pin). A missing or unknown provider
-  // on either side fails closed to the LOWER standing — same_vendor, which
-  // derives advisory — never up to independent.
+  // The pairing facts each review round records. Independence is derived from
+  // the two seats' TRAINING LINEAGE — (trainingOrg, modelFamily, lineage,
+  // origin_confidence) via identity.deriveIndependence — never from the provider
+  // prefix of an observed identity string: two models can share a training org
+  // while wearing different provider labels (§10 rules 1-4/7). The same
+  // fail-toward-lower rule holds — any unknown org/family/lineage on either side
+  // seals same_vendor, which derives advisory, never up to independent. The round
+  // ALSO records the accepted qualification the reviewer seat ran under and the
+  // scope it ran at (words-lane audits have no gate binding, so review_scope is
+  // null and the built-in reviewer's gate_scope is null too — the §10.8.4
+  // cross-check then compares two null channels, never a forged full-scope claim).
+  const makerFacts = resolveSeatIdentityFacts(snapshot.maker, { backend: 'claude', provider: makerProvider });
+  const reviewerFacts = resolveSeatIdentityFacts(snapshot.reviewer, { backend: 'codex', provider: reviewerProvider });
+  const makerQualification = qualificationForSeat({
+    backend: makerFacts.backend,
+    transport: makerFacts.transport,
+    accepted: snapshot.maker?.qualification ?? null,
+  });
+  const reviewerQualification = qualificationForSeat({
+    backend: reviewerFacts.backend,
+    transport: reviewerFacts.transport,
+    accepted: snapshot.reviewer?.qualification ?? null,
+  });
+  const pairingQualified = makerQualification !== null && reviewerQualification !== null;
+  const actualEvidenceClasses = new Set(['observed_api_response', 'observed_cli_event', 'asserted_pin', 'mapped_by_operator_docs']);
+  const observationReady = (facts, evidenceClass) => (
+    ((facts.backend === 'claude' || facts.backend === 'codex') && facts.transport === 'vendor_managed')
+    || actualEvidenceClasses.has(evidenceClass)
+  );
   const reviewPairingFacts = (review) => {
     const reviewerIdentity = review.reviewerIdentity ?? (reviewerModel ? `${reviewerProvider}:${reviewerModel}` : null);
-    const executorIdentity = makerActualModels.at(-1) ?? (makerModel ? `${makerProvider}:${makerModel}` : null);
-    const executorP = providerOf(executorIdentity);
-    const reviewerP = providerOf(reviewerIdentity);
+    const pairingEvidenceReady = observationReady(makerFacts, makerActualEvidence)
+      && observationReady(reviewerFacts, review.reviewerActualEvidence ?? null);
     return {
       reviewerBackend: snapshot.reviewer?.backend ?? null,
       reviewerIdentity,
-      independence: executorP && reviewerP && executorP !== 'unknown' && reviewerP !== 'unknown' && executorP !== reviewerP
-        ? 'cross_vendor'
+      reviewerActualEvidence: review.reviewerActualEvidence ?? null,
+      reviewerReportedModel: review.reviewerReportedModel ?? null,
+      // A pair whose admission evidence is not yet available cannot earn the
+      // new v3 standing. Keep existing configurable seats runnable, but fail
+      // their review standing down to advisory until slice C supplies qual1.
+      independence: pairingQualified && pairingEvidenceReady
+        ? deriveIndependence({ maker: makerFacts, reviewer: reviewerFacts })
         : 'same_vendor',
+      review_scope: null,
+      qualification: reviewerQualification,
     };
   };
 
@@ -604,7 +640,7 @@ export async function runLoop(run, ctx) {
       if (choice.startsWith('One more')) { verifyFixBudget = 1; continue; }
       if (choice.startsWith('Ship anyway')) {
         emit('status', { status: 'verify_failed', rev, costUsd });
-        return { status: 'verify_failed', draft, rev, costUsd, answers, makerUsage, makerActualModels };
+        return { status: 'verify_failed', draft, rev, costUsd, answers, makerUsage, makerActualModels, makerActualEvidence, makerReportedModel };
       }
       throw new Error('stopped_by_human');
     }
@@ -621,14 +657,14 @@ export async function runLoop(run, ctx) {
 
     const status = doneWithFindings ? 'done_with_findings' : 'done';
     emit('status', { status, rev, costUsd, artifactPublished: !!artifact, artifactUrl: artifact?.url ?? null });
-    return { status, draft, rev, costUsd, answers, makerUsage, makerActualModels };
+    return { status, draft, rev, costUsd, answers, makerUsage, makerActualModels, makerActualEvidence, makerReportedModel };
   } catch (err) {
     if (err.message === 'aborted' || err.message === 'stopped_by_human' || signal.aborted) {
       emit('status', { status: 'stopped', costUsd });
-      return { status: 'stopped', costUsd, answers, makerUsage, makerActualModels };
+      return { status: 'stopped', costUsd, answers, makerUsage, makerActualModels, makerActualEvidence, makerReportedModel };
     }
     emit('error', { message: String(err.stack || err) });
     emit('status', { status: 'failed', costUsd });
-    return { status: 'failed', error: String(err), costUsd, answers, makerUsage, makerActualModels };
+    return { status: 'failed', error: String(err), costUsd, answers, makerUsage, makerActualModels, makerActualEvidence, makerReportedModel };
   }
 }

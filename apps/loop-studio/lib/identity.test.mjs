@@ -18,6 +18,7 @@ import {
   deriveIndependence,
   expectedReportedSet,
   buildSeatIdentitySealed,
+  qualificationForSeat,
 } from './identity.mjs';
 
 let passed = 0;
@@ -351,6 +352,38 @@ ok('buildSeatIdentitySealed: every actual_evidence class survives assembly', () 
   for (const ev of ['observed_api_response', 'observed_cli_event', 'asserted_pin', 'mapped_by_operator_docs', 'none']) {
     assert.equal(buildSeatIdentitySealed({ actualEvidence: ev }).actual_evidence, ev);
   }
+});
+
+// --- qualification provenance ---------------------------------------------
+ok('qualificationForSeat: vendor-managed built-ins mint versioned builtin1 only', () => {
+  const claude = qualificationForSeat({ backend: 'claude', transport: 'vendor_managed' });
+  const codex = qualificationForSeat({ backend: 'codex', transport: 'vendor_managed' });
+  assert.match(claude.fingerprint, /^builtin1:[0-9a-f]{64}$/);
+  assert.match(codex.fingerprint, /^builtin1:[0-9a-f]{64}$/);
+  assert.notEqual(claude.fingerprint, codex.fingerprint);
+  assert.deepEqual(claude, { fingerprint: claude.fingerprint, gate_scope: null, contract_version: null });
+});
+ok('qualificationForSeat: configurable seats carry accepted qual1 unchanged, never mint it from config', () => {
+  const accepted = { fingerprint: `qual1:${'a'.repeat(64)}`, gate_scope: null, contract_version: null };
+  assert.deepEqual(
+    qualificationForSeat({ backend: 'kimi', transport: 'direct_https', accepted }),
+    accepted,
+  );
+  assert.equal(qualificationForSeat({
+    backend: 'kimi', transport: 'direct_https', provider: 'moonshot', model: 'kimi-k2',
+    trainingOrg: 'moonshot', modelFamily: 'kimi', lineageSource: 'registry',
+  }), null);
+  assert.equal(qualificationForSeat({ backend: 'codex', transport: 'direct_https' }), null,
+    'executor kind or backend name cannot award builtin1 outside vendor_managed');
+});
+ok('qualificationForSeat: scope and contract mismatches refuse accepted qual1', () => {
+  const accepted = { fingerprint: `qual1:${'b'.repeat(64)}`, gate_scope: 'light', contract_version: 'review-1' };
+  assert.deepEqual(
+    qualificationForSeat({ backend: 'remote', transport: 'ssh_tunnel', accepted, gateScope: 'light', contractVersion: 'review-1' }),
+    accepted,
+  );
+  assert.equal(qualificationForSeat({ backend: 'remote', transport: 'ssh_tunnel', accepted, gateScope: 'full', contractVersion: 'review-1' }), null);
+  assert.equal(qualificationForSeat({ backend: 'remote', transport: 'ssh_tunnel', accepted, gateScope: 'light', contractVersion: 'review-2' }), null);
 });
 
 console.log(`identity.test.mjs: ${passed} checks passed`);

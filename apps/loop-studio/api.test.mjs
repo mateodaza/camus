@@ -182,7 +182,16 @@ try {
       { backend: 'kimi', provider: 'moonshot', model: 'kimi-k2', source: 'run request' },
       'the snapshot records the per-run maker decision with its source',
     );
+    assert.equal(runMeta.models.maker.executor, 'http_client', 'the run snapshot carries the selected seat executor');
+    assert.equal(runMeta.models.maker.transport, 'unknown', 'an undeclared legacy backend does not promote its anonymous loopback URL into an asserted transport identity');
+    assert.equal(runMeta.models.maker.connection, '$legacy:kimi', 'the anonymous migrated connection is still named for later qualification');
+    assert.equal(runMeta.models.maker.trainingOrg, 'unknown', 'legacy provider text is not promoted into training identity');
+    assert.deepEqual(runMeta.models.maker.lineage, { source: 'unknown', derivedFrom: null });
+    assert.equal(runMeta.models.maker.originConfidence, 'unknown');
     assert.equal(runMeta.models.reviewer.backend, 'claude');
+    assert.equal(runMeta.models.reviewer.executor, 'claude_cli');
+    assert.equal(runMeta.models.reviewer.trainingOrg, 'anthropic');
+    assert.equal(runMeta.models.reviewer.lineage.source, 'registry');
     assert.equal(runMeta.models.reviewer.modelSource, 'run request');
     assert.equal(runMeta.models.reviewer.effort, null, 'a claude reviewer records no fabricated effort tier');
     await fetch(`${base}/api/runs/${id}/stop`, { method: 'POST', headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN } });
@@ -986,6 +995,9 @@ try {
     }
     assert.ok(report, 'audit replay seals a report');
     assert.equal(report.sourceRunId, sourceId);
+    assert.equal(report.evidencePack.schemaVersion, 3, 'a v3 source seals a v3 replay rather than back-filling a legacy shape');
+    assert.equal(report.evidencePack.pairing.schemaVersion, 2);
+    assert.equal(report.evidencePack.statuses.schemaVersion, 2);
     assert.equal(report.evidencePack.artifact_id, sourcePack.artifact_id, 'same artifact id');
     assert.notEqual(report.evidencePack.receipt_id, sourcePack.receipt_id, 'new receipt id');
     assert.equal(report.evidencePack.statuses.audit, 'not_run', 'mock audit never becomes standing');
@@ -1105,6 +1117,12 @@ try {
     const snapshots = report.childRunIds.map((runId) => JSON.parse(readFileSync(join(tmp, runId, 'report.json'), 'utf8')));
     assert.equal(new Set(snapshots.map((child) => child.knowledgeSnapshotId)).size, 1, 'every arm uses the exact same snapshot id');
     assert.equal(snapshots[0].knowledgeSnapshotId, report.experiment.knowledge.snapshot_id, 'child receipts bind the parent snapshot');
+    assert.equal(snapshots.every((child) => child.models.maker.backend === 'claude' && child.models.maker.executor === 'claude_cli'), true, 'comparison children keep the exact built-in maker backend and executor');
+    assert.equal(snapshots.every((child) => child.models.maker.trainingOrg === 'anthropic' && child.models.maker.modelFamily === 'claude'), true, 'comparison children keep maker training identity');
+    assert.equal(snapshots.every((child) => child.models.maker.transport === 'vendor_managed' && child.models.maker.lineage?.source === 'registry'), true, 'comparison children keep maker transport and lineage');
+    assert.equal(snapshots.every((child) => child.models.reviewer.backend === 'codex' && child.models.reviewer.executor === 'codex_cli'), true, 'comparison children keep the exact auditor backend and executor');
+    assert.equal(snapshots.every((child) => child.models.reviewer.trainingOrg === 'openai' && child.models.reviewer.modelFamily === 'gpt'), true, 'comparison children keep auditor training identity');
+    assert.equal(snapshots.every((child) => child.models.reviewer.transport === 'vendor_managed' && child.models.reviewer.lineage?.source === 'registry'), true, 'comparison children keep auditor transport and lineage');
     assert.equal(snapshots.every((child) => child.evidence?.grounding?.frozen === true), true, 'arms record frozen retrieval instead of live querying');
     assert.equal(snapshots.every((child) => child.evidencePack.session_log.includes(`frozen knowledge snapshot: ${report.experiment.knowledge.snapshot_id}`)), true, 'each arm receipt custody-binds the snapshot');
     assert.ok(existsSync(join(tmp, comparisonId, 'knowledge.json')), 'private snapshot contents stay in the local parent receipt directory');
@@ -1335,7 +1353,9 @@ try {
     assert.ok(report.models && report.models.maker, 'the receipt carries the run-start model snapshot, like run.json');
     assert.equal(report.acceptanceContract, ACCEPTANCE, 'the explicit trust contract survives into the report');
     assert.ok(report.evidencePack, `the evidence pack seals (${report.evidencePackError || 'no error'})`);
-    assert.equal(report.evidencePack.schemaVersion, 2, 'new Studio receipts use the coverage-aware evidence-pack v2');
+    assert.equal(report.evidencePack.schemaVersion, 3, 'new Studio receipts use evidence-pack v3');
+    assert.equal(report.evidencePack.pairing.schemaVersion, 2, 'envelope v3 carries pairing v2');
+    assert.equal(report.evidencePack.statuses.schemaVersion, 2, 'envelope v3 carries status v2');
     assert.match(report.evidencePack.artifact_id, /^sha256:[0-9a-f]{64}$/, 'artifact identity is sealed');
     assert.match(report.evidencePack.receipt_id, /^sha256:[0-9a-f]{64}$/, 'receipt identity is sealed');
     assert.equal(report.evidencePack.acceptance_contract, ACCEPTANCE, 'the pack uses the explicit contract, never aliases goal');
