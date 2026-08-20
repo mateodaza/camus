@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { isIP } from 'node:net';
 import { deriveLineageSource, executorOrgFamily, originConfidence } from './identity.mjs';
-import { initGrandfather, consult } from './grandfather.mjs';
+import { initGrandfather, consult, consultClaudeRoute } from './grandfather.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // The tracked file is a PUBLIC FALLBACK, not mutable operator state. Settings
@@ -475,7 +475,17 @@ export function seatIdentityFacts(backend, model) {
   if (backend.name === 'claude' || backend.name === 'codex') {
     const executorKind = backend.kind; // claude_cli / codex_cli
     const orgFamily = executorOrgFamily(executorKind) || {};
-    const source = deriveLineageSource({ executorKind, transport: 'vendor_managed' });
+    // §9.1's recorded interim path remains real even after claude_cli earns the
+    // stronger isolation-backed registry tier. If isolation is unproven, only a
+    // valid machine-bound human confirmation supplies the declaration that can
+    // derive operator_declared; absent/broken evidence leaves the seat unknown.
+    // When isolation is proven the same input remains registry, so a weaker
+    // operator record can never downgrade the mechanically stronger result.
+    const confirmation = backend.name === 'claude' ? consultClaudeRoute() : null;
+    const declared = confirmation?.ok && orgFamily.org && orgFamily.family
+      ? { org: orgFamily.org, family: orgFamily.family }
+      : undefined;
+    const source = deriveLineageSource({ executorKind, transport: 'vendor_managed', declared });
     return {
       executor: executorKind,
       transport: 'vendor_managed',

@@ -28,6 +28,7 @@ import { createParallelExperiment, finalizeParallelExperiment, knowledgeSnapshot
 import { validateExperimentRecord } from '../../packages/trust/lib/validate.mjs';
 import { deriveStatusDimensions, deriveHeadline } from './lib/status-dims.mjs';
 import { getModels, updateModels, modelsSummary, modelCatalog, seatCatalog, seatOffered, groundingNeedsClaudeMaker, gateModels, EFFORTS } from './lib/models.mjs';
+import { confirmClaudeRoute } from './lib/grandfather.mjs';
 import { reviewPrompt } from './lib/prompts.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -43,6 +44,24 @@ const runs = new Map(); // id -> { run, events, subscribers, answer, abort }
 // ---------------------------------------------------------------------------
 // Doctor
 // ---------------------------------------------------------------------------
+
+const confirmClaudeRouteIndex = process.argv.indexOf('--confirm-claude-route');
+if (confirmClaudeRouteIndex !== -1) {
+  const why = process.argv[confirmClaudeRouteIndex + 1];
+  try {
+    // Load the real configuration first so §7 performs its one-time complete
+    // legacy inventory before this action appends anything to the shared,
+    // machine-bound confirmation store. The action must never initialize an
+    // empty sidecar that silently omits legacy entries from the same config.
+    getModels();
+    const result = confirmClaudeRoute(why);
+    console.log(`recorded Claude direct-route confirmation at ${result.record.recordedAt}`);
+    process.exit(0);
+  } catch (error) {
+    console.error(`could not confirm Claude's direct route: ${error.message || error}`);
+    process.exit(2);
+  }
+}
 
 if (process.argv.includes('--doctor')) {
   const { runDoctor } = await import('./lib/doctor.mjs');

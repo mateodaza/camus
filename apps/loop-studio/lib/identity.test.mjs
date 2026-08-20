@@ -4,7 +4,7 @@
 // FAIL by mutating the guard input (break-on-purpose).
 
 import assert from 'node:assert/strict';
-import { writeFileSync, mkdtempSync, readFileSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -107,10 +107,13 @@ ok('registry lookups ignore prototype properties', () => {
   assert.equal(familyOrg('hasOwnProperty'), null);
 });
 
-// --- redirectIsolationProven: the only flag (pre Task 9 flip) -------------
-ok('redirectIsolationProven table is codex-only today', () => {
+// --- redirectIsolationProven: both built-ins proven (post Task 9 flip) ----
+// claude_cli flipped to true once lib/adapters/claude.test.mjs proved both seats
+// spawn with claudeDirectEnv() + empty --setting-sources. Non-built-ins stay
+// false: an http_client backend has no proven scrubbed spawn.
+ok('redirectIsolationProven table covers both built-ins', () => {
   assert.equal(redirectIsolationProven('codex_cli'), true);
-  assert.equal(redirectIsolationProven('claude_cli'), false);
+  assert.equal(redirectIsolationProven('claude_cli'), true);
   assert.equal(redirectIsolationProven('http_client'), false);
   assert.equal(redirectIsolationProven(undefined), false);
 });
@@ -128,11 +131,14 @@ const LADDER = [
     { connectionKind: 'loopback' }, 'unknown'],
   ['codex_cli vendor_managed built-in -> registry',
     { transport: 'vendor_managed', executorKind: 'codex_cli' }, 'registry'],
-  ['claude_cli vendor_managed built-in, declared -> operator_declared (PRE-flip)',
+  // POST-flip (Task 9): claude_cli isolation is proven, so its built-in seat
+  // derives registry via branch (c) whether or not it is declared — exactly like
+  // codex_cli. A registry-agreeing declaration is redundant, not required.
+  ['claude_cli vendor_managed built-in, declared -> registry (POST-flip)',
     { transport: 'vendor_managed', executorKind: 'claude_cli', declared: { org: 'anthropic', family: 'claude' } },
-    'operator_declared'],
-  ['claude_cli vendor_managed built-in, undeclared -> unknown (PRE-flip)',
-    { transport: 'vendor_managed', executorKind: 'claude_cli' }, 'unknown'],
+    'registry'],
+  ['claude_cli vendor_managed built-in, undeclared -> registry (POST-flip)',
+    { transport: 'vendor_managed', executorKind: 'claude_cli' }, 'registry'],
   ['Kimi-via-claude_cli: camusInjectedRedirect routes through endpoint branch',
     { executorKind: 'claude_cli', transport: 'vendor_managed', camusInjectedRedirect: true,
       endpointHost: 'api.moonshot.ai', modelId: 'kimi-k2-0711-preview',
@@ -141,6 +147,38 @@ const LADDER = [
 for (const [name, input, want] of LADDER) {
   ok(`deriveLineageSource: ${name}`, () => assert.equal(deriveLineageSource(input), want));
 }
+
+// --- operator-confirmation interim path for an UNPROVEN built-in ----------
+// claude_cli flipped to isolation-proven, but the interim branch (d) path it
+// used to take is preserved and must still hold for any FUTURE registry-known
+// built-in whose isolation is not yet proven: a declaration lands it at
+// operator_declared (operator confirmation), and no declaration leaves it
+// unknown — it never jumps to registry without the isolation proof. Modelled
+// with a fixture executor so no real proven built-in has to be un-proven.
+ok('unproven vendor_managed built-in: declared -> operator_declared, undeclared -> unknown', () => {
+  const prev = process.env.STUDIO_REGISTRY_FILE;
+  const dir = mkdtempSync(join(tmpdir(), 'identity-interim-'));
+  const file = join(dir, 'registry.json');
+  writeFileSync(file, JSON.stringify({ executors: { future_cli: { org: 'someorg', family: 'somefam' } } }));
+  try {
+    process.env.STUDIO_REGISTRY_FILE = file;
+    // future_cli is registry-known...
+    assert.deepEqual(executorOrgFamily('future_cli'), { org: 'someorg', family: 'somefam' });
+    // ...but NOT isolation-proven, so branch (c) is skipped:
+    assert.equal(redirectIsolationProven('future_cli'), false);
+    assert.equal(
+      deriveLineageSource({ transport: 'vendor_managed', executorKind: 'future_cli', declared: { org: 'someorg', family: 'somefam' } }),
+      'operator_declared',
+    );
+    assert.equal(
+      deriveLineageSource({ transport: 'vendor_managed', executorKind: 'future_cli' }),
+      'unknown',
+    );
+  } finally {
+    if (prev === undefined) delete process.env.STUDIO_REGISTRY_FILE; else process.env.STUDIO_REGISTRY_FILE = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 // --- registry is ONLY for direct_https / injected redirect [AT11] ---------
 // The SAME registry-agreeing declaration over a non-direct_https connection must

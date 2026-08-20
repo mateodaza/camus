@@ -406,3 +406,35 @@ export function confirmLegacy(backendName, url, why) {
   writeGrandfatherJson(p, data);
   return { ok: true, record: r };
 }
+
+// The §9.1 interim confirmation uses the same machine-bound, HMAC-protected
+// record machinery as §7 instead of inventing a weaker trust store. The
+// reserved backend name cannot collide with a models.json backend name (which
+// must match CONFIG_NAME), and the fixed URL names the exact route the operator
+// is confirming: direct Anthropic, not an ambient gateway or base-URL override.
+const CLAUDE_DIRECT_ROUTE = Object.freeze({
+  backendName: '@builtin/claude_cli',
+  url: 'https://api.anthropic.com',
+});
+
+/**
+ * Record the explicit human action: "confirm Claude's active route is direct
+ * Anthropic, with no base-URL override in this environment". `why` remains
+ * mandatory through confirmLegacy(), and is covered by the record HMAC.
+ */
+export function confirmClaudeRoute(why) {
+  return confirmLegacy(CLAUDE_DIRECT_ROUTE.backendName, CLAUDE_DIRECT_ROUTE.url, why);
+}
+
+/**
+ * Read the optional confirmation without turning absent/broken evidence into a
+ * Studio outage. Any missing, malformed, wrong-machine, or HMAC-broken sidecar
+ * simply supplies no declaration and therefore fails lineage toward `unknown`.
+ */
+export function consultClaudeRoute() {
+  try {
+    return consult(CLAUDE_DIRECT_ROUTE);
+  } catch {
+    return { ok: false, reason: 'confirmation_unavailable' };
+  }
+}
