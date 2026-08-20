@@ -33,7 +33,15 @@ export function deriveEvidence(events) {
     // construction, and the audit derivation treats the absence that way.
     reviewerBackend: r.reviewerBackend ?? null,
     reviewerIdentity: r.reviewerIdentity ?? null,
+    reviewerActualEvidence: r.reviewerActualEvidence ?? null,
+    reviewerReportedModel: r.reviewerReportedModel ?? null,
     independence: r.independence ?? null,
+    // §10.8.1 qualification + review-scope channels. The scope the round ran at
+    // arrives through the binding channel INDEPENDENTLY of the qualification the
+    // seat ran under; both are absent on pre-seats receipts.
+    review_scope: r.review_scope ?? null,
+    review_contract_version: r.review_contract_version ?? null,
+    qualification: r.qualification ?? null,
     at: Number.isInteger(r.at) ? r.at : null,
     claimAssessments: (r.claimAssessments ?? []).map((a) => ({
       marker: a.marker,
@@ -140,7 +148,7 @@ export function receiptCompleteness({ lane, evidence, writeFailed, status = null
       // A same-vendor pairing seals an ADVISORY audit — the trail is complete
       // and the downgrade lives in the standing (same_vendor_reviewed), not in
       // a degraded receipt. Only a broken or absent audit degrades here.
-      if (!['independent_clean', 'independent_findings', 'advisory_clean', 'advisory_findings'].includes(audit)) missing.push('a usable audit bound to the final revision');
+      if (!['independent_clean', 'independent_findings', 'advisory_clean', 'advisory_findings', 'declared_clean', 'declared_findings'].includes(audit)) missing.push('a usable audit bound to the final revision');
       if (!['passed', 'passed_with_caveats'].includes(verification)) missing.push('a conclusive deterministic verification');
       if (missing.length) return { degraded: true, note: `the successful words run is missing ${missing.join(', ')}; do not treat it as a complete receipt` };
     }

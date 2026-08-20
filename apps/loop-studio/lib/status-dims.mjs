@@ -16,7 +16,7 @@ import { DIMENSIONS, validStatus, deriveHeadline } from '../../../packages/trust
 
 export { deriveHeadline, DIMENSIONS };
 
-export const STATUS_DIMS_VERSION = 1;
+export const STATUS_DIMS_VERSION = 2;
 const SHA_RE = /^[0-9a-f]{7,64}$/i;
 
 // The independent audit, from the LATEST APPLICABLE round — selected FIRST,
@@ -34,12 +34,16 @@ function auditFromReviews(rounds, { requireGateSource, expectedRev = null }) {
   // on a new receipt fails closed; build has its separate commit-SHA binding.
   if (expectedRev !== null && latest.rev !== expectedRev) return 'not_run';
   const verdict = latest.verdict;
-  // Seat selection made same-vendor pairings expressible: a round whose
-  // recorded independence fact says the seats shared a provider seals an
-  // ADVISORY audit, which the headline derivation reads as
-  // same_vendor_reviewed — advisory never impersonates independent. Rounds
-  // sealed before the fact existed were cross-vendor by construction.
-  const advisory = latest.independence === 'same_vendor';
+  // Seat selection made same-vendor and declared-cross-vendor pairings
+  // expressible. The round's recorded independence fact selects the audit
+  // STANDING: same_vendor → advisory (headline same_vendor_reviewed);
+  // cross_vendor_declared → declared (headline declared_cross_vendor_reviewed,
+  // §10 rule 4 — cross-organization but origin only operator-declared, never
+  // attested); cross_vendor (or a pre-seats round with no fact, cross-vendor by
+  // construction) → independent. Advisory/declared never impersonate independent.
+  const standing = latest.independence === 'same_vendor' ? 'advisory'
+    : latest.independence === 'cross_vendor_declared' ? 'declared'
+      : 'independent';
   // APPROVED means no blocking finding, not necessarily no finding. Low
   // findings and explicit unchecked claim assessments are still caveats on
   // the record and must derive verified_with_findings rather than the plain
@@ -48,10 +52,15 @@ function auditFromReviews(rounds, { requireGateSource, expectedRev = null }) {
     const hasCaveats = (latest.findings ?? []).length > 0
       || (latest.claimAssessments ?? []).some((a) => a.decision !== 'supported')
       || (latest.coverageAssessments ?? []).some((a) => a.decision !== 'met');
-    if (advisory) return hasCaveats ? 'advisory_findings' : 'advisory_clean';
+    if (standing === 'advisory') return hasCaveats ? 'advisory_findings' : 'advisory_clean';
+    if (standing === 'declared') return hasCaveats ? 'declared_findings' : 'declared_clean';
     return hasCaveats ? 'independent_findings' : 'independent_clean';
   }
-  if (verdict === 'REVISE') return advisory ? 'advisory_findings' : 'independent_findings';
+  if (verdict === 'REVISE') {
+    if (standing === 'advisory') return 'advisory_findings';
+    if (standing === 'declared') return 'declared_findings';
+    return 'independent_findings';
+  }
   return 'infra_failed'; // a round ran but its latest verdict is unreadable/invalid
 }
 

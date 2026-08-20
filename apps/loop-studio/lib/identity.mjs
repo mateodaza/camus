@@ -8,6 +8,7 @@
 // reviewed edit to checks/registry.json takes effect without a restart and tests
 // can point STUDIO_REGISTRY_FILE at a fixture. Zero new deps.
 
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -188,6 +189,98 @@ export function deriveIndependence({ maker, reviewer } = {}) {
     return 'cross_vendor_declared';
   }
   return 'same_vendor';
+}
+
+// The versioned built-in adapter contract. Bump when the built-in spawn/normalize
+// contract changes: it rides the builtin1 fingerprint, so a contract change voids
+// the admission constant exactly as a probe-component change voids a qual1 receipt
+// (§9.2/§10.8.1). A plain string, never a probe of the live installation.
+export const BUILTIN_ADAPTER_CONTRACT_VERSION = '1';
+
+const fpHash = (parts) => createHash('sha256').update(parts.map((p) => String(p ?? '')).join('\x00'), 'utf8').digest('hex');
+
+const QUAL1_RE = /^qual1:[0-9a-f]{64}$/;
+
+// Resolve the qualification a seat ALREADY ran under (§9.2/§9.4, §10.8.1).
+// Vendor-managed built-ins earn a deterministic, versioned builtin1 contract
+// constant here. Every configurable seat must instead carry an accepted qual1
+// receipt from admission unchanged: configuration facts are not capability
+// probes, so this function never manufactures a plausible qual1 from them.
+// Capability-probe storage/validation lands in slice C; until then an
+// unqualified configurable seat remains runnable on the frozen envelope-2
+// compatibility path and cannot earn the new identity standing.
+export function qualificationForSeat({
+  backend,
+  transport,
+  accepted = null,
+  gateScope = null,
+  contractVersion = null,
+} = {}) {
+  const builtin = (backend === 'claude' || backend === 'codex') && transport === 'vendor_managed';
+  if (builtin) {
+    // builtin1 = hash over (built-in backend name, adapter contract version, and —
+    // for gate seats — review-contract version + scope). A fingerprintable,
+    // version-bumpable value, not an exemption.
+    return {
+      fingerprint: `builtin1:${fpHash(['builtin1', backend, BUILTIN_ADAPTER_CONTRACT_VERSION, contractVersion ?? '', gateScope ?? ''])}`,
+      gate_scope: gateScope ?? null,
+      contract_version: contractVersion ?? null,
+    };
+  }
+  if (!accepted || typeof accepted !== 'object' || !QUAL1_RE.test(accepted.fingerprint ?? '')) return null;
+  if ((accepted.gate_scope ?? null) !== (gateScope ?? null)) return null;
+  if ((accepted.contract_version ?? null) !== (contractVersion ?? null)) return null;
+  return {
+    fingerprint: accepted.fingerprint,
+    gate_scope: accepted.gate_scope ?? null,
+    contract_version: accepted.contract_version ?? null,
+  };
+}
+
+// Resolve the full identity fact-set for a run-snapshot seat (models.maker /
+// models.reviewer). A real getModels() snapshot already carries these — this
+// passes them through. A LEGACY pre-seats snapshot carried only { model } (its
+// meaning was claude-writes / codex-reviews), so its built-in facts are
+// synthesized from the registry here, deterministically, the same way getModels
+// would have. Both engine.mjs (independence) and evidence-pack.mjs (the sealed
+// seat) read seats through this one resolver so the round fact and the seal can
+// never disagree about a seat's lineage.
+export function resolveSeatIdentityFacts(seat = null, { backend, provider } = {}) {
+  const b = seat?.backend ?? backend ?? null;
+  const p = seat?.provider ?? provider ?? null;
+  const model = seat?.model ?? null;
+  if (seat && seat.trainingOrg !== undefined && seat.lineage !== undefined) {
+    return {
+      backend: b, provider: p, model,
+      executor: seat.executor ?? 'http_client',
+      transport: seat.transport ?? 'vendor_managed',
+      connection: seat.connection ?? null,
+      trainingOrg: seat.trainingOrg ?? 'unknown',
+      modelFamily: seat.modelFamily ?? 'unknown',
+      inferenceOperator: seat.inferenceOperator ?? p ?? 'unknown',
+      lineage: { source: seat.lineage?.source ?? 'unknown', derivedFrom: seat.lineage?.derivedFrom ?? null },
+      originConfidence: seat.originConfidence ?? originConfidence(seat.lineage?.source ?? 'unknown'),
+    };
+  }
+  if (b === 'claude' || b === 'codex') {
+    const executorKind = b === 'claude' ? 'claude_cli' : 'codex_cli';
+    const of = executorOrgFamily(executorKind) || {};
+    const source = deriveLineageSource({ executorKind, transport: 'vendor_managed' });
+    return {
+      backend: b, provider: p, model,
+      executor: executorKind, transport: 'vendor_managed', connection: null,
+      trainingOrg: of.org ?? 'unknown', modelFamily: of.family ?? 'unknown',
+      inferenceOperator: p ?? 'unknown',
+      lineage: { source, derivedFrom: null },
+      originConfidence: originConfidence(source),
+    };
+  }
+  return {
+    backend: b, provider: p, model,
+    executor: 'http_client', transport: 'vendor_managed', connection: seat?.connection ?? null,
+    trainingOrg: 'unknown', modelFamily: 'unknown', inferenceOperator: p ?? 'unknown',
+    lineage: { source: 'unknown', derivedFrom: null }, originConfidence: 'unknown',
+  };
 }
 
 // §6.2: normally exactly { resolvedModel }; an operator-documented mapping
