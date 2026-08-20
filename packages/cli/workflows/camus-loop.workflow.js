@@ -1720,6 +1720,23 @@ if (verdict.ok === 'pass') {
     // by title (smoke 2026-06-12: without these, a reader can't tell addressed-unreviewed from
     // untouched — the field is named claimedResolution because nobody verified it).
     const findingsOut = unreviewedFixFields().findings
+    const hasUnreviewedP0P1 = findingsOut.some((f) => Number.isInteger(f && f.priority) && f.priority <= 1)
+    // FULL posture must not auto-upgrade a final unreviewed P0/P1 repair into a
+    // mergeable result. The bounded fix was still worthwhile, and deterministic
+    // verify still certifies its commit, but only another independent review (or
+    // an explicit human accept) can clear that trust debt. Oneshot remains the
+    // deliberately cheaper contract; P2-only debt in full remains mergeable.
+    if (POSTURE === 'full' && finalBoundedFix && hasUnreviewedP0P1) {
+      return {
+        status: 'review_unresolved', task: TASK, worktree: WT, branch: BRANCH,
+        commit_sha: COMMIT_SHA, parkedSha: COMMIT_SHA, verifyClean: true,
+        blocking: findingsOut, ...unreviewedFixFields(), ...reviewerReceiptFields(),
+        rounds: round, summary: candidateSummary, decisions: candidateDecisions,
+        tier, tierSource, classificationSkipped, model: fixModel, initialModel: thinkModel,
+        finalFixModel: fixModel, escalated: fixModel !== thinkModel, planSkipped,
+        note: `FINAL-ROUND BOUNDED FIX: review round ${round}/${ROUND_CAP} raised ${findingsOut.length} NEW blocking finding(s), including unresolved P0/P1 risk. ONE bounded fix ran and deterministic verify PASSES on committed candidate ${COMMIT_SHA}, but the repair is UNREVIEWED: NOT review-clean and NOT independent_clean. Read the findings and maker's claimed resolutions below. Full posture therefore PARKS and HALTS; it does not return a mergeable result. Re-review the parked commit, or explicitly accept the reviewed risk.${reviewerReceiptNote()}`,
+      }
+    }
     return {
       status: 'done_with_findings', task: TASK, worktree: WT, branch: BRANCH, commit_sha: COMMIT_SHA, ...unreviewedFixFields(), ...reviewerReceiptFields(),
       rounds: round, summary: candidateSummary, decisions: candidateDecisions,

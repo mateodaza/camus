@@ -18,6 +18,7 @@ import {
   computeFingerprint,
   writeReceipt,
   readReceipt,
+  validateReceiptAgainstInput,
   qualifySeat,
   COMPONENT_NAMES,
   PROBE_SUITE_VERSION,
@@ -270,6 +271,39 @@ test('an unprobed model / connection / backend on the same seat reads missing, n
   assert.equal(readReceipt({ ...baseInput(), connection: 'loopback 127.0.0.1:9999' }).state, 'missing');
   assert.equal(readReceipt({ ...baseInput(), backendKind: 'legacy_http' }).state, 'missing');
   assert.equal(readReceipt(baseInput()).ok, true); // control: the probed tuple still reads
+});
+
+test('a presented receipt names drift on every tuple-key axis while a fresh lookup stays missing', () => {
+  freshEnv();
+  const accepted = writeReceipt(baseInput(), { capabilities: demoCaps(), probeResults: demoProbe() });
+  const mutations = {
+    seatType: (i) => (i.seatType = 'words_maker'),
+    backend: (i) => (i.backendKind = 'legacy_http'),
+    connection: (i) => (i.connection = 'loopback 127.0.0.1:9999'),
+    requestedModelId: (i) => (i.requestedModelId = 'never-probed:9b'),
+    gateScope: (i) => (i.gateScope = 'full'),
+  };
+
+  for (const [component, mutate] of Object.entries(mutations)) {
+    const live = clone(baseInput());
+    mutate(live);
+    assert.equal(readReceipt(live).state, 'missing', `${component}: an unprobed tuple has no slot`);
+    const presented = validateReceiptAgainstInput(accepted, live);
+    assert.equal(presented.state, 'voided', `${component}: an accepted receipt cannot be re-attributed`);
+    assert.equal(presented.component, component, `${component}: mismatch is named`);
+    assert.equal(validateReceiptAgainstInput(accepted, baseInput()).ok, true, `${component}: unchanged control validates`);
+  }
+});
+
+test('qualifySeat validates an accepted receipt instead of laundering tuple drift into missing', () => {
+  freshEnv();
+  const accepted = writeReceipt(baseInput(), { capabilities: demoCaps(), probeResults: demoProbe() });
+  const changed = { ...baseInput(), requestedModelId: 'replacement-model:70b' };
+  const q = qualifySeat(changed, { acceptedReceipt: accepted });
+  assert.equal(q.qualified, false);
+  assert.equal(q.reason, 'voided');
+  assert.equal(q.component, 'requestedModelId');
+  assert.match(q.fix, /requestedModelId/);
 });
 
 test('a non-key component drift on the SAME tuple VOIDS and names the component', () => {

@@ -435,6 +435,41 @@ function firstChangedComponent(stored, live) {
 }
 
 /**
+ * Validate a receipt that the caller has already selected/accepted against the
+ * current live descriptor. Unlike readReceipt(), this does not perform tuple
+ * lookup: the presented receipt is the identity claim, so a mismatch on ANY of
+ * the 16 components (including seat/backend/connection/model/gate scope) is a
+ * void with the changed component named. This distinction lets independent
+ * tuple slots coexist while preventing a previously accepted receipt from
+ * being silently re-attributed after its live seat identity changes.
+ */
+export function validateReceiptAgainstInput(receipt, input, { now = Date.now() } = {}) {
+  if (!receipt || receipt.schemaVersion !== RECEIPT_SCHEMA_VERSION || typeof receipt.fingerprint !== 'string') {
+    return { ok: false, state: 'unparseable' };
+  }
+  if (!receiptComponentsIntact(receipt)) {
+    return { ok: false, state: 'voided', component: 'fingerprint' };
+  }
+
+  let live;
+  try {
+    live = computeFingerprint(input, { create: false });
+  } catch (err) {
+    return { ok: false, state: 'credential_unavailable', detail: err.message };
+  }
+
+  if (receipt.fingerprint !== live.fingerprint) {
+    return { ok: false, state: 'voided', component: firstChangedComponent(receipt.components, live.components) };
+  }
+  const expMs = new Date(receipt.expiresAt).getTime();
+  const nowMs = typeof now === 'number' ? now : new Date(now).getTime();
+  if (!Number.isFinite(expMs) || nowMs >= expMs) {
+    return { ok: false, state: 'expired', expiresAt: receipt.expiresAt };
+  }
+  return { ok: true, receipt };
+}
+
+/**
  * Read the receipt for a tuple and validate it against LIVE identity values.
  * Returns:
  *   { ok:true, receipt }
@@ -454,24 +489,7 @@ function firstChangedComponent(stored, live) {
 export function readReceipt(input, { now = Date.now() } = {}) {
   const loaded = loadPayload(input); // salt-free lookup + on-disk integrity
   if (!loaded.ok) return loaded; // missing/unparseable/corrupt → no credential HMAC
-  const data = loaded.data;
-
-  let live;
-  try {
-    live = computeFingerprint(input, { create: false }); // recompute from LIVE facts, never mint salt
-  } catch (err) {
-    return { ok: false, state: 'credential_unavailable', detail: err.message };
-  }
-
-  if (data.fingerprint !== live.fingerprint) {
-    return { ok: false, state: 'voided', component: firstChangedComponent(data.components, live.components) };
-  }
-  const expMs = new Date(data.expiresAt).getTime();
-  const nowMs = typeof now === 'number' ? now : new Date(now).getTime();
-  if (!Number.isFinite(expMs) || nowMs >= expMs) {
-    return { ok: false, state: 'expired', expiresAt: data.expiresAt };
-  }
-  return { ok: true, receipt: data };
+  return validateReceiptAgainstInput(loaded.data, input, { now });
 }
 
 // ---- §9.4 seat qualification -----------------------------------------------
@@ -528,7 +546,12 @@ export function qualifySeat(input, opts = {}) {
   }
   const req = requirementsFor(seatType);
 
-  const read = readReceipt(input, opts);
+  // A catalog/snapshot that already carries an accepted receipt must validate
+  // THAT receipt, rather than looking up a new tuple and losing provenance as a
+  // generic `missing` result when a key identity axis changed.
+  const read = opts.acceptedReceipt
+    ? validateReceiptAgainstInput(opts.acceptedReceipt, input, opts)
+    : readReceipt(input, opts);
   if (!read.ok) {
     return {
       qualified: false,

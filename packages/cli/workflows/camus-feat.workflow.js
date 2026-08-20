@@ -1271,9 +1271,35 @@ If the branch does not exist git errors — output that error line verbatim.`,
     })
   }
 
-  // done_with_findings (VELOCITY §1, oneshot posture) is MERGEABLE: the work is committed and
-  // deterministically green — the deferred review debt is the posture's contract, carried on
-  // the node and surfaced at the feat level (never as a plain done).
+  // Defense in depth for mixed/older loop runtimes: full posture must never auto-merge a
+  // done_with_findings relay that still carries P0/P1 debt. Current camus-loop returns such a
+  // result as review_unresolved, but the feat owns the merge and therefore enforces the policy
+  // independently. Park the proven commit as a decision point; only an explicit later human
+  // accept can enter land mode. Oneshot keeps its documented speed/quality trade.
+  const deferred = res && Array.isArray(res.findings) ? res.findings : []
+  const hasUnreviewedP0P1 = deferred.some((f) => Number.isInteger(f && f.priority) && f.priority <= 1)
+  if (POSTURE === 'full' && res && res.status === 'done_with_findings' && hasUnreviewedP0P1) {
+    node.status = 'needs_decision'
+    node.provenStatus = 'done_with_findings'
+    const proofSha = (typeof res.commit_sha === 'string' && res.commit_sha)
+      ? res.commit_sha
+      : ((typeof res.parkedSha === 'string' && res.parkedSha) ? res.parkedSha : null)
+    if (proofSha) node.provenCommit = proofSha
+    node.findingsDeferred = res.findingsDeferred || deferred.length
+    node.deferredFindings = deferred
+    if (Array.isArray(res.decisions) && res.decisions.length) node.decisions = res.decisions
+    await persistState('Tasks')
+    note(`⚠ Task ${n} returned done_with_findings with unresolved P0/P1 debt under FULL posture — parked, NOT merged.`)
+    return finalize('halted', {
+      stage: 'task', haltedTask: node.taskId, haltReason: 'unreviewed_p0_p1',
+      verifyCleanDecision: true, loopResult: res,
+      note: `Task ${n} has a committed, deterministically green repair, but its P0/P1 finding was not independently re-reviewed. Full posture refuses to auto-merge it. Re-run the independent review and refine if needed; an explicit human accept may land the parked commit, but Camus will not silently turn this result green.`,
+    })
+  }
+
+  // done_with_findings (VELOCITY §1, oneshot posture or P2-only bounded debt) is MERGEABLE: the
+  // work is committed and deterministically green — the deferred review debt is the posture's
+  // contract, carried on the node and surfaced at the feat level (never as a plain done).
   const mergeableStatus = res && (res.status === 'done' || res.status === 'done_with_findings')
   if (!mergeableStatus) {
     // Any non-done (review_unresolved / verify_failed / verify_inconclusive / infra_error /
