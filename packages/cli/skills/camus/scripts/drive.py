@@ -469,6 +469,11 @@ def _persist_driver_stop(run, reason):
             pass
     kernel_state["phase"] = "stopped"
     kernel_state["stopReason"] = str(reason)[:500]
+    stop_kind = kernel.direct_output_stop_kind({"stopReason": str(reason)})
+    if stop_kind is not None:
+        kernel_state["stopKind"] = stop_kind
+    else:
+        kernel_state.pop("stopKind", None)
     kernel_state["updatedAt"] = int(time.time())
     state["kernel"] = kernel_state
     state["status"] = "needs_human"
@@ -849,8 +854,7 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
         repo = kernel._resolve_repo(run, options.repo)
         current = kernel._kernel(run["state"])
         if current.get("phase") == "stopped" and options.token_budget is not None \
-                and str(current.get("stopReason") or "").startswith(
-                    "direct output-token budget exhausted ("):
+                and kernel.direct_output_stop_kind(current) is not None:
             kernel.resume_budget_stop(feat_id, options.token_budget, base=base)
             run = kernel._validated_run(feat_id, base)
             current = kernel._kernel(run["state"])
@@ -1188,14 +1192,10 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
             fixed_unreviewed = False
 
         while seal is None and review is not None and not review.get("clean"):
-            budget_stop = _pre_agent_budget_stop(
-                feat_id, base, reserve_tokens=getattr(options, "direct_output_reserve", None),
-            )
-            if budget_stop:
-                return incomplete({
-                    "action": "stop", "reason": budget_stop,
-                    "featId": feat_id, "taskId": task_id,
-                }, review_evidence=review, terminal=True)
+            # The reserve protects the next expensive maker/fix turn, not the small controller
+            # decision that decides whether such a turn is worthwhile. Let the controller see
+            # the honest exhausted evidence and choose stop/human without forcing an unnecessary
+            # budget increase. A fix decision is still gated immediately below before launch.
             budget_evidence = _direct_output_budget_evidence(
                 feat_id, base, reserve_tokens=getattr(options, "direct_output_reserve", None),
             )

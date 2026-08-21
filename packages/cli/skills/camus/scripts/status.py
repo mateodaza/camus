@@ -131,6 +131,8 @@ def review_activity(base, task_ids, now=None):
             prefix = "camus-wt-%s-r" % tid
             if stem.startswith(prefix):
                 rnd = stem[len(prefix):]
+                if not rnd.isdigit():
+                    continue
                 try:
                     mtime = os.path.getmtime(os.path.join(reviews_dir, name))
                 except OSError:
@@ -164,6 +166,21 @@ def fmt_age(sec):
 
 def fmt_tokens(tokens):
     return "~%dk tokens" % round(tokens / 1000.0) if isinstance(tokens, (int, float)) else None
+
+
+def _direct_output_stop_kind(state, question=""):
+    kernel_state = state.get("kernel") if isinstance(state.get("kernel"), dict) else {}
+    kind = kernel_state.get("stopKind")
+    if kind in ("direct_output_budget", "direct_output_reserve"):
+        return kind
+    reason = kernel_state.get("stopReason") or question
+    if not isinstance(reason, str):
+        return None
+    if reason.startswith("direct output-token budget exhausted ("):
+        return "direct_output_budget"
+    if reason.startswith("direct output reserve exhausted ("):
+        return "direct_output_reserve"
+    return None
 
 
 def synthesize(base, feat_id=None, now=None, repo=None):
@@ -313,7 +330,9 @@ def render(synth, now=None):
             lines.append("  ≈ $%.2f Claude-side API value, repo's latest run (%s · rates %s — estimate, not an invoice;"
                          % (cost["usd"], per, cost.get("ratesAsOf", "?")))
             lines.append("    codex review settles in your ChatGPT plan credits)")
-        if act_age is not None and act_age > LIVENESS_STALE_S and status == "running":
+        feat_age = hb_age if hb_age is not None else synth.get("stateAge")
+        if act_age is not None and act_age > LIVENESS_STALE_S and status == "running" \
+                and (feat_age is None or feat_age > LIVENESS_STALE_S):
             lines.append("  ⚠ state says RUNNING but the repo's latest workflow transcript has been quiet for %s — the run may have died."
                          % fmt_age(act_age))
             lines.append("    (best-effort repo-level signal, not feat-bound; `camus resume` lists restartable runs)")
@@ -350,7 +369,7 @@ def render(synth, now=None):
             lines.append("  resume: re-run with a HIGHER budgetTokens (or drop it) — done tasks skip")
         elif stage == "steer":
             lines.append("  resume: re-issue your guidance (camus steer ...), then re-run with the SAME args")
-        elif stage == "kernel_stop" and str(q).startswith("direct output-token budget exhausted ("):
+        elif stage == "kernel_stop" and _direct_output_stop_kind(s, q) is not None:
             lines.append("  resume: camus run %s --token-budget <higher> (plus the same --experiment, if used)" % (
                 s.get("featId") or "<featId>",
             ))

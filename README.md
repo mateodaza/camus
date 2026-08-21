@@ -34,7 +34,7 @@ You need [Claude Code](https://code.claude.com) and the [Codex CLI](https://gith
 (`codex login`) — the cross-vendor pairing is the product, so both halves are required.
 
 ```bash
-npm i -g camus-cli@0.4.2
+npm i -g camus-cli@0.4.3
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 ```
@@ -58,7 +58,7 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.4.2
+### Public alpha: 0.4.3
 
 Camus 0.4.1 made that deterministic kernel the executable default. Durable Claude Code sessions
 survive the launching terminal, restarts adopt rather than duplicate them, and a model controller
@@ -68,7 +68,10 @@ until every configured arm clears its declared quality floor. The release dogfoo
 review-clean, HEAD-bound tasks in 9m13s—an 87% reduction in comparable end-to-end trace time versus
 the previous model-orchestrated run. Camus 0.4.2 is a bounded recovery hotfix: it safely adopts a
 maker that committed despite its contract, gives high-effort review watchdogs enough host time, and
-counts one recovered background turn only once. See the [0.4.2 release notes](docs/RELEASE-0.4.2.md).
+counts one recovered background turn only once. Camus 0.4.3 makes native budget stops typed and
+resumable, lets the low-cost controller decide before reserving another expensive maker turn, and
+keeps stale repo-level telemetry from contradicting fresh feature state. See the
+[0.4.3 release notes](docs/RELEASE-0.4.3.md).
 
 The identity, connection-migration, and sealed trust foundation for open-model seats is present,
 but qualified Grok/Kimi/Qwen/local seats, generic CLI backends, and managed SSH remain explicit
@@ -156,7 +159,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.4.2
+npm i -g camus-cli@0.4.3
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```

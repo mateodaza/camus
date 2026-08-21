@@ -1273,7 +1273,8 @@ def test_explicit_higher_budget_resumes_a_post_fix_stop_at_independent_review():
     state = json.load(open(state_path, encoding="utf-8"))
     state["kernel"]["budgets"]["tokens"] = 50
     state["kernel"]["phase"] = "stopped"
-    state["kernel"]["stopReason"] = "direct output-token budget exhausted (70/50)"
+    state["kernel"]["stopReason"] = "direct output reserve exhausted (0 remaining; 50 reserved of 50)"
+    state["kernel"]["stopKind"] = "direct_output_reserve"
     state["status"] = "needs_human"
     state["stage"] = "kernel_stop"
     state["question"] = state["kernel"]["stopReason"]
@@ -1287,12 +1288,26 @@ def test_explicit_higher_budget_resumes_a_post_fix_stop_at_independent_review():
         assert "must exceed" in str(exc)
     resumed = K.resume_budget_stop(world["feat_id"], 1000, base=world["base"], now=106)
     assert resumed["phase"] == "task_reviewing"
+    assert resumed["resumedStopKind"] == "direct_output_reserve"
     assert resumed["directOutputTokens"] == 70
     state = K._validated_run(world["feat_id"], world["base"])["state"]
     assert state["kernel"]["directReviewRound"] == 2
     assert state["kernel"]["budgets"]["tokens"] == 1000
     assert state["tasks"][0]["status"] == "running"
     assert state["status"] == "running"
+
+
+def test_direct_output_stop_kind_migrates_both_published_reason_strings():
+    assert K.direct_output_stop_kind({
+        "stopReason": "direct output-token budget exhausted (70/50)",
+    }) == "direct_output_budget"
+    assert K.direct_output_stop_kind({
+        "stopReason": "direct output reserve exhausted (176527 remaining; 250000 reserved of 1000000)",
+    }) == "direct_output_reserve"
+    assert K.direct_output_stop_kind({
+        "stopKind": "direct_output_reserve", "stopReason": "wording may evolve",
+    }) == "direct_output_reserve"
+    assert K.direct_output_stop_kind({"stopReason": "controller stopped"}) is None
 
 
 def test_background_usage_refuses_observed_model_substitution():

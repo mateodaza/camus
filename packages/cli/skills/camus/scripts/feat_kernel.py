@@ -83,10 +83,35 @@ REVIEWED_STATUSES = ("done", "done_with_findings", "verify_inconclusive")
 SEAT_VALUE_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 DIRECT_REVIEW_AWAITS = 20
 DIRECT_REVIEW_HOST_TIMEOUT = 540
+DIRECT_OUTPUT_BUDGET_STOP = "direct_output_budget"
+DIRECT_OUTPUT_RESERVE_STOP = "direct_output_reserve"
+DIRECT_OUTPUT_STOP_KINDS = (DIRECT_OUTPUT_BUDGET_STOP, DIRECT_OUTPUT_RESERVE_STOP)
 
 
 class Refusal(Exception):
     """A fail-closed contract or evidence refusal, suitable for a typed stop."""
+
+
+def direct_output_stop_kind(kernel_state):
+    """Return the typed native direct-output stop kind, including legacy migrations.
+
+    0.4.2 produced two user-visible reason strings but its resume gate recognized only one.
+    Keep the strings for operator context while making the machine contract explicit. Published
+    0.4.1/0.4.2 states remain resumable without rewriting their artifacts first.
+    """
+    if not isinstance(kernel_state, dict):
+        return None
+    kind = kernel_state.get("stopKind")
+    if kind in DIRECT_OUTPUT_STOP_KINDS:
+        return kind
+    reason = kernel_state.get("stopReason")
+    if not isinstance(reason, str):
+        return None
+    if reason.startswith("direct output-token budget exhausted ("):
+        return DIRECT_OUTPUT_BUDGET_STOP
+    if reason.startswith("direct output reserve exhausted ("):
+        return DIRECT_OUTPUT_RESERVE_STOP
+    return None
 
 
 def camus_home():
@@ -983,9 +1008,8 @@ def resume_budget_stop(feat_id, token_budget, base=None, now=None):
         run = _validated_run(feat_id, base)
         state = run["state"]
         kernel_state = _kernel(state)
-        reason = kernel_state.get("stopReason")
-        if kernel_state.get("phase") != "stopped" or not isinstance(reason, str) \
-                or not reason.startswith("direct output-token budget exhausted ("):
+        stop_kind = direct_output_stop_kind(kernel_state)
+        if kernel_state.get("phase") != "stopped" or stop_kind is None:
             raise Refusal("only a native direct output-token budget stop can be resumed this way")
         budgets = _budgets(run)
         prior_budget = budgets.get("tokens")
@@ -1008,6 +1032,7 @@ def resume_budget_stop(feat_id, token_budget, base=None, now=None):
             "measuredDirectOutputTokens": direct_output, "resumedAt": now,
         }
         kernel_state.pop("stopReason", None)
+        kernel_state.pop("stopKind", None)
         kernel_state.pop("resumePhase", None)
         kernel_state.pop("resumeReviewRound", None)
         if phase == "task_reviewing":
@@ -1025,7 +1050,7 @@ def resume_budget_stop(feat_id, token_budget, base=None, now=None):
             "schemaVersion": SCHEMA_VERSION, "traceId": kernel_state.get("traceId"),
             "action": "budget_resumed", "taskId": active, "phase": phase,
             "priorBudget": prior_budget, "tokenBudget": token_budget,
-            "directOutputTokens": direct_output,
+            "directOutputTokens": direct_output, "resumedStopKind": stop_kind,
         }
 
 

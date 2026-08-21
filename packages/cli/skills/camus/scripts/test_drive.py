@@ -382,6 +382,47 @@ def test_crash_replay_refuses_a_conflicting_explicit_round_cap():
                 assert "conflicts with the persisted human authorization" in str(exc)
 
 
+def test_042_reserve_stop_reopens_from_the_exact_published_reason():
+    with tempfile.TemporaryDirectory() as root:
+        stopped = {
+            "state": {
+                "featId": "feat-a", "status": "needs_human", "stage": "kernel_stop",
+                "kernel": {
+                    "phase": "stopped", "activeTaskId": "task-a",
+                    "stopReason": (
+                        "direct output reserve exhausted "
+                        "(176527 remaining; 250000 reserved of 1000000)"
+                    ),
+                },
+                "tasks": [{"taskId": "task-a", "status": "needs_human"}],
+            },
+            "args": {"tasks": ["bounded task"], "targetPath": root},
+            "nodes": [{"taskId": "task-a", "status": "needs_human"}],
+        }
+        resumed = {
+            "state": {
+                "featId": "feat-a", "status": "running",
+                "kernel": {"phase": "ready", "activeTaskId": None},
+                "tasks": [],
+            },
+            "args": stopped["args"], "nodes": [], "specs": [],
+        }
+        options = SimpleNamespace(
+            base=root, repo=None, experiment=None, ledger=os.path.join(root, "episodes.jsonl"),
+            token_budget=1250000, human_action=None, verify_timeout=10,
+        )
+        with mock.patch.object(D.kernel, "_validated_run", side_effect=[stopped, resumed]), \
+                mock.patch.object(D.kernel, "_resolve_repo", return_value=root), \
+                mock.patch.object(D.kernel, "resume_budget_stop") as resume, \
+                mock.patch.object(D.kernel, "_selected_index", return_value=(None, None)), \
+                mock.patch.object(D.kernel, "integrate_feature", return_value={
+                    "action": "feature_complete", "status": "done",
+                }):
+            result = D._drive_feature("feat-a", options, client=object())
+        assert result["action"] == "feature_complete"
+        resume.assert_called_once_with("feat-a", 1250000, base=root)
+
+
 def test_direct_output_budget_stop_is_recorded_once_before_review_or_next_model():
     with tempfile.TemporaryDirectory() as root:
         task_id = "task-a"
@@ -451,6 +492,7 @@ def test_direct_output_budget_stop_is_recorded_once_before_review_or_next_model(
         assert run["state"]["status"] == "needs_human"
         assert run["state"]["stage"] == "kernel_stop"
         assert run["state"]["kernel"]["phase"] == "stopped"
+        assert run["state"]["kernel"]["stopKind"] == "direct_output_budget"
         assert run["state"]["kernel"]["resumePhase"] == "task_open"
         assert node["status"] == "needs_human"
 
@@ -494,6 +536,9 @@ def test_resumed_review_uses_the_adopted_round_for_the_round_cap():
             node["reviewerRound"] = 3
             return adopted
         controller_result = {"action": "human", "reason": "review round cap reached"}
+        reserve_gate = mock.Mock(return_value=(
+            "direct output reserve exhausted (176527 remaining; 250000 reserved of 1000000)"
+        ))
         with mock.patch.object(D.kernel, "_validated_run", return_value=run), \
                 mock.patch.object(D.kernel, "_resolve_repo", return_value=root), \
                 mock.patch.object(D.kernel, "_selected_index", return_value=(0, None)), \
@@ -501,7 +546,7 @@ def test_resumed_review_uses_the_adopted_round_for_the_round_cap():
                     "loopArgs": {"task": "bounded task"}, "repo": root,
                 }), \
                 mock.patch.object(D, "_post_agent_budget_stop", return_value=None), \
-                mock.patch.object(D, "_pre_agent_budget_stop", return_value=None), \
+                mock.patch.object(D, "_pre_agent_budget_stop", reserve_gate), \
                 mock.patch.object(D, "_direct_output_budget_evidence", return_value={}), \
                 mock.patch.object(D.kernel, "review_task", side_effect=adopt_review), \
                 mock.patch.object(D, "controller_decision", return_value=controller_result) as controller, \
@@ -511,6 +556,7 @@ def test_resumed_review_uses_the_adopted_round_for_the_round_cap():
         assert result["action"] == "human"
         assert controller.call_args.kwargs["attempt"] == 3
         assert controller.call_args.kwargs["max_rounds"] == 3
+        reserve_gate.assert_not_called(), "reserve must gate a maker/fix, not controller judgment"
         maker.assert_not_called()
 
 

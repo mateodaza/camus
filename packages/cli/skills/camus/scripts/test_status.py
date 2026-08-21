@@ -67,6 +67,7 @@ def test_review_activity_matches_only_this_feats_tasks():
         _write(os.path.join(rdir, "camus-wt-do-the-thing-aa11bb-r1.json"), {})
         _write(os.path.join(rdir, "camus-wt-do-the-thing-aa11bb-r2.json"), {})
         _write(os.path.join(rdir, "camus-wt-other-feats-task-zz99-r1.json"), {})
+        _write(os.path.join(rdir, "camus-wt-do-the-thing-aa11bb-request.json"), {})
         acts = S.review_activity(base, ["do-the-thing-aa11bb", "polish-it-cc22dd"])
         assert len(acts) == 2
         assert {a["round"] for a in acts} == {"1", "2"}
@@ -151,6 +152,14 @@ def test_render_native_budget_stop_shows_the_supported_token_budget_override():
         out = "\n".join(S.render(synth))
         assert "camus run native-f --token-budget <higher>" in out
         assert "answers:{" not in out
+
+        st["question"] = "direct output reserve exhausted (176527 remaining; 250000 reserved of 1000000)"
+        st["kernel"] = {"phase": "stopped", "stopKind": "direct_output_reserve",
+                        "stopReason": st["question"]}
+        _write(os.path.join(base, "feats", "native-f.json"), st)
+        out = "\n".join(S.render(S.synthesize(base, "native-f")))
+        assert "camus run native-f --token-budget <higher>" in out
+        assert "--human-action" not in out
 
 
 def test_render_native_terminal_stop_does_not_invent_a_resume_command():
@@ -286,8 +295,12 @@ def test_render_liveness_from_transcript_activity():
         out = "\n".join(S.render(synth, now=now))
         assert "last activity" in out and "may have died" not in out
         synth["live"] = [{"label": "implement", "model": "Opus", "outputTokens": 1, "toolCount": 0, "lastTs": iso(1500)}]
+        synth["stateAge"] = 1500
         out = "\n".join(S.render(synth, now=now))
         assert "may have died" in out and "camus resume" in out
+        synth["stateAge"] = 8
+        out = "\n".join(S.render(synth, now=now))
+        assert "may have died" not in out, "fresh feature state must beat unrelated stale repo telemetry"
         # …but a finished feat with old transcripts is NOT flagged (nothing is supposed to run).
         synth["state"]["status"] = "done"
         out = "\n".join(S.render(synth, now=now))
