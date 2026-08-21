@@ -501,10 +501,11 @@ def _pairing(args, options, plan, ledger, assignment_key, assigned_arm=None):
     }, None
 
 
-def _task_metrics(run, node, log):
+def _task_metrics(run, node, log, ended_at=None):
     direct = node.get("directMakerUsage") if isinstance(node, dict) else None
     totals = direct.get("totals") if isinstance(direct, dict) else {}
-    receipts = direct.get("receipts") if isinstance(direct, dict) else []
+    receipts = direct.get("receipts") if isinstance(direct, dict) \
+        and isinstance(direct.get("receipts"), list) else []
     task_rows = [row for row in log.records() if row.get("taskId") == node.get("taskId")]
     agent_rows = [row for row in task_rows if row.get("type") == "agent.completed"]
     launched_rows = [row for row in task_rows if row.get("type") == "agent.launched"]
@@ -519,7 +520,8 @@ def _task_metrics(run, node, log):
         model_output += int(usage.get("outputTokens") or 0)
         model_duration += int(data.get("durationMs") or 0)
     started = log.latest("task.started", node.get("taskId"))
-    wall_ms = max(0, int(time.time()) - int(started.get("at"))) * 1000 \
+    end = ended_at if isinstance(ended_at, int) else int(time.time())
+    wall_ms = max(0, end - int(started.get("at"))) * 1000 \
         if isinstance(started, dict) and isinstance(started.get("at"), int) else model_duration
     transcript_hashes = [
         (row.get("data") or {}).get("transcriptSha256") for row in agent_rows
@@ -605,8 +607,9 @@ def _record_episode(ledger, log, run, node, pairing, experiment, seal):
 
 
 def _record_incomplete_episode(ledger, log, run, node, pairing, experiment, terminal, review=None):
-    metrics, transcripts = _task_metrics(run, node, log)
     terminal_event = log.latest("task.incomplete", node.get("taskId"))
+    ended_at = terminal_event.get("at") if isinstance(terminal_event, dict) else None
+    metrics, transcripts = _task_metrics(run, node, log, ended_at=ended_at)
     sequence = terminal_event.get("seq", 0) if isinstance(terminal_event, dict) else 0
     action = terminal.get("action") or "stop"
     episode = evals.make_episode(

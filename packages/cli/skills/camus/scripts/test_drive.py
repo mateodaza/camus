@@ -318,6 +318,27 @@ def test_metrics_rebuild_missing_transcript_uses_sealed_event_duration():
         assert metrics["modelWallMs"] == 4242
 
 
+def test_incomplete_episode_wall_uses_persisted_terminal_boundary_on_rebuild():
+    with tempfile.TemporaryDirectory() as root:
+        log = D.EventLog("feat-a", base=root)
+        node = {"taskId": "task-a", "directMakerUsage": {"totals": {}}}
+        run = {
+            "state": {"featId": "feat-a", "kernel": {"traceId": "trace:a1"}},
+            "nodes": [node], "specs": ["bounded task"], "args": {},
+        }
+        ledger = D.evals.Ledger(os.path.join(root, "episodes.jsonl"))
+        with mock.patch.object(D.time, "time", side_effect=[100.0, 154.0]):
+            log.append("task.started", trace_id="trace:a1", task_id="task-a", key="task-a")
+            log.append("task.incomplete", trace_id="trace:a1", task_id="task-a",
+                       key="task-a", data={"action": "stop"})
+        D._record_incomplete_episode(
+            ledger, log, run, node,
+            {"makerModel": "opus", "reviewerModel": "sol"}, None,
+            {"action": "stop", "reason": "budget"},
+        )
+        assert ledger.records()[0]["economics"]["wallMs"] == 54000
+
+
 def test_direct_output_reserve_rejects_negative_and_allows_zero_disable():
     run = {"args": {}, "state": {"tasks": [], "kernel": {
         "budgets": {"tokens": 80000}, "usage": {"tokens": 0, "retries": 0},
