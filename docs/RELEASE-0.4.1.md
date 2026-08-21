@@ -1,8 +1,8 @@
-# Camus 0.4.1 candidate
+# Camus 0.4.1 release candidate
 
 Camus 0.4.1 turns the 0.4.0 kernel from a set of safe primitives into the default executable
-architecture. It is not released yet; the next dogfood must validate this path before tag or npm
-publication.
+architecture. The release-gate dogfood passed on 2026-08-21. The tag, npm publication, and merge to
+`main` remain explicit operator actions.
 
 ## What changes
 
@@ -81,3 +81,30 @@ maker or fix launch. `camus run --direct-output-reserve 0` explicitly disables t
 reserve. Claude background sessions do not expose a per-turn output cap, so an in-flight turn may
 still overshoot; the post-receipt direct-output ceiling prevents subsequent model calls and records
 the exact measured overage.
+
+## Release-gate evidence (2026-08-21)
+
+The fresh feature `prove-corrected-0-4-1-ev-15z84v` ran two bounded CLI tasks through `camus start`
+and `camus run` from base `c123348`. Claude authentication was proven with
+`ANTHROPIC_API_KEY` removed: the CLI reported first-party `claude.ai` account auth. Task 1's maker
+was interrupted after launch; the resumed driver adopted the same session and launched no duplicate.
+Both tasks received a direct Sol review with zero findings, passed HEAD-bound verification, landed,
+and passed the final feature integration at `706d3e1`.
+
+The exact exploratory eval segment is `camus-0-4-1-release-gate-r4` /
+`camus_cli_small_change` / config `sha256:28803a4167ee49da11fc8d3d7761cf3912656a2d953f7642ed3384118c8bfc6c`:
+
+| Arm | Trials | Quality floor | Wall | Background model wall | Observed orchestration gap | Output tokens |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Opus 4.8 low + Sol high | 1 | 100% | 284,000 ms | 193,202 ms | 90,798 ms | 22,673 |
+| Opus 4.8 medium + Sol high | 1 | 100% | 265,000 ms | 150,732 ms | 114,268 ms | 23,785 |
+
+The two-task feature completed in 553 seconds including the planned interruption, with 205,066 ms
+of combined observed orchestration gap. The last model-orchestrated Slice C trace took 4,285 seconds
+for one task, so the comparable end-to-end trace window fell by 87%. That older workflow did not
+record paired `wallMs` / `modelWallMs`; its gap cannot be reconstructed under the stricter 0.4.1
+definition, and this release does not invent an exact old-gap percentage.
+
+The driver performed no push, publication, deployment, or `main` merge. After local integration,
+the full root/CLI suite (including 633 workflow assertions), the full Studio suite, the production
+web build, `npm pack --dry-run`, and `git diff --check` all passed.
