@@ -38,7 +38,9 @@ def direct_env(parent=None):
     """Default-deny routing/credential env for a Claude account-authenticated maker."""
     parent = os.environ if parent is None else parent
     out = {name: parent[name] for name in SAFE_ENV_NAMES if name in parent}
-    out["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST"] = "1"
+    # Do not force a provider override here.  Claude Code's account-authenticated CLI can prove
+    # the claude.ai subscription only when its own provider selection remains intact; the explicit
+    # override made auth status report `authMethod: none` and blocked valid Max-account launches.
     out["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
     return out
 

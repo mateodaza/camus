@@ -69,7 +69,7 @@ def test_direct_env_drops_api_routes_credentials_and_proxies():
     })
     assert env["PATH"] == "/bin"
     assert env["VIRTUAL_ENV"] == "/tmp/venv"
-    assert env["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST"] == "1"
+    assert "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST" not in env
     for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "HTTPS_PROXY"):
         assert name not in env
 
