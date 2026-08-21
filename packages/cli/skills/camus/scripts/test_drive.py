@@ -401,6 +401,69 @@ def test_incomplete_episode_wall_uses_persisted_terminal_boundary_on_rebuild():
         assert ledger.records()[0]["economics"]["wallMs"] == 54000
 
 
+def test_vanished_controller_replay_returns_sealed_fix_recheck_without_relaunch():
+    """End-to-end: a sealed stale controller whose exact transcript ends in a valid turn-duration
+    marker replays as a done fix_recheck decision, launches no replacement controller, and records
+    after an earlier false human observation via the corrected action-bound decision key."""
+    with tempfile.TemporaryDirectory() as root:
+        task_id = "task-a"
+        round_no = 1
+        session_id = "12345678-1234-1234-1234-123456789abc"
+        # Real exact controller transcript: a constrained fix_recheck verdict whose semantic turn is
+        # sealed by a terminal turn-duration marker.
+        transcript = os.path.join(root, "controller.jsonl")
+        with open(transcript, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "assistant", "message": {
+                "model": "sonnet", "usage": {"output_tokens": 5},
+                "content": [{"type": "text",
+                             "text": '{"action":"fix_recheck","reason":"fresh maker clears the finding"}'}],
+            }}) + "\n")
+            fh.write(json.dumps({"type": "system", "subtype": "turn_duration",
+                                 "durationMs": 373737,
+                                 "timestamp": "2026-08-21T12:29:04.536Z"}) + "\n")
+        sealed = D.background_agent.transcript_receipt(transcript)["transcriptSha256"]
+
+        log = D.EventLog("feat-a", base=root)
+        # An earlier false human observation was recorded under the human-bound decision key while the
+        # supervisor was disappearing mid-turn.
+        human_key = D._decision_event_key(task_id, "decision", round_no, {"action": "human"})
+        assert log.append("controller.decision", trace_id="t", task_id=task_id, key=human_key,
+                          data={"action": "human", "reason": "supervisor vanished mid-turn"}) is True
+        # The controller turn completed but was sealed `stale` before the transcript's terminal row
+        # became visible. Its public receipt carries the sealed hash and session wall, no verdict text.
+        controller_key = "%s:controller:%d" % (task_id, round_no)
+        log.append("agent.completed", trace_id="t", task_id=task_id, key=controller_key, data={
+            "state": "stale", "terminalReason": "supervisor disappeared",
+            "cwd": root, "sessionId": session_id, "durationMs": 1054805,
+            "modelRequested": "sonnet", "effortRequested": "low",
+            "transcriptSha256": sealed,
+        })
+
+        client = FakeClient()
+        # Mock only at the Claude transcript boundary; EventLog/run_agent/_recover_completed/
+        # controller_decision run for real.
+        with mock.patch.object(D.background_agent, "transcript_path", return_value=transcript):
+            decision = D.controller_decision(
+                client, log, trace_id="t", feat_id="feat-a", task_id=task_id, attempt=round_no,
+                cwd=root, review={"blocking": [{"id": "b1"}]}, model="sonnet",
+                timeout=10, max_rounds=3,
+            )
+        # The vanished turn replays as its constrained fix_recheck verdict; no controller is relaunched.
+        assert decision["action"] == "fix_recheck"
+        assert decision["reason"] == "fresh maker clears the finding"
+        assert client.launched == 0
+
+        # The corrected verdict records under an action-bound key distinct from the false human one,
+        # superseding it instead of being deduplicated away.
+        fixed_key = D._decision_event_key(task_id, "decision", round_no, decision)
+        assert fixed_key != human_key
+        assert log.append("controller.decision", trace_id="t", task_id=task_id, key=fixed_key,
+                          data=decision) is True
+        actions = [row["data"]["action"] for row in log.records()
+                   if row.get("type") == "controller.decision"]
+        assert actions == ["human", "fix_recheck"]
+
+
 def test_direct_output_reserve_rejects_negative_and_allows_zero_disable():
     run = {"args": {}, "state": {"tasks": [], "kernel": {
         "budgets": {"tokens": 80000}, "usage": {"tokens": 0, "retries": 0},
