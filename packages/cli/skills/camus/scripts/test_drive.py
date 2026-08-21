@@ -69,6 +69,23 @@ def test_event_log_is_append_only_and_deduplicates_phase_keys():
         assert os.stat(os.path.dirname(log.path)).st_mode & 0o777 == 0o700
 
 
+def test_controller_decision_keys_deduplicate_replay_but_allow_corrected_evidence():
+    task_id = "task-a"
+    human = D._decision_event_key(task_id, "decision", 1, {"action": "human"})
+    fixed = D._decision_event_key(task_id, "decision", 1, {"action": "fix_recheck"})
+    assert human == D._decision_event_key(task_id, "decision", 1, {"action": "human"})
+    assert human != fixed
+    with tempfile.TemporaryDirectory() as root:
+        log = D.EventLog("feat-a", base=root)
+        assert log.append("controller.decision", trace_id="t", task_id=task_id,
+                          key=human, data={"action": "human"}) is True
+        assert log.append("controller.decision", trace_id="t", task_id=task_id,
+                          key=human, data={"action": "human"}) is False
+        assert log.append("controller.decision", trace_id="t", task_id=task_id,
+                          key=fixed, data={"action": "fix_recheck"}) is True
+        assert [row["data"]["action"] for row in log.records()] == ["human", "fix_recheck"]
+
+
 class FakeClient:
     def __init__(self):
         self.launched = 0

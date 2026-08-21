@@ -85,6 +85,13 @@ def _brief(value, maximum=160):
     return text if len(text) <= maximum else text[:maximum - 1].rstrip() + "…"
 
 
+def _decision_event_key(task_id, kind, round_no, decision):
+    """Deduplicate an observed verdict, while allowing corrected replay evidence to supersede it."""
+    action = decision.get("action") if isinstance(decision, dict) else None
+    action = action if action in CONTROLLER_ACTIONS else "invalid"
+    return "%s:%s:%d:%s" % (task_id, kind, round_no, action)
+
+
 class EventLog:
     """Append-only resumable trace. It records identities and metrics, never prompts or diffs."""
 
@@ -840,7 +847,9 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                 verify_decision["action"], verify_decision["reason"],
             ), flush=True)
             log.append("controller.decision", trace_id=trace_id, task_id=task_id,
-                       key="%s:verify-decision:%d" % (task_id, max(1, round_no)),
+                       key=_decision_event_key(
+                           task_id, "verify-decision", max(1, round_no), verify_decision,
+                       ),
                        data={**verify_decision, "budgetEvidence": budget_evidence})
             if verify_decision["action"] in ("human", "stop"):
                 return incomplete({
@@ -974,7 +983,9 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
             )
             decision["budgetEvidence"] = budget_evidence
             log.append("controller.decision", trace_id=trace_id, task_id=task_id,
-                       key="%s:decision:%d" % (task_id, max(1, round_no)), data=decision)
+                       key=_decision_event_key(
+                           task_id, "decision", max(1, round_no), decision,
+                       ), data=decision)
             print("  controller → %s (%s)" % (decision["action"], decision["reason"]), flush=True)
             if decision["action"] in ("human", "stop"):
                 return incomplete({
