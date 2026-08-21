@@ -397,10 +397,11 @@ class BackgroundAgentClient:
                     "durationMs": terminal_duration if terminal_duration is not None else session_wall_ms,
                 })
                 return receipt
-            # Claude can leave a completed turn published as supervisor `status=idle` while the
-            # row's state remains `working`. Only a terminal `system/turn_duration` row at the
-            # end of this exact session transcript proves completion; prose is not evidence.
-            if state == "working":
+            # Claude can leave a completed turn published as supervisor `status=idle`/`blocked`
+            # while the row's state remains non-terminal. Only a terminal `system/turn_duration`
+            # row at the end of this exact session transcript proves completion; prose is not
+            # evidence. A controller that deliberately chooses `human` is observed as `blocked`.
+            if state in ("working", "blocked"):
                 path = transcript_path(
                     session["cwd"], live.get("sessionId") or session.get("sessionId"),
                     projects_dir=self.projects_dir,

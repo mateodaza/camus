@@ -348,6 +348,35 @@ def test_busy_working_with_valid_terminal_marker_is_done():
         assert receipt["terminalTurnAt"] == "2026-08-21T12:46:45.977Z"
 
 
+def test_blocked_controller_with_valid_terminal_marker_is_done():
+    with tempfile.TemporaryDirectory() as projects:
+        cwd = "/tmp/repo"
+        sid = "12345678-1234-1234-1234-123456789abc"
+        path = os.path.join(projects, B.project_slug(cwd), sid + ".jsonl")
+        _write_jsonl(path, [
+            {"type": "assistant", "message": {
+                "model": "claude-sonnet-5", "usage": {"output_tokens": 7},
+                "content": [{"type": "text", "text": '{"action":"human","reason":"cap"}'}],
+            }},
+            {"type": "system", "subtype": "turn_duration", "durationMs": 3570,
+             "timestamp": "2026-08-21T16:25:27.775Z"},
+        ])
+        client = B.BackgroundAgentClient(
+            projects_dir=projects, clock=lambda: 2.0, sleeper=lambda _n: None,
+        )
+        with mock.patch.object(client, "find", return_value={
+            "id": "12345678", "sessionId": sid, "name": "n",
+            "status": "idle", "state": "blocked",
+        }):
+            receipt = client.wait({
+                "cwd": cwd, "shortId": "12345678", "sessionId": sid, "name": "n",
+                "startedAt": 1000, "modelRequested": "sonnet", "effortRequested": "low",
+            }, timeout_seconds=10, stale_after_seconds=1)
+        assert receipt["state"] == "done"
+        assert receipt["terminalTurnMarker"] is True
+        assert receipt["lastAssistantText"] == '{"action":"human","reason":"cap"}'
+
+
 def test_permission_denied_pid_probe_is_alive():
     clock_values = iter([1.0, 2.0, 3.0])
     states = iter(("working", "done"))

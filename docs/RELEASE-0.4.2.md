@@ -19,6 +19,9 @@ from three conditions that occurred during that run.
   budget stop. It restores the exact safe checkpoint and sends an already-completed maker/fix to
   independent review rather than launching another maker. Other human stops remain closed, and a
   lower or still-insufficient ceiling refuses.
+- A Claude background controller that deliberately chooses a human handoff may remain published as
+  supervisor state `blocked`. A sealed terminal turn marker now closes that turn exactly as it does
+  for `working`; unsealed prose still proves nothing.
 
 ## Dogfood evidence
 
@@ -34,6 +37,9 @@ The Slice C task exposed all three failures without losing model work:
 4. A later fix crossed its 300,000-token ceiling by 706 tokens and correctly stopped, but the native
    CLI exposed no supported way to apply the operator's higher budget. The recovery path now accepts
    that explicit decision and resumes at the pending review round without JSON surgery.
+5. The final-round controller returned a valid human verdict and terminal marker but remained
+   published as `blocked`, which would have held the driver until its timeout. Marker-bound blocked
+   turns are now adopted immediately.
 
 The recovery patch adds regression coverage for committed-maker normalization, duplicate-wrapper
 repair, eval-metric deduplication, explicit budget-stop reopening, and the high-effort timeout
