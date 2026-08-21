@@ -114,6 +114,7 @@ def transcript_receipt(path, requested_model=None, requested_effort=None):
         return {
             "transcriptPath": None, "transcriptSha256": None, "modelActual": None,
             "usage": None, "toolCalls": None, "lastAssistantText": None,
+            "terminalTurnMarker": False,
         }
     digest = hashlib.sha256()
     models = []
@@ -125,6 +126,7 @@ def transcript_receipt(path, requested_model=None, requested_effort=None):
     }
     tool_calls = 0
     last_text = None
+    last_valid_row = None
     try:
         with open(path, "rb") as raw:
             for chunk in iter(lambda: raw.read(1024 * 1024), b""):
@@ -135,6 +137,8 @@ def transcript_receipt(path, requested_model=None, requested_effort=None):
                     row = json.loads(line)
                 except (TypeError, ValueError):
                     continue
+                if isinstance(row, dict):
+                    last_valid_row = row
                 if row.get("type") != "assistant" or not isinstance(row.get("message"), dict):
                     continue
                 message = row["message"]
@@ -159,6 +163,7 @@ def transcript_receipt(path, requested_model=None, requested_effort=None):
         return {
             "transcriptPath": None, "transcriptSha256": None, "modelActual": None,
             "usage": None, "toolCalls": None, "lastAssistantText": None,
+            "terminalTurnMarker": False,
         }
     return {
         "transcriptPath": path,
@@ -170,6 +175,11 @@ def transcript_receipt(path, requested_model=None, requested_effort=None):
         "usage": usage,
         "toolCalls": tool_calls,
         "lastAssistantText": last_text,
+        "terminalTurnMarker": (
+            isinstance(last_valid_row, dict)
+            and last_valid_row.get("type") == "system"
+            and last_valid_row.get("subtype") == "turn_duration"
+        ),
     }
 
 
@@ -309,6 +319,25 @@ class BackgroundAgentClient:
                     "durationMs": max(0, ended - int(session.get("startedAt") or ended)),
                 })
                 return receipt
+            # Claude can leave a completed turn published as supervisor `status=idle` while the
+            # row's state remains `working`. Only a terminal `system/turn_duration` row at the
+            # end of this exact session transcript proves completion; prose is not evidence.
+            if state == "working" and live.get("status") == "idle":
+                path = transcript_path(
+                    session["cwd"], live.get("sessionId") or session.get("sessionId"),
+                    projects_dir=self.projects_dir,
+                )
+                marker_receipt = transcript_receipt(
+                    path, requested_model=session.get("modelRequested"),
+                    requested_effort=session.get("effortRequested"),
+                )
+                if marker_receipt.get("terminalTurnMarker") is True:
+                    ended = int(self.clock() * 1000)
+                    marker_receipt.update({
+                        **session, "state": "done", "endedAt": ended,
+                        "durationMs": max(0, ended - int(session.get("startedAt") or ended)),
+                    })
+                    return marker_receipt
             # A supervisor row can remain `working` after the child was externally terminated.
             # Detect a dead published PID immediately; otherwise cap an unchanging working row so
             # a stale session cannot consume the normal four-hour agent timeout.

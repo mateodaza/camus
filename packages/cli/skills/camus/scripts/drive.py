@@ -241,6 +241,7 @@ def _public_receipt(receipt):
         "shortId", "sessionId", "name", "cwd", "state", "startedAt", "endedAt", "durationMs",
         "modelRequested", "modelActual", "modelsObserved", "effortRequested", "billingMode",
         "surface", "transcriptSha256", "usage", "toolCalls", "terminalReason",
+        "terminalTurnMarker",
     }
     out = {key: receipt[key] for key in allowed if key in receipt}
     out["source"] = "claude_background_session"
