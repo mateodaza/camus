@@ -240,7 +240,7 @@ def _public_receipt(receipt):
     allowed = {
         "shortId", "sessionId", "name", "cwd", "state", "startedAt", "endedAt", "durationMs",
         "modelRequested", "modelActual", "modelsObserved", "effortRequested", "billingMode",
-        "surface", "transcriptSha256", "usage", "toolCalls",
+        "surface", "transcriptSha256", "usage", "toolCalls", "terminalReason",
     }
     out = {key: receipt[key] for key in allowed if key in receipt}
     out["source"] = "claude_background_session"
@@ -372,6 +372,13 @@ def _record_background_usage(base, repo, feat_id, task_id, role, attempt, receip
     )
 
 
+def _post_agent_budget_stop(feat_id, base):
+    """Re-read kernel-owned usage immediately after a maker receipt, before any next model gate."""
+    run = kernel._validated_run(feat_id, base)
+    stop = kernel._budget_stop(kernel._budgets(run), kernel._usage(run["state"]))
+    return stop
+
+
 def _review_from_node(node):
     direct = node.get("directReview") if isinstance(node.get("directReview"), dict) else None
     if not direct:
@@ -424,8 +431,9 @@ def _task_metrics(run, node, log):
     direct = node.get("directMakerUsage") if isinstance(node, dict) else None
     totals = direct.get("totals") if isinstance(direct, dict) else {}
     receipts = direct.get("receipts") if isinstance(direct, dict) else []
-    agent_rows = [row for row in log.records()
-                  if row.get("type") == "agent.completed" and row.get("taskId") == node.get("taskId")]
+    task_rows = [row for row in log.records() if row.get("taskId") == node.get("taskId")]
+    agent_rows = [row for row in task_rows if row.get("type") == "agent.completed"]
+    launched_rows = [row for row in task_rows if row.get("type") == "agent.launched"]
     model_output = 0
     model_duration = 0
     for row in agent_rows:
@@ -445,13 +453,25 @@ def _task_metrics(run, node, log):
         transcript_hashes = [item.get("transcriptSha256") for item in receipts
                              if isinstance(item, dict)
                              and isinstance(item.get("transcriptSha256"), str)]
+    attempted_sessions = len({row.get("key") for row in launched_rows if row.get("key")})
+    measured_sessions = len({row.get("key") for row in agent_rows if row.get("key")})
+    incomplete_sessions = max(0, attempted_sessions - measured_sessions)
     return {
         "wallMs": wall_ms,
         "modelWallMs": model_duration or int(totals.get("durationMs") or 0),
         "outputTokens": model_output or int(totals.get("outputTokens") or 0),
         "inputTokens": int(totals.get("inputTokens") or 0),
         "calls": len(agent_rows) or int(totals.get("calls") or 0),
-        "measurementCoverage": "background_models_plus_end_to_end_wall; reviewer_tokens_unavailable",
+        "attemptedCalls": attempted_sessions,
+        "measuredCalls": measured_sessions,
+        "attemptedSessions": attempted_sessions,
+        "measuredSessions": measured_sessions,
+        "incompleteSessions": incomplete_sessions,
+        "measurementCoverage": (
+            "incomplete_background_models_missing_terminal_receipts"
+            if incomplete_sessions else
+            "background_models_plus_end_to_end_wall; reviewer_tokens_unavailable"
+        ),
     }, transcript_hashes
 
 
@@ -509,8 +529,8 @@ def _record_episode(ledger, log, run, node, pairing, experiment, seal):
 
 def _record_incomplete_episode(ledger, log, run, node, pairing, experiment, terminal, review=None):
     metrics, transcripts = _task_metrics(run, node, log)
-    rows = log.records()
-    sequence = max([row.get("seq", 0) for row in rows] or [0])
+    terminal_event = log.latest("task.incomplete", node.get("taskId"))
+    sequence = terminal_event.get("seq", 0) if isinstance(terminal_event, dict) else 0
     action = terminal.get("action") or "stop"
     episode = evals.make_episode(
         trace_id=kernel._kernel(run["state"]).get("traceId"),
@@ -663,7 +683,7 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                    data={"pairing": experiment["armId"] if experiment else "explicit"})
 
         def incomplete(value, review_evidence=None):
-            log.append("task.incomplete", trace_id=trace_id, task_id=task_id,
+            log.append("task.incomplete", trace_id=trace_id, task_id=task_id, key=task_id,
                        data={"action": value.get("action") or "stop"})
             stopped_run = kernel._validated_run(feat_id, base)
             stopped_node = next(item for item in stopped_run["nodes"] if item["taskId"] == task_id)
@@ -687,43 +707,56 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
         fixed_unreviewed = False
         if phase == "accepted":
             seal = _accepted_seal(node)
-        elif phase in ("task_sealing", "task_verify_failed"):
+        elif phase == "task_sealing":
             intent = node.get("directSeal") if isinstance(node.get("directSeal"), dict) else {}
             fixed_unreviewed = intent.get("provenStatus") == "done_with_findings"
-            if phase == "task_sealing":
+            seal = kernel.seal_task(
+                feat_id, task_id, fixed_unreviewed=fixed_unreviewed, repo=repo,
+                verify_timeout=options.verify_timeout, base=base,
+            )
+        elif phase == "task_verify_failed":
+            budget_stop = _post_agent_budget_stop(feat_id, base)
+            if budget_stop:
+                return incomplete({
+                    "action": "stop", "reason": budget_stop,
+                    "featId": feat_id, "taskId": task_id,
+                })
+            intent = node.get("directSeal") if isinstance(node.get("directSeal"), dict) else {}
+            fixed_unreviewed = intent.get("provenStatus") == "done_with_findings"
+            verify_decision = controller_decision(
+                client, log, trace_id=trace_id, feat_id=feat_id, task_id=task_id,
+                attempt=max(1, round_no), cwd=repo,
+                review={"verificationFailed": True, "review": _review_from_node(node)},
+                model=pairing["orchestratorModel"], timeout=options.controller_timeout,
+                max_rounds=round_cap, verify_failure=True,
+            )
+            print("  controller → %s (%s)" % (
+                verify_decision["action"], verify_decision["reason"],
+            ), flush=True)
+            log.append("controller.decision", trace_id=trace_id, task_id=task_id,
+                       key="%s:verify-decision:%d" % (task_id, max(1, round_no)),
+                       data=verify_decision)
+            if verify_decision["action"] in ("human", "stop"):
+                return incomplete({
+                    "action": verify_decision["action"], "reason": verify_decision["reason"],
+                    "featId": feat_id, "taskId": task_id,
+                }, review_evidence=_review_from_node(node))
+            if verify_decision["action"] == "retry_verify":
                 seal = kernel.seal_task(
                     feat_id, task_id, fixed_unreviewed=fixed_unreviewed, repo=repo,
                     verify_timeout=options.verify_timeout, base=base,
                 )
             else:
-                verify_decision = controller_decision(
-                    client, log, trace_id=trace_id, feat_id=feat_id, task_id=task_id,
-                    attempt=max(1, round_no), cwd=repo,
-                    review={"verificationFailed": True, "review": _review_from_node(node)},
-                    model=pairing["orchestratorModel"], timeout=options.controller_timeout,
-                    max_rounds=round_cap, verify_failure=True,
-                )
-                print("  controller → %s (%s)" % (
-                    verify_decision["action"], verify_decision["reason"],
-                ), flush=True)
-                log.append("controller.decision", trace_id=trace_id, task_id=task_id,
-                           key="%s:verify-decision:%d" % (task_id, max(1, round_no)),
-                           data=verify_decision)
-                if verify_decision["action"] in ("human", "stop"):
-                    return incomplete({
-                        "action": verify_decision["action"], "reason": verify_decision["reason"],
-                        "featId": feat_id, "taskId": task_id,
-                    }, review_evidence=_review_from_node(node))
-                if verify_decision["action"] == "retry_verify":
-                    seal = kernel.seal_task(
-                        feat_id, task_id, fixed_unreviewed=fixed_unreviewed, repo=repo,
-                        verify_timeout=options.verify_timeout, base=base,
-                    )
-                else:
-                    review = _review_from_node(node)
+                review = _review_from_node(node)
         elif phase == "task_reviewed":
             review = _review_from_node(node)
         elif phase == "task_reviewing":
+            budget_stop = _post_agent_budget_stop(feat_id, base)
+            if budget_stop:
+                return incomplete({
+                    "action": "stop", "reason": budget_stop,
+                    "featId": feat_id, "taskId": task_id,
+                })
             review = kernel.review_task(feat_id, task_id, repo=repo, base=base)
         elif phase == "ready":
             kernel.dispatch_task(feat_id, task_id, repo=repo, base=base)
@@ -737,6 +770,12 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
             raise DriverError("cannot resume unknown kernel phase %s" % phase)
 
         if seal is None and review is None and phase in ("ready", "task_running", "task_open"):
+            budget_stop = _post_agent_budget_stop(feat_id, base)
+            if budget_stop:
+                return incomplete({
+                    "action": "stop", "reason": budget_stop,
+                    "featId": feat_id, "taskId": task_id,
+                })
             receipt = run_agent(
                 client, log, trace_id=trace_id, feat_id=feat_id, task_id=task_id,
                 role="maker", attempt=1, cwd=payload["worktree"],
@@ -750,10 +789,18 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                 })
             if receipt.get("state") != "done":
                 return incomplete({
-                    "action": "stop", "reason": "maker ended %s" % receipt.get("state"),
+                    "action": "stop", "reason": "maker ended %s: %s" % (
+                        receipt.get("state"), receipt.get("terminalReason") or "no terminal receipt",
+                    ),
                     "featId": feat_id, "taskId": task_id,
                 })
             _record_background_usage(base, repo, feat_id, task_id, "maker", 1, receipt)
+            budget_stop = _post_agent_budget_stop(feat_id, base)
+            if budget_stop:
+                return incomplete({
+                    "action": "stop", "reason": budget_stop,
+                    "featId": feat_id, "taskId": task_id,
+                })
             review = kernel.review_task(feat_id, task_id, repo=repo, base=base)
             round_no = review.get("reviewer", {}).get("round", 1)
 
@@ -763,6 +810,12 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
             round_no += 1
             usage = kernel._usage(kernel._validated_run(feat_id, base)["state"])
             kernel.record_usage(feat_id, retries=usage["retries"] + 1, base=base)
+            budget_stop = _post_agent_budget_stop(feat_id, base)
+            if budget_stop:
+                return incomplete({
+                    "action": "stop", "reason": budget_stop,
+                    "featId": feat_id, "taskId": task_id,
+                }, review_evidence=review)
             receipt = run_agent(
                 client, log, trace_id=trace_id, feat_id=feat_id, task_id=task_id,
                 role="fix", attempt=round_no, cwd=payload["worktree"],
@@ -774,14 +827,28 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
             )
             if receipt.get("state") != "done":
                 return incomplete({
-                    "action": "stop", "reason": "verification fix ended %s" % receipt.get("state"),
+                    "action": "stop", "reason": "verification fix ended %s: %s" % (
+                        receipt.get("state"), receipt.get("terminalReason") or "no terminal receipt",
+                    ),
                     "featId": feat_id, "taskId": task_id,
                 }, review_evidence=review)
             _record_background_usage(base, repo, feat_id, task_id, "fix", round_no, receipt)
+            budget_stop = _post_agent_budget_stop(feat_id, base)
+            if budget_stop:
+                return incomplete({
+                    "action": "stop", "reason": budget_stop,
+                    "featId": feat_id, "taskId": task_id,
+                }, review_evidence=review)
             review = kernel.review_task(feat_id, task_id, repo=repo, base=base)
             fixed_unreviewed = False
 
         while seal is None and review is not None and not review.get("clean"):
+            budget_stop = _post_agent_budget_stop(feat_id, base)
+            if budget_stop:
+                return incomplete({
+                    "action": "stop", "reason": budget_stop,
+                    "featId": feat_id, "taskId": task_id,
+                }, review_evidence=review)
             decision = controller_decision(
                 client, log, trace_id=trace_id, feat_id=feat_id, task_id=task_id,
                 attempt=max(1, round_no), cwd=repo, review={
@@ -809,10 +876,18 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
             )
             if receipt.get("state") != "done":
                 return incomplete({
-                    "action": "stop", "reason": "fix maker ended %s" % receipt.get("state"),
+                    "action": "stop", "reason": "fix maker ended %s: %s" % (
+                        receipt.get("state"), receipt.get("terminalReason") or "no terminal receipt",
+                    ),
                     "featId": feat_id, "taskId": task_id,
                 }, review_evidence=review)
             _record_background_usage(base, repo, feat_id, task_id, "fix", round_no, receipt)
+            budget_stop = _post_agent_budget_stop(feat_id, base)
+            if budget_stop:
+                return incomplete({
+                    "action": "stop", "reason": budget_stop,
+                    "featId": feat_id, "taskId": task_id,
+                }, review_evidence=review)
             if decision["action"] == "fix_verify":
                 fixed_unreviewed = True
                 break

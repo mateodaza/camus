@@ -132,6 +132,98 @@ def test_invalid_controller_output_fails_to_human():
         assert decision["action"] == "human"
 
 
+def test_direct_output_budget_stop_is_recorded_once_before_review_or_next_model():
+    with tempfile.TemporaryDirectory() as root:
+        task_id = "task-a"
+        node = {
+            "taskId": task_id, "brief": "bounded task", "status": "running",
+            "branch": "camus/feat/f/task-a", "worktree": os.path.join(root, "worktree"),
+        }
+        run = {
+            "state": {"featId": "feat-a", "feat": "F", "kernel": {
+                "phase": "task_open", "traceId": "trace:a1", "activeTaskId": task_id,
+            }, "status": "running"},
+            "args": {"feat": "F", "tasks": ["bounded task"], "targetPath": root},
+            "nodes": [node], "specs": ["bounded task"], "statePath": os.path.join(root, "state.json"),
+        }
+        options = SimpleNamespace(
+            base=root, repo=None, experiment=None, ledger=os.path.join(root, "episodes.jsonl"),
+            maker_model="claude-opus-4-8", maker_effort="high", reviewer_backend="codex",
+            reviewer_model="gpt-5.6-sol", reviewer_effort="high", controller_model="sonnet",
+            wall_seconds=None, token_budget=None, retry_budget=None, verify_timeout=10,
+            controller_timeout=10, agent_timeout=10, round_cap=2, max_tasks=None,
+            claude_binary="claude",
+        )
+        receipt = {
+            "state": "done", "modelActual": "claude-opus-4-8", "modelsObserved": ["claude-opus-4-8"],
+            "usage": {"outputTokens": 53357}, "transcriptSha256": "sha256:" + "1" * 64,
+        }
+
+        def fake_run_agent(_client, log, **kwargs):
+            log.append("agent.completed", trace_id="trace:a1", task_id=task_id,
+                       key="%s:maker:1" % task_id, data={
+                           **receipt, "durationMs": 1,
+                           "usage": {"outputTokens": 53357},
+                       })
+            return receipt
+
+        budget_reason = "direct output-token budget exhausted (53357/50000)"
+        post_budget = mock.Mock(side_effect=[None, budget_reason, budget_reason])
+        recorded = mock.Mock(return_value={"action": "maker_usage_recorded"})
+        with mock.patch.object(D.kernel, "_validated_run", return_value=run), \
+                mock.patch.object(D.kernel, "_resolve_repo", return_value=root), \
+                mock.patch.object(D.kernel, "_selected_index", return_value=(0, None)), \
+                mock.patch.object(D.kernel, "task_payload", return_value={
+                    "loopArgs": {"task": "bounded task"}, "repo": root,
+                }), \
+                mock.patch.object(D.kernel, "open_task", return_value={
+                    "loopArgs": {"task": "bounded task"}, "repo": root,
+                    "worktree": node["worktree"], "branch": node["branch"],
+                }), \
+                mock.patch.object(D, "run_agent", side_effect=fake_run_agent) as maker, \
+                mock.patch.object(D, "_record_background_usage", recorded), \
+                mock.patch.object(D, "_post_agent_budget_stop", post_budget), \
+                mock.patch.object(D.kernel, "review_task") as review, \
+                mock.patch.object(D, "controller_decision") as controller:
+            first = D._drive_feature("feat-a", options)
+            second = D._drive_feature("feat-a", options)
+
+        assert first["action"] == "stop" and budget_reason in first["reason"]
+        assert second["action"] == "stop" and budget_reason in second["reason"]
+        assert maker.call_count == 1, "replay must not launch a second maker"
+        assert recorded.call_args.args[-1]["usage"]["outputTokens"] == 53357
+        review.assert_not_called()
+        controller.assert_not_called()
+        episodes = D.evals.Ledger(options.ledger).records()
+        assert len(episodes) == 1
+        assert episodes[0]["outcome"]["verificationPass"] is False
+        assert episodes[0]["economics"]["outputTokens"] == 53357
+
+
+def test_metrics_expose_unfinished_launched_session_without_inventing_usage():
+    with tempfile.TemporaryDirectory() as root:
+        log = D.EventLog("feat-a", base=root)
+        node = {"taskId": "task-a", "directMakerUsage": {"totals": {"outputTokens": 53357}}}
+        run = {"state": {"kernel": {"traceId": "trace:a1"}}}
+        log.append("agent.launched", trace_id="trace:a1", task_id="task-a",
+                   key="task-a:maker:1", data={"sessionId": "maker"})
+        log.append("agent.completed", trace_id="trace:a1", task_id="task-a",
+                   key="task-a:maker:1", data={
+                       "durationMs": 10, "usage": {"outputTokens": 53357},
+                       "transcriptSha256": "sha256:" + "1" * 64,
+                   })
+        log.append("agent.launched", trace_id="trace:a1", task_id="task-a",
+                   key="task-a:fix:2", data={"sessionId": "stopped-fix"})
+        metrics, _transcripts = D._task_metrics(run, node, log)
+        assert metrics["attemptedCalls"] == 2
+        assert metrics["measuredCalls"] == 1
+        assert metrics["attemptedSessions"] == 2
+        assert metrics["measuredSessions"] == 1
+        assert metrics["incompleteSessions"] == 1
+        assert metrics["measurementCoverage"] == "incomplete_background_models_missing_terminal_receipts"
+        assert metrics["outputTokens"] == 53357
+
+
 def test_feature_driver_lease_refuses_duplicate_host():
     with tempfile.TemporaryDirectory() as root:
         directory = os.path.join(root, "sessions")
@@ -168,7 +260,14 @@ def test_incomplete_attempt_is_retained_in_eval_denominator():
             {"id": "ab", "armId": "opus-sol", "taskClass": "bounded_feature"},
             {"action": "stop", "reason": "maker failed"},
         )
+        D._record_incomplete_episode(
+            ledger, log, run, node,
+            {"makerModel": "opus", "reviewerModel": "sol"},
+            {"id": "ab", "armId": "opus-sol", "taskClass": "bounded_feature"},
+            {"action": "stop", "reason": "maker failed"},
+        )
         record = ledger.records()[0]
+        assert len(ledger.records()) == 1
         assert record["taskClass"] == "bounded_feature"
         assert record["outcome"]["terminalAction"] == "stop"
         assert D.evals.arm_stats(ledger.records(), "ab", "opus-sol")["qualityFloorRate"] == 0

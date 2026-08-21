@@ -2,6 +2,7 @@
 """Hermetic contract tests for the Claude background-session adapter."""
 
 import json
+import errno
 import os
 import tempfile
 from types import SimpleNamespace
@@ -139,6 +140,88 @@ def test_wait_returns_durable_receipt_and_never_invents_billing():
         assert receipt["billingMode"] == "claude_ai_account_quota"
         assert receipt["modelActual"] == "claude-sonnet-4-7"
         assert receipt["usage"]["outputTokens"] == 3
+
+
+def test_wait_marks_disappeared_session_stale_instead_of_waiting_four_hours():
+    clock_values = iter([1.0, 2.0])
+    client = B.BackgroundAgentClient(clock=lambda: next(clock_values), sleeper=lambda _n: None)
+    with mock.patch.object(client, "find", return_value=None):
+        receipt = client.wait({
+            "cwd": "/tmp/repo", "shortId": "12345678",
+            "sessionId": "12345678-1234-1234-1234-123456789abc", "name": "n",
+            "startedAt": 1000, "modelRequested": "sonnet", "effortRequested": "low",
+        }, timeout_seconds=14400)
+    assert receipt["state"] == "stale"
+    assert "disappeared" in receipt["terminalReason"]
+
+
+def test_wait_marks_dead_published_pid_stale():
+    clock_values = iter([1.0, 2.0])
+    client = B.BackgroundAgentClient(clock=lambda: next(clock_values), sleeper=lambda _n: None)
+    with mock.patch.object(client, "find", return_value={
+        "id": "12345678", "sessionId": "12345678-1234-1234-1234-123456789abc",
+        "name": "n", "state": "working", "pid": 2147483647,
+    }):
+        receipt = client.wait({
+            "cwd": "/tmp/repo", "shortId": "12345678",
+            "sessionId": "12345678-1234-1234-1234-123456789abc", "name": "n",
+            "startedAt": 1000, "modelRequested": "sonnet", "effortRequested": "low",
+        }, timeout_seconds=14400)
+    assert receipt["state"] == "stale"
+    assert "process" in receipt["terminalReason"]
+
+
+def test_wait_bounds_working_row_without_pid_with_short_grace():
+    current = [0.0]
+
+    def clock():
+        current[0] += 0.6
+        return current[0]
+
+    client = B.BackgroundAgentClient(clock=clock, sleeper=lambda _n: None)
+    with mock.patch.object(client, "find", return_value={
+        "id": "12345678", "sessionId": "12345678-1234-1234-1234-123456789abc",
+        "name": "n", "state": "working",
+    }):
+        receipt = client.wait({
+            "cwd": "/tmp/repo", "shortId": "12345678",
+            "sessionId": "12345678-1234-1234-1234-123456789abc", "name": "n",
+            "startedAt": 1000, "modelRequested": "sonnet", "effortRequested": "low",
+        }, timeout_seconds=14400, stale_after_seconds=1)
+    assert receipt["state"] == "stale"
+    assert "stale-session bound" in receipt["terminalReason"]
+
+
+def test_live_pid_ignores_short_stale_bound_until_normal_timeout_or_terminal():
+    clock_values = iter([1.0, 2.0, 3.0])
+    states = iter(("working", "done"))
+    client = B.BackgroundAgentClient(clock=lambda: next(clock_values), sleeper=lambda _n: None)
+    with mock.patch.object(client, "find", side_effect=lambda *_args, **_kwargs: {
+        "id": "12345678", "sessionId": "12345678-1234-1234-1234-123456789abc",
+        "name": "n", "state": next(states), "pid": os.getpid(),
+    }):
+        receipt = client.wait({
+            "cwd": "/tmp/repo", "shortId": "12345678",
+            "sessionId": "12345678-1234-1234-1234-123456789abc", "name": "n",
+            "startedAt": 1000, "modelRequested": "sonnet", "effortRequested": "low",
+        }, timeout_seconds=10, stale_after_seconds=1)
+    assert receipt["state"] == "done"
+
+
+def test_permission_denied_pid_probe_is_alive():
+    clock_values = iter([1.0, 2.0, 3.0])
+    states = iter(("working", "done"))
+    client = B.BackgroundAgentClient(clock=lambda: next(clock_values), sleeper=lambda _n: None)
+    with mock.patch.object(client, "find", side_effect=lambda *_args, **_kwargs: {
+        "id": "12345678", "sessionId": "12345678-1234-1234-1234-123456789abc",
+        "name": "n", "state": next(states), "pid": 4242,
+    }), mock.patch.object(B.os, "kill", side_effect=OSError(errno.EPERM, "not allowed")):
+        receipt = client.wait({
+            "cwd": "/tmp/repo", "shortId": "12345678",
+            "sessionId": "12345678-1234-1234-1234-123456789abc", "name": "n",
+            "startedAt": 1000, "modelRequested": "sonnet", "effortRequested": "low",
+        }, timeout_seconds=10, stale_after_seconds=1)
+    assert receipt["state"] == "done"
 
 
 if __name__ == "__main__":

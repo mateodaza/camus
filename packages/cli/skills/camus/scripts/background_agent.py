@@ -11,6 +11,7 @@ lists (never a shell string), and receipts retain only model/session/timing/usag
 hash of the transcript -- never its potentially sensitive prose.
 """
 
+import errno
 import hashlib
 import json
 import os
@@ -271,7 +272,8 @@ class BackgroundAgentClient:
             "surface": "claude_background_session",
         }
 
-    def wait(self, session, timeout_seconds=14400, poll_seconds=5, on_state=None):
+    def wait(self, session, timeout_seconds=14400, poll_seconds=5, on_state=None,
+             stale_after_seconds=30):
         started = self.clock()
         last_state = None
         while True:
@@ -280,7 +282,12 @@ class BackgroundAgentClient:
                 session_id=session.get("sessionId"), name=session.get("name"),
             )
             if not live:
-                raise BackgroundAgentError("background session disappeared before a terminal state")
+                now = self.clock()
+                return {
+                    **session, "state": "stale", "endedAt": int(now * 1000),
+                    "durationMs": int((now - started) * 1000),
+                    "terminalReason": "background session disappeared before a terminal state",
+                }
             state = live.get("state") or "unknown"
             if state != last_state and on_state:
                 on_state(state, live)
@@ -302,8 +309,38 @@ class BackgroundAgentClient:
                     "durationMs": max(0, ended - int(session.get("startedAt") or ended)),
                 })
                 return receipt
-            if self.clock() - started >= timeout_seconds:
-                return {**session, "state": "timeout", "durationMs": int((self.clock() - started) * 1000)}
+            # A supervisor row can remain `working` after the child was externally terminated.
+            # Detect a dead published PID immediately; otherwise cap an unchanging working row so
+            # a stale session cannot consume the normal four-hour agent timeout.
+            pid = live.get("pid")
+            pid_alive = False
+            if isinstance(pid, int) and pid > 0:
+                try:
+                    os.kill(pid, 0)
+                    pid_alive = True
+                except OSError as exc:
+                    if exc.errno == errno.ESRCH:
+                        now = self.clock()
+                        return {
+                            **session, "state": "stale", "endedAt": int(now * 1000),
+                            "durationMs": int((now - started) * 1000),
+                            "terminalReason": "background session process is no longer alive",
+                        }
+                    # EPERM (and other probe errors) means the PID exists but is not
+                    # signalable from this process; do not misclassify it as stale.
+                    pid_alive = True
+            elapsed = self.clock() - started
+            if elapsed >= timeout_seconds:
+                return {
+                    **session, "state": "stale", "durationMs": int(elapsed * 1000),
+                    "terminalReason": "background session exceeded its stale-session wait bound",
+                }
+            if (not pid_alive and stale_after_seconds is not None
+                    and elapsed >= stale_after_seconds):
+                return {
+                    **session, "state": "stale", "durationMs": int(elapsed * 1000),
+                    "terminalReason": "background session remained non-terminal past stale-session bound",
+                }
             self.sleeper(max(0.1, poll_seconds))
 
 
