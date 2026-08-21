@@ -346,6 +346,126 @@ def test_zero_valued_metrics_are_not_ranked_as_infinite():
     assert segment["leader"] == "zero", segment
 
 
+# --- Native orchestration overhead: overhead per episode is max(0, wallMs - modelWallMs); the
+# medians are reported only from complete raw timing pairs and never invent coverage. ---
+
+def _timed_episode(number, arm, config_hash="sha256:cfg", economics=None):
+    return E.make_episode(
+        trace_id="f:a%d" % number, feat_id="f", task_id="t%d" % number,
+        task_hash="sha256:%064d" % number, task_class="feature",
+        pairing={"makerModel": arm, "reviewerModel": "judge"},
+        outcome={"verificationPass": True, "independentReview": "clean", "humanIntervention": False},
+        economics=economics if economics is not None else {"wallMs": 1000, "outputTokens": 100},
+        artifact={"commit": "%040d" % number},
+        experiment={"id": "exp", "armId": arm, "configHash": config_hash}, recorded_at=number,
+    )
+
+
+def test_orchestration_overhead_from_complete_raw_timing():
+    rows = [
+        _timed_episode(1, "a", economics={"wallMs": 1000, "modelWallMs": 700, "outputTokens": 10}),
+        _timed_episode(2, "a", economics={"wallMs": 1600, "modelWallMs": 1000, "outputTokens": 10}),
+    ]
+    stats = E.summarize(rows)["segments"][0]["arms"]["a"]
+    assert stats["medianModelWallMs"] == 850  # median(700, 1000)
+    assert stats["medianOrchestrationOverheadMs"] == 450  # median(300, 600)
+
+
+def test_orchestration_overhead_is_null_when_model_wall_absent():
+    # Without modelWallMs there is no pair to subtract: overhead must be null, never imputed
+    # from wallMs alone, and modelWallMs itself stays null.
+    rows = [
+        _timed_episode(1, "a", economics={"wallMs": 1000, "outputTokens": 10}),
+        _timed_episode(2, "a", economics={"wallMs": 2000, "outputTokens": 10}),
+    ]
+    stats = E.summarize(rows)["segments"][0]["arms"]["a"]
+    assert stats["medianWallMs"] == 1500
+    assert stats["medianModelWallMs"] is None
+    assert stats["medianOrchestrationOverheadMs"] is None
+
+
+def test_orchestration_overhead_ignores_episodes_missing_either_side():
+    # Only the episode with both wallMs and modelWallMs contributes; the half-timed episode is
+    # not counted as zero overhead (that would invent coverage).
+    rows = [
+        _timed_episode(1, "a", economics={"wallMs": 1000, "modelWallMs": 400, "outputTokens": 10}),
+        _timed_episode(2, "a", economics={"modelWallMs": 400, "outputTokens": 10}),
+    ]
+    stats = E.summarize(rows)["segments"][0]["arms"]["a"]
+    assert stats["medianOrchestrationOverheadMs"] == 600  # only episode 1, not median(600, 0)
+    # medianModelWallMs must share the same complete-pair population: the half-timed episode's
+    # modelWallMs=400 is excluded, so only episode 1's 400 counts (not the standalone median).
+    assert stats["medianModelWallMs"] == 400
+
+
+def test_model_wall_median_null_without_complete_pair():
+    # Every episode carries modelWallMs but omits wallMs, so no complete pair exists. Both
+    # pair-requiring medians are null rather than reporting a standalone modelWallMs median.
+    rows = [
+        _timed_episode(1, "a", economics={"modelWallMs": 700, "outputTokens": 10}),
+        _timed_episode(2, "a", economics={"modelWallMs": 1000, "outputTokens": 10}),
+    ]
+    stats = E.summarize(rows)["segments"][0]["arms"]["a"]
+    assert stats["medianModelWallMs"] is None
+    assert stats["medianOrchestrationOverheadMs"] is None
+
+
+def test_explicit_incomplete_native_timing_is_not_treated_as_a_complete_pair():
+    # Native recovery can expose numeric timings for the measured subset while stating that a
+    # launched session has no terminal receipt. Subtracting that partial duration would mislabel
+    # the unmeasured model runtime as orchestration overhead.
+    rows = [_timed_episode(1, "a", economics={
+        "wallMs": 1000, "modelWallMs": 400, "outputTokens": 10,
+        "attemptedSessions": 2, "measuredSessions": 1, "incompleteSessions": 1,
+        "measurementCoverage": "incomplete_background_models_missing_terminal_receipts",
+    })]
+    stats = E.summarize(rows)["segments"][0]["arms"]["a"]
+    assert stats["medianWallMs"] == 1000
+    assert stats["medianModelWallMs"] is None
+    assert stats["medianOrchestrationOverheadMs"] is None
+
+
+def test_complete_native_timing_is_admitted_despite_unavailable_reviewer_tokens():
+    rows = [_timed_episode(1, "a", economics={
+        "wallMs": 1000, "modelWallMs": 400, "outputTokens": 10,
+        "attemptedSessions": 1, "measuredSessions": 1, "incompleteSessions": 0,
+        "measurementCoverage": "background_models_plus_end_to_end_wall; reviewer_tokens_unavailable",
+    })]
+    stats = E.summarize(rows)["segments"][0]["arms"]["a"]
+    assert stats["medianModelWallMs"] == 400
+    assert stats["medianOrchestrationOverheadMs"] == 600
+
+
+def test_impossible_negative_overhead_is_floored_at_zero():
+    # modelWallMs > wallMs is impossible raw evidence; overhead floors at 0 rather than going
+    # negative and understating a real arm's latency.
+    rows = [
+        _timed_episode(1, "a", economics={"wallMs": 500, "modelWallMs": 900, "outputTokens": 10}),
+        _timed_episode(2, "a", economics={"wallMs": 500, "modelWallMs": 900, "outputTokens": 10}),
+    ]
+    stats = E.summarize(rows)["segments"][0]["arms"]["a"]
+    assert stats["medianOrchestrationOverheadMs"] == 0
+
+
+def test_overhead_does_not_change_quality_first_ranking():
+    # An arm with lower model wall but huge orchestration overhead must not be reranked ahead of
+    # a faster-overall arm: ranking stays on medianWallMs, then medianOutputTokens.
+    rows = [
+        _timed_episode(1, "fast", economics={"wallMs": 100, "modelWallMs": 90, "outputTokens": 10}),
+        _timed_episode(2, "fast", economics={"wallMs": 100, "modelWallMs": 90, "outputTokens": 10}),
+        _timed_episode(3, "slow", economics={"wallMs": 9000, "modelWallMs": 10, "outputTokens": 10}),
+        _timed_episode(4, "slow", economics={"wallMs": 9000, "modelWallMs": 10, "outputTokens": 10}),
+    ]
+    plan = {
+        "id": "exp", "configHash": "sha256:cfg", "taskClass": "feature",
+        "minimumTrials": 2, "qualityFloor": 0.5,
+        "mode": "route", "arms": [{"id": "fast"}, {"id": "slow"}],
+    }
+    segment = E.summarize(rows, plans=[plan])["segments"][0]
+    assert segment["leader"] == "fast", segment
+    assert segment["arms"]["slow"]["medianOrchestrationOverheadMs"] == 8990
+
+
 if __name__ == "__main__":
     import sys
     tests = [value for key, value in sorted(globals().items())

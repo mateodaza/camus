@@ -207,6 +207,44 @@ def _median(values):
     return statistics.median(values) if values else None
 
 
+def _is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _timing_coverage_complete(item):
+    """Reject native partial timing even when its measured subset is numeric."""
+    coverage = item.get("measurementCoverage")
+    if isinstance(coverage, str):
+        return coverage == "background_models_plus_end_to_end_wall; reviewer_tokens_unavailable"
+    incomplete = item.get("incompleteSessions")
+    return not (_is_number(incomplete) and incomplete > 0)
+
+
+def _timing_pairs(economics):
+    """Episodes carrying both raw timings, as (wallMs, modelWallMs) tuples.
+
+    An episode contributes only when both wallMs and modelWallMs are real numbers; a missing side
+    is never imputed. This is the single complete-pair population shared by every timing median
+    that requires the pair.
+    """
+    return [
+        (item.get("wallMs"), item.get("modelWallMs"))
+        for item in economics
+        if _is_number(item.get("wallMs")) and _is_number(item.get("modelWallMs"))
+        and _timing_coverage_complete(item)
+    ]
+
+
+def _orchestration_overheads(pairs):
+    """Per-episode native orchestration overhead over complete timing pairs.
+
+    Overhead is max(0, wallMs - modelWallMs): the observed end-to-end wall time not spent inside
+    the model. Impossible raw evidence (modelWallMs > wallMs) is floored at zero rather than
+    reported as negative overhead.
+    """
+    return [max(0, wall - model) for wall, model in pairs]
+
+
 def arm_stats(records, experiment_id, arm_id, task_class=None, config_hash=_ANY_CONFIG_HASH):
     rows = [
         row for row in records
@@ -218,11 +256,14 @@ def arm_stats(records, experiment_id, arm_id, task_class=None, config_hash=_ANY_
     ]
     passed = sum(1 for row in rows if _floor_pass(row))
     economics = [row.get("economics") for row in rows if isinstance(row.get("economics"), dict)]
+    pairs = _timing_pairs(economics)
     return {
         "trials": len(rows),
         "qualityFloorPasses": passed,
         "qualityFloorRate": passed / len(rows) if rows else None,
         "medianWallMs": _median([item.get("wallMs") for item in economics]),
+        "medianModelWallMs": _median([model for _wall, model in pairs]),
+        "medianOrchestrationOverheadMs": _median(_orchestration_overheads(pairs)),
         "medianOutputTokens": _median([item.get("outputTokens") for item in economics]),
     }
 
@@ -477,9 +518,14 @@ def main(argv=None):
             for arm, stats in segment["arms"].items():
                 rate = "—" if stats["qualityFloorRate"] is None else "%.0f%%" % (100 * stats["qualityFloorRate"])
                 wall = "—" if stats["medianWallMs"] is None else "%.1fm" % (stats["medianWallMs"] / 60000)
+                model_wall = "—" if stats["medianModelWallMs"] is None \
+                    else "%.1fm" % (stats["medianModelWallMs"] / 60000)
+                overhead = "—" if stats["medianOrchestrationOverheadMs"] is None \
+                    else "%.1fm" % (stats["medianOrchestrationOverheadMs"] / 60000)
                 coverage = "n=%d" % stats["trials"] if minimum is None \
                     else "n=%d/%d" % (stats["trials"], minimum)
-                print("  %-18s %s quality=%s median=%s" % (arm, coverage, rate, wall))
+                print("  %-18s %s quality=%s median=%s model=%s overhead=%s" % (
+                    arm, coverage, rate, wall, model_wall, overhead))
             print("  → %s" % _standing_line(segment))
         print("\n" + report["note"])
     return 0

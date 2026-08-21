@@ -36,6 +36,20 @@ Top-level `segmented_only` likewise names no winner: consumers must inspect `seg
 `episodes` is the ledger-row count in scope; `experimentEpisodes` is the subset with experiment
 evidence.
 
+Each arm also exposes native orchestration overhead. `medianModelWallMs` is the median measured
+background maker/controller time, and `medianOrchestrationOverheadMs` is the median of each
+episode's `max(0, wallMs - modelWallMs)` — the observed orchestration gap around that background
+model work. The gap includes independent-review time as well as deterministic host control; it is
+not a claim that every millisecond was kernel CPU time. An episode contributes to these medians only
+when it carries both `wallMs` and `modelWallMs` and, when native coverage is declared, complete
+background-session timing. An episode missing either side or declaring incomplete measurement is
+counted in neither (never imputed as zero overhead), and impossible raw evidence where
+`modelWallMs > wallMs` floors at zero instead of
+reporting a negative overhead. Both fields are `null` when no episode supplies the required pair, so
+absent timing evidence is never dressed up as measured coverage. The text report renders them as
+`model=` and `overhead=`. They are reported evidence only: arm ranking stays quality-first, then
+`medianWallMs`, then `medianOutputTokens`, and overhead never reorders arms.
+
 ## Release gate
 
 Before release, run one fresh multi-task dogfood through `camus start` + `camus run` using Opus 4.8

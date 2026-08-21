@@ -202,6 +202,19 @@ rejected loudly, never silently downgraded.
   `(experiment id, configHash, taskClass)` tuple. Without the matching config it reports observed
   coverage but no leader. Configured arms with no trials remain visible at `n=0`, and records from
   changed configs or task classes are never pooled into a complete-looking result.
+- **Native orchestration overhead is visible per arm.** Each arm reports `medianModelWallMs` (median
+  measured background maker/controller time) alongside `medianWallMs`, and
+  `medianOrchestrationOverheadMs` — the median of each episode's
+  `max(0, wallMs - modelWallMs)`, the observed orchestration gap around that background model work.
+  The gap includes independent-review time as well as deterministic host control; it is not a claim
+  that every millisecond was kernel CPU time. Overhead is computed only for episodes that carry both
+  raw timings and, when native coverage is declared, complete background-session timing. An episode
+  missing either side or declaring incomplete measurement contributes to neither median (no imputed
+  zero), and impossible raw evidence
+  (`modelWallMs > wallMs`) floors at zero rather than reporting negative overhead. Both medians are
+  `null` when no episode supplies the required pair. The text report shows them as `model=` and
+  `overhead=`. These are reported evidence only: arm ranking stays quality-first, then `medianWallMs`,
+  then `medianOutputTokens` — overhead never reorders arms.
 
 - **Plan it first (optional).** `/camus-plan "<request>"` reframes a vague or large
   request into a quality-gated, ordered task list before any code is written: it grounds
