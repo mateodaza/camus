@@ -21,10 +21,12 @@ The trust-protocol integration now ships in Studio: every new run starts with an
 
 ## Quickstart
 
-Requirements: Node ≥ 18.17, plus — for the live engine — the `claude` (Claude Code) and `codex` CLIs installed and authenticated.
+Requirements: Node ≥ 18.17. Built-in seats use the authenticated `claude`
+(Claude Code) and `codex` CLIs; configurable seats use the endpoint and env-var
+credential declared in local operator state.
 
 ```bash
-node server.mjs --doctor   # check claude / codex / hivemind wiring
+node server.mjs --doctor   # check wiring; deep-probes declared custom seats and may spend provider tokens
 node server.mjs            # live engine → http://localhost:1913
 npm run rehearse           # mock engine: full scripted loop, no model calls, ~2 min
 npm test                   # deterministic-verifier self-test
@@ -35,7 +37,7 @@ npm test                   # deterministic-verifier self-test
 The setup is guided from inside the page. One command starts the studio (`node server.mjs`, or `npx camus-loop-studio` once published) — that first command is still a terminal step until a packaged launcher ships; everything after it happens in the browser:
 
 - The **setup** panel runs the same checks as `--doctor`, row by row, and every missing piece comes with the exact command to paste — install Claude Code, install Codex, sign in once each. "Check again" re-verifies without restarting anything.
-- The **settings** panel edits the run decisions (maker model, reviewer model, effort, review rounds) and writes local operator state to `~/.camus/studio/models.json` with a stamped why. The tracked [checks/models.json](checks/models.json) remains a cheap public fallback, so dogfood choices do not dirty the repo or become somebody else's default.
+- The **settings** panel edits the run decisions (maker model, reviewer model, effort, review rounds) and writes local operator state to `~/.camus/studio/models.json` with a stamped why. The tracked [checks/models.json](checks/models.json) remains a cheap public fallback, so dogfood choices do not dirty the repo or become somebody else's default. Configurable models stay disabled until the operator explicitly qualifies that exact maker or reviewer tuple; the action warns that it can spend provider tokens.
 - **Show the session** (in a running view) opens the raw feed underneath the loop: the maker's live searches, the reviewer's reasoning, token counts — the "what is it actually doing right now" view.
 - **Publish the completed artifact to Hivemind** is an explicit words-lane opt-in on the launch form. It is off by default; accepting review findings never implies permission to publish.
 
@@ -45,22 +47,30 @@ Every model is named explicitly on every call (`claude --model`, `codex -m`, or 
 
 ### Any model in either seat
 
-Since the multi-model-seats slice ([docs/MULTI-MODEL-SEATS.md](../../docs/MULTI-MODEL-SEATS.md)) the two seats — **maker** (drafts and fixes) and **reviewer** (tries to break it) — are filled independently from a backend-qualified catalog: the built-in `claude` and `codex` CLI backends in either seat (including reversed: GPT writes, Claude reviews), plus opt-in `openai_compat` entries for open-weight endpoints. Declare one under `backends`:
+Since the multi-model-seats slice ([docs/MULTI-MODEL-SEATS.md](../../docs/MULTI-MODEL-SEATS.md)) the two seats — **maker** (drafts and fixes) and **reviewer** (tries to break it) — are filled independently: the built-in `claude` and `codex` CLI backends in either seat (including reversed: GPT writes, Claude reviews), plus opt-in `openai_compat` entries for open-weight endpoints. A declaration makes a tuple visible; it does **not** make it selectable. The tuple must separately earn a live capability receipt.
 
 ```json
+"connections": {
+  "moonshot": { "kind": "direct_https", "baseUrl": "https://api.moonshot.ai/v1" }
+},
 "backends": {
   "kimi": {
-    "kind": "openai_compat",
-    "provider": "moonshot",
-    "baseUrl": "https://api.moonshot.ai/v1",
-    "apiKeyEnv": "MOONSHOT_API_KEY",
-    "models": ["kimi-k2-0905-preview"],
+    "kind": "openai_compat", "provider": "moonshot",
+    "connection": "moonshot", "protocol": "chat_completions",
+    "trainingOrg": "moonshot", "modelFamily": "kimi", "derivedFrom": null,
+    "inferenceOperator": "moonshot",
+    "auth": { "kind": "env", "envVar": "MOONSHOT_API_KEY" },
+    "models": ["kimi-k3"], "seats": ["maker", "reviewer"],
     "why": "added <date> for <reason>"
   }
 }
 ```
 
-No backend exists until someone writes one down; the key lives only in the named env var. A same-vendor pairing is allowed and recorded honestly: the review seals as **advisory** and the standing reads **same-vendor reviewed**, never independent. Boundaries of the slice: Build keeps the gate's own pairing, Compare & Learn and audit replay keep their frozen claude/codex catalogs, grounded managed-connector runs need a claude-backend maker, and `openai_compat` backends have no tools (no web, no MCP) — a contract demanding live-loaded sources will honestly fail review under such a maker.
+No backend exists until someone writes one down; the key lives only in the named env var. Settings includes inert declaration starters for xAI, Moonshot, DashScope, Ollama, LM Studio, llama.cpp, vLLM, and a neutral OpenAI-compatible HTTPS server. Copying a starter grants no lineage or qualification. After the declaration loads, **Qualify** runs the production streaming, context-window, reported-model, and reviewer-JSON probes for one exact `(seat, backend, model, connection)` tuple. Missing, failed, expired, wrong-seat, wrong-model, credential-drift, and observed server-drift receipts cannot save or launch. A successful launch freezes the accepted `qual1:` fingerprint into the run snapshot, every round, and envelope 3.
+
+Model discovery is advisory: `listed`, `unlisted`, and `discovery_unavailable` are shown, but a valid qualification is what gates admission. A same-vendor pairing is allowed and recorded honestly: the review seals as **advisory** and the standing reads **same-vendor reviewed**, never independent. A cross-organization pairing backed only by operator declarations seals as **declared**, never as registry-verified. The server supplies the badges and warning copy; the browser does not derive a trust tier.
+
+Boundaries of this release: only `chat_completions` over `loopback` and `direct_https` is selectable. OpenAI Responses is visibly planned, not selectable. Managed SSH, its connection editor, and CLI/gate custom-reviewer dispatch remain later slices. Build keeps the gate's own pairing, Compare & Learn and audit replay keep their frozen claude/codex catalogs, grounded managed-connector runs need a claude-backend maker, and `openai_compat` backends have no tools (no web, no MCP) — a contract demanding live-loaded sources will honestly fail review under such a maker. The hermetic fixture proves the complete local adapter path; real xAI/Moonshot/DashScope credentials and real Ollama/vLLM/LM Studio hardware remain an explicit provider-backed validation gap.
 
 Both **codex** seats run a hardened subprocess: shell/exec, web search (which defaults to *on*), browser, apps, and plugins disabled by flag; no user config, rules, or MCP; ephemeral session; a scrubbed environment; and a fail-closed watch that refuses the call if any unexpected tool event appears. See [docs/MULTI-MODEL-SEATS.md](../../docs/MULTI-MODEL-SEATS.md#the-hardened-codex-profile-both-seats) for the flag table and the live controls behind each claim.
 

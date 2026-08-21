@@ -47,8 +47,8 @@ const models = {
   reviewer: { backend: 'codex', model: 'gpt-5.4-mini', effort: 'low' },
   loop: { roundCap: 2 },
   connections: {
-    hosted: { kind: 'direct_https', baseUrl: 'https://models.privacy.invalid/v1' },
-    local: { kind: 'loopback', port: brokenModelsPort, basePath: '/v1' },
+    hosted: { kind: 'direct_https', baseUrl: 'https://models.privacy.invalid/v1', resolvedBaseUrl: 'http://127.0.0.1:49177/v1', localPort: 49177 },
+    local: { kind: 'loopback', port: brokenModelsPort, basePath: '/v1', resolvedPort: 49178 },
     local_down: { kind: 'loopback', port: 9, basePath: '/v1' },
     legacy_lab: { kind: 'legacy_http', baseUrl: 'http://192.168.88.7:11434/v1' },
   },
@@ -57,6 +57,7 @@ const models = {
       kind: 'openai_compat', provider: 'acme', connection: 'hosted', protocol: 'chat_completions',
       trainingOrg: 'acme', modelFamily: 'acme-family', derivedFrom: null, inferenceOperator: 'acme',
       auth: { kind: 'env', envVar: KEY_NAME }, models: ['acme-large', 'acme-edge'], seats: ['maker', 'reviewer'],
+      resolvedBaseUrl: 'http://127.0.0.1:49177/v1', resolvedPort: 49177,
     },
     keyless_backend: {
       kind: 'openai_compat', provider: 'openlab', connection: 'local', protocol: 'chat_completions',
@@ -175,6 +176,52 @@ try {
   await check('no broad environment dump (an unreferenced value never leaks)', async () => {
     assertNoPlantedValues(configText, [{ name: DECOY_NAME, value: DECOY }]);
     assertNoPlantedValues(doctorText, [{ name: DECOY_NAME, value: DECOY }]);
+  });
+
+  await check('config omits runtime state and raw receipt components', async () => {
+    for (const forbidden of ['resolvedBaseUrl', 'resolvedPort', 'localPort', 'credentialRevision', 'components', 'probedAt']) {
+      assert.ok(!configText.includes(`"${forbidden}"`), `/api/config omits ${forbidden}`);
+    }
+    const config = JSON.parse(configText);
+    for (const template of config.templates ?? []) {
+      const text = JSON.stringify(template);
+      assert.ok(!text.includes('lineage.source'));
+      assert.ok(!text.includes('credentialRevision'));
+      assert.ok(!text.includes('resolvedBaseUrl'));
+    }
+  });
+
+  await check('the SSE run event exposes only safe pairing presentation', async () => {
+    const session = await (await fetch(`${base}/api/status`)).json();
+    const started = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': session.token },
+      body: JSON.stringify({
+        goal: 'privacy sweep run for the server authored pairing presentation',
+        acceptanceContract: 'The receipt must preserve the selected maker and reviewer without exposing runtime configuration.',
+        lane: 'freeform', publish: false,
+      }),
+    });
+    assert.equal(started.status, 201);
+    const { id } = await started.json();
+    const events = await fetch(`${base}/api/runs/${id}/events`, { headers: { origin: base } });
+    const reader = events.body.getReader();
+    const decoder = new TextDecoder();
+    let streamed = '';
+    for (let i = 0; i < 10 && !streamed.includes('"type":"run"'); i += 1) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      streamed += decoder.decode(value, { stream: true });
+    }
+    await reader.cancel();
+    assert.match(streamed, /"pairingView"/, 'the server-authored safe presentation is present');
+    assertNoPlantedValues(streamed, [{ name: KEY_NAME, value: SECRET }, { name: DECOY_NAME, value: DECOY }]);
+    for (const forbidden of ['resolvedBaseUrl', 'resolvedPort', 'localPort', 'credentialRevision', 'components']) {
+      assert.ok(!streamed.includes(`"${forbidden}"`), `SSE omits ${forbidden}`);
+    }
+    await fetch(`${base}/api/runs/${id}/stop`, {
+      method: 'POST', headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': session.token },
+    });
   });
 
   await check('doctor checks connections before backends and pins actionable fixes', async () => {

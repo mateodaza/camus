@@ -584,12 +584,17 @@ function fillSeatPicker(sel, entries, current) {
     }
     const o = document.createElement('option');
     o.value = JSON.stringify([e.backend, e.model]);
-    o.textContent = e.model;
+    o.disabled = e.admission?.qualified === false;
+    o.textContent = o.disabled
+      ? `${e.model} — ${e.admission?.status ?? 'unprobed'}`
+      : e.model;
+    if (e.admission?.warning) o.title = e.admission.warning;
     groups.get(e.backend).appendChild(o);
   }
   const wanted = JSON.stringify([current?.backend, current?.model]);
-  const offered = [...sel.options].some((o) => o.value === wanted);
-  sel.value = offered ? wanted : (sel.options[0]?.value ?? '');
+  const offered = [...sel.options].some((o) => o.value === wanted && !o.disabled);
+  const firstEnabled = [...sel.options].find((o) => !o.disabled);
+  sel.value = offered ? wanted : (firstEnabled?.value ?? '');
   return offered;
 }
 const seatOf = (sel) => {
@@ -610,29 +615,137 @@ function reflectEffortField(seats) {
   $('set-effort-note').textContent = honors ? '' : 'this backend takes no effort request; the receipt records none';
 }
 
+function appendSeatBadges(parent, badges = []) {
+  const wrap = el('span', 'seat-badges');
+  for (const badge of badges) {
+    const chip = el('span', `seat-badge ${badge.kind ?? ''}`, badge.label);
+    wrap.appendChild(chip);
+  }
+  parent.appendChild(wrap);
+}
+
+function renderQualificationCatalog(config) {
+  const box = $('qualification-list');
+  box.innerHTML = '';
+  const entries = [
+    ...(config.seats?.maker ?? []).map((entry) => ({ ...entry, seatKey: 'maker' })),
+    ...(config.seats?.reviewer ?? []).map((entry) => ({ ...entry, seatKey: 'reviewer' })),
+  ].filter((entry) => entry.admission?.state !== 'builtin');
+  if (!entries.length) {
+    box.appendChild(el('div', 'hint', 'No configurable backends are declared yet. Use a template below as a local configuration starter.'));
+    return;
+  }
+  for (const entry of entries) {
+    const row = el('div', 'qualification-row');
+    const head = el('div', 'qualification-head');
+    head.appendChild(el('strong', null, `${entry.backend}:${entry.model} · ${entry.seatKey}`));
+    head.appendChild(el('span', `qualification-status ${entry.admission?.status ?? 'unprobed'}`, entry.admission?.status ?? 'unprobed'));
+    appendSeatBadges(head, entry.presentation?.badges ?? []);
+    row.appendChild(head);
+    row.appendChild(el('div', 'qualification-reason', entry.admission?.warning ?? 'No qualification record.'));
+    if (entry.admission?.qualifiable) {
+      const button = el('button', 'ghost', entry.admission.qualified ? 'Re-qualify' : 'Qualify');
+      button.onclick = async () => {
+        button.disabled = true;
+        button.textContent = 'Probing this tuple…';
+        $('settings-note').textContent = 'Qualification can spend provider tokens. Running only the selected tuple.';
+        try {
+          const response = await fetch(`${API}/api/qualifications`, {
+            method: 'POST', headers: postHeaders(),
+            body: JSON.stringify({ seat: entry.seatKey, backend: entry.backend, model: entry.model }),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || response.statusText);
+          $('settings-note').textContent = result.qualified
+            ? `${entry.backend}:${entry.model} qualified for ${entry.seatKey}.`
+            : `${entry.backend}:${entry.model} did not qualify: ${result.reason}${result.missing?.length ? ` (${result.missing.join(', ')})` : ''}.`;
+          await loadSettingsConfig();
+          await refreshPairing();
+        } catch (error) {
+          $('settings-note').textContent = `qualification failed: ${error.message}`;
+          button.disabled = false;
+          button.textContent = entry.admission.qualified ? 'Re-qualify' : 'Qualify';
+        }
+      };
+      row.appendChild(button);
+    }
+    box.appendChild(row);
+  }
+}
+
+function renderProviderTemplates(config) {
+  const box = $('provider-templates');
+  box.innerHTML = '';
+  for (const template of config.templates ?? []) {
+    const row = el('div', 'template-row');
+    const head = el('div', 'template-head');
+    head.appendChild(el('strong', null, template.label));
+    head.appendChild(el('span', 'qualification-status', `${template.transport} · ${template.protocol}`));
+    row.appendChild(head);
+    if (template.note) row.appendChild(el('div', 'template-note', template.note));
+    const payload = {
+      connections: { [template.connection.name]: template.connection.value },
+      backends: { [template.backend.name]: template.backend.value },
+    };
+    const pre = el('pre', null, JSON.stringify(payload, null, 2));
+    row.appendChild(pre);
+    const copy = el('button', 'ghost', 'Copy declaration JSON');
+    copy.onclick = async () => {
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      copy.textContent = 'Copied';
+      setTimeout(() => { copy.textContent = 'Copy declaration JSON'; }, 1500);
+    };
+    row.appendChild(copy);
+    if (template.docsUrl) {
+      const docs = document.createElement('a');
+      docs.href = template.docsUrl;
+      docs.target = '_blank';
+      docs.rel = 'noreferrer';
+      docs.textContent = 'provider docs';
+      docs.className = 'ghost';
+      row.appendChild(docs);
+    }
+    box.appendChild(row);
+  }
+  $('planned-protocols').textContent = (config.plannedProtocols ?? [])
+    .map((protocol) => `${protocol.label}: planned, not selectable`)
+    .join(' · ');
+}
+
+function renderSettingsConfig(c) {
+  state.seats = c.seats ?? { maker: [], reviewer: [] };
+  const makerOffered = fillSeatPicker($('set-maker'), state.seats.maker, { backend: c.maker.backend, model: c.maker.model });
+  const reviewerOffered = fillSeatPicker($('set-reviewer'), state.seats.reviewer, { backend: c.reviewer.backend, model: c.reviewer.model });
+  if (c.reviewer.effort) $('set-effort').value = c.reviewer.effort;
+  reflectEffortField(state.seats);
+  $('set-reviewer').onchange = () => reflectEffortField(state.seats);
+  $('set-roundcap').value = c.loop.roundCap;
+  $('set-depth').value = state.depth;
+  const notes = ['Settings save to local operator state under ~/.camus; tracked public defaults stay unchanged.'];
+  if (c.envOverrides.length) notes.push(`${c.envOverrides.join(', ')} set in the environment. Env wins over these fields this session.`);
+  if (!makerOffered) notes.push(`current maker "${c.maker.backend}:${c.maker.model}" is not admitted on this machine — qualify it or pick an enabled option to save.`);
+  if (!reviewerOffered) notes.push(`current reviewer "${c.reviewer.backend}:${c.reviewer.model}" is not admitted on this machine — qualify it or pick an enabled option to save.`);
+  if (c.seats?.reviewerSource === 'fallback') notes.push('the codex list is a default: codex has no model cache to read on this machine, so those entries are not CLI-verified.');
+  $('settings-env').textContent = notes.join(' ');
+  renderQualificationCatalog(c);
+  renderProviderTemplates(c);
+}
+
+async function loadSettingsConfig() {
+  const response = await fetch(`${API}/api/config`);
+  if (!response.ok) throw new Error(`config returned ${response.status}`);
+  const config = await response.json();
+  renderSettingsConfig(config);
+  return config;
+}
+
 async function openSettings() {
   const panel = $('settings-panel');
   if (!panel.classList.contains('hidden')) { requestPanel(null); setPanel(null); return; }
   const gen = requestPanel('settings');
   try {
-    const c = await (await fetch(`${API}/api/config`)).json();
+    const c = await loadSettingsConfig();
     if (gen !== panelGen || panelIntent !== 'settings') return; // switched, closed, or reopened while config loaded
-    state.seats = c.seats ?? { maker: [], reviewer: [] };
-    const makerOffered = fillSeatPicker($('set-maker'), state.seats.maker, { backend: c.maker.backend, model: c.maker.model });
-    // Never make an unoffered current selectable (a hidden codex model, a
-    // deleted backend): offer only offerable seats; the note names the gap.
-    const reviewerOffered = fillSeatPicker($('set-reviewer'), state.seats.reviewer, { backend: c.reviewer.backend, model: c.reviewer.model });
-    if (c.reviewer.effort) $('set-effort').value = c.reviewer.effort;
-    reflectEffortField(state.seats);
-    $('set-reviewer').onchange = () => reflectEffortField(state.seats);
-    $('set-roundcap').value = c.loop.roundCap;
-    $('set-depth').value = state.depth;
-    const notes = ['Settings save to local operator state under ~/.camus; tracked public defaults stay unchanged.'];
-    if (c.envOverrides.length) notes.push(`${c.envOverrides.join(', ')} set in the environment. Env wins over these fields this session.`);
-    if (!makerOffered) notes.push(`current maker "${c.maker.backend}:${c.maker.model}" is not offered on this machine — pick a listed option to save.`);
-    if (!reviewerOffered) notes.push(`current reviewer "${c.reviewer.backend}:${c.reviewer.model}" is not offered on this machine — pick a listed option to save.`);
-    if (c.seats?.reviewerSource === 'fallback') notes.push('the codex list is a default: codex has no model cache to read on this machine, so those entries are not CLI-verified.');
-    $('settings-env').textContent = notes.join(' ');
     $('settings-note').textContent = '';
     setPanel('settings');
   } catch {
@@ -649,7 +762,8 @@ $('open-settings').addEventListener('click', openSettings);
 // its provenance stay the decision of record. Failure is explicit — a pairing
 // nobody can read must not look like a choice.
 let pairingDirty = false;
-function reflectPairingNote() {
+let pairingPresentationRequest = 0;
+async function reflectPairingNote(prefix = '') {
   const maker = seatEntry(state.seats?.maker, seatOf($('pair-maker')));
   const reviewer = seatEntry(state.seats?.reviewer, seatOf($('pair-reviewer')));
   const note = $('pairing-note');
@@ -657,9 +771,31 @@ function reflectPairingNote() {
     note.textContent = 'One model makes the work. A different one tries to break it.';
     return;
   }
-  note.textContent = maker.provider === reviewer.provider
-    ? `Same provider on both seats (${maker.provider}): allowed, and recorded honestly — the review counts as advisory and the standing reads same-vendor reviewed, never independent.`
-    : `Cross-vendor pairing: ${maker.provider} makes it, ${reviewer.provider} tries to break it.`;
+  const request = ++pairingPresentationRequest;
+  const query = new URLSearchParams({
+    makerBackend: maker.backend,
+    makerModel: maker.model,
+    reviewerBackend: reviewer.backend,
+    reviewerModel: reviewer.model,
+  });
+  try {
+    const response = await fetch(`${API}/api/pairing-presentation?${query}`);
+    if (!response.ok) throw new Error(`presentation returned ${response.status}`);
+    const presentation = await response.json();
+    if (request !== pairingPresentationRequest) return;
+    note.innerHTML = '';
+    if (prefix) note.appendChild(document.createTextNode(prefix));
+    note.appendChild(el('span', null, presentation.note));
+    const facts = el('div', 'pairing-presentation-facts');
+    facts.appendChild(el('strong', null, 'Maker '));
+    appendSeatBadges(facts, presentation.makerBadges ?? []);
+    facts.appendChild(el('strong', null, 'Auditor '));
+    appendSeatBadges(facts, presentation.reviewerBadges ?? []);
+    note.appendChild(facts);
+  } catch {
+    if (request !== pairingPresentationRequest) return;
+    note.textContent = `${prefix}Pairing presentation unavailable: the local Studio server could not author its standing.`;
+  }
 }
 async function refreshPairing() {
   try {
@@ -675,20 +811,21 @@ async function refreshPairing() {
     // it, so the server executed the hidden stale record while the form
     // showed something else (audit P1, 2026-08-04).
     pairingDirty = !makerOffered || !reviewerOffered;
-    reflectPairingNote();
+    let prefix = '';
     if (pairingDirty) {
       const missing = [
         !makerOffered && `maker "${c.maker.backend}:${c.maker.model}"`,
         !reviewerOffered && `reviewer "${c.reviewer.backend}:${c.reviewer.model}"`,
       ].filter(Boolean).join(' and ');
-      $('pairing-note').textContent = `The saved ${missing} is not offered on this machine, so the run uses exactly the pairing shown here (recorded as a run request). ${$('pairing-note').textContent}`;
+      prefix = `The saved ${missing} is not admitted on this machine, so the run uses exactly the pairing shown here (recorded as a run request). `;
     }
+    await reflectPairingNote(prefix);
   } catch {
     $('pairing-note').textContent = 'pairing unavailable: the local studio server is unreachable';
   }
 }
 for (const id of ['pair-maker', 'pair-reviewer']) {
-  $(id).addEventListener('change', () => { pairingDirty = true; reflectPairingNote(); });
+  $(id).addEventListener('change', () => { pairingDirty = true; void reflectPairingNote(); });
 }
 $('pairing-change').addEventListener('click', openSettings);
 $('jump-recents').addEventListener('click', () => {
@@ -1574,6 +1711,22 @@ function handle(ev) {
   switch (ev.type) {
     case 'run':
       if (ev.run?.goal) setRunGoal(ev.run.goal);
+      {
+        const pairing = $('run-pairing-view');
+        const view = ev.run?.pairingView;
+        pairing.innerHTML = '';
+        pairing.classList.toggle('hidden', !view);
+        if (view) {
+          pairing.appendChild(el('strong', null, 'Frozen pairing · '));
+          pairing.appendChild(el('span', null, view.note));
+          const facts = el('div', 'pairing-presentation-facts');
+          facts.appendChild(el('strong', null, 'Maker '));
+          appendSeatBadges(facts, view.makerBadges ?? []);
+          facts.appendChild(el('strong', null, 'Auditor '));
+          appendSeatBadges(facts, view.reviewerBadges ?? []);
+          pairing.appendChild(facts);
+        }
+      }
       if (ev.at) { state.runStartAt = ev.at; startTimer(ev.at); }
       state.runLane = ev.run?.lane;
       reflectDocumentActions(state.runLane);

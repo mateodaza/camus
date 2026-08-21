@@ -1,10 +1,12 @@
 # RFC: Open-weight and Grok model seats — identity, connections, and self-hosted inference
 
-**Status:** v6.1 — **architecture rounds closed; approved for implementation of slice A + the
-B migration core** after five audit rounds plus two folded-in P2 clarifications (every
-finding mapped in the change logs at the end). Nothing here is implemented yet; this document
-proposes, it does not describe shipped behavior except where it cites existing files.
-**Date:** 2026-08-18 (v2 through v6.1 same day).
+**Status:** v6.1 — **approved architecture contract** after five audit rounds plus two
+folded-in P2 clarifications (every finding mapped in the change logs at the end).
+**Implementation status (2026-08-21):** slice A, the B migration core, and slice C are
+implemented. Slices D–I remain unimplemented. The frozen design below remains the contract;
+implementation claims are recorded in this status line and the closing ledger, not silently
+rewritten into the original proposal text.
+**Date:** 2026-08-18 (v2 through v6.1 same day); implementation status updated 2026-08-21.
 **Builds on:** `docs/MULTI-MODEL-SEATS.md` (adopted 2026-08-04) — the seat/backend contract this
 RFC extends. Nothing in that document is weakened here; every requirement below is additive or a
 tightening.
@@ -2970,5 +2972,7 @@ and 6.
 
 ---
 
-*End of RFC (v6.1). Architecture rounds closed; approved for implementation of slice A + the
-B migration core (§19.1). Implementation has not begun.*
+*End of RFC (v6.1). Architecture rounds remain closed. Implementation ledger as of
+2026-08-21: A complete; B migration core complete; C complete; D–I not begun. Slice C has a
+hermetic end-to-end loopback acceptance test, while live provider-backed validation remains
+explicitly open under §19.7.*

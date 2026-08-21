@@ -30,6 +30,7 @@ import { streamChatCompletion } from './adapters/openai-compat.mjs';
 import { normalizeReview } from './adapters/codex.mjs';
 import {
   writeReceipt,
+  invalidateReceipt,
   qualifySeat,
   readStoredReceipt,
   capabilityDiagnosticsDir,
@@ -551,6 +552,20 @@ export async function deepQualifyModel({
   const collected = await collectServerAnchors({ entry, fetchImpl, model });
   const { serialized: serverAnchors, anchors } = collected;
   discoveryStatus = collected.discoveryStatus;
+  // Salt/credential-free tuple descriptor used only to locate and revoke a
+  // stale receipt when a probe cannot honestly write a replacement result.
+  const tuple = {
+    seatType,
+    backendName: entry.name,
+    backendKind: entry.kind,
+    connection: connectionLabel(entry),
+    requestedModelId: model,
+    gateScope: 'n/a',
+  };
+  const failAndInvalidate = (reason, extra = {}) => {
+    invalidateReceipt(tuple);
+    return fail(reason, extra);
+  };
 
   // ---- streaming/liveness + (reviewer) structured-output probe -------------
   const isReviewer = seatType === 'words_reviewer';
@@ -559,12 +574,12 @@ export async function deepQualifyModel({
     prompt: isReviewer ? STRUCTURED_PROBE_PROMPT : LIVENESS_PROBE_PROMPT,
     timeoutMs: 120_000,
   });
-  if (!live.ok) return fail('probe_unreachable', { error: live.error, identity: null });
+  if (!live.ok) return failAndInvalidate('probe_unreachable', { error: live.error, identity: null });
 
   // Identity is reconciled BEFORE the draft/verdict is consumed. An unexpected
   // substitution kills the call as an infra refusal and writes no receipt.
   const identity = reconcileAllReported({ requested: model, reportedModels: live.reportedModels, primary: live.reported, expectedReported });
-  if (!identity.ok) return fail('model_substituted', { identity, error: { code: 'model_identity', message: identity.detail } });
+  if (!identity.ok) return failAndInvalidate('model_substituted', { identity, error: { code: 'model_identity', message: identity.detail } });
 
   const capabilities = {};
   const probeResults = {};
@@ -674,7 +689,7 @@ export async function deepQualifyModel({
     // substitution, so it is left to fail the envelope below.
     if (ctx.ok) {
       const ctxIdentity = reconcileAllReported({ requested: model, reportedModels: ctx.reportedModels, primary: ctx.reported, expectedReported });
-      if (!ctxIdentity.ok) return fail('model_substituted', { identity: ctxIdentity, error: { code: 'model_identity', message: ctxIdentity.detail } });
+      if (!ctxIdentity.ok) return failAndInvalidate('model_substituted', { identity: ctxIdentity, error: { code: 'model_identity', message: ctxIdentity.detail } });
     }
     // Both the head and the tail marker must survive: the head defeats silent
     // left-truncation, the tail defeats right-truncation, and only an endpoint
@@ -747,6 +762,10 @@ export async function deepQualifyModel({
   }
 
   // ---- durable receipt from the ACTUAL results -----------------------------
+  // Discovery is presentation/provenance only. Persist the observed status so
+  // Studio can explain listed/unlisted/unavailable without re-contacting a
+  // provider on every config GET; it never gates qualification.
+  probeResults.discoveryStatus = discoveryStatus;
   const input = qualInput({ entry, model, seatType, serverAnchors, keyless, secretValue });
 
   let receipt;
@@ -930,5 +949,57 @@ export async function seatQualification({ entry, model, seatType, fetchImpl = fe
     reason: outcome.reason,
     component: outcome.component,
     missing: outcome.missing,
+  };
+}
+
+/**
+ * Network-free presentation/config-save gate for one declared words-seat tuple.
+ * It validates the durable receipt against every CURRENT operator-controlled
+ * input (backend/model/connection/protocol/auth/version/credential revision) and
+ * expiry, using the receipt's own stored server anchors. Launch admission still
+ * calls seatQualification() to re-observe available anchors immediately before
+ * execution. This split keeps /api/config side-effect-free while ensuring a
+ * picker never enables a tuple whose local decision no longer matches its
+ * receipt.
+ */
+export function storedSeatQualification({ entry, model, seatType, now = Date.now() } = {}) {
+  if (!WORDS_SEATS.includes(seatType)) {
+    return { qualified: false, seatType, reason: 'out_of_scope_seat' };
+  }
+  if (entry?.kind !== 'openai_compat') {
+    return { qualified: false, seatType, reason: 'not_configurable_backend' };
+  }
+  if (!isSupportedTransport(entry)) {
+    return { qualified: false, seatType, reason: 'unsupported_transport' };
+  }
+  const keyless = entry.auth?.kind === 'none';
+  const secretValue = keyless ? undefined : process.env[entry.apiKeyEnv];
+  if (!keyless && !secretValue) {
+    return { qualified: false, seatType, reason: 'missing_credential' };
+  }
+  const lookup = qualInput({ entry, model, seatType, serverAnchors: 'lookup', keyless, secretValue });
+  const stored = readStoredReceipt(lookup);
+  if (!stored.ok) {
+    return { qualified: false, seatType, reason: stored.state, component: stored.component };
+  }
+  const storedAnchors = stored.data.components.find((c) => c.name === 'serverAnchors')?.value;
+  if (typeof storedAnchors !== 'string' || !storedAnchors) {
+    return { qualified: false, seatType, reason: 'voided', component: 'serverAnchors' };
+  }
+  const liveInput = qualInput({ entry, model, seatType, serverAnchors: storedAnchors, keyless, secretValue });
+  let outcome;
+  try {
+    outcome = qualifySeat(liveInput, { acceptedReceipt: stored.data, now });
+  } catch (err) {
+    return { qualified: false, seatType, reason: 'unqualifiable', detail: err.message };
+  }
+  return {
+    qualified: outcome.qualified,
+    fingerprint: outcome.qualified ? stored.data.fingerprint : undefined,
+    seatType,
+    reason: outcome.reason,
+    component: outcome.component,
+    missing: outcome.missing,
+    receipt: stored.data,
   };
 }

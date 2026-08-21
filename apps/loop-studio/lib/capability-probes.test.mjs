@@ -341,6 +341,35 @@ await test('an unexpected substitution fails closed BEFORE a verdict is consumed
   assert.equal(existsSync(capDir) ? readdirSync(capDir).length : 0, 0, 'a substituted model writes no receipt');
 });
 
+await test('a failed re-qualification revokes the older successful receipt', async () => {
+  const dir = freshEnv();
+  process.env.CAP_TEST_KEY = SECRET;
+  let mode = 'ok';
+  const { baseUrl } = await startServer((kind) => {
+    if (mode === 'unreachable' && kind === 'structured') return { status: 503, body: 'temporarily unavailable' };
+    if (kind === 'structured') return { body: REVIEW_JSON, model: mode === 'substituted' ? 'wrong-model' : 'served-alias' };
+    return { body: 'CAMUS-CTX-OK', model: 'served-alias' };
+  });
+  const entry = envEntry(baseUrl);
+  const qualify = () => deepQualifyModel({ entry, model: 'served-alias', seatType: 'words_reviewer', contextProbeTokens: 64 });
+  assert.equal((await qualify()).qualified, true, 'control earns the original receipt');
+  const capDir = join(dir, 'capabilities');
+  assert.equal(readdirSync(capDir).length, 1);
+
+  mode = 'substituted';
+  const substituted = await qualify();
+  assert.equal(substituted.reason, 'model_substituted');
+  assert.equal(readdirSync(capDir).length, 0, 'a substitution cannot leave the earlier demonstrated receipt active');
+  assert.equal((await seatQualification({ entry, model: 'served-alias', seatType: 'words_reviewer' })).qualified, false);
+
+  mode = 'ok';
+  assert.equal((await qualify()).qualified, true, 'the tuple can earn a new receipt after the endpoint is repaired');
+  mode = 'unreachable';
+  const unreachable = await qualify();
+  assert.equal(unreachable.reason, 'probe_unreachable');
+  assert.equal(readdirSync(capDir).length, 0, 'an unreachable re-probe cannot preserve stale demonstrated evidence');
+});
+
 await test('a silent (absent) reported model is an asserted_pin and can qualify', async () => {
   freshEnv();
   process.env.CAP_TEST_KEY = SECRET;

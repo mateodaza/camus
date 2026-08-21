@@ -275,7 +275,7 @@ receipt        0b8960d2e40d`}
                 <ul>
                   <li>browser interface, no JSON noise</li>
                   <li>the full acceptance contract in your own words</li>
-                  <li>configurable maker and reviewer seats</li>
+                  <li>qualified Claude, GPT, Grok, Kimi, Qwen, or local model seats</li>
                   <li>Hivemind grounding through your Claude MCP</li>
                   <li>verification-only recovery for parked code</li>
                 </ul>

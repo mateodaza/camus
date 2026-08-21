@@ -2864,16 +2864,27 @@ Myosin Learns is a live session. A person decides when the evidence is enough.
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
   const { resolveSeatAdapters } = await import('./lib/adapters/registry.mjs');
+  const { deepQualifyModel } = await import('./lib/capability-probes.mjs');
+  const { listBackends } = await import('./lib/models.mjs');
   const { runClaude, runClaudeReview } = await import('./lib/adapters/claude.mjs');
   const { runCodexReview, runCodexMaker } = await import('./lib/adapters/codex.mjs');
 
   const tmp = mkdtempSync(join(tmpdir(), 'cls-registry-'));
   const file = join(tmp, 'models.json');
   const prevFile = process.env.STUDIO_MODELS_FILE;
+  const prevGrandfather = process.env.STUDIO_GRANDFATHER_DIR;
+  const prevCapability = process.env.STUDIO_CAPABILITY_DIR;
   process.env.STUDIO_MODELS_FILE = file;
+  process.env.STUDIO_GRANDFATHER_DIR = tmp;
+  delete process.env.STUDIO_CAPABILITY_DIR;
   writeFileSync(file, JSON.stringify({
     maker: { model: 'sonnet' }, reviewer: { model: 'gpt-5.4', effort: 'low' },
-    backends: { kimi: { kind: 'openai_compat', provider: 'moonshot', baseUrl: 'http://127.0.0.1:9/v1', apiKeyEnv: 'CLS_TEST_KIMI_KEY', models: ['kimi-k2'] } },
+    connections: { local_kimi: { kind: 'loopback', port: 9, basePath: '/v1' } },
+    backends: { kimi: {
+      kind: 'openai_compat', provider: 'moonshot', connection: 'local_kimi', protocol: 'chat_completions',
+      trainingOrg: 'moonshot', modelFamily: 'kimi', derivedFrom: null, inferenceOperator: 'self_hosted',
+      auth: { kind: 'none' }, models: ['kimi-k2'], seats: ['maker'],
+    } },
     loop: { roundCap: 3 },
   }));
   try {
@@ -2886,13 +2897,44 @@ Myosin Learns is a live session. A person decides when the evidence is enough.
     assert.equal(reversed.maker, runCodexMaker, 'GPT can take the maker seat');
     assert.equal(reversed.reviewer, runClaudeReview, 'Claude can take the reviewer seat');
 
-    const compat = resolveSeatAdapters({ maker: { backend: 'kimi', model: 'kimi-k2' }, reviewer: { backend: 'claude', model: 'sonnet' } });
+    assert.throws(
+      () => resolveSeatAdapters({ maker: { backend: 'kimi', model: 'kimi-k2' }, reviewer: { backend: 'claude', model: 'sonnet' } }),
+      /exact accepted qual1 qualification/,
+      'adapter resolution is a final bypass guard: config declaration alone grants no custom maker',
+    );
+    assert.throws(
+      () => resolveSeatAdapters({ maker: { backend: 'kimi', model: 'kimi-k2', qualification: { fingerprint: `qual1:${'a'.repeat(64)}`, seatType: 'words_reviewer' } }, reviewer: { backend: 'claude', model: 'sonnet' } }),
+      /exact accepted qual1 qualification/,
+      'a reviewer receipt cannot be relabeled as maker admission',
+    );
+    assert.throws(
+      () => resolveSeatAdapters({ maker: { backend: 'kimi', model: 'kimi-k2', qualification: { fingerprint: `qual1:${'a'.repeat(64)}`, seatType: 'words_maker' } }, reviewer: { backend: 'claude', model: 'sonnet' } }),
+      /does not match the valid stored receipt/,
+      'a syntactically plausible fingerprint cannot bypass exact receipt validation',
+    );
+    const qualified = await deepQualifyModel({
+      entry: listBackends().kimi, model: 'kimi-k2', seatType: 'words_maker', contextProbeTokens: 64,
+      fetchImpl: async () => { throw new Error('no discovery route'); },
+      streamImpl: async ({ prompt }) => {
+        const head = /MARKER-HEAD:\s*(\S+)/.exec(prompt)?.[1];
+        const tail = /MARKER-TAIL:\s*(\S+)/.exec(prompt)?.[1];
+        return {
+          text: head && tail ? `${head} ${tail}` : 'live',
+          responseModel: 'kimi-k2', reportedModels: ['kimi-k2'], deltaCount: 1,
+          usage: { prompt_tokens: 100000, completion_tokens: 8 },
+        };
+      },
+    });
+    assert.equal(qualified.qualified, true, qualified.reason);
+    const compat = resolveSeatAdapters({ maker: { backend: 'kimi', model: 'kimi-k2', qualification: { fingerprint: qualified.receipt.fingerprint, seatType: 'words_maker' } }, reviewer: { backend: 'claude', model: 'sonnet' } });
     assert.equal(typeof compat.maker, 'function', 'a declared compat backend fills the maker seat');
     assert.equal(compat.makerBackend.provider, 'moonshot');
 
     assert.throws(() => resolveSeatAdapters({ maker: { backend: 'ghost', model: 'x' }, reviewer: { backend: 'codex', model: 'gpt-5.4' } }), /not declared/, 'an undeclared backend refuses — never a silent fallback');
   } finally {
     if (prevFile === undefined) delete process.env.STUDIO_MODELS_FILE; else process.env.STUDIO_MODELS_FILE = prevFile;
+    if (prevGrandfather === undefined) delete process.env.STUDIO_GRANDFATHER_DIR; else process.env.STUDIO_GRANDFATHER_DIR = prevGrandfather;
+    if (prevCapability === undefined) delete process.env.STUDIO_CAPABILITY_DIR; else process.env.STUDIO_CAPABILITY_DIR = prevCapability;
     rmSync(tmp, { recursive: true, force: true });
   }
 }

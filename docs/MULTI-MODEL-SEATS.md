@@ -3,7 +3,8 @@
 Adopted 2026-08-04, the lead item of the post-Myosin-call roadmap. This document
 is the contract; the code in `apps/loop-studio/lib/models.mjs` and
 `apps/loop-studio/lib/adapters/` implements it, and `verify.test.mjs` /
-`api.test.mjs` hold the two in agreement.
+`api.test.mjs`, `lib/admission.test.mjs`, and `slice-c.e2e.test.mjs` hold the
+declaration, admission, API, and real-adapter paths in agreement.
 
 ## The shape: seats, not vendors
 
@@ -271,9 +272,38 @@ observed.
 - Next slice (explicitly not started here): retrieval scope vs evidence scope
   in grounding (see SHANE-DEMO-BRIEF.md, the brand-voice refusal's root cause).
 
-## Addendum: open-model seats (slice A + B migration core)
+## Addendum: open-model seats (slices A–C)
 
 The connection-aware successor to this contract is
-[docs/OPEN-MODEL-SEATS-RFC.md](OPEN-MODEL-SEATS-RFC.md). Slice A plus the B
-migration core landed: identity records, pairing v2, status v2, envelope 3, and
-the loopback, direct_https, and legacy_http connection kinds.
+[docs/OPEN-MODEL-SEATS-RFC.md](OPEN-MODEL-SEATS-RFC.md). Slices A, the B
+migration core, and C landed: identity records, pairing v2, status v2, envelope
+3; loopback, direct_https, and grandfathered legacy_http connection kinds; and
+capability-gated direct/local Studio seats.
+
+Declaration and admission are deliberately separate. A configured model is
+visible with an origin/operator/transport badge, but every picker disables it
+until a stored receipt demonstrates the requirements for its exact
+`(words_maker|words_reviewer, backend, model, connection)` tuple. Config save,
+per-run pairing, launch, and adapter resolution all enforce the same boundary.
+At live launch Studio re-observes available server/weight anchors; it freezes
+the accepted `qual1:` fingerprint into `run.json`, round and review events, and
+the envelope-3 pairing. A receipt for another seat or model is not reusable.
+Built-in vendor-managed Claude/Codex seats continue to use their versioned
+`builtin1:` contracts.
+
+Settings provides a bounded **Qualify / Re-qualify** action for one tuple at a
+time, plus inert copyable templates for xAI, Moonshot, DashScope, Ollama, LM
+Studio, llama.cpp, vLLM, and a neutral OpenAI-compatible HTTPS server. Templates
+contain env-var names, never values, and cannot write `lineage.source`, receipt
+data, or resolved runtime state. Discovery is shown as `listed`, `unlisted`, or
+`discovery_unavailable` but never gates a declared model whose qualification is
+valid. The pairing explanation and badges are server-authored so the browser
+cannot grade provenance upward.
+
+Slice C is intentionally `chat_completions` over `loopback` and `direct_https`
+only. Responses remains visible as planned and cannot be selected. Managed SSH,
+the full connection editor, CLI/gate reviewer dispatch, benchmarking, and new
+maker executors remain slices D–H. A hermetic loopback fixture proves the full
+qualify → select → real adapter → envelope-3 path without network access; live
+provider credentials and real local-serving hardware remain an explicit test
+gap.

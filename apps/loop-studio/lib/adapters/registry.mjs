@@ -11,6 +11,7 @@ import { listBackends } from '../models.mjs';
 import { runClaude, runClaudeReview } from './claude.mjs';
 import { runCodexReview, runCodexMaker } from './codex.mjs';
 import { openAiCompatMaker, openAiCompatReviewer } from './openai-compat.mjs';
+import { storedSeatQualification } from '../capability-probes.mjs';
 
 function makerFor(backend) {
   if (backend.kind === 'claude_cli') return runClaude;
@@ -22,6 +23,28 @@ function reviewerFor(backend) {
   if (backend.kind === 'claude_cli') return runClaudeReview;
   if (backend.kind === 'codex_cli') return runCodexReview;
   return openAiCompatReviewer(backend);
+}
+
+const QUAL1_RE = /^qual1:[0-9a-f]{64}$/;
+
+// Final synchronous bypass guard. The server performs the live receipt check
+// and freezes its accepted fingerprint into the run snapshot; adapter resolution
+// refuses any configurable seat that did not arrive through that gate. It does
+// not try to recreate trust from config or hit the network here.
+function requireAcceptedAdmission(seat, backend, seatType) {
+  if (backend.kind !== 'openai_compat') return;
+  const accepted = seat?.qualification;
+  if (!accepted || !QUAL1_RE.test(accepted.fingerprint ?? '') || accepted.seatType !== seatType) {
+    throw new Error(
+      `backend "${backend.name}" cannot resolve as ${seatType} without the exact accepted qual1 qualification in the run snapshot`,
+    );
+  }
+  const stored = storedSeatQualification({ entry: backend, model: seat?.model, seatType });
+  if (!stored.qualified || stored.fingerprint !== accepted.fingerprint) {
+    throw new Error(
+      `backend "${backend.name}" cannot resolve as ${seatType}: the snapshot qualification does not match the valid stored receipt for ${backend.name}:${seat?.model ?? 'unknown'}`,
+    );
+  }
 }
 
 // models → { maker, reviewer } seat functions plus the resolved backend metadata
@@ -47,6 +70,8 @@ export function resolveSeatAdapters(models, frozenBackends = null) {
   if (!reviewerBackend) throw new Error(`this run's snapshot names reviewer backend "${reviewerName}", which is not declared on this machine`);
   if (!makerBackend.seats.includes('maker')) throw new Error(`backend "${makerName}" does not offer the maker seat`);
   if (!reviewerBackend.seats.includes('reviewer')) throw new Error(`backend "${reviewerName}" does not offer the reviewer seat`);
+  requireAcceptedAdmission(models?.maker, makerBackend, 'words_maker');
+  requireAcceptedAdmission(models?.reviewer, reviewerBackend, 'words_reviewer');
   return {
     maker: makerFor(makerBackend),
     reviewer: reviewerFor(reviewerBackend),

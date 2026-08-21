@@ -41,6 +41,8 @@ export function deriveEvidence(events) {
     // seat ran under; both are absent on pre-seats receipts.
     review_scope: r.review_scope ?? null,
     review_contract_version: r.review_contract_version ?? null,
+    executorQualification: r.executorQualification ?? null,
+    auditorQualification: r.auditorQualification ?? r.qualification ?? null,
     qualification: r.qualification ?? null,
     at: Number.isInteger(r.at) ? r.at : null,
     claimAssessments: (r.claimAssessments ?? []).map((a) => ({

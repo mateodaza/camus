@@ -76,6 +76,17 @@
         <button id="save-settings" class="primary">Save decisions</button>
         <span id="settings-env" class="hint">Saved locally under ~/.camus; tracked public defaults stay unchanged.</span>
       </div>
+      <div class="settings-subsection">
+        <div class="trust-title">MODEL ADMISSION</div>
+        <div class="hint">Declarations are not trust. A configurable model becomes selectable only after this machine demonstrates the exact maker or reviewer tuple. Launch checks it again.</div>
+        <div id="qualification-list" class="qualification-list"></div>
+      </div>
+      <details class="settings-subsection template-gallery">
+        <summary>Provider templates — declarations only</summary>
+        <div class="hint">Copy a starter into local operator state, replace every placeholder, then qualify it. Templates never include credentials, receipts, or a lineage tier.</div>
+        <div id="provider-templates" class="provider-templates"></div>
+        <div id="planned-protocols" class="hint"></div>
+      </details>
     </section>
 
     <section class="card form">
@@ -213,6 +224,7 @@
         <button id="stop" class="danger">Stop</button>
       </div>
     </header>
+    <div id="run-pairing-view" class="run-pairing-view hidden" aria-label="Run model pairing"></div>
 
     <div id="sim-banner" class="sim-banner hidden" role="status"></div>
 

@@ -25,7 +25,7 @@
 // STUDIO_GRANDFATHER_DIR points salt + receipts at one fixture in tests.
 
 import { createHash, createHmac } from 'node:crypto';
-import { existsSync, readFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -307,6 +307,23 @@ function receiptPath(input) {
   return join(capabilitiesDir(), `${tupleKey(input)}.json`);
 }
 
+// A fail-closed probe that cannot honestly write a capability result (for
+// example, the endpoint answered as an unexpected model) must still revoke any
+// older successful receipt for the SAME tuple. Otherwise Re-qualify could report
+// failure while the picker and adapter gate continued accepting stale evidence.
+// Deletion is scoped by the hashed tuple key; absence and unlink failure both
+// return false, and no broader path is ever accepted.
+export function invalidateReceipt(input) {
+  const path = receiptPath(input);
+  if (!existsSync(path)) return false;
+  try {
+    unlinkSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ---- capability payload normalization --------------------------------------
 
 function normalizeContextWindow(cw, defaultStatus = CAP_STATES.UNPROBED) {
@@ -370,6 +387,11 @@ export function writeReceipt(input, { capabilities = {}, probeResults = {}, prob
       contextDemonstratedAt: probeResults.contextDemonstratedAt ?? null,
       normalizerVerdict: probeResults.normalizerVerdict ?? null,
       toolTranscriptDigest: probeResults.toolTranscriptDigest ?? null,
+      // Informational only (§9.3): what model discovery said when the probes
+      // ran. It never enters the fingerprint or satisfies a capability row.
+      discoveryStatus: typeof probeResults.discoveryStatus === 'string'
+        ? probeResults.discoveryStatus
+        : null,
     },
     probedAt: nowIso, // outside the hash
     ttlDays: days, // outside the hash

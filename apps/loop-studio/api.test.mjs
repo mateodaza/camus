@@ -135,8 +135,12 @@ try {
     const c = await (await fetch(`${base}/api/config`, { headers: { origin: base } })).json();
     assert.ok(Array.isArray(c.seats?.maker) && Array.isArray(c.seats?.reviewer), 'both seat lists present');
     assert.ok(c.seats.maker.every((e) => e.backend && e.provider && e.model), 'every entry is backend-qualified');
-    assert.ok(c.seats.maker.some((e) => e.backend === 'kimi' && e.provider === 'moonshot' && e.model === 'kimi-k2'), 'a declared compat backend is offered in the maker seat');
-    assert.ok(c.seats.reviewer.some((e) => e.backend === 'kimi'), 'and in the reviewer seat (both are declared by default)');
+    const kimiMaker = c.seats.maker.find((e) => e.backend === 'kimi' && e.model === 'kimi-k2');
+    const kimiReviewer = c.seats.reviewer.find((e) => e.backend === 'kimi' && e.model === 'kimi-k2');
+    assert.ok(kimiMaker && kimiReviewer, 'a declared compat backend remains visible in both declared seats');
+    assert.equal(kimiMaker.admission.qualified, false, 'an unprobed custom maker is disabled, never selectable');
+    assert.equal(kimiReviewer.admission.qualified, false, 'qualification is exact per seat tuple');
+    assert.equal(kimiMaker.admission.status, 'unprobed');
     assert.ok(c.seats.reviewer.some((e) => e.backend === 'claude' && e.model === 'sonnet'), 'claude models are offered in the reviewer seat — the reversed pairing is expressible');
     assert.ok(c.seats.reviewer.filter((e) => e.backend === 'codex').every((e) => e.effort === true), 'codex entries declare the effort knob');
     assert.ok(c.seats.reviewer.filter((e) => e.backend !== 'codex').every((e) => e.effort === false), 'no other backend claims an effort knob');
@@ -159,6 +163,8 @@ try {
     assert.equal(ghost.status, 400, 'an undeclared backend is refused');
     const wrongModel = await post({ reviewer: { backend: 'kimi', model: 'undeclared-model' } });
     assert.equal(wrongModel.status, 400, 'a model the backend does not declare is refused');
+    const unqualified = await post({ maker: { backend: 'kimi', model: 'kimi-k2' } });
+    assert.equal(unqualified.status, 400, 'a declared but unqualified tuple cannot be saved');
     const restore = await post({ maker: { backend: 'claude', model: 'sonnet' } });
     assert.equal(restore.status, 200);
   });
@@ -171,7 +177,7 @@ try {
         goal: 'pairing probe: a run whose seats were chosen on the launch form',
         acceptanceContract: ACCEPTANCE,
         lane: 'freeform',
-        pairing: { maker: { backend: 'kimi', model: 'kimi-k2' }, reviewer: { backend: 'claude', model: 'sonnet' } },
+        pairing: { maker: { backend: 'codex', model: 'gpt-5.4' }, reviewer: { backend: 'claude', model: 'sonnet' } },
       }),
     });
     assert.equal(start.status, 201, `pairing run starts (${start.status})`);
@@ -179,15 +185,14 @@ try {
     const runMeta = JSON.parse(readFileSync(join(tmp, id, 'run.json'), 'utf8'));
     assert.deepEqual(
       { backend: runMeta.models.maker.backend, provider: runMeta.models.maker.provider, model: runMeta.models.maker.model, source: runMeta.models.maker.source },
-      { backend: 'kimi', provider: 'moonshot', model: 'kimi-k2', source: 'run request' },
+      { backend: 'codex', provider: 'openai', model: 'gpt-5.4', source: 'run request' },
       'the snapshot records the per-run maker decision with its source',
     );
-    assert.equal(runMeta.models.maker.executor, 'http_client', 'the run snapshot carries the selected seat executor');
-    assert.equal(runMeta.models.maker.transport, 'unknown', 'an undeclared legacy backend does not promote its anonymous loopback URL into an asserted transport identity');
-    assert.equal(runMeta.models.maker.connection, '$legacy:kimi', 'the anonymous migrated connection is still named for later qualification');
-    assert.equal(runMeta.models.maker.trainingOrg, 'unknown', 'legacy provider text is not promoted into training identity');
-    assert.deepEqual(runMeta.models.maker.lineage, { source: 'unknown', derivedFrom: null });
-    assert.equal(runMeta.models.maker.originConfidence, 'unknown');
+    assert.equal(runMeta.models.maker.executor, 'codex_cli', 'the run snapshot carries the selected seat executor');
+    assert.equal(runMeta.models.maker.transport, 'vendor_managed');
+    assert.equal(runMeta.models.maker.trainingOrg, 'openai');
+    assert.equal(runMeta.models.maker.lineage.source, 'registry');
+    assert.equal(runMeta.models.maker.originConfidence, 'verified_operator');
     assert.equal(runMeta.models.reviewer.backend, 'claude');
     assert.equal(runMeta.models.reviewer.executor, 'claude_cli');
     assert.equal(runMeta.models.reviewer.trainingOrg, 'anthropic');
@@ -195,6 +200,19 @@ try {
     assert.equal(runMeta.models.reviewer.modelSource, 'run request');
     assert.equal(runMeta.models.reviewer.effort, null, 'a claude reviewer records no fabricated effort tier');
     await fetch(`${base}/api/runs/${id}/stop`, { method: 'POST', headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN } });
+
+    const unqualified = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify({
+        goal: 'pairing probe: a declared but unqualified maker must never start',
+        acceptanceContract: ACCEPTANCE,
+        lane: 'freeform',
+        pairing: { maker: { backend: 'kimi', model: 'kimi-k2' }, reviewer: { backend: 'claude', model: 'sonnet' } },
+      }),
+    });
+    assert.equal(unqualified.status, 400, 'a declared but unqualified pairing is refused');
+    assert.match((await unqualified.json()).error, /not qualified for this exact seat tuple/, 'the refusal names qualification, not availability');
 
     const bad = await fetch(`${base}/api/runs`, {
       method: 'POST',
@@ -241,7 +259,7 @@ try {
         headers: { 'content-type': 'application/json', origin: base3, 'x-studio-token': status3.token },
         body: JSON.stringify({ goal: 'grounded pairing guard probe run', acceptanceContract: ACCEPTANCE, lane: 'freeform', ground: true, pairing }),
       });
-      const refused = await post({ maker: { backend: 'kimi', model: 'kimi-k2' }, reviewer: { backend: 'claude', model: 'sonnet' } });
+      const refused = await post({ maker: { backend: 'codex', model: 'gpt-5.4' }, reviewer: { backend: 'claude', model: 'sonnet' } });
       assert.equal(refused.status, 400, 'grounded + non-claude maker is refused');
       assert.match((await refused.json()).error, /claude backend/, 'the refusal names the rule');
       const allowed = await post({ maker: { backend: 'claude', model: 'sonnet' }, reviewer: { backend: 'codex', model: 'gpt-5.4' } });

@@ -28,7 +28,8 @@ import { createParallelExperiment, finalizeParallelExperiment, knowledgeSnapshot
 import { validateExperimentRecord } from '../../packages/trust/lib/validate.mjs';
 import { deriveStatusDimensions, deriveHeadline } from './lib/status-dims.mjs';
 import { getModels, updateModels, modelsSummary, modelCatalog, seatCatalog, seatOffered, groundingNeedsClaudeMaker, gateModels, listConnections, listBackends, EFFORTS } from './lib/models.mjs';
-import { seatQualification } from './lib/capability-probes.mjs';
+import { deepQualifyModel, expectedReportedFor, seatQualification, storedSeatQualification } from './lib/capability-probes.mjs';
+import { admissionCatalog, admittedSeat, pairingPresentation } from './lib/admission.mjs';
 import { confirmClaudeRoute } from './lib/grandfather.mjs';
 import { reviewPrompt } from './lib/prompts.mjs';
 
@@ -225,6 +226,7 @@ async function startRun({
   recovery = null,
   modelsSnapshot = null,
   frozenBackends = null,
+  pairingView = null,
   frozenKnowledge = null,
   toolPolicy = null,
   publish = false,
@@ -256,9 +258,9 @@ async function startRun({
     ? { maker: null, reviewer: null, loop: { roundCap: 0 }, recovery: true }
     : modelsSnapshot ? JSON.parse(JSON.stringify(modelsSnapshot)) : getModels();
   const publishRequested = publish === true;
-  const run = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, frozenKnowledge, toolPolicy, publish: publishRequested, experimentContext };
+  const run = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, pairingView, frozenKnowledge, toolPolicy, publish: publishRequested, experimentContext };
   // The run exists on disk from second zero — a crash must not orphan it.
-  const runMetadata = () => ({ id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: run.idSalt, engine: ENGINE, models, publishRequested, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, experimentContext, startedAt: run.startedAt });
+  const runMetadata = () => ({ id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: run.idSalt, engine: ENGINE, models, pairingView, publishRequested, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, experimentContext, startedAt: run.startedAt });
   await writeFile(join(dir, 'run.json'), JSON.stringify(runMetadata(), null, 2))
     .catch((err) => console.error(`[receipts] failed to write run.json for ${id}: ${err.message}`));
   const state = { run, events: [], subscribers: new Set(), answer: null, abort: new AbortController(), writeChain: Promise.resolve() };
@@ -356,7 +358,7 @@ async function startRun({
     : ENGINE === 'mock' ? (() => { const m = createMockAdapters(); return { maker: m.maker, reviewer: m.reviewer }; })()
       : resolveSeatAdapters(models, frozenBackends);
 
-  emit('run', { run: { id, goal: displayGoal ?? goal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, recoveryOf: recovery?.sourceRunId ?? null, recovery: recovery ? { sourceRunId: recovery.sourceRunId ?? null, sourceReceiptId: recovery.sourceReceiptId ?? null, parkedSha: recovery.parkedSha ?? null, shaProvenance: recovery.shaProvenance ?? null } : null, engine: ENGINE, roundCap: models.loop.roundCap, experimentContext } });
+  emit('run', { run: { id, goal: displayGoal ?? goal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, pairingView, recoveryOf: recovery?.sourceRunId ?? null, recovery: recovery ? { sourceRunId: recovery.sourceRunId ?? null, sourceReceiptId: recovery.sourceReceiptId ?? null, parkedSha: recovery.parkedSha ?? null, shaProvenance: recovery.shaProvenance ?? null } : null, engine: ENGINE, roundCap: models.loop.roundCap, experimentContext } });
   if (!gitOk) emit('log', { line: '⚠ git unavailable; codex reviews will run outside a git repo (different conditions than camus)' });
 
   // A recovery runs the host verifier and NOTHING else — including under the mock
@@ -1218,8 +1220,59 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, await runDoctor({ deep: body?.deep === true, engine: ENGINE }));
     }
 
+    if (path === '/api/qualifications' && req.method === 'POST') {
+      // One explicit tuple per action: bounded spend, no surprise "qualify all"
+      // fan-out. Rehearsal promises no model calls, so qualification is available
+      // only from the live Studio process.
+      if (ENGINE === 'mock') {
+        return json(res, 409, { error: 'Qualification is unavailable in rehearsal because rehearsal makes no model calls. Start live Studio, then qualify the tuple.' });
+      }
+      const body = await readBody(req);
+      const seatKey = body?.seat;
+      const backendName = typeof body?.backend === 'string' ? body.backend.trim() : '';
+      const model = typeof body?.model === 'string' ? body.model.trim() : '';
+      if (!['maker', 'reviewer'].includes(seatKey) || !backendName || !model) {
+        return json(res, 400, { error: 'qualification requires { seat: maker|reviewer, backend, model }' });
+      }
+      const declared = seatCatalog();
+      const catalogEntry = (declared[seatKey] ?? []).find((entry) => entry.backend === backendName && entry.model === model);
+      if (!catalogEntry) {
+        return json(res, 400, { error: `${seatKey} "${backendName}:${model}" is not a declared seat tuple; nothing was probed` });
+      }
+      const backend = listBackends()[backendName];
+      if (!backend || backend.kind !== 'openai_compat' || !['loopback', 'direct_https'].includes(backend.transport)) {
+        return json(res, 400, { error: `${backendName}:${model} is not a Slice C loopback/direct_https chat-completions backend` });
+      }
+      const seatType = seatKey === 'maker' ? 'words_maker' : 'words_reviewer';
+      const expectedReported = expectedReportedFor(backend, catalogEntry, model);
+      const result = await deepQualifyModel({ entry: backend, model, seatType, expectedReported });
+      const refreshed = admissionCatalog();
+      const status = (refreshed[seatKey] ?? []).find((entry) => entry.backend === backendName && entry.model === model) ?? null;
+      return json(res, 200, {
+        qualified: result.qualified,
+        reason: result.reason,
+        missing: result.missing ?? [],
+        discoveryStatus: result.discoveryStatus ?? 'discovery_unavailable',
+        identity: result.identity ?? null,
+        capabilities: result.capabilities ?? null,
+        admission: status?.admission ?? null,
+      });
+    }
+
+    if (path === '/api/pairing-presentation' && req.method === 'GET') {
+      const seats = admissionCatalog();
+      const maker = (seats.maker ?? []).find((entry) =>
+        entry.backend === url.searchParams.get('makerBackend') && entry.model === url.searchParams.get('makerModel'));
+      const reviewer = (seats.reviewer ?? []).find((entry) =>
+        entry.backend === url.searchParams.get('reviewerBackend') && entry.model === url.searchParams.get('reviewerModel'));
+      return json(res, 200, pairingPresentation({ maker, reviewer }));
+    }
+
     if (path === '/api/config' && req.method === 'GET') {
       const m = getModels();
+      const seats = admissionCatalog();
+      const currentMaker = (seats.maker ?? []).find((entry) => entry.backend === m.maker.backend && entry.model === m.maker.model);
+      const currentReviewer = (seats.reviewer ?? []).find((entry) => entry.backend === m.reviewer.backend && entry.model === m.reviewer.model);
       return json(res, 200, {
         maker: m.maker, reviewer: m.reviewer, loop: m.loop,
         // What the settings pickers may offer: the machine's real options,
@@ -1230,7 +1283,10 @@ const server = http.createServer(async (req, res) => {
         // identity facts each seat seals. `connections` is the normalized endpoint
         // vocabulary (name, kind, baseUrl) — also values-never, per §11.2.
         catalog: modelCatalog(),
-        seats: seatCatalog(),
+        seats,
+        templates: seats.templates,
+        plannedProtocols: seats.plannedProtocols,
+        pairingPresentation: pairingPresentation({ maker: currentMaker, reviewer: currentReviewer }),
         connections: listConnections(),
         envOverrides: ['CLAUDE_MODEL', 'CODEX_MODEL', 'CODEX_EFFORT', 'ROUND_CAP'].filter((k) => process.env[k] !== undefined),
       });
@@ -1253,7 +1309,7 @@ const server = http.createServer(async (req, res) => {
       // codex-auto-review, an undeclared backend, anything off the list) must
       // not be persistable, or it would slip back into the picker as the
       // current decision on the next load.
-      const seats = seatCatalog();
+      const seats = admissionCatalog();
       const current = getModels();
       const normalizeSeat = (value, seatName) => {
         if (value === undefined) return { seat: undefined };
@@ -1363,6 +1419,11 @@ const server = http.createServer(async (req, res) => {
       // concurrent /api/config edit could have swapped (RFC §9.2). Stays null for
       // build/mock/CLI-only launches, which fall back to the live registry.
       let frozenBackends = null;
+      // Safe server-authored presentation frozen from the SAME seat snapshot as
+      // execution. Never re-read mutable config after the live qualification
+      // awaits, or the run banner could describe a newer pairing than the one
+      // whose backend objects and fingerprints are actually running.
+      let pairingView = null;
       if (body.pairing !== undefined) {
         if (lane === 'build') return json(res, 400, { error: 'the Build lane runs the camus gate with its own model decisions; per-run pairing applies to the words lanes' });
         const p = body.pairing;
@@ -1376,11 +1437,21 @@ const server = http.createServer(async (req, res) => {
         if (makerSeat.error) return json(res, 400, { error: makerSeat.error });
         const reviewerSeat = seatOf(p.reviewer, 'reviewer');
         if (reviewerSeat.error) return json(res, 400, { error: reviewerSeat.error });
-        const seats = seatCatalog();
-        const makerEntry = seats.maker.find((e) => e.backend === makerSeat.backend && e.model === makerSeat.model);
-        if (!makerEntry) return json(res, 400, { error: `maker "${makerSeat.backend}:${makerSeat.model}" is not an offered seat option; no substitution was made` });
-        const reviewerEntry = seats.reviewer.find((e) => e.backend === reviewerSeat.backend && e.model === reviewerSeat.model);
-        if (!reviewerEntry) return json(res, 400, { error: `reviewer "${reviewerSeat.backend}:${reviewerSeat.model}" is not an offered seat option; no substitution was made` });
+        const seats = admissionCatalog();
+        const makerEntry = admittedSeat(seats.maker, makerSeat.backend, makerSeat.model);
+        if (!makerEntry) {
+          const declared = seats.maker.find((e) => e.backend === makerSeat.backend && e.model === makerSeat.model);
+          return json(res, 400, { error: declared
+            ? `maker "${makerSeat.backend}:${makerSeat.model}" is declared but not qualified for this exact seat tuple (${declared.admission?.reason}); no substitution was made`
+            : `maker "${makerSeat.backend}:${makerSeat.model}" is not an offered seat option; no substitution was made` });
+        }
+        const reviewerEntry = admittedSeat(seats.reviewer, reviewerSeat.backend, reviewerSeat.model);
+        if (!reviewerEntry) {
+          const declared = seats.reviewer.find((e) => e.backend === reviewerSeat.backend && e.model === reviewerSeat.model);
+          return json(res, 400, { error: declared
+            ? `reviewer "${reviewerSeat.backend}:${reviewerSeat.model}" is declared but not qualified for this exact seat tuple (${declared.admission?.reason}); no substitution was made`
+            : `reviewer "${reviewerSeat.backend}:${reviewerSeat.model}" is not an offered seat option; no substitution was made` });
+        }
         const requestedEffort = p.reviewer?.effort;
         if (requestedEffort !== undefined && !EFFORTS.includes(requestedEffort)) {
           return json(res, 400, { error: 'pairing.reviewer.effort must be low, medium, high, or xhigh' });
@@ -1443,9 +1514,9 @@ const server = http.createServer(async (req, res) => {
       // openai_compat seat may not launch without a VALID qual1 receipt for the
       // run's seat type. The accepted fingerprint is copied into the run snapshot
       // so the round events and sealed pairing carry it unchanged. Built-in CLI
-      // seats (claude/codex) are outside this gate; rehearsals never launch a real
-      // model, so the mock engine is exempt.
-      if (lane !== 'build' && ENGINE !== 'mock') {
+      // seats (claude/codex) use builtin1. Rehearsals validate stored custom-seat
+      // receipts without making the live anchor request.
+      if (lane !== 'build') {
         // Freeze the EXACT decision we are about to qualify BEFORE any network
         // await. A concurrent settings write must never swap the standing
         // backend/model out from under the receipts we attach here: if we
@@ -1478,7 +1549,12 @@ const server = http.createServer(async (req, res) => {
           if (!entry || entry.kind !== 'openai_compat') {
             return json(res, 400, { error: `the ${seatKey} seat "${seat.backend}:${seat.model}" is not a qualifiable openai_compat backend and cannot launch` });
           }
-          const q = await seatQualification({ entry, model: seat.model, seatType });
+          // A rehearsal launches no real model, so it validates the stored tuple
+          // without contacting the endpoint. Live Studio re-observes all
+          // currently available server anchors immediately before execution.
+          const q = ENGINE === 'mock'
+            ? storedSeatQualification({ entry, model: seat.model, seatType })
+            : await seatQualification({ entry, model: seat.model, seatType });
           if (!q.qualified) {
             return json(res, 400, { error: `${seat.backend}:${seat.model} has no valid ${seatType} qualification (${q.reason}${q.component ? `: ${q.component}` : ''}${q.missing?.length ? ` [${q.missing.join(', ')}]` : ''}). Run \`--doctor\` deep probes (or the connect flow) to qualify it, then retry.` });
           }
@@ -1499,13 +1575,14 @@ const server = http.createServer(async (req, res) => {
           maker: backendsByName[effective.maker.backend] ?? null,
           reviewer: backendsByName[effective.reviewer.backend] ?? null,
         };
+        pairingView = pairingPresentation({ maker: effective.maker, reviewer: effective.reviewer });
       }
 
       const admission = acquireAdmission(1);
       if (!admission.ok) return json(res, 429, { error: `${admission.used} runs are already active or starting — the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}.` });
       try {
         if (targetToplevel) activeBuilds.add(targetToplevel);
-        const id = await startRun({ goal, acceptanceContract, lane, depth: body.depth === 'standard' ? 'standard' : 'quick', ground: !!body.ground, targetPath, targetToplevel, modelsSnapshot, frozenBackends, verifyCmd, publish: body.publish === true });
+        const id = await startRun({ goal, acceptanceContract, lane, depth: body.depth === 'standard' ? 'standard' : 'quick', ground: !!body.ground, targetPath, targetToplevel, modelsSnapshot, frozenBackends, pairingView, verifyCmd, publish: body.publish === true });
         return json(res, 201, { id });
       } catch (err) {
         if (targetToplevel) activeBuilds.delete(targetToplevel);

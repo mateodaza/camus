@@ -73,9 +73,12 @@ resumable, lets the low-cost controller decide before reserving another expensiv
 keeps stale repo-level telemetry from contradicting fresh feature state. See the
 [0.4.3 release notes](docs/RELEASE-0.4.3.md).
 
-The identity, connection-migration, and sealed trust foundation for open-model seats is present,
-but qualified Grok/Kimi/Qwen/local seats, generic CLI backends, and managed SSH remain explicit
-later slices rather than being advertised early.
+The current development tree also completes Studio's first user-visible open-model slice:
+declared Grok/Kimi/Qwen or local OpenAI-compatible models stay disabled until their exact maker
+or reviewer tuple passes live capability probes, then carry the accepted receipt unchanged into
+the run and sealed evidence pack. This does not change the released 0.4.3 CLI. Generic CLI/gate
+backends, Responses transport, and managed SSH remain explicit later slices rather than being
+advertised early.
 
 ## Makes it work
 

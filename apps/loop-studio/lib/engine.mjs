@@ -139,6 +139,12 @@ export async function runLoop(run, ctx) {
         ? deriveIndependence({ maker: makerFacts, reviewer: reviewerFacts })
         : 'same_vendor',
       review_scope: null,
+      // Both accepted admission channels ride every review event. `qualification`
+      // remains the auditor-compatible field consumed by existing envelope
+      // builders; the explicit role fields prove neither fingerprint vanished or
+      // was reconstructed between snapshot and round.
+      executorQualification: makerQualification,
+      auditorQualification: reviewerQualification,
       qualification: reviewerQualification,
     };
   };
@@ -392,7 +398,11 @@ export async function runLoop(run, ctx) {
 
     for (let round = 1; round <= ROUND_CAP; round++) {
       stage('review', 'active', { round });
-      emit('round', { round, cap: ROUND_CAP });
+      emit('round', {
+        round,
+        cap: ROUND_CAP,
+        qualifications: { maker: makerQualification, reviewer: reviewerQualification },
+      });
       const claims = extractClaimCandidates(draft, { groundingResults: groundingEvidence()?.results ?? [] });
       const thresholds = extractThresholdLines(draft);
       lastReview = await withRetries(`review round ${round}`, () =>

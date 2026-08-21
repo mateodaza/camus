@@ -276,6 +276,21 @@ export function buildEvidencePack({
     && customObservationReady(reviewerFacts, auditorEvidenceClass)
     && gateBindingReady;
 
+  // Slice C provenance continuity: the run snapshot is the executor admission
+  // channel; the governing review event is the round channel. A v3 seal is
+  // allowed only when the round carried the same accepted fingerprints. This is
+  // a comparison, never a reconstruction or silent repair.
+  const roundCarriesRoleQualifications = auditRound
+    && (auditRound.executorQualification != null || auditRound.auditorQualification != null);
+  if (produceV3 && roundCarriesRoleQualifications
+      && auditRound?.executorQualification?.fingerprint !== executorQualification?.fingerprint) {
+    throw new TypeError('executor qualification changed or disappeared between the run snapshot and governing review round');
+  }
+  if (produceV3 && roundCarriesRoleQualifications
+      && auditRound?.auditorQualification?.fingerprint !== auditorQualification?.fingerprint) {
+    throw new TypeError('auditor qualification changed or disappeared between the run snapshot and governing review round');
+  }
+
   // §10 rule-7 seal-time guard, mirroring the validator's semantic cross-checks
   // (Task 6). It throws — deriving from recorded facts — rather than adjusting,
   // so a run whose recorded lineage contradicts its independence claim degrades

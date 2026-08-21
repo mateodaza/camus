@@ -920,7 +920,11 @@ export function seatCatalog() {
 // this on every write path (config save, run request) so an unofferable pair
 // can never become a decision.
 export function seatOffered(catalogEntries, backend, model) {
-  return catalogEntries.some((entry) => entry.backend === backend && entry.model === model);
+  return catalogEntries.some((entry) => entry.backend === backend && entry.model === model
+    // Raw declaration catalogs predate Slice C and carry no admission field.
+    // Once the server enriches an entry, only an explicitly qualified tuple is
+    // offerable; disabled/unprobed declarations remain visible but unselectable.
+    && (entry.admission === undefined || entry.admission?.qualified === true));
 }
 
 // Grounding through the managed Claude connector runs retrieval inside the

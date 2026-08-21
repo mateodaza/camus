@@ -92,6 +92,24 @@ a { color: inherit; }
   border: 1px solid var(--code-line); border-radius: 2px; padding: 8px 10px; text-transform: none; letter-spacing: 0;
 }
 .settings-grid input:focus, .settings-grid select:focus { outline: none; border-color: var(--ink); }
+.settings-subsection { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--rule); }
+.qualification-list, .provider-templates { display: grid; gap: 8px; margin-top: 10px; }
+.qualification-row, .template-row { border: 1px solid var(--rule); border-radius: 3px; padding: 10px 11px; }
+.qualification-head, .template-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.qualification-head strong, .template-head strong { font-size: 13px; }
+.qualification-status { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+.qualification-status.demonstrated { color: var(--ink); }
+.qualification-status.failed { color: var(--red); }
+.seat-badges { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.seat-badge { border: 1px solid var(--rule); border-radius: 99px; padding: 1px 6px; font-family: var(--mono); font-size: 9.5px; color: var(--muted); }
+.pairing-presentation-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; margin-top: 5px; }
+.qualification-reason, .template-note { margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.qualification-row button { margin-top: 7px; }
+.template-gallery summary { cursor: pointer; font-family: var(--mono); font-size: 11.5px; letter-spacing: .04em; }
+.template-row pre { max-height: 180px; overflow: auto; margin: 8px 0 0; padding: 8px; background: var(--code); font-size: 10.5px; }
+.run-pairing-view { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 7px 16px; border-bottom: 1px solid var(--rule); background: var(--paper); font-size: 11.5px; color: var(--muted); }
+.run-pairing-view .pairing-view-seat { display: inline-flex; gap: 5px; align-items: center; }
+.run-pairing-view .pairing-view-note { flex: 1 1 280px; }
 
 .card { border: 1px solid var(--rule); border-radius: 3px; padding: 24px; background: var(--paper); }
 .form { display: flex; flex-direction: column; gap: 16px; }
