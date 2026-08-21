@@ -27,12 +27,22 @@ function reviewerFor(backend) {
 // models → { maker, reviewer } seat functions plus the resolved backend metadata
 // (name/kind/provider) the server records. Throws on a backend nobody declared —
 // a run must never silently fall back to a different backend than its snapshot.
-export function resolveSeatAdapters(models) {
+//
+// `frozenBackends` (optional) is the { maker, reviewer } backend objects the
+// launch gate qualified, captured at admission BEFORE any network await. They are
+// preferred over a live `listBackends()` reload for exactly the seats they cover:
+// a concurrent `/api/config` edit can change a backend's URL, auth, provider, or
+// alias mapping under an unchanged name after its qual1 receipt was accepted but
+// before this resolves (RFC §9.2). Reloading here would launch the run against
+// the new, unqualified endpoint while carrying the old endpoint's fingerprint.
+// The frozen object is the exact one qualification validated; only it may serve a
+// gated seat. Legacy/recovery/build snapshots pass none and fall back to live.
+export function resolveSeatAdapters(models, frozenBackends = null) {
   const backends = listBackends();
   const makerName = models?.maker?.backend || 'claude';
   const reviewerName = models?.reviewer?.backend || 'codex';
-  const makerBackend = backends[makerName];
-  const reviewerBackend = backends[reviewerName];
+  const makerBackend = frozenBackends?.maker || backends[makerName];
+  const reviewerBackend = frozenBackends?.reviewer || backends[reviewerName];
   if (!makerBackend) throw new Error(`this run's snapshot names maker backend "${makerName}", which is not declared on this machine`);
   if (!reviewerBackend) throw new Error(`this run's snapshot names reviewer backend "${reviewerName}", which is not declared on this machine`);
   if (!makerBackend.seats.includes('maker')) throw new Error(`backend "${makerName}" does not offer the maker seat`);

@@ -504,7 +504,11 @@ async function openSetup(deep) {
   const gen = panelGen; // whatever the caller's user action set this to
   const stale = () => gen !== panelGen || panelIntent !== 'setup';
   try {
-    const report = await (await fetch(`${API}/api/doctor${deep ? '?deep=1' : ''}`)).json();
+    // Deep qualification spends real tokens and writes receipts, so it is an
+    // authorized POST carrying the session token; the shallow read stays a GET.
+    const report = await (await (deep
+      ? fetch(`${API}/api/doctor`, { method: 'POST', headers: postHeaders(), body: JSON.stringify({ deep: true }) })
+      : fetch(`${API}/api/doctor`))).json();
     if (stale()) return; // the user switched, closed, or reopened while the deep check ran
     renderSetup(report);
   } catch {

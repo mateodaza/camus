@@ -53,6 +53,11 @@ export async function runLoop(run, ctx) {
   const makerModel = snapshot.maker?.model;
   const reviewerModel = snapshot.reviewer?.model;
   const reviewerEffort = snapshot.reviewer?.effort;
+  // Operator-declared expected-reported alias mappings (§6.2) ride the snapshot
+  // seats; thread them into every adapter call so a configurable mapping endpoint
+  // reconciles instead of failing closed on a legitimate served alias.
+  const makerExpectedReported = snapshot.maker?.expectedReported;
+  const reviewerExpectedReported = snapshot.reviewer?.expectedReported;
   // A snapshot without providers is a legacy pairing — claude wrote, codex
   // reviewed — so those defaults ARE what the snapshot meant, not a guess.
   const makerProvider = snapshot.maker?.provider || 'anthropic';
@@ -179,7 +184,7 @@ export async function runLoop(run, ctx) {
     // ---- Plan ------------------------------------------------------------
     stage('plan', 'active');
     const plan = await withRetries('plan', () =>
-      adapters.maker({ model: makerModel, stage: 'plan', prompt: planPrompt(run), cwd: ctx.scratchDir, signal, onTick: log, onSession: sess('maker'), toolPolicy: run.toolPolicy ?? 'research' }),
+      adapters.maker({ model: makerModel, stage: 'plan', prompt: planPrompt(run), cwd: ctx.scratchDir, signal, onTick: log, onSession: sess('maker'), toolPolicy: run.toolPolicy ?? 'research', expectedReported: makerExpectedReported }),
     );
     recordMakerCall('plan', plan);
     costUsd += plan.costUsd || 0;
@@ -242,6 +247,7 @@ export async function runLoop(run, ctx) {
           onTick: log,
           onSession: sess('retriever'),
           toolPolicy: 'hivemind_only',
+          expectedReported: makerExpectedReported,
         }),
       );
       let retrieval = await retrieve(groundingPrompt(run));
@@ -349,6 +355,7 @@ export async function runLoop(run, ctx) {
         onTick: log,
         onSession: sess('maker'),
         toolPolicy: run.toolPolicy ?? (run.frozenKnowledge ? 'web_only' : 'research'),
+        expectedReported: makerExpectedReported,
       }),
     );
     recordMakerCall('make', makeRes);
@@ -401,6 +408,7 @@ export async function runLoop(run, ctx) {
           onTick: log,
           onSession: sess('reviewer'),
           receiptDir: `${ctx.receiptsDir}/review-r${round}`,
+          expectedReported: reviewerExpectedReported,
         }),
       );
       emit('review', {
@@ -486,6 +494,7 @@ export async function runLoop(run, ctx) {
           onTick: log,
           onSession: sess('maker'),
           toolPolicy: run.toolPolicy ?? (run.frozenKnowledge ? 'web_only' : 'research'),
+          expectedReported: makerExpectedReported,
         }),
       );
       recordMakerCall('fix', fixRes);
@@ -537,6 +546,7 @@ export async function runLoop(run, ctx) {
               onTick: log,
               onSession: sess('reviewer'),
               receiptDir: `${ctx.receiptsDir}/review-closure-rev-${rev}`,
+              expectedReported: reviewerExpectedReported,
             }),
           );
           emit('review', {
@@ -577,6 +587,7 @@ export async function runLoop(run, ctx) {
                 onTick: log,
                 onSession: sess('maker'),
                 toolPolicy: run.toolPolicy ?? (run.frozenKnowledge ? 'web_only' : 'research'),
+                expectedReported: makerExpectedReported,
               }),
             );
             recordMakerCall('closure_fix', fixRes);
@@ -619,6 +630,7 @@ export async function runLoop(run, ctx) {
             onTick: log,
             onSession: sess('maker'),
             toolPolicy: run.toolPolicy ?? (run.frozenKnowledge ? 'web_only' : 'research'),
+            expectedReported: makerExpectedReported,
           }),
         );
         recordMakerCall('verify_fix', fixRes);
