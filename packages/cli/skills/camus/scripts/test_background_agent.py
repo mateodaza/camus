@@ -187,6 +187,34 @@ def test_wait_marks_disappeared_session_stale_instead_of_waiting_four_hours():
     assert "disappeared" in receipt["terminalReason"]
 
 
+def test_wait_recovers_terminal_transcript_after_supervisor_row_disappears():
+    with tempfile.TemporaryDirectory() as projects:
+        cwd = "/tmp/repo"
+        sid = "12345678-1234-1234-1234-123456789abc"
+        path = os.path.join(projects, B.project_slug(cwd), sid + ".jsonl")
+        _write_jsonl(path, [
+            {"type": "assistant", "message": {
+                "model": "claude-sonnet-5", "usage": {"output_tokens": 52},
+                "content": [{"type": "text", "text": '{"action":"fix_recheck"}'}]}},
+            {"type": "system", "subtype": "turn_duration", "durationMs": 5086,
+             "timestamp": "2026-08-21T13:44:54.493Z"},
+        ])
+        clock_values = iter([2.0, 3.0])
+        client = B.BackgroundAgentClient(
+            projects_dir=projects, clock=lambda: next(clock_values), sleeper=lambda _n: None,
+        )
+        with mock.patch.object(client, "find", return_value=None):
+            receipt = client.wait({
+                "cwd": cwd, "shortId": "12345678", "sessionId": sid, "name": "n",
+                "startedAt": 1000, "modelRequested": "sonnet", "effortRequested": "low",
+            }, timeout_seconds=14400)
+        assert receipt["state"] == "done"
+        assert receipt["durationMs"] == 5086
+        assert receipt["sessionWallMs"] == 2000
+        assert receipt["lastAssistantText"] == '{"action":"fix_recheck"}'
+        assert receipt["terminalTurnMarker"] is True
+
+
 def test_wait_marks_dead_published_pid_stale():
     clock_values = iter([1.0, 2.0])
     client = B.BackgroundAgentClient(clock=lambda: next(clock_values), sleeper=lambda _n: None)

@@ -348,6 +348,26 @@ class BackgroundAgentClient:
             )
             if not live:
                 now = self.clock()
+                # Short controller turns can finish and disappear from `claude agents` between
+                # two polls. The exact-session transcript is stronger terminal evidence than the
+                # supervisor row: accept only a final semantic turn-duration marker, otherwise
+                # preserve the existing fail-closed stale result.
+                path = transcript_path(
+                    session["cwd"], session.get("sessionId"), projects_dir=self.projects_dir,
+                )
+                marker_receipt = transcript_receipt(
+                    path, requested_model=session.get("modelRequested"),
+                    requested_effort=session.get("effortRequested"),
+                )
+                if marker_receipt.get("terminalTurnMarker") is True:
+                    ended = int(now * 1000)
+                    session_wall_ms = max(0, ended - int(session.get("startedAt") or ended))
+                    marker_receipt.update({
+                        **session, "state": "done", "endedAt": ended,
+                        "sessionWallMs": session_wall_ms,
+                        "durationMs": marker_receipt["terminalTurnDurationMs"],
+                    })
+                    return marker_receipt
                 return {
                     **session, "state": "stale", "endedAt": int(now * 1000),
                     "durationMs": int((now - started) * 1000),
