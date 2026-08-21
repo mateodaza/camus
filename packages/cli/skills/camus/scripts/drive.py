@@ -256,6 +256,16 @@ def _recover_completed(receipt):
         path, requested_model=receipt.get("modelRequested"),
         requested_effort=receipt.get("effortRequested"),
     )
+    # A missing transcript is an expected recovery condition (for example, after retention or
+    # a host crash).  Preserve the sealed event in full; an empty enrichment must not erase its
+    # usage, hash, or event duration.
+    if not enriched.get("transcriptPath") or not enriched.get("transcriptSha256"):
+        return dict(receipt)
+    stored_hash = receipt.get("transcriptSha256")
+    if stored_hash is not None and enriched.get("transcriptSha256") != stored_hash:
+        raise background_agent.BackgroundAgentError(
+            "completed background transcript hash drifted; refusing to rebind evidence"
+        )
     recovered = {**receipt, **enriched}
     terminal_duration = enriched.get("terminalTurnDurationMs")
     if isinstance(terminal_duration, int) and terminal_duration >= 0:
@@ -502,6 +512,9 @@ def _task_metrics(run, node, log):
     model_duration = 0
     for row in agent_rows:
         data = row.get("data") if isinstance(row.get("data"), dict) else {}
+        # Rebuilds can happen after the original driver has stopped.  Re-validate the sealed
+        # transcript binding and prefer its exact terminal-turn duration over adoption wall time.
+        data = _recover_completed(data)
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
         model_output += int(usage.get("outputTokens") or 0)
         model_duration += int(data.get("durationMs") or 0)

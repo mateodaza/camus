@@ -247,6 +247,7 @@ def test_recovered_terminal_timing_overrides_adoption_wall():
     old = {"durationMs": 1054805, "modelRequested": "claude-opus-4-8",
            "effortRequested": "medium", "cwd": "/tmp/repo", "sessionId": "sid"}
     enriched = {
+        "transcriptPath": "/tmp/t.jsonl", "transcriptSha256": "sha256:" + "1" * 64,
         "terminalTurnMarker": True, "terminalTurnDurationMs": 373737,
         "terminalTurnAt": "2026-08-21T12:29:04.536Z", "usage": {"outputTokens": 7},
     }
@@ -258,6 +259,63 @@ def test_recovered_terminal_timing_overrides_adoption_wall():
     assert recovered["terminalTurnAt"] == "2026-08-21T12:29:04.536Z"
     replay = D._recover_completed({**old, "durationMs": 373737, "sessionWallMs": 1054805})
     assert replay["durationMs"] == 373737 and replay["sessionWallMs"] == 1054805
+
+
+def test_metrics_rebuild_uses_validated_terminal_duration_for_old_event():
+    with tempfile.TemporaryDirectory() as root:
+        log = D.EventLog("feat-a", base=root)
+        node = {"taskId": "task-a", "directMakerUsage": {"totals": {}}}
+        run = {"state": {"kernel": {"traceId": "trace:a1"}}}
+        log.append("task.started", trace_id="trace:a1", task_id="task-a", key="task-a",
+                   data={})
+        log.append("agent.completed", trace_id="trace:a1", task_id="task-a",
+                   key="task-a:maker:1", data={
+                       "cwd": root, "sessionId": "12345678-1234-1234-1234-123456789abc",
+                       "durationMs": 1054805, "transcriptSha256": "sha256:" + "1" * 64,
+                       "usage": {"outputTokens": 7},
+                   })
+        with mock.patch.object(D.background_agent, "transcript_path",
+                               return_value=os.path.join(root, "transcript.jsonl")), \
+                mock.patch.object(D.background_agent, "transcript_receipt", return_value={
+                    "transcriptPath": os.path.join(root, "transcript.jsonl"),
+                    "transcriptSha256": "sha256:" + "1" * 64,
+                    "terminalTurnMarker": True, "terminalTurnDurationMs": 373737,
+                }):
+            metrics, _transcripts = D._task_metrics(run, node, log)
+        assert metrics["modelWallMs"] == 373737
+
+
+def test_recovered_completed_refuses_transcript_hash_drift():
+    old = {
+        "cwd": "/tmp/repo", "sessionId": "12345678-1234-1234-1234-123456789abc",
+        "durationMs": 1054805, "transcriptSha256": "sha256:" + "1" * 64,
+    }
+    with mock.patch.object(D.background_agent, "transcript_path", return_value="/tmp/t.jsonl"), \
+            mock.patch.object(D.background_agent, "transcript_receipt", return_value={
+                "transcriptPath": "/tmp/t.jsonl",
+                "transcriptSha256": "sha256:" + "2" * 64,
+            }):
+        try:
+            D._recover_completed(old)
+        except D.background_agent.BackgroundAgentError as exc:
+            assert "hash drifted" in str(exc)
+        else:
+            raise AssertionError("completed evidence must not be rebound after transcript drift")
+
+
+def test_metrics_rebuild_missing_transcript_uses_sealed_event_duration():
+    with tempfile.TemporaryDirectory() as root:
+        log = D.EventLog("feat-a", base=root)
+        node = {"taskId": "task-a", "directMakerUsage": {"totals": {}}}
+        run = {"state": {"kernel": {"traceId": "trace:a1"}}}
+        log.append("agent.completed", trace_id="trace:a1", task_id="task-a",
+                   key="task-a:maker:1", data={
+                       "durationMs": 4242, "usage": {"outputTokens": 7},
+                       "transcriptSha256": "sha256:" + "1" * 64,
+                   })
+        with mock.patch.object(D.background_agent, "transcript_path", return_value=None):
+            metrics, _transcripts = D._task_metrics(run, node, log)
+        assert metrics["modelWallMs"] == 4242
 
 
 def test_direct_output_reserve_rejects_negative_and_allows_zero_disable():
