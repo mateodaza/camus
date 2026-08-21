@@ -18,6 +18,10 @@ export const meta = {
 const SKILL = '"$HOME/.claude/skills/camus/scripts"'
 const ENV_CMD = `python3 ${SKILL}/env_check.py`     // [REPO] -> exit 0 ready, 1 prints what to fix
 const VERIFY_CMD = `bash ${SKILL}/verify.sh`         // [DIR]  -> {pass,failures,checks} JSON
+// Full repository verification can legitimately exceed Claude Code's 120s Bash default (Camus's
+// own git/process safety suite is ~4.5m on macOS). Feat baseline + integration runners must set
+// the TOOL timeout, never a shell wrapper, or healthy repos halt as env_not_ready before a task.
+const VERIFY_TIMEOUT_MS = 600000
 const MERGE_CMD = `bash ${SKILL}/merge.sh`           // <feat> <task> <msg> -> the merge contract JSON,
                                                      // computed in-script (hookless/unsigned inside the
                                                      // allowlisted script — run-5 classifier finding)
@@ -654,7 +658,28 @@ if (pf.base === 'HEAD') {
     note: 'HEAD is detached — the feat would be cut from the parked commit, not a branch. Check out the branch you mean to build on (e.g. `git checkout main`) and re-run.',
   })
 }
-state.base = pf.base || null
+// Parse the checkpoint before the feat-branch guard: a normal interrupted run leaves the parent
+// checkout ON its own deterministic feat branch. That is a resume, not an attempt to stack a new
+// feat on arbitrary unreviewed work. It is proven only when the live branch and the checkpoint's
+// feat identity BOTH equal the identity recomputed from this invocation; otherwise the original
+// anti-stacking refusal remains fail-closed. Restore the original mainline base for honest reports.
+const prior = pf.stateRaw ? extractJsonObject(pf.stateRaw) : null
+const priorBaseIsMainline = prior && typeof prior.base === 'string' && prior.base.length > 0
+  && !/^camus\/feat[-/]/.test(prior.base)
+// v0.4.0 briefly had the guard before checkpoint hydration, so its own false halt could persist
+// base=<this exact feat branch> over a previously-correct mainline base. Accept that ONE legacy
+// damaged shape only when every recomputed identity still matches; report base:null rather than
+// inventing a mainline. Any other feat-shaped prior base remains an attempted stack and refuses.
+const legacySelfCheckpoint = prior && prior.base === featBranch
+// Once the legacy self shape is recovered, its honest normalized checkpoint carries base:null.
+// That normalized state must itself remain resumable; otherwise the NEXT interruption wedges on
+// the same guard again. Exact feat identity still supplies the authorization — null supplies none.
+const legacyUnknownBase = prior && prior.base == null
+const exactFeatResume = pf.base === featBranch
+  && prior && prior.featId === featId && prior.featBranch === featBranch
+  && Array.isArray(prior.tasks)
+  && (priorBaseIsMainline || legacySelfCheckpoint || legacyUnknownBase)
+state.base = exactFeatResume ? (priorBaseIsMainline ? prior.base : null) : (pf.base || null)
 if (!pf.clean) {
   return finalize('dirty_tree', {
     note: `Base working tree has ${pf.dirtyFiles} uncommitted change(s). Commit or stash before running the feat — Camus will not run on a dirty tree. (If the lines name a SUBMODULE, the pointer is stale rather than edited: \`git submodule update --init\` clears it.)`,
@@ -665,7 +690,8 @@ if (!pf.clean) {
 // unreviewed work as the baseline (and baseline-verify passes because the prior feat's commits are
 // green). Same implicit-context family as the fork (finding 5): the base is the current branch,
 // and forking it forks identity. Halt with a converging next step rather than build on a phantom base.
-if (typeof pf.base === 'string' && /^camus\/feat[-/]/.test(pf.base) && A.allowFeatBase !== true) {
+if (typeof pf.base === 'string' && /^camus\/feat[-/]/.test(pf.base)
+  && !exactFeatResume && A.allowFeatBase !== true) {
   return finalize('needs_human', {
     stage: 'base_is_feat_branch', question: `Base branch "${pf.base}" is a camus feat branch, not a mainline.`,
     note: `The current branch is "${pf.base}" — a camus feat branch, not a mainline. Cutting this feat from it would inherit its unmerged (possibly unreviewed) work as your baseline. Almost always this means a prior run left you on a feat branch: \`git checkout main\` (or your mainline) and re-run the feat with the SAME args. If you GENUINELY mean to stack on it, re-run with allowFeatBase:true.`,
@@ -685,7 +711,6 @@ const PROVEN_DECISION = new Set()
 // FULLY proven, so they AUTO-land on resume (no land list needed): re-running the full loop would
 // re-enter review for nothing and collide on the existing branch/worktree.
 const PROVEN_READY = new Set()
-const prior = pf.stateRaw ? extractJsonObject(pf.stateRaw) : null
 // A compact prior state plus an existing sidecar proves that this invocation already sealed args.
 // Avoid paying another large write on every manual resume. The scanner independently verifies the
 // sidecar bytes before auto-resuming; a missing/corrupt sidecar therefore fails closed there.
@@ -880,6 +905,7 @@ if (!state.env.ready) {
 // ── 4. BASELINE VERIFY — base must be green before any task ───────────────────
 const baseRaw = await agent(
   `THIN verifier. cd ${REPO_ARG}, then run EXACTLY:  ${HB_TOUCH}${VERIFY_ENV}${VERIFY_CMD} ${REPO_ARG}
+Set the Bash tool's timeout PARAMETER to ${VERIFY_TIMEOUT_MS} for this call. Do NOT wrap the command in shell \`timeout\`/\`gtimeout\`.
 Output the command's stdout VERBATIM as your entire reply (JSON {pass,failures,checks}). No fences, no commentary.
 ${VERIFY_OATH}`,
   { model: MODEL_RUNNER, phase: 'Env+Baseline', label: 'baseline-verify' }
@@ -1271,9 +1297,35 @@ If the branch does not exist git errors — output that error line verbatim.`,
     })
   }
 
-  // done_with_findings (VELOCITY §1, oneshot posture) is MERGEABLE: the work is committed and
-  // deterministically green — the deferred review debt is the posture's contract, carried on
-  // the node and surfaced at the feat level (never as a plain done).
+  // Defense in depth for mixed/older loop runtimes: full posture must never auto-merge a
+  // done_with_findings relay that still carries P0/P1 debt. Current camus-loop returns such a
+  // result as review_unresolved, but the feat owns the merge and therefore enforces the policy
+  // independently. Park the proven commit as a decision point; only an explicit later human
+  // accept can enter land mode. Oneshot keeps its documented speed/quality trade.
+  const deferred = res && Array.isArray(res.findings) ? res.findings : []
+  const hasUnreviewedP0P1 = deferred.some((f) => Number.isInteger(f && f.priority) && f.priority <= 1)
+  if (POSTURE === 'full' && res && res.status === 'done_with_findings' && hasUnreviewedP0P1) {
+    node.status = 'needs_decision'
+    node.provenStatus = 'done_with_findings'
+    const proofSha = (typeof res.commit_sha === 'string' && res.commit_sha)
+      ? res.commit_sha
+      : ((typeof res.parkedSha === 'string' && res.parkedSha) ? res.parkedSha : null)
+    if (proofSha) node.provenCommit = proofSha
+    node.findingsDeferred = res.findingsDeferred || deferred.length
+    node.deferredFindings = deferred
+    if (Array.isArray(res.decisions) && res.decisions.length) node.decisions = res.decisions
+    await persistState('Tasks')
+    note(`⚠ Task ${n} returned done_with_findings with unresolved P0/P1 debt under FULL posture — parked, NOT merged.`)
+    return finalize('halted', {
+      stage: 'task', haltedTask: node.taskId, haltReason: 'unreviewed_p0_p1',
+      verifyCleanDecision: true, loopResult: res,
+      note: `Task ${n} has a committed, deterministically green repair, but its P0/P1 finding was not independently re-reviewed. Full posture refuses to auto-merge it. Re-run the independent review and refine if needed; an explicit human accept may land the parked commit, but Camus will not silently turn this result green.`,
+    })
+  }
+
+  // done_with_findings (VELOCITY §1, oneshot posture or P2-only bounded debt) is MERGEABLE: the
+  // work is committed and deterministically green — the deferred review debt is the posture's
+  // contract, carried on the node and surfaced at the feat level (never as a plain done).
   const mergeableStatus = res && (res.status === 'done' || res.status === 'done_with_findings')
   if (!mergeableStatus) {
     // Any non-done (review_unresolved / verify_failed / verify_inconclusive / infra_error /
@@ -1679,6 +1731,7 @@ if (!state.envRecheck.ready) {
 }
 const intRaw = await agent(
   `THIN verifier. cd ${REPO_ARG}, then run EXACTLY:  ${HB_TOUCH}${VERIFY_ENV}${VERIFY_CMD} ${REPO_ARG}
+Set the Bash tool's timeout PARAMETER to ${VERIFY_TIMEOUT_MS} for this call. Do NOT wrap the command in shell \`timeout\`/\`gtimeout\`.
 Output the command's stdout VERBATIM (JSON {pass,failures,checks}). No fences, no commentary.
 ${VERIFY_OATH}`,
   { model: MODEL_RUNNER, phase: 'Integration', label: 'integration-verify' }

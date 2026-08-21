@@ -242,7 +242,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   }
   {
     const { res, calls } = await runLoop({ task: 't', roundCap: 1 }, varyBlock())
-    ok('S8a roundCap:1 → ONE bounded fix, parked as done_with_findings', res.status === 'done_with_findings', res.status)
+    ok('S8a roundCap:1 + unreviewed P1 → parked review_unresolved', res.status === 'review_unresolved' && res.verifyClean === true, res.status)
     ok('S8a exactly 1 review round ran', calls.filter((c) => c.startsWith('review')).length === 1, calls.filter((c) => c.startsWith('review')).join(','))
     ok('S8a the note says the fix was NOT re-reviewed', /UNREVIEWED/.test(res.note || ''), (res.note || '').slice(0, 120))
     ok('S8a and never claims review-clean', !/review-clean\b(?!.*NOT)/i.test(res.note || '') && /NOT review-clean/.test(res.note || ''), (res.note || '').slice(0, 160))
@@ -251,7 +251,14 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     // out-of-range cap (99) falls back to the default 3 — bounded so a bad value can't run away.
     const { res, calls } = await runLoop({ task: 't', roundCap: 99 }, varyBlock())
     ok('S8b out-of-range roundCap → default 3 rounds', calls.filter((c) => c.startsWith('review')).length === 3, String(calls.filter((c) => c.startsWith('review')).length))
-    ok('S8b → done_with_findings after the final bounded fix', res.status === 'done_with_findings', res.status)
+    ok('S8b → review_unresolved after the final unreviewed P1 fix', res.status === 'review_unresolved', res.status)
+  }
+  {
+    let r = 0
+    const p2 = varyBlock()
+    p2.review = () => { r++; return J({ ran: true, clean: false, blocking: [{ priority: 2, title: 'low-' + r, code_location: 'f.ts:' + r }], nonblocking: [] }) }
+    const { res } = await runLoop({ task: 't', roundCap: 1 }, p2)
+    ok('S8c full + P2-only final bounded fix remains done_with_findings', res.status === 'done_with_findings', res.status)
   }
   // S8e/S8f — FIXED EFFORT (displayed pairing = executed pairing). The review
   // label encodes the effort each round actually ran at ("review:rN codex·<effort>"),
@@ -659,7 +666,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const { res, calls } = await runLoop({ task: 't', roundCap: 2 }, varyBlock())
     ok('S16 the FINAL round gets its own bounded fix (2 fixes for 2 rounds)', calls.filter((c) => c.startsWith('fix')).length === 2, calls.join(','))
     ok('S16 both review rounds ran — and NO third', calls.filter((c) => c.startsWith('review')).length === 2, calls.filter((c) => c.startsWith('review')).join(','))
-    ok('S16 → done_with_findings (never review-clean)', res.status === 'done_with_findings', res.status)
+    ok('S16 unreviewed P1 → review_unresolved (never mergeable)', res.status === 'review_unresolved' && res.verifyClean === true, res.status)
     ok('S16 the findings are recorded verbatim for the human', Array.isArray(res.findings) && res.findings.length === 1, JSON.stringify(res.findings || []).slice(0, 120))
   }
   // S17 (0.2.5 item 1): HEARTBEAT — under a feat (idSalt) every runner command and think prompt
@@ -1165,6 +1172,17 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     // deterministic expectation.
     ok('F23d merged list names the branch ACTUALLY merged (dwf included)', Array.isArray(r1.res.merged) && r1.res.merged.length === 1 && r1.res.merged[0] === 'camus/feat/x/only', JSON.stringify(r1.res && r1.res.merged))
   }
+  {
+    // Full posture cannot silently merge the final bounded repair when its P0/P1 finding has
+    // not been independently re-reviewed. This is also a defense against an older loop runtime
+    // returning done_with_findings instead of review_unresolved.
+    const finding = { priority: 1, title: 'unreviewed trust break', code_location: 'gate.ts:7' }
+    const r = await runFeat({ feat: 'F', tasks: ['only task'], posture: 'full' }, featBase,
+      [{ status: 'done_with_findings', branch: 'camus/feat/x/only', decisions: [], findings: [finding], findingsDeferred: 1, resolution: 'fixed_unreviewed', commit_sha: h40('p1park') }])
+    ok('F23e full + unreviewed P1 halts before merge', r.res && r.res.status === 'halted' && r.res.haltReason === 'unreviewed_p0_p1', r.res && (r.res.status + '/' + r.res.haltReason))
+    ok('F23e merge and integration never run', !r.calls.some((c) => c.startsWith('merge:')) && !r.calls.includes('integration-verify'), r.calls.join(','))
+    ok('F23e proof parks as needs_decision with finding + sha', !!r.stateJSON && r.stateJSON.tasks[0].status === 'needs_decision' && r.stateJSON.tasks[0].provenCommit === h40('p1park') && r.stateJSON.tasks[0].deferredFindings[0].priority === 1, JSON.stringify(r.stateJSON && r.stateJSON.tasks[0]))
+  }
   // F24 (audit P1 2026-06-11, the F14-style crash window for done_with_findings): the proof
   // persist carries the loop's REAL verdict, and BOTH resume lanes — auto-land and the
   // prior-merge-commit evidence path — restore it. Land mode only ever says plain done; without
@@ -1417,6 +1435,9 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F19 baseline verify heartbeats', (prompts['baseline-verify'] || '').includes(hb))
     ok('F19 merge heartbeats', (prompts['merge:' + tid] || '').includes(hb))
     ok('F19 integration verify heartbeats', (prompts['integration-verify'] || '').includes(hb))
+    ok('F19 feat baseline verify requests a 600000ms Bash-tool timeout', /timeout PARAMETER to 600000/.test(prompts['baseline-verify'] || ''))
+    ok('F19 feat integration verify requests a 600000ms Bash-tool timeout', /timeout PARAMETER to 600000/.test(prompts['integration-verify'] || ''))
+    ok('F19 verifier prompts forbid shell timeout wrappers', [prompts['baseline-verify'], prompts['integration-verify']].every((p) => /Do NOT wrap/.test(p || '') && /timeout.*gtimeout/.test(p || '')))
   }
   // F20 (audit P1 2026-06-11): a merged pause+answers note must NOT lose its payload — the
   // boundary check consumed the file, so the engine re-queues the remainder (minus pause)
@@ -2489,6 +2510,41 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F44 early guard preserves prior decisions/events in state and report',
       preserved.stateJSON.eventSeq === 7 && preserved.res.tasks[0].status === 'ready_to_merge'
         && preserved.res.tasks[0].decisions[0].what === 'accepted', J(preserved.res.tasks[0]))
+    const exactResume = { ...prior, featBranch: `camus/feat-${fid}`, base: 'main' }
+    const resumed = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, preflight: { clean: true, base: `camus/feat-${fid}`, dirtyFiles: 0,
+        stateRaw: JSON.stringify(exactResume), argsPresent: false } }, loopDone)
+    ok('F44 exact feat branch + matching checkpoint → resumes instead of false stacking halt',
+      resumed.res && resumed.res.status === 'done', resumed.res && (resumed.res.status + '/' + resumed.res.stage))
+    ok('F44 exact resume restores original mainline base in state/report',
+      resumed.stateJSON.base === 'main' && resumed.res.base === 'main',
+      J({ state: resumed.stateJSON.base, report: resumed.res.base }))
+    const legacySelf = { ...exactResume, base: `camus/feat-${fid}` }
+    const recovered = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, preflight: { clean: true, base: `camus/feat-${fid}`, dirtyFiles: 0,
+        stateRaw: JSON.stringify(legacySelf), argsPresent: false } }, loopDone)
+    ok('F44 legacy self-overwritten base + exact identity → resumes for migration recovery',
+      recovered.res && recovered.res.status === 'done',
+      recovered.res && (recovered.res.status + '/' + recovered.res.stage))
+    ok('F44 legacy recovery reports unknown base rather than inventing mainline provenance',
+      recovered.stateJSON.base === null && recovered.res.base === null,
+      J({ state: recovered.stateJSON.base, report: recovered.res.base }))
+    const recoveredAgain = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, preflight: { clean: true, base: `camus/feat-${fid}`, dirtyFiles: 0,
+        stateRaw: JSON.stringify(recovered.stateJSON), argsPresent: false } }, loopDone)
+    ok('F44 normalized base:null checkpoint remains resumable after another interruption',
+      recoveredAgain.res && recoveredAgain.res.status === 'done',
+      recoveredAgain.res && (recoveredAgain.res.status + '/' + recoveredAgain.res.stage))
+    ok('F44 repeated legacy resume keeps unknown base honest',
+      recoveredAgain.stateJSON.base === null && recoveredAgain.res.base === null,
+      J({ state: recoveredAgain.stateJSON.base, report: recoveredAgain.res.base }))
+    const missingProof = await runFeat({ feat: 'F', tasks: ['only task'] },
+      { ...featBase, preflight: { clean: true, base: `camus/feat-${fid}`, dirtyFiles: 0,
+        stateRaw: '', argsPresent: false } }, loopDone)
+    ok('F44 exact feat branch without matching checkpoint still refuses fail-closed',
+      missingProof.res && missingProof.res.status === 'needs_human'
+        && missingProof.res.stage === 'base_is_feat_branch',
+      missingProof.res && (missingProof.res.status + '/' + missingProof.res.stage))
     const bypass = await runFeat({ feat: 'F', tasks: ['only task'], allowFeatBase: true },
       { ...featBase, preflight: { clean: true, base: 'camus/feat-old', dirtyFiles: 0, stateRaw: '' } }, loopDone)
     ok('F44 allowFeatBase:true bypasses (proceeds)', bypass.res && bypass.res.status === 'done', bypass.res && bypass.res.status)
@@ -2829,7 +2885,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const fixes = calls.filter((c) => c.startsWith('fix'))
     ok('F55a exactly TWO reviewer calls (roundCap honoured, no extra round)', reviews.length === 2, reviews.join(','))
     ok('F55b exactly TWO fix calls (r1 fix + the final bounded fix)', fixes.length === 2, fixes.join(','))
-    ok('F55c the candidate is parked with a head-bound green', res.status === 'done_with_findings', res.status)
+    ok('F55c the P1 candidate is parked with a head-bound green', res.status === 'review_unresolved' && res.verifyClean === true && res.parkedSha === h40('f1na1f'), res.status)
     ok('F55d …committed at the verified sha', res.commit_sha === h40('f1na1f'), String(res.commit_sha))
     ok('F55e provenance is fixed_unreviewed, never review-clean', /UNREVIEWED/.test(res.note || '') && /NOT review-clean/.test(res.note || ''), (res.note || '').slice(0, 140))
     ok('F55f …and explicitly NOT independent_clean', /NOT independent_clean/.test(res.note || ''), (res.note || '').slice(0, 140))
@@ -2840,7 +2896,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F55h the maker\'s claimed resolution rides the final finding', Array.isArray(res.findings) && res.findings.some((f) => f.title === 'new-2' && /cooldown expiry/.test(String(f.claimedResolution || ''))), JSON.stringify(res.findings || []).slice(0, 200))
     ok('F55h1 …and the sealed resolution field says fixed_unreviewed', res.resolution === 'fixed_unreviewed', String(res.resolution))
     ok('F55h2 …and the note directs the human to those claimed resolutions', /claimed resolutions/.test(res.note || ''), (res.note || '').slice(0, 200))
-    ok('F55h3 done_with_findings carries the FINAL post-fix summary', res.summary === 'Final candidate after the bounded repair.', String(res.summary))
+    ok('F55h3 review_unresolved carries the FINAL post-fix summary', res.summary === 'Final candidate after the bounded repair.', String(res.summary))
     ok('F55h4 …and replaces superseded decisions', Array.isArray(res.decisions) && res.decisions.length === 1 && res.decisions[0].what === 'Final repair choice', JSON.stringify(res.decisions))
     ok('F55i no human pause preceded the solution attempt', !calls.some((c) => /ask|question/i.test(c)), calls.join(','))
     ok('F55j the note names the final-round case, not the oneshot posture', /FINAL-ROUND BOUNDED FIX/.test(res.note || ''), (res.note || '').slice(0, 90))
@@ -2918,7 +2974,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F56a stringified args honour roundCap:2 — exactly two reviewer calls', reviews.length === 2, reviews.join(','))
     ok('F56b NO third round is ever attempted (no r3 agent)', !calls.some((c) => /r3/.test(c)), calls.join(','))
     ok('F56c the final round still gets its ONE bounded fix', calls.filter((c) => c.startsWith('fix')).length === 2, calls.join(','))
-    ok('F56d → done_with_findings', res.status === 'done_with_findings', res.status)
+    ok('F56d unreviewed P1 → review_unresolved', res.status === 'review_unresolved' && res.verifyClean === true, res.status)
     ok('F56e resolution is fixed_unreviewed', res.resolution === 'fixed_unreviewed', String(res.resolution))
     ok('F56f reviewedAfterFix is false', res.reviewedAfterFix === false, String(res.reviewedAfterFix))
     ok('F56g the note reports the honoured cap (2/2), not 3', /round 2\/2/.test(res.note || ''), (res.note || '').slice(0, 110))
@@ -2974,7 +3030,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F58a a pending r2 is re-attached, not re-reviewed', calls.some((c) => /await/.test(c)), calls.join(','))
     ok('F58b exactly two reviewer rounds under cap 2', reviews.length === 2, reviews.join(','))
     ok('F58c no third round', !calls.some((c) => /r3/.test(c)), calls.join(','))
-    ok('F58d the completed BOUND await is accepted → commit + verify terminal', res.status === 'done_with_findings', res.status)
+    ok('F58d the completed BOUND await is accepted → commit + verify + P1 park', res.status === 'review_unresolved' && res.verifyClean === true, res.status)
     ok('F58e …at the verified head', res.commit_sha === h40('cust0dy'), String(res.commit_sha))
     ok('F58f …with fixed_unreviewed provenance', res.resolution === 'fixed_unreviewed', String(res.resolution))
   }

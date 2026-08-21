@@ -7,16 +7,21 @@ without you watching: Claude writes the code, Codex (a competing model) reviews
 every change, and your repo's own type-check and tests have the final word. Nothing in
 the loop, Claude included, can approve itself. The pairing is the point.
 
-It runs as three Claude Code workflows plus a skill: `/camus-plan` turns a raw
-request into a quality-gated task list, `/camus-loop` takes one task, and `/camus-feat`
-ships an ordered task list as one feature branch with a report. Formerly Nightcrawler
+The preferred 0.4.1 path is a native host driver: `camus start` creates a feature from
+JSON without a model turn, and `camus run` gives one kernel-owned worktree to a durable
+Claude Code background session, invokes the independent reviewer directly, and lets code
+perform every mechanical transition. The three Claude Code workflows remain available for
+compatibility: `/camus-plan` turns a raw request into a quality-gated task list,
+`/camus-loop` takes one task, and `/camus-feat` ships an ordered task list. Formerly Nightcrawler
 v2; v1 remains archived at [mateodaza/nightcrawler](https://github.com/mateodaza/nightcrawler).
 Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMUS-SPEC.md).
 
-> **Public alpha (0.4.0).** The deterministic Hybrid Kernel now owns feature state,
-> task dispatch, budgets, evidence binding, model-free land, and final integration. Use it
-> on real work and keep the acceptance contract explicit. A material custody or receipt
-> defect should stop the run; ordinary UX and efficiency observations belong in `camus retro`.
+> **0.4.1 candidate.** The Hybrid Kernel now has an actual host driver. Claude background
+> sessions persist independently of the launching terminal and use Claude subscription quota;
+> the driver adopts them after interruption. An append-only local eval ledger supports sequential
+> A/B assignment of model pairings. Arms must clear deterministic verification plus independent
+> clean review before latency or token pressure can influence routing. The legacy workflows remain
+> rollback surfaces while 0.4.1 is dogfooded.
 
 ```
 plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep → verify
@@ -177,6 +182,40 @@ rejected loudly, never silently downgraded.
 
 ## Autonomy controls
 
+- **The host owns orchestration.** `camus start spec.json` initializes canonical feature state
+  without asking a model to write JSON or run Git. `camus run <featId>` polls durable Claude
+  background sessions, calls the direct independent reviewer, verifies, seals, and lands through
+  the kernel. A small controller model is called only at a real semantic fork: fix and re-review,
+  fix once with explicit `fixed_unreviewed` provenance, retry a failed verifier, or stop for a
+  human. It never executes Git or rewrites state.
+- **Every task becomes an eval episode.** `~/.camus/evals/episodes.jsonl` records content-free
+  task/model identities, outcome, transcript hashes, end-to-end wall time, and available usage.
+  `camus eval` summarizes it. The ledger does not store prompts, diffs, or credentials, and its
+  operational score is not represented as human calibration.
+- **A/B testing learns by task class.** `camus run --experiment experiment.json` balances real
+  tasks across at least two pinned model-pairing arms until every arm reaches `minimumTrials`.
+  Only arms above `qualityFloor` become eligible for lowest-latency/token selection. Failed and
+  interrupted work remains evidence; a cheap failure never wins. Studio continues to own
+  parallel same-input comparisons, while CLI uses sequential assignment to avoid paying twice for
+  every real feature.
+- **Eval reporting fails closed by generation.** `camus eval` groups evidence by the exact
+  `(experiment id, configHash, taskClass)` tuple. Without the matching config it reports observed
+  coverage but no leader. Configured arms with no trials remain visible at `n=0`, and records from
+  changed configs or task classes are never pooled into a complete-looking result.
+- **Native orchestration overhead is visible per arm.** Each arm reports `medianModelWallMs` (median
+  measured background maker/controller time) alongside `medianWallMs`, and
+  `medianOrchestrationOverheadMs` — the median of each episode's
+  `max(0, wallMs - modelWallMs)`, the observed orchestration gap around that background model work.
+  The gap includes independent-review time as well as deterministic host control; it is not a claim
+  that every millisecond was kernel CPU time. Overhead is computed only for episodes that carry both
+  raw timings and, when native coverage is declared, complete background-session timing. An episode
+  missing either side or declaring incomplete measurement contributes to neither median (no imputed
+  zero), and impossible raw evidence
+  (`modelWallMs > wallMs`) floors at zero rather than reporting negative overhead. Both medians are
+  `null` when no episode supplies the required pair. The text report shows them as `model=` and
+  `overhead=`. These are reported evidence only: arm ranking stays quality-first, then `medianWallMs`,
+  then `medianOutputTokens` — overhead never reorders arms.
+
 - **Plan it first (optional).** `/camus-plan "<request>"` reframes a vague or large
   request into a quality-gated, ordered task list before any code is written: it grounds
   in your repo, asks when genuinely ambiguous, designs the change, decomposes it to camus
@@ -206,6 +245,11 @@ rejected loudly, never silently downgraded.
   boundary, and once more after the final task before integration, against per-task
   totals that persist across resumes. Past the cap the run halts as a question —
   continue with a higher budget, or stop here — never a silent overrun.
+- **Native direct-output admission is conservative.** `camus run` reserves
+  `max(10,000, 25% of budgetTokens)` direct-output tokens before each maker/fix; pass
+  `--direct-output-reserve 0` to disable that admission reserve. Claude background sessions do
+  not expose a per-turn output cap, so an in-flight turn can still overshoot; the post-receipt
+  ceiling stops every later model call and records the exact overage.
 - **Costs are stated honestly.** `camus watch` prices the Claude side of a live run at
   the published API rate card, labeled as an estimate, never an invoice. The Codex
   review settles in your ChatGPT plan credits, and Camus does not fabricate a dollar
@@ -312,12 +356,99 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.4.0
+npm i -g camus-cli@0.4.1
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)
 camus auto-setup     # optional: the zero-click permission profile
 ```
+
+Create a native run from a small JSON file:
+
+```json
+{
+  "feat": "Add bounded export support",
+  "tasks": [
+    "Implement the export contract and focused unit tests.",
+    "Add integration coverage and update operator documentation."
+  ],
+  "targetPath": "/absolute/path/to/repo",
+  "model": "claude-opus-4-8",
+  "roundCap": 3
+}
+```
+
+```bash
+camus start feature.json       # returns the deterministic featId
+camus run <featId>             # Opus 4.8 maker, Sol reviewer by default
+camus eval                     # local quality / speed / usage evidence
+```
+
+An A/B config names a task domain and complete pairings; requested model and effort values are
+recorded, never silently substituted:
+
+```json
+{
+  "id": "coding-feature-v1",
+  "taskClass": "bounded_feature",
+  "mode": "route",
+  "minimumTrials": 5,
+  "qualityFloor": 0.8,
+  "arms": [
+    {
+      "id": "opus-sol",
+      "makerModel": "claude-opus-4-8",
+      "makerEffort": "high",
+      "reviewerBackend": "codex",
+      "reviewerModel": "gpt-5.6-sol",
+      "reviewerEffort": "high"
+    },
+    {
+      "id": "sonnet-sol",
+      "makerModel": "sonnet",
+      "makerEffort": "medium",
+      "reviewerBackend": "codex",
+      "reviewerModel": "gpt-5.6-sol",
+      "reviewerEffort": "high"
+    }
+  ]
+}
+```
+
+Use `camus run <featId> --experiment experiment.json`. The safer default mode is `explore`, which
+keeps assignments balanced after the minimum instead of changing routing. `route` is explicit and
+requires at least five trials per arm before quality-gated exploitation. Even then, promotion is
+local evidence for that declared task class, never a universal model leaderboard.
+
+Read the evidence with the same frozen config:
+
+```bash
+camus eval --config experiment.json
+camus eval --config experiment.json --json
+camus eval --experiment coding-feature-v1 --config experiment.json
+camus eval --task-class bounded_feature --config experiment.json
+```
+
+For `camus run`, `--experiment` names a config file; for `camus eval`, it filters by experiment
+ID. `--task-class <name>` filters the report to one exact scenario: both observed episodes and any
+supplied `--config` context are restricted to that task class, so an unrelated config can never
+seed a zero-trial segment. It fails closed on an empty name. In JSON, each `segments[]` entry is
+one exact generation and task class. Interpret it as follows:
+
+- `exploratory_only`: observed trials exist, but the matching configured floor and trial minimum
+  were not supplied; `leader` is null.
+- `coverage_incomplete`: the config matches, but at least one configured arm is below
+  `minimumTrials`; zero-trial arms are included and `routingEligible` is false.
+- `no_arm_clears_quality_floor`: coverage is complete, but quality blocks promotion.
+- `exploratory_leader`: the configured quality-first leader is visible for learning, while
+  `routingConfigured` and `routingEligible` remain false.
+- `routing_leader`: route mode, complete coverage, and the quality floor all hold;
+  `routingEligible` is true for this generation and task class only.
+
+Top-level `segmented_only` means standing exists only inside `segments[]`; `mixed_generations` is
+an additional warning, never an aggregate winner. `episodes` counts ledger rows in scope, while
+`experimentEpisodes` counts rows carrying experiment evidence. Inspect the individual segments;
+Camus will not combine their trials or standing.
 
 From a checkout: `npm i -g ./packages/cli` from the repo root, or run `./install.sh`
 directly inside `packages/cli/`. The CLI and the shell script are the same entrypoints.
