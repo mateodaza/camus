@@ -90,7 +90,8 @@ usage: npx camus-cli <command>
                                                   (0 disables the reserve; not a hard cap)
   eval [--json]      per-arm coverage/A/B report segmented by experiment id, configHash, task class
                        --config <json> supplies a generation's qualityFloor/minimumTrials so a
-                       leader may be named (repeatable); --experiment <id> filters to one experiment
+                       leader may be named (repeatable); --experiment <id> filters to one experiment;
+                       --task-class <name> filters observed rows AND config context to one scenario
   resume       list interrupted feat runs (canonical resumeArgs, JSON)
   retro        read-only run-history analytics over ~/.camus/reports: per-feat lines,
                  aggregates (status/posture mix, rounds, token p50/p90), evidence-gated

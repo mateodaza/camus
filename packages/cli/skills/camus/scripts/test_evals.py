@@ -466,6 +466,61 @@ def test_overhead_does_not_change_quality_first_ranking():
     assert segment["arms"]["slow"]["medianOrchestrationOverheadMs"] == 8990
 
 
+def test_task_class_filter_restricts_observed_rows_to_that_scenario():
+    # Only episodes recorded under the exact task class are counted; other scenarios vanish.
+    rows = [
+        _seg_episode(1, "a", "sha256:cfg", task_class="feature"),
+        _seg_episode(2, "a", "sha256:cfg", task_class="feature"),
+        _seg_episode(3, "a", "sha256:cfg", task_class="research"),
+    ]
+    report = E.summarize(rows, task_class="feature")
+    assert report["episodes"] == 2, report
+    assert [seg["taskClass"] for seg in report["segments"]] == ["feature"]
+    assert report["segments"][0]["arms"]["a"]["trials"] == 2
+
+
+def test_task_class_filter_drops_plan_context_for_other_scenarios():
+    # A plan for an unrelated task class must not seed a zero-trial segment under the filter.
+    plan_other = {
+        "id": "exp", "configHash": "sha256:cfg", "taskClass": "research",
+        "minimumTrials": 1, "qualityFloor": 0.5, "mode": "route", "arms": [{"id": "a"}],
+    }
+    plan_match = {
+        "id": "exp", "configHash": "sha256:cfg", "taskClass": "feature",
+        "minimumTrials": 1, "qualityFloor": 0.5, "mode": "route", "arms": [{"id": "a"}],
+    }
+    report = E.summarize([], plans=[plan_other, plan_match], task_class="feature")
+    task_classes = [seg["taskClass"] for seg in report["segments"]]
+    assert task_classes == ["feature"], "unrelated config must not create a zero-trial segment"
+
+
+def test_task_class_filter_combines_with_experiment_filter():
+    rows = [
+        _seg_episode(1, "a", "sha256:cfg", task_class="feature"),
+        _seg_episode(2, "a", "sha256:cfg", task_class="research"),
+        E.make_episode(
+            trace_id="f:z", feat_id="f", task_id="tz", task_hash="sha256:%064d" % 9,
+            task_class="feature", pairing={"makerModel": "a", "reviewerModel": "judge"},
+            outcome={"verificationPass": True, "independentReview": "clean",
+                     "humanIntervention": False},
+            economics={"wallMs": 1000, "outputTokens": 100},
+            artifact={"commit": "%040d" % 9},
+            experiment={"id": "other", "armId": "a", "configHash": "sha256:cfg"}, recorded_at=9),
+    ]
+    report = E.summarize(rows, experiment_id="exp", task_class="feature")
+    assert report["experimentEpisodes"] == 1, report
+    assert [(s["experimentId"], s["taskClass"]) for s in report["segments"]] == [("exp", "feature")]
+
+
+def test_task_class_fails_closed_on_empty_value():
+    with tempfile.TemporaryDirectory() as root:
+        ledger = os.path.join(root, "episodes.jsonl")
+        assert E.main(["--ledger", ledger, "--task-class", "   "]) == 2
+        assert E.main(["--ledger", ledger, "--task-class", ""]) == 2
+        # a real value is accepted (empty ledger → clean run)
+        assert E.main(["--ledger", ledger, "--task-class", "feature", "--json"]) == 0
+
+
 if __name__ == "__main__":
     import sys
     tests = [value for key, value in sorted(globals().items())

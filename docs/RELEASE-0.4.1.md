@@ -25,6 +25,10 @@ publication.
 but cannot recover a generation's configured `qualityFloor` or `minimumTrials`, so it names no
 leader. Supply the frozen config with `camus eval --config experiment.json`; repeat `--config` to
 inspect several generations. `camus eval --experiment <id>` filters the report by experiment ID.
+`camus eval --task-class <name>` narrows the report to one exact scenario: both observed episodes
+and any supplied `--config` context are restricted to that task class, so an unrelated config can
+never seed a zero-trial segment. It composes with `--experiment` and repeated `--config`, does not
+affect run-time assignment, and fails closed on an empty name.
 
 The text and `--json` forms use the same fail-closed ladder. `coverage_incomplete` includes every
 configured arm, even arms at zero trials. `no_arm_clears_quality_floor` blocks promotion after

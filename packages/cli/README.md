@@ -426,11 +426,14 @@ Read the evidence with the same frozen config:
 camus eval --config experiment.json
 camus eval --config experiment.json --json
 camus eval --experiment coding-feature-v1 --config experiment.json
+camus eval --task-class bounded_feature --config experiment.json
 ```
 
 For `camus run`, `--experiment` names a config file; for `camus eval`, it filters by experiment
-ID. In JSON, each `segments[]` entry is one exact generation and task class. Interpret it as
-follows:
+ID. `--task-class <name>` filters the report to one exact scenario: both observed episodes and any
+supplied `--config` context are restricted to that task class, so an unrelated config can never
+seed a zero-trial segment. It fails closed on an empty name. In JSON, each `segments[]` entry is
+one exact generation and task class. Interpret it as follows:
 
 - `exploratory_only`: observed trials exist, but the matching configured floor and trial minimum
   were not supplied; `leader` is null.

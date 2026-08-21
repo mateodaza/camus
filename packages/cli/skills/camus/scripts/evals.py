@@ -410,11 +410,17 @@ def _segment_report(rows, experiment_id, config_hash, task_class, arm_ids, plan)
     return segment
 
 
-def summarize(records, experiment_id=None, plans=None):
+def summarize(records, experiment_id=None, plans=None, task_class=None):
     rows = [row for row in records if row.get("schemaVersion") == SCHEMA_VERSION]
     if experiment_id:
         rows = [row for row in rows if isinstance(row.get("experiment"), dict)
                 and row["experiment"].get("id") == experiment_id]
+    # A task-class filter scopes the report to one exact scenario: observed rows AND supplied
+    # plan context are both restricted, so an unrelated config can never seed a zero-trial
+    # segment for a task class the operator did not ask about.
+    if task_class is not None:
+        rows = [row for row in rows if (row.get("taskClass") or "unknown") == task_class]
+        plans = [plan for plan in (plans or []) if plan.get("taskClass") == task_class]
     segment_arms = experiment_segments(rows)
     # A supplied plan is itself useful coverage context. Show all configured arms at n=0 even
     # before the first episode rather than making a valid experiment disappear from the report.
@@ -488,18 +494,28 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Camus local eval and A/B ledger")
     parser.add_argument("--ledger", default=None)
     parser.add_argument("--experiment", default=None, help="filter the report to one experiment id")
+    parser.add_argument("--task-class", default=None, dest="task_class", metavar="NAME",
+                        help="filter the report to one exact task class: both observed episodes and "
+                             "supplied --config context are restricted to it (fails closed if empty)")
     parser.add_argument("--config", action="append", default=[], metavar="JSON",
                         help="experiment config supplying qualityFloor/minimumTrials for its generation "
                              "(repeatable); required before any leader can be named")
     parser.add_argument("--json", action="store_true")
     options = parser.parse_args(argv)
+    task_class = options.task_class
+    if task_class is not None:
+        try:
+            task_class = _nonempty(task_class, "--task-class")
+        except EvalError as exc:
+            print("error: %s" % exc, file=sys.stderr)
+            return 2
     try:
         plans = [load_experiment(path) for path in options.config]
     except EvalError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 2
     report = summarize(Ledger(options.ledger).records(),
-                       experiment_id=options.experiment, plans=plans)
+                       experiment_id=options.experiment, plans=plans, task_class=task_class)
     if options.json:
         print(canonical(report))
     else:
