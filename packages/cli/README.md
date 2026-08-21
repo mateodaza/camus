@@ -7,7 +7,7 @@ without you watching: Claude writes the code, Codex (a competing model) reviews
 every change, and your repo's own type-check and tests have the final word. Nothing in
 the loop, Claude included, can approve itself. The pairing is the point.
 
-The preferred 0.4.1 path is a native host driver: `camus start` creates a feature from
+The preferred 0.4.2 path is a native host driver: `camus start` creates a feature from
 JSON without a model turn, and `camus run` gives one kernel-owned worktree to a durable
 Claude Code background session, invokes the independent reviewer directly, and lets code
 perform every mechanical transition. The three Claude Code workflows remain available for
@@ -16,14 +16,15 @@ compatibility: `/camus-plan` turns a raw request into a quality-gated task list,
 v2; v1 remains archived at [mateodaza/nightcrawler](https://github.com/mateodaza/nightcrawler).
 Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMUS-SPEC.md).
 
-> **0.4.1 is released.** The Hybrid Kernel now has an actual host driver. Claude background
+> **0.4.2 is released.** The Hybrid Kernel has an actual host driver. Claude background
 > sessions persist independently of the launching terminal and use Claude subscription quota;
 > the driver adopts them after interruption. An append-only local eval ledger supports sequential
 > A/B assignment of model pairings. Arms must clear deterministic verification plus independent
-> clean review before latency or token pressure can influence routing. The release dogfood landed
-> two clean, HEAD-bound tasks in 9m13s, including an interrupted maker adopted without duplication.
-> The legacy workflows remain available for compatibility.
-> [Read the release evidence.](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.1.md)
+> clean review before latency or token pressure can influence routing. The 0.4.2 recovery hotfix
+> normalizes an accidental maker commit without losing its candidate, prevents the host from timing
+> out a healthy high-effort review watchdog, and deduplicates recovered wrappers around one sealed
+> background turn. The legacy workflows remain available for compatibility.
+> [Read the release evidence.](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.2.md)
 
 ```
 plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep → verify
@@ -357,7 +358,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.4.1
+npm i -g camus-cli@0.4.2
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)

@@ -245,6 +245,38 @@ def test_metrics_expose_unfinished_launched_session_without_inventing_usage():
         assert metrics["outputTokens"] == 53357
 
 
+def test_metrics_do_not_double_count_one_background_turn_wrapped_twice():
+    receipt = {
+        "source": "claude_background_session",
+        "sessionId": "12345678-1234-1234-1234-123456789abc",
+        "transcriptSha256": "sha256:" + "a" * 64,
+        "modelRequested": "claude-opus-4-8",
+        "models": [{"model": "claude-opus-4-8", "canonicalModel": None, "provider": "anthropic"}],
+        "usage": {"inputTokens": 2, "cacheCreationInputTokens": 3,
+                  "cacheReadInputTokens": 5, "outputTokens": 7},
+        "durationMs": 11, "billingMode": "claude_ai_account_quota",
+        "terminalReason": "done", "role": "maker", "receiptSha256": "1" * 64,
+    }
+    duplicate = dict(receipt)
+    duplicate.update({"receiptSha256": "2" * 64, "head": "f" * 40})
+    node = {"taskId": "task-a", "directMakerUsage": {
+        "receipts": [receipt, duplicate],
+        "totals": {"inputTokens": 4, "cacheCreationInputTokens": 6,
+                   "cacheReadInputTokens": 10, "outputTokens": 14,
+                   "durationMs": 22, "calls": 2},
+    }}
+    with tempfile.TemporaryDirectory() as root:
+        metrics, hashes = D._task_metrics(
+            {"args": {}, "state": {"tasks": [node]}}, node, D.EventLog("feat-a", base=root),
+            ended_at=100,
+        )
+    assert metrics["outputTokens"] == 7
+    assert metrics["inputTokens"] == 2
+    assert metrics["modelWallMs"] == 11
+    assert metrics["calls"] == 1
+    assert hashes == [receipt["transcriptSha256"]]
+
+
 def test_prelaunch_direct_output_reserve_is_typed_and_exposed():
     run = {"args": {}, "state": {"tasks": [{"directMakerUsage": {
         "receipts": [{"usage": {"outputTokens": 69793}}],

@@ -82,6 +82,7 @@ HEX_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 REVIEWED_STATUSES = ("done", "done_with_findings", "verify_inconclusive")
 SEAT_VALUE_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 DIRECT_REVIEW_AWAITS = 20
+DIRECT_REVIEW_HOST_TIMEOUT = 540
 
 
 class Refusal(Exception):
@@ -251,6 +252,73 @@ def _budgets(run, overrides=None):
     }
 
 
+def _background_receipt_identity(receipt):
+    """The provider turn, not a mutable recovery envelope, is the billable unit."""
+    if not isinstance(receipt, dict) or receipt.get("source") != "claude_background_session":
+        return None
+    session_id = receipt.get("sessionId")
+    transcript_sha = receipt.get("transcriptSha256")
+    if isinstance(session_id, str) and session_id and isinstance(transcript_sha, str) and transcript_sha:
+        return session_id, transcript_sha
+    return None
+
+
+def _unique_maker_receipts(receipts):
+    """Deduplicate adoption/recovery wrappers around one sealed background turn.
+
+    A recovered terminal envelope can acquire different transport timestamps, HEAD, or candidate
+    fingerprints without becoming a second model call.  Session id + sealed transcript hash is the
+    stable identity.  A reused session id with a different transcript, or different metrics for the
+    same sealed turn, is custody drift and fails closed.
+    """
+    if not isinstance(receipts, list):
+        raise Refusal("direct maker usage receipts are malformed")
+    unique = []
+    by_session = {}
+    by_receipt_sha = set()
+    stable_fields = (
+        "source", "transcriptSha256", "sessionId", "modelRequested", "models", "usage",
+        "durationMs", "billingMode", "terminalReason", "role",
+    )
+    for receipt in receipts:
+        if not isinstance(receipt, dict):
+            raise Refusal("direct maker usage receipt is malformed")
+        identity = _background_receipt_identity(receipt)
+        if identity is not None:
+            session_id, transcript_sha = identity
+            prior = by_session.get(session_id)
+            if prior is not None:
+                if prior.get("transcriptSha256") != transcript_sha:
+                    raise Refusal("background maker session transcript identity drifted")
+                if any(prior.get(field) != receipt.get(field) for field in stable_fields):
+                    raise Refusal("background maker session metrics drifted across recovery")
+                continue
+            by_session[session_id] = receipt
+            unique.append(receipt)
+            continue
+        receipt_sha = receipt.get("receiptSha256")
+        if isinstance(receipt_sha, str) and receipt_sha:
+            if receipt_sha in by_receipt_sha:
+                continue
+            by_receipt_sha.add(receipt_sha)
+        unique.append(receipt)
+    return unique
+
+
+def _maker_usage_totals(receipts):
+    metric_keys = ("inputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens")
+    totals = {key: sum(item.get("usage", {}).get(key, 0) for item in receipts) for key in metric_keys}
+    costs = [item.get("costUsd") for item in receipts]
+    totals.update({
+        "costUsd": sum(costs) if all(isinstance(cost, (int, float)) and not isinstance(cost, bool)
+                                      for cost in costs) else None,
+        "durationMs": sum(item.get("durationMs", 0) for item in receipts),
+        "turns": sum(item.get("turns", 0) for item in receipts),
+        "calls": len(receipts),
+    })
+    return totals
+
+
 def _usage(state):
     value = _kernel(state).get("usage")
     value = value if isinstance(value, dict) else {}
@@ -269,9 +337,7 @@ def _usage(state):
         receipts = direct.get("receipts") if isinstance(direct, dict) else None
         if receipts is None:
             continue
-        if not isinstance(receipts, list):
-            raise Refusal("direct maker usage receipts are malformed")
-        for receipt in receipts:
+        for receipt in _unique_maker_receipts(receipts):
             output = receipt.get("usage", {}).get("outputTokens") if isinstance(receipt, dict) else None
             if isinstance(output, bool) or not isinstance(output, int) or output < 0:
                 raise Refusal("direct maker output-token receipt is malformed")
@@ -1240,39 +1306,55 @@ def record_maker_usage(feat_id, task_id, result_file, role="maker", repo=None, b
             raise Refusal("maker usage source must be print|background")
 
         existing = node.get("directMakerUsage")
-        receipts = existing.get("receipts") if isinstance(existing, dict) else []
-        receipts = receipts if isinstance(receipts, list) else []
-        duplicate = next((item for item in receipts if isinstance(item, dict)
-                          and item.get("receiptSha256") == receipt["receiptSha256"]), None)
+        stored_receipts = existing.get("receipts") if isinstance(existing, dict) else []
+        receipts = _unique_maker_receipts(stored_receipts if stored_receipts is not None else [])
+        receipt["role"] = role
+        identity = _background_receipt_identity(receipt)
+        duplicate = None
+        if identity is not None:
+            duplicate = next((item for item in receipts
+                              if _background_receipt_identity(item) == identity), None)
+            if duplicate is not None:
+                stable_fields = (
+                    "source", "transcriptSha256", "sessionId", "modelRequested", "models",
+                    "usage", "durationMs", "billingMode", "terminalReason", "role",
+                )
+                if any(duplicate.get(field) != receipt.get(field) for field in stable_fields):
+                    raise Refusal("background maker session metrics drifted across recovery")
+        else:
+            duplicate = next((item for item in receipts
+                              if item.get("receiptSha256") == receipt["receiptSha256"]), None)
         if duplicate is not None:
+            normalized = len(receipts) != len(stored_receipts or [])
+            totals = _maker_usage_totals(receipts)
+            if normalized:
+                node["directMakerUsage"] = {
+                    "metric": existing.get("metric") if isinstance(existing, dict) else None,
+                    "receipts": receipts,
+                    "totals": totals,
+                }
+                kernel["updatedAt"] = now
+                run["state"]["kernel"] = kernel
+                _append_event(run["state"], "Kernel %s collapsed duplicate recovery receipts for %s" % (
+                    kernel.get("traceId"), task_id,
+                ))
+                _atomic_write(run["statePath"], run["state"])
             return {
                 "schemaVersion": SCHEMA_VERSION, "traceId": kernel.get("traceId"),
                 "action": "maker_usage_recorded", "taskId": task_id,
                 "idempotent": True, "receipt": duplicate,
-                "totals": existing.get("totals") if isinstance(existing, dict) else None,
+                "totals": totals,
                 "budgetUsage": _usage(run["state"]),
             }
 
         receipt.update({
             "sequence": len(receipts) + 1,
-            "role": role,
             "head": head,
             "candidateFingerprint": _candidate_fingerprint(worktree),
             "recordedAt": now,
         })
         receipts.append(receipt)
-        metric_keys = (
-            "inputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens",
-        )
-        totals = {key: sum(item.get("usage", {}).get(key, 0) for item in receipts) for key in metric_keys}
-        costs = [item.get("costUsd") for item in receipts]
-        totals.update({
-            "costUsd": sum(costs) if all(isinstance(cost, (int, float)) and not isinstance(cost, bool)
-                                          for cost in costs) else None,
-            "durationMs": sum(item.get("durationMs", 0) for item in receipts),
-            "turns": sum(item.get("turns", 0) for item in receipts),
-            "calls": len(receipts),
-        })
+        totals = _maker_usage_totals(receipts)
         node["directMakerUsage"] = {
             "metric": (
                 "claude_background_session_usage_v1"
@@ -1320,7 +1402,7 @@ def _run_direct_review(run, repo, node, worktree, backend, model, effort, round_
     spec = run["specs"][run["nodes"].index(node)]
     verdict = _json_command(
         ["bash", review_script, worktree, spec, str(round_no), effort, "light"],
-        repo, env=env, timeout=180, label="direct independent review",
+        repo, env=env, timeout=DIRECT_REVIEW_HOST_TIMEOUT, label="direct independent review",
     )
     awaits = 0
     while verdict.get("pending") is True and awaits < DIRECT_REVIEW_AWAITS:
@@ -1328,7 +1410,8 @@ def _run_direct_review(run, repo, node, worktree, backend, model, effort, round_
         if not isinstance(handle, str) or not os.path.isabs(handle):
             raise Refusal("direct reviewer returned an invalid pending handle")
         verdict = _json_command(
-            ["bash", review_script, "await", handle], repo, env=env, timeout=180,
+            ["bash", review_script, "await", handle], repo, env=env,
+            timeout=DIRECT_REVIEW_HOST_TIMEOUT,
             label="direct independent review await",
         )
         awaits += 1
@@ -1352,7 +1435,29 @@ def review_task(feat_id, task_id, repo=None, base=None, now=None):
         kernel, node = _direct_task(run, task_id)
         if kernel.get("phase") not in ("task_open", "task_reviewing", "task_reviewed", "task_verify_failed"):
             raise Refusal("kernel is not at a direct-review phase")
-        worktree, _head = _validated_worktree(repo, node, node.get("worktree"))
+        worktree, head = _validated_worktree(repo, node, node.get("worktree"))
+        base_commit = node.get("directBaseCommit")
+        if head != base_commit:
+            if not isinstance(base_commit, str) or not HEX_SHA_RE.fullmatch(base_commit):
+                raise Refusal("direct task has no valid base commit for maker-commit recovery")
+            _git_ok(worktree, "merge-base", "--is-ancestor", base_commit, head)
+            try:
+                reset = subprocess.run(
+                    ["git", "-C", worktree, "reset", "--mixed", base_commit],
+                    capture_output=True, text=True, timeout=60,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise Refusal("could not normalize maker commit into a reviewable candidate: %s" % exc)
+            if reset.returncode != 0:
+                raise Refusal("could not normalize maker commit into a reviewable candidate: %s" %
+                              (reset.stderr or reset.stdout)[-500:])
+            node["makerCommitRecovery"] = {
+                "fromHead": head, "baseCommit": base_commit, "recoveredAt": now,
+                "mode": "mixed_reset_files_preserved",
+            }
+            _append_event(run["state"], "Kernel %s normalized maker commit %s into the working-tree candidate for %s" % (
+                kernel.get("traceId"), head[:12], task_id,
+            ))
         if not _git_ok(worktree, "status", "--porcelain", "--untracked-files=all"):
             raise Refusal("direct maker produced no candidate diff to review")
         seats = _seats(run)

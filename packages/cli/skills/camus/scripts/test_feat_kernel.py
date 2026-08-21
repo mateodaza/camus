@@ -749,6 +749,34 @@ def test_direct_lane_opens_reviews_seals_and_lands_without_model_relays():
     assert _git(world["repo"], "merge-base", "--is-ancestor", sealed["commit"], world["state"]["featBranch"]) == ""
 
 
+def test_direct_review_normalizes_a_maker_commit_without_losing_the_candidate():
+    world = _direct_fixture()
+    _git(world["worktree"], "add", "direct.txt")
+    _git(world["worktree"], "commit", "-qm", "maker ignored the no-commit contract")
+    committed = _git(world["worktree"], "rev-parse", "HEAD")
+    base_commit = K._validated_run(world["feat_id"], world["base"])["nodes"][0]["directBaseCommit"]
+    assert committed != base_commit
+    assert _git(world["worktree"], "status", "--porcelain", "--untracked-files=all") == ""
+
+    def review(_run, _repo, _node, worktree, *_args, **_kwargs):
+        assert _git(worktree, "rev-parse", "HEAD") == base_commit
+        assert "direct.txt" in _git(worktree, "status", "--porcelain", "--untracked-files=all")
+        assert "candidate" in _git(worktree, "diff", "--", "direct.txt")
+        return world["verdict"]
+
+    with mock.patch.object(K, "_run_direct_review", side_effect=review):
+        reviewed = K.review_task(
+            world["feat_id"], world["node"]["taskId"],
+            repo=world["repo"], base=world["base"], now=103,
+        )
+    assert reviewed["clean"] is True
+    node = K._validated_run(world["feat_id"], world["base"])["nodes"][0]
+    assert node["makerCommitRecovery"] == {
+        "fromHead": committed, "baseCommit": base_commit, "recoveredAt": 103,
+        "mode": "mixed_reset_files_preserved",
+    }
+
+
 def test_direct_maker_usage_keeps_units_separate_and_is_idempotent():
     world = _direct_fixture()
     result_path = os.path.join(world["base"], "claude-result.json")
@@ -1142,6 +1170,78 @@ def test_background_usage_receipt_is_model_bound_and_content_free():
     assert recorded["totals"]["outputTokens"] == 13
     assert recorded["budgetUsage"]["directOutputTokens"] == 13
     assert "lastAssistantText" not in recorded["receipt"]
+
+
+def test_background_usage_deduplicates_the_sealed_session_not_the_recovery_wrapper():
+    world = _direct_fixture()
+    path = os.path.join(world["base"], "background-recovered.json")
+    payload = {
+        "source": "claude_background_session", "state": "done",
+        "sessionId": "12345678-1234-1234-1234-123456789abc", "shortId": "12345678",
+        "modelRequested": "claude-opus-4-8", "modelActual": "claude-opus-4-8",
+        "modelsObserved": ["claude-opus-4-8"],
+        "transcriptSha256": "sha256:" + "c" * 64,
+        "durationMs": 42, "toolCalls": 3,
+        "usage": {"inputTokens": 5, "cacheCreationInputTokens": 7,
+                  "cacheReadInputTokens": 11, "outputTokens": 13},
+        "billingMode": "claude_ai_account_quota",
+    }
+    _write(path, payload)
+    first = K.record_maker_usage(
+        world["feat_id"], world["node"]["taskId"], path, source="background",
+        repo=world["repo"], base=world["base"], now=103,
+    )
+    payload["endedAt"] = 999  # recovered transport metadata changes the file hash, not the turn
+    _write(path, payload)
+    replay = K.record_maker_usage(
+        world["feat_id"], world["node"]["taskId"], path, source="background",
+        repo=world["repo"], base=world["base"], now=104,
+    )
+    assert replay["idempotent"] is True
+    assert replay["receipt"]["receiptSha256"] == first["receipt"]["receiptSha256"]
+    assert replay["budgetUsage"]["directOutputTokens"] == 13
+
+    # Repair an already-affected 0.4.1 state on the next idempotent ingestion.
+    state_path = os.path.join(world["base"], "feats", world["feat_id"] + ".json")
+    state = json.load(open(state_path, encoding="utf-8"))
+    direct = state["tasks"][0]["directMakerUsage"]
+    duplicate = dict(direct["receipts"][0])
+    duplicate.update({"receiptSha256": "f" * 64, "sequence": 2,
+                      "head": "e" * 40, "candidateFingerprint": "candidate1:" + "d" * 64})
+    direct["receipts"].append(duplicate)
+    direct["totals"] = {key: value * 2 if isinstance(value, int) else value
+                        for key, value in direct["totals"].items()}
+    _write(state_path, state)
+    assert K._usage(state)["directOutputTokens"] == 13
+    repaired = K.record_maker_usage(
+        world["feat_id"], world["node"]["taskId"], path, source="background",
+        repo=world["repo"], base=world["base"], now=105,
+    )
+    assert repaired["idempotent"] is True
+    repaired_node = K._validated_run(world["feat_id"], world["base"])["nodes"][0]
+    assert len(repaired_node["directMakerUsage"]["receipts"]) == 1
+    assert repaired_node["directMakerUsage"]["totals"]["outputTokens"] == 13
+
+
+def test_direct_review_host_timeout_covers_the_high_effort_watchdog_chunk():
+    run = {
+        "base": "/tmp/camus", "state": {"kernel": {"traceId": "feat:a1"}},
+        "nodes": [{"taskId": "task-abc123"}], "specs": ["bounded task"],
+    }
+    calls = [
+        {"ok": True},
+        {"pending": True, "handle": "/tmp/camus/reviews/task-r1.watch"},
+        {"ran": True, "clean": True, "blocking": [], "nonblocking": []},
+    ]
+    with mock.patch.object(K, "_json_command", side_effect=calls) as command:
+        verdict = K._run_direct_review(
+            run, "/tmp/repo", run["nodes"][0], "/tmp/worktree",
+            "codex", "gpt-5.6-sol", "high", round_no=1,
+        )
+    assert verdict["ran"] is True
+    assert command.call_args_list[1].kwargs["timeout"] == K.DIRECT_REVIEW_HOST_TIMEOUT
+    assert command.call_args_list[2].kwargs["timeout"] == K.DIRECT_REVIEW_HOST_TIMEOUT
+    assert K.DIRECT_REVIEW_HOST_TIMEOUT > 480
 
 
 def test_background_usage_refuses_observed_model_substitution():

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native Camus 0.4.1 driver: models do semantic work; code owns orchestration.
+"""Native Camus driver: models do semantic work; code owns orchestration.
 
 The driver intentionally reuses ``feat_kernel`` instead of reimplementing custody.  Claude Code
 background sessions edit kernel-owned task worktrees using proven claude.ai account auth. Codex reviews the
@@ -519,9 +519,10 @@ def _pairing(args, options, plan, ledger, assignment_key, assigned_arm=None):
 
 def _task_metrics(run, node, log, ended_at=None):
     direct = node.get("directMakerUsage") if isinstance(node, dict) else None
-    totals = direct.get("totals") if isinstance(direct, dict) else {}
-    receipts = direct.get("receipts") if isinstance(direct, dict) \
+    stored_receipts = direct.get("receipts") if isinstance(direct, dict) \
         and isinstance(direct.get("receipts"), list) else []
+    receipts = kernel._unique_maker_receipts(stored_receipts)
+    totals = kernel._maker_usage_totals(receipts) if receipts else {}
     task_rows = [row for row in log.records() if row.get("taskId") == node.get("taskId")]
     agent_rows = [row for row in task_rows if row.get("type") == "agent.completed"]
     launched_rows = [row for row in task_rows if row.get("type") == "agent.launched"]
