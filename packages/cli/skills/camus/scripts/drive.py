@@ -32,6 +32,7 @@ ALLOWED_SPEC_FIELDS = {
     "budgetTokens", "verifyCmd", "posture", "answers", "taskClass",
 }
 CONTROLLER_ACTIONS = {"fix_recheck", "fix_verify", "retry_verify", "human", "stop"}
+HUMAN_RESUME_ACTIONS = {"fix_recheck", "fix_verify", "retry_verify"}
 
 
 class DriverError(Exception):
@@ -479,6 +480,152 @@ def _persist_driver_stop(run, reason):
     kernel._atomic_write(run["statePath"], state)
 
 
+def _persist_controller_handoff(run, task_id, decision, verify_failure=False):
+    """Make a semantic controller handoff durable without destroying its safe checkpoint."""
+    state = run["state"]
+    kernel_state = kernel._kernel(state)
+    node = next((item for item in state.get("tasks", []) if item.get("taskId") == task_id), None)
+    if not isinstance(node, dict) or node.get("status") != "running":
+        raise DriverError("controller handoff task is not the active running task")
+    phase = kernel_state.get("phase")
+    expected_phase = "task_verify_failed" if verify_failure else "task_reviewed"
+    if phase != expected_phase or kernel_state.get("activeTaskId") != task_id:
+        raise DriverError("controller handoff is not bound to the expected kernel checkpoint")
+    direct_review = node.get("directReview") if isinstance(node.get("directReview"), dict) else {}
+    candidate_fingerprint = direct_review.get("candidateFingerprint")
+    review_receipt_sha = direct_review.get("receiptSha256")
+    if not isinstance(candidate_fingerprint, str) \
+            or re.fullmatch(r"candidate1:[0-9a-f]{64}", candidate_fingerprint) is None \
+            or not isinstance(review_receipt_sha, str) \
+            or re.fullmatch(r"[0-9a-f]{64}", review_receipt_sha) is None:
+        raise DriverError("controller handoff lacks exact candidate/review receipt bindings")
+    round_no = direct_review.get("round")
+    if isinstance(round_no, bool) or not isinstance(round_no, int) or round_no < 1:
+        round_no = node.get("reviewerRound")
+    if isinstance(round_no, bool) or not isinstance(round_no, int) or round_no < 1:
+        raise DriverError("controller handoff lacks a valid review round")
+    reason = str(decision.get("reason") or decision.get("action") or "human decision required")[:500]
+    handoff = {
+        "schemaVersion": DRIVER_SCHEMA,
+        "controllerAction": decision.get("action"),
+        "reason": reason,
+        "reviewRound": round_no,
+        "kernelPhase": phase,
+        "candidateFingerprint": candidate_fingerprint,
+        "reviewReceiptSha256": review_receipt_sha,
+        "allowedActions": sorted(
+            ("fix_recheck", "retry_verify") if verify_failure else ("fix_recheck", "fix_verify")
+        ),
+        "recordedAt": int(time.time()),
+    }
+    node["nativeControllerHandoff"] = handoff
+    node["status"] = "needs_human"
+    state["status"] = "needs_human"
+    state["stage"] = "native_controller"
+    state["question"] = reason
+    kernel_state["updatedAt"] = int(time.time())
+    state["kernel"] = kernel_state
+    kernel._append_event(state, "Native controller handed %s to a human at review round %d" % (
+        task_id, round_no,
+    ))
+    kernel._atomic_write(run["statePath"], state)
+
+
+def _resume_controller_handoff(run, action, round_cap):
+    """Consume one explicit operator decision, bound to the paused review and candidate."""
+    if action not in HUMAN_RESUME_ACTIONS:
+        raise DriverError("human action must be fix_recheck|fix_verify|retry_verify")
+    state = run["state"]
+    if state.get("status") != "needs_human" or state.get("stage") != "native_controller":
+        raise DriverError("--human-action is valid only for a native controller handoff")
+    kernel_state = kernel._kernel(state)
+    task_id = kernel_state.get("activeTaskId")
+    node = next((item for item in state.get("tasks", []) if item.get("taskId") == task_id), None)
+    handoff = node.get("nativeControllerHandoff") if isinstance(node, dict) else None
+    if not isinstance(handoff, dict) or node.get("status") != "needs_human":
+        raise DriverError("native controller handoff record is missing or malformed")
+    if action not in handoff.get("allowedActions", []):
+        raise DriverError("human action is not valid for this controller checkpoint")
+    if kernel_state.get("phase") != handoff.get("kernelPhase"):
+        raise DriverError("native controller checkpoint drifted after the handoff")
+    direct_review = node.get("directReview") if isinstance(node.get("directReview"), dict) else {}
+    if re.fullmatch(r"candidate1:[0-9a-f]{64}", str(handoff.get("candidateFingerprint") or "")) is None \
+            or re.fullmatch(r"[0-9a-f]{64}", str(handoff.get("reviewReceiptSha256") or "")) is None:
+        raise DriverError("native controller handoff has malformed candidate/review bindings")
+    for key, expected in (
+        ("candidateFingerprint", handoff.get("candidateFingerprint")),
+        ("receiptSha256", handoff.get("reviewReceiptSha256")),
+    ):
+        if direct_review.get(key) != expected:
+            raise DriverError("native controller review binding drifted after the handoff")
+    review_round = handoff.get("reviewRound")
+    if action == "fix_recheck" and (not isinstance(round_cap, int) or round_cap <= review_round):
+        raise DriverError(
+            "fix_recheck after a final-round handoff requires an explicit higher --round-cap"
+        )
+    authorization = {
+        "schemaVersion": DRIVER_SCHEMA,
+        "action": action,
+        "reviewRound": review_round,
+        "kernelPhase": handoff.get("kernelPhase"),
+        "candidateFingerprint": handoff.get("candidateFingerprint"),
+        "reviewReceiptSha256": handoff.get("reviewReceiptSha256"),
+        "authorizedRoundCap": round_cap,
+        "authorizedAt": int(time.time()),
+    }
+    node["nativeControllerAuthorization"] = authorization
+    node["status"] = "running"
+    state["status"] = "running"
+    state["stage"] = "kernel_" + str(kernel_state.get("phase"))
+    state.pop("question", None)
+    kernel_state["updatedAt"] = int(time.time())
+    state["kernel"] = kernel_state
+    kernel._append_event(state, "Operator authorized %s for %s at review round %d" % (
+        action, task_id, review_round,
+    ))
+    kernel._atomic_write(run["statePath"], state)
+    return authorization
+
+
+def _pending_controller_authorization(run):
+    """Recover a bound operator decision after a driver crash, before replaying its action."""
+    state = run["state"]
+    if state.get("status") != "running":
+        return None
+    kernel_state = kernel._kernel(state)
+    task_id = kernel_state.get("activeTaskId")
+    node = next((item for item in state.get("tasks", []) if item.get("taskId") == task_id), None)
+    authorization = node.get("nativeControllerAuthorization") if isinstance(node, dict) else None
+    if not isinstance(authorization, dict) or node.get("status") != "running":
+        return None
+    if authorization.get("action") not in HUMAN_RESUME_ACTIONS:
+        raise DriverError("persisted native controller authorization has an invalid action")
+    if authorization.get("kernelPhase") != kernel_state.get("phase"):
+        return None
+    review_round = authorization.get("reviewRound")
+    if isinstance(review_round, bool) or not isinstance(review_round, int) or review_round < 1:
+        raise DriverError("persisted native controller authorization has an invalid review round")
+    authorized_round_cap = authorization.get("authorizedRoundCap")
+    if isinstance(authorized_round_cap, bool) or not isinstance(authorized_round_cap, int) \
+            or authorized_round_cap < 1:
+        raise DriverError("persisted native controller authorization has an invalid round cap")
+    if authorization.get("action") == "fix_recheck" \
+            and authorized_round_cap <= review_round:
+        raise DriverError("persisted fix_recheck authorization lacks a higher round cap")
+    direct_review = node.get("directReview") if isinstance(node.get("directReview"), dict) else {}
+    direct_round = direct_review.get("round")
+    if isinstance(direct_round, int) and not isinstance(direct_round, bool) \
+            and direct_round > review_round:
+        # A fresh independent review proves that the authorized action advanced. Its newer binding
+        # consumes the authorization; it must not replay against the next semantic checkpoint.
+        return None
+    if direct_round != review_round \
+            or direct_review.get("candidateFingerprint") != authorization.get("candidateFingerprint") \
+            or direct_review.get("receiptSha256") != authorization.get("reviewReceiptSha256"):
+        raise DriverError("persisted native controller authorization binding drifted before use")
+    return authorization
+
+
 def _review_from_node(node):
     direct = node.get("directReview") if isinstance(node.get("directReview"), dict) else None
     if not direct:
@@ -695,6 +842,8 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
             if data.get("id") != plan["id"] or data.get("configHash") != plan["configHash"]:
                 raise DriverError("experiment config disagrees with a prior durable assignment")
     completed_this_call = 0
+    human_authorization = None
+    requested_human_action = getattr(options, "human_action", None)
     while True:
         run = kernel._validated_run(feat_id, base)
         repo = kernel._resolve_repo(run, options.repo)
@@ -705,6 +854,44 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
             kernel.resume_budget_stop(feat_id, options.token_budget, base=base)
             run = kernel._validated_run(feat_id, base)
             current = kernel._kernel(run["state"])
+        if run["state"].get("stage") == "native_controller":
+            active = current.get("activeTaskId")
+            node = next((item for item in run["nodes"] if item.get("taskId") == active), None)
+            handoff = node.get("nativeControllerHandoff") if isinstance(node, dict) else {}
+            if requested_human_action is None:
+                return {
+                    "action": "human", "reason": handoff.get("reason") or "human decision required",
+                    "featId": feat_id, "taskId": active,
+                    "allowedActions": handoff.get("allowedActions") or [],
+                }
+            effective_round_cap = options.round_cap or run["args"].get("roundCap") or 3
+            human_authorization = _resume_controller_handoff(
+                run, requested_human_action, effective_round_cap,
+            )
+            log.append(
+                "human.decision", trace_id=current.get("traceId") or feat_id, task_id=active,
+                key="%s:human:%d:%s" % (
+                    active, human_authorization["reviewRound"], human_authorization["action"],
+                ), data=human_authorization,
+            )
+            requested_human_action = None
+            run = kernel._validated_run(feat_id, base)
+            current = kernel._kernel(run["state"])
+        else:
+            pending_authorization = _pending_controller_authorization(run)
+            if requested_human_action is not None:
+                if pending_authorization is None \
+                        or pending_authorization.get("action") != requested_human_action:
+                    raise DriverError("--human-action is valid only for a native controller handoff")
+                requested_human_action = None
+            if pending_authorization is not None:
+                explicit_round_cap = options.round_cap
+                if explicit_round_cap is not None \
+                        and explicit_round_cap != pending_authorization.get("authorizedRoundCap"):
+                    raise DriverError(
+                        "--round-cap conflicts with the persisted human authorization"
+                    )
+                human_authorization = pending_authorization
         selected, blocked = kernel._selected_index(run)
         if current.get("phase") == "accepted" and isinstance(current.get("activeTaskId"), str):
             selected = next((index for index, item in enumerate(run["nodes"])
@@ -817,7 +1004,11 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                 _persist_driver_stop(stopped_run, reason)
             return value
 
-        round_cap = options.round_cap or run["args"].get("roundCap") or 3
+        round_cap = (
+            human_authorization.get("authorizedRoundCap")
+            if isinstance(human_authorization, dict)
+            else options.round_cap or run["args"].get("roundCap") or 3
+        )
         round_no = node.get("reviewerRound") if isinstance(node.get("reviewerRound"), int) else 0
         payload = ({"loopArgs": {"task": run["specs"][selected]}, "repo": repo}
                    if phase == "accepted" else kernel.task_payload(run, task_id, repo=repo))
@@ -852,14 +1043,21 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
             budget_evidence = _direct_output_budget_evidence(
                 feat_id, base, reserve_tokens=getattr(options, "direct_output_reserve", None),
             )
-            verify_decision = controller_decision(
-                client, log, trace_id=trace_id, feat_id=feat_id, task_id=task_id,
-                attempt=max(1, round_no), cwd=repo,
-                review={"verificationFailed": True, "review": _review_from_node(node),
-                        "budgetEvidence": budget_evidence},
-                model=pairing["orchestratorModel"], timeout=options.controller_timeout,
-                max_rounds=round_cap, verify_failure=True,
-            )
+            if human_authorization is not None:
+                verify_decision = {
+                    "action": human_authorization["action"],
+                    "reason": "explicit operator decision at the native controller handoff",
+                }
+                human_authorization = None
+            else:
+                verify_decision = controller_decision(
+                    client, log, trace_id=trace_id, feat_id=feat_id, task_id=task_id,
+                    attempt=max(1, round_no), cwd=repo,
+                    review={"verificationFailed": True, "review": _review_from_node(node),
+                            "budgetEvidence": budget_evidence},
+                    model=pairing["orchestratorModel"], timeout=options.controller_timeout,
+                    max_rounds=round_cap, verify_failure=True,
+                )
             print("  controller → %s (%s)" % (
                 verify_decision["action"], verify_decision["reason"],
             ), flush=True)
@@ -868,11 +1066,21 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                            task_id, "verify-decision", max(1, round_no), verify_decision,
                        ),
                        data={**verify_decision, "budgetEvidence": budget_evidence})
-            if verify_decision["action"] in ("human", "stop"):
+            if verify_decision["action"] == "stop":
                 return incomplete({
-                    "action": verify_decision["action"], "reason": verify_decision["reason"],
+                    "action": "stop", "reason": verify_decision["reason"],
+                    "featId": feat_id, "taskId": task_id,
+                }, review_evidence=_review_from_node(node), terminal=True)
+            if verify_decision["action"] == "human":
+                value = incomplete({
+                    "action": "human", "reason": verify_decision["reason"],
                     "featId": feat_id, "taskId": task_id,
                 }, review_evidence=_review_from_node(node))
+                _persist_controller_handoff(
+                    kernel._validated_run(feat_id, base), task_id, verify_decision,
+                    verify_failure=True,
+                )
+                return value
             if verify_decision["action"] == "retry_verify":
                 seal = kernel.seal_task(
                     feat_id, task_id, fixed_unreviewed=fixed_unreviewed, repo=repo,
@@ -991,25 +1199,42 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
             budget_evidence = _direct_output_budget_evidence(
                 feat_id, base, reserve_tokens=getattr(options, "direct_output_reserve", None),
             )
-            decision = controller_decision(
-                client, log, trace_id=trace_id, feat_id=feat_id, task_id=task_id,
-                attempt=max(1, round_no), cwd=repo, review={
-                    "blocking": review.get("blocking"), "nonblocking": review.get("nonblocking"),
-                    "budgetEvidence": budget_evidence,
-                }, model=pairing["orchestratorModel"], timeout=options.controller_timeout,
-                max_rounds=round_cap,
-            )
+            if human_authorization is not None:
+                decision = {
+                    "action": human_authorization["action"],
+                    "reason": "explicit operator decision at the native controller handoff",
+                }
+                human_authorization = None
+            else:
+                decision = controller_decision(
+                    client, log, trace_id=trace_id, feat_id=feat_id, task_id=task_id,
+                    attempt=max(1, round_no), cwd=repo, review={
+                        "blocking": review.get("blocking"), "nonblocking": review.get("nonblocking"),
+                        "budgetEvidence": budget_evidence,
+                    }, model=pairing["orchestratorModel"], timeout=options.controller_timeout,
+                    max_rounds=round_cap,
+                )
             decision["budgetEvidence"] = budget_evidence
             log.append("controller.decision", trace_id=trace_id, task_id=task_id,
                        key=_decision_event_key(
                            task_id, "decision", max(1, round_no), decision,
                        ), data=decision)
             print("  controller → %s (%s)" % (decision["action"], decision["reason"]), flush=True)
-            if decision["action"] in ("human", "stop"):
+            if decision["action"] == "stop":
                 return incomplete({
-                    "action": decision["action"], "reason": decision["reason"],
+                    "action": "stop", "reason": decision["reason"],
+                    "featId": feat_id, "taskId": task_id, "review": review,
+                }, review_evidence=review, terminal=True)
+            if decision["action"] == "human":
+                value = incomplete({
+                    "action": "human", "reason": decision["reason"],
                     "featId": feat_id, "taskId": task_id, "review": review,
                 }, review_evidence=review)
+                _persist_controller_handoff(
+                    kernel._validated_run(feat_id, base), task_id, decision,
+                    verify_failure=False,
+                )
+                return value
             round_no += 1
             usage = kernel._usage(kernel._validated_run(feat_id, base)["state"])
             kernel.record_usage(feat_id, retries=usage["retries"] + 1, base=base)
@@ -1096,6 +1321,10 @@ def _parser():
     run.add_argument("--reviewer-effort", choices=("low", "medium", "high", "xhigh"), default="high")
     run.add_argument("--controller-model", default="sonnet")
     run.add_argument("--round-cap", type=int, default=None)
+    run.add_argument(
+        "--human-action", choices=tuple(sorted(HUMAN_RESUME_ACTIONS)), default=None,
+        help="explicitly resume a durable native controller handoff",
+    )
     run.add_argument("--wall-seconds", type=int, default=None)
     run.add_argument("--token-budget", type=int, default=None)
     run.add_argument(

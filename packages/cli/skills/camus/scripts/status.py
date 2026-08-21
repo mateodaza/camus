@@ -354,6 +354,24 @@ def render(synth, now=None):
             lines.append("  resume: camus run %s --token-budget <higher> (plus the same --experiment, if used)" % (
                 s.get("featId") or "<featId>",
             ))
+        elif stage == "kernel_stop":
+            lines.append("  resume: none automatic — inspect the terminal stop reason before deciding next work")
+        elif stage == "native_controller":
+            halted_node = next(
+                (t for t in tasks if t.get("status") == "needs_human"), {}
+            )
+            handoff = halted_node.get("nativeControllerHandoff") \
+                if isinstance(halted_node.get("nativeControllerHandoff"), dict) else {}
+            allowed = handoff.get("allowedActions") \
+                if isinstance(handoff.get("allowedActions"), list) else []
+            action_hint = "|".join(action for action in allowed if isinstance(action, str)) \
+                or "fix_recheck|fix_verify|retry_verify"
+            lines.append(
+                "  resume: camus run %s --human-action <%s> "
+                "(plus a higher --round-cap for a final-round fix_recheck)" % (
+                    s.get("featId") or "<featId>", action_hint,
+                )
+            )
         else:
             halted = next((t.get("taskId") for t in tasks if t.get("status") == "needs_human"), "<taskId>")
             lines.append('  resume: re-run the feat with  answers:{"%s":"<your answer>"}' % halted)

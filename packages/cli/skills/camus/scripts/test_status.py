@@ -153,6 +153,36 @@ def test_render_native_budget_stop_shows_the_supported_token_budget_override():
         assert "answers:{" not in out
 
 
+def test_render_native_terminal_stop_does_not_invent_a_resume_command():
+    with tempfile.TemporaryDirectory() as base:
+        st = _feat_state("native-stop", status="needs_human")
+        st["stage"] = "kernel_stop"
+        st["question"] = "controller stopped irrelevant work"
+        st["tasks"][0]["status"] = "needs_human"
+        _write(os.path.join(base, "feats", "native-stop.json"), st)
+        synth = S.synthesize(base, "native-stop")
+        synth["live"] = []
+        out = "\n".join(S.render(synth))
+        assert "resume: none automatic" in out
+        assert "--human-action" not in out
+        assert "answers:{" not in out
+
+
+def test_render_native_controller_handoff_shows_the_supported_human_action():
+    with tempfile.TemporaryDirectory() as base:
+        st = _feat_state("native-human", status="needs_human")
+        st["stage"] = "native_controller"
+        st["question"] = "Five contract findings need operator judgment."
+        st["tasks"][0]["status"] = "needs_human"
+        _write(os.path.join(base, "feats", "native-human.json"), st)
+        synth = S.synthesize(base, "native-human")
+        synth["live"] = []
+        out = "\n".join(S.render(synth))
+        assert "camus run native-human --human-action" in out
+        assert "higher --round-cap" in out
+        assert "answers:{" not in out
+
+
 def test_render_needs_human_legacy_task_pause_byte_identical():
     # No stage, question on the TASK node (older states / real task pauses): the whole PAUSED
     # block renders byte-identical to what it always was — question + answers:{...} hint.

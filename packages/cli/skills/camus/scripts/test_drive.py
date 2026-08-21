@@ -149,6 +149,239 @@ def test_invalid_controller_output_fails_to_human():
         assert decision["action"] == "human"
 
 
+def test_controller_handoff_persists_and_resumes_only_with_bound_explicit_authority():
+    with tempfile.TemporaryDirectory() as root:
+        task_id = "task-a"
+        node = {
+            "taskId": task_id, "status": "running", "reviewerRound": 3,
+            "directReview": {
+                "round": 3, "candidateFingerprint": "candidate1:" + "a" * 64,
+                "receiptSha256": "b" * 64,
+            },
+        }
+        state_path = os.path.join(root, "state.json")
+        state = {
+            "status": "running", "stage": "kernel_task_reviewed", "tasks": [node],
+            "events": [], "eventSeq": 0,
+            "kernel": {
+                "phase": "task_reviewed", "activeTaskId": task_id, "traceId": "trace:a1",
+            },
+        }
+        run = {"state": state, "nodes": state["tasks"], "statePath": state_path}
+
+        D._persist_controller_handoff(
+            run, task_id, {"action": "human", "reason": "contract judgment required"},
+        )
+        persisted = json.load(open(state_path, encoding="utf-8"))
+        assert persisted["status"] == "needs_human"
+        assert persisted["stage"] == "native_controller"
+        assert persisted["kernel"]["phase"] == "task_reviewed"
+        assert persisted["tasks"][0]["status"] == "needs_human"
+        assert persisted["tasks"][0]["nativeControllerHandoff"]["reviewRound"] == 3
+
+        paused = {"state": persisted, "nodes": persisted["tasks"], "statePath": state_path}
+        try:
+            D._resume_controller_handoff(paused, "fix_recheck", 3)
+            assert False, "final-round recheck must require a higher explicit round cap"
+        except D.DriverError as exc:
+            assert "higher --round-cap" in str(exc)
+        authorization = D._resume_controller_handoff(paused, "fix_recheck", 4)
+        resumed = json.load(open(state_path, encoding="utf-8"))
+        assert authorization["action"] == "fix_recheck"
+        assert resumed["status"] == "running"
+        assert resumed["stage"] == "kernel_task_reviewed"
+        assert resumed["kernel"]["phase"] == "task_reviewed"
+        assert resumed["tasks"][0]["status"] == "running"
+        assert resumed["tasks"][0]["nativeControllerAuthorization"]["reviewRound"] == 3
+        recovered = D._pending_controller_authorization({"state": resumed})
+        assert recovered["action"] == "fix_recheck"
+        assert recovered["authorizedRoundCap"] == 4
+
+        # Once a fresh review advances the binding, the authorization is consumed rather than
+        # replayed against a different candidate/review.
+        resumed["tasks"][0]["directReview"]["round"] = 4
+        assert D._pending_controller_authorization({"state": resumed}) is None
+
+        # A same-round mutation is not proof the authorized action advanced; it is custody drift.
+        resumed["tasks"][0]["directReview"]["round"] = 3
+        resumed["tasks"][0]["directReview"]["candidateFingerprint"] = "candidate1:" + "f" * 64
+        try:
+            D._pending_controller_authorization({"state": resumed})
+            assert False, "same-round authorization binding drift must fail closed"
+        except D.DriverError as exc:
+            assert "binding drifted before use" in str(exc)
+
+
+def test_controller_handoff_resume_refuses_review_binding_drift():
+    with tempfile.TemporaryDirectory() as root:
+        task_id = "task-a"
+        node = {
+            "taskId": task_id, "status": "needs_human", "reviewerRound": 2,
+            "directReview": {
+                "round": 2, "candidateFingerprint": "candidate1:" + "c" * 64,
+                "receiptSha256": "d" * 64,
+            },
+            "nativeControllerHandoff": {
+                "reviewRound": 2, "kernelPhase": "task_reviewed",
+                "candidateFingerprint": "candidate1:" + "e" * 64,
+                "reviewReceiptSha256": "d" * 64,
+                "allowedActions": ["fix_recheck", "fix_verify"],
+            },
+        }
+        state_path = os.path.join(root, "state.json")
+        state = {
+            "status": "needs_human", "stage": "native_controller", "tasks": [node],
+            "kernel": {"phase": "task_reviewed", "activeTaskId": task_id},
+        }
+        try:
+            D._resume_controller_handoff(
+                {"state": state, "nodes": state["tasks"], "statePath": state_path},
+                "fix_recheck", 3,
+            )
+            assert False, "candidate drift must refuse the human authorization"
+        except D.DriverError as exc:
+            assert "binding drifted" in str(exc)
+
+
+def test_controller_handoff_refuses_missing_candidate_or_review_hash():
+    with tempfile.TemporaryDirectory() as root:
+        task_id = "task-a"
+        node = {
+            "taskId": task_id, "status": "running", "reviewerRound": 1,
+            "directReview": {"round": 1},
+        }
+        state = {
+            "status": "running", "tasks": [node],
+            "kernel": {"phase": "task_reviewed", "activeTaskId": task_id},
+        }
+        try:
+            D._persist_controller_handoff(
+                {"state": state, "nodes": state["tasks"],
+                 "statePath": os.path.join(root, "state.json")},
+                task_id, {"action": "human", "reason": "inspect"},
+            )
+            assert False, "unbound controller handoff must fail closed"
+        except D.DriverError as exc:
+            assert "exact candidate/review receipt bindings" in str(exc)
+
+
+def test_crash_replay_consumes_the_exact_authorized_round_cap():
+    with tempfile.TemporaryDirectory() as root:
+        task_id = "task-a"
+        old_candidate = "candidate1:" + "a" * 64
+        old_receipt = "b" * 64
+        node = {
+            "taskId": task_id, "brief": "bounded task", "status": "running",
+            "branch": "camus/feat/f/task-a", "worktree": os.path.join(root, "worktree"),
+            "reviewerRound": 3,
+            "directReview": {
+                "head": "1" * 40, "round": 3, "candidateFingerprint": old_candidate,
+                "receiptSha256": old_receipt, "clean": False,
+                "blocking": [{"priority": 1, "title": "fix it"}], "nonblocking": [],
+            },
+            "nativeControllerAuthorization": {
+                "schemaVersion": 1, "action": "fix_recheck", "reviewRound": 3,
+                "kernelPhase": "task_reviewed", "candidateFingerprint": old_candidate,
+                "reviewReceiptSha256": old_receipt, "authorizedRoundCap": 4,
+                "authorizedAt": 1,
+            },
+        }
+        state_path = os.path.join(root, "state.json")
+        run = {
+            "state": {
+                "featId": "feat-a", "feat": "F", "status": "running",
+                "stage": "kernel_task_reviewed", "tasks": [node], "events": [], "eventSeq": 0,
+                "kernel": {
+                    "phase": "task_reviewed", "traceId": "trace:a1", "activeTaskId": task_id,
+                    "usage": {"retries": 2},
+                },
+            },
+            "args": {"feat": "F", "tasks": ["bounded task"], "targetPath": root, "roundCap": 3},
+            "nodes": [node], "specs": ["bounded task"], "statePath": state_path,
+        }
+        options = SimpleNamespace(
+            base=root, repo=None, experiment=None, ledger=os.path.join(root, "episodes.jsonl"),
+            maker_model="claude-opus-4-8", maker_effort="low", reviewer_backend="codex",
+            reviewer_model="gpt-5.6-sol", reviewer_effort="high", controller_model="sonnet",
+            wall_seconds=None, token_budget=None, retry_budget=None, verify_timeout=10,
+            controller_timeout=10, agent_timeout=10, round_cap=None, human_action=None,
+            direct_output_reserve=None, max_tasks=None, claude_binary="claude",
+        )
+        review4 = {
+            "action": "fix_then_seal", "taskId": task_id, "clean": False,
+            "blocking": [{"priority": 1, "title": "still wrong"}], "nonblocking": [],
+            "reviewer": {"round": 4},
+        }
+
+        def adopt_round4(*_args, **_kwargs):
+            node["reviewerRound"] = 4
+            node["directReview"] = {
+                "head": "1" * 40, "round": 4,
+                "candidateFingerprint": "candidate1:" + "c" * 64,
+                "receiptSha256": "d" * 64, "clean": False,
+                "blocking": review4["blocking"], "nonblocking": [],
+            }
+            return review4
+
+        with mock.patch.object(D.kernel, "_validated_run", return_value=run), \
+                mock.patch.object(D.kernel, "_resolve_repo", return_value=root), \
+                mock.patch.object(D.kernel, "_selected_index", return_value=(0, None)), \
+                mock.patch.object(D.kernel, "task_payload", return_value={
+                    "loopArgs": {"task": "bounded task"}, "repo": root,
+                }), \
+                mock.patch.object(D, "_pre_agent_budget_stop", return_value=None), \
+                mock.patch.object(D, "_post_agent_budget_stop", return_value=None), \
+                mock.patch.object(D, "_direct_output_budget_evidence", return_value={}), \
+                mock.patch.object(D.kernel, "record_usage"), \
+                mock.patch.object(D, "run_agent", return_value={"state": "done"}) as maker, \
+                mock.patch.object(D, "_record_background_usage"), \
+                mock.patch.object(D.kernel, "review_task", side_effect=adopt_round4), \
+                mock.patch.object(D, "controller_decision", return_value={
+                    "action": "stop", "reason": "fourth round still has findings",
+                }) as controller, \
+                mock.patch.object(D, "_record_incomplete_episode"):
+            result = D._drive_feature("feat-a", options)
+
+        assert result["action"] == "stop"
+        assert maker.call_args.kwargs["attempt"] == 4
+        assert controller.call_args.kwargs["attempt"] == 4
+        assert controller.call_args.kwargs["max_rounds"] == 4
+        assert run["state"]["kernel"]["phase"] == "stopped"
+
+
+def test_crash_replay_refuses_a_conflicting_explicit_round_cap():
+    with tempfile.TemporaryDirectory() as root:
+        task_id = "task-a"
+        candidate = "candidate1:" + "a" * 64
+        receipt = "b" * 64
+        node = {
+            "taskId": task_id, "status": "running", "reviewerRound": 3,
+            "directReview": {"round": 3, "candidateFingerprint": candidate,
+                             "receiptSha256": receipt},
+            "nativeControllerAuthorization": {
+                "action": "fix_recheck", "reviewRound": 3, "kernelPhase": "task_reviewed",
+                "candidateFingerprint": candidate, "reviewReceiptSha256": receipt,
+                "authorizedRoundCap": 4,
+            },
+        }
+        run = {
+            "state": {"status": "running", "stage": "kernel_task_reviewed", "tasks": [node],
+                      "kernel": {"phase": "task_reviewed", "activeTaskId": task_id}},
+            "args": {"tasks": ["bounded task"], "roundCap": 3}, "nodes": [node],
+        }
+        options = SimpleNamespace(
+            base=root, repo=None, experiment=None, ledger=os.path.join(root, "episodes.jsonl"),
+            round_cap=5, human_action=None, token_budget=None,
+        )
+        with mock.patch.object(D.kernel, "_validated_run", return_value=run), \
+                mock.patch.object(D.kernel, "_resolve_repo", return_value=root):
+            try:
+                D._drive_feature("feat-a", options, client=object())
+                assert False, "a different replay cap must not replace the authorized cap"
+            except D.DriverError as exc:
+                assert "conflicts with the persisted human authorization" in str(exc)
+
+
 def test_direct_output_budget_stop_is_recorded_once_before_review_or_next_model():
     with tempfile.TemporaryDirectory() as root:
         task_id = "task-a"
@@ -252,6 +485,14 @@ def test_resumed_review_uses_the_adopted_round_for_the_round_cap():
             "blocking": [{"priority": 1, "title": "still wrong"}], "nonblocking": [],
             "reviewer": {"round": 3},
         }
+        def adopt_review(*_args, **_kwargs):
+            run["state"]["kernel"]["phase"] = "task_reviewed"
+            node["directReview"] = {
+                "round": 3, "candidateFingerprint": "candidate1:" + "a" * 64,
+                "receiptSha256": "b" * 64,
+            }
+            node["reviewerRound"] = 3
+            return adopted
         controller_result = {"action": "human", "reason": "review round cap reached"}
         with mock.patch.object(D.kernel, "_validated_run", return_value=run), \
                 mock.patch.object(D.kernel, "_resolve_repo", return_value=root), \
@@ -262,7 +503,7 @@ def test_resumed_review_uses_the_adopted_round_for_the_round_cap():
                 mock.patch.object(D, "_post_agent_budget_stop", return_value=None), \
                 mock.patch.object(D, "_pre_agent_budget_stop", return_value=None), \
                 mock.patch.object(D, "_direct_output_budget_evidence", return_value={}), \
-                mock.patch.object(D.kernel, "review_task", return_value=adopted), \
+                mock.patch.object(D.kernel, "review_task", side_effect=adopt_review), \
                 mock.patch.object(D, "controller_decision", return_value=controller_result) as controller, \
                 mock.patch.object(D, "_record_incomplete_episode"), \
                 mock.patch.object(D, "run_agent") as maker:

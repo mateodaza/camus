@@ -22,6 +22,11 @@ from three conditions that occurred during that run.
 - A Claude background controller that deliberately chooses a human handoff may remain published as
   supervisor state `blocked`. A sealed terminal turn marker now closes that turn exactly as it does
   for `working`; unsealed prose still proves nothing.
+- A native controller `human` verdict now persists `needs_human` without erasing the
+  review/verification checkpoint. `camus run --human-action ...` records an explicit operator
+  decision bound to the same candidate and review receipt; a final-round `fix_recheck` additionally
+  requires an explicit higher `--round-cap`. A controller `stop` persists as a non-resumable typed
+  stop and cannot be converted into more model work.
 
 ## Dogfood evidence
 
@@ -40,6 +45,9 @@ The Slice C task exposed all three failures without losing model work:
 5. The final-round controller returned a valid human verdict and terminal marker but remained
    published as `blocked`, which would have held the driver until its timeout. Marker-bound blocked
    turns are now adopted immediately.
+6. After adoption the command returned the human verdict but left the feature visibly `running` and
+   exposed no supported decision transport. The durable handoff and bound resume command close that
+   state/provenance gap without JSON editing.
 
 The recovery patch adds regression coverage for committed-maker normalization, duplicate-wrapper
 repair, eval-metric deduplication, explicit budget-stop reopening, and the high-effort timeout

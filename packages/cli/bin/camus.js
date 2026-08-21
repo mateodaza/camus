@@ -88,6 +88,7 @@ usage: npx camus-cli <command>
                        --experiment <json> assigns model pairings and records quality/cost/latency
                        --direct-output-reserve <n> reserves direct-output runway before maker/fix
                                                   (0 disables the reserve; not a hard cap)
+                       --human-action <action> resumes a durable native controller handoff
   eval [--json]      per-arm coverage/A/B report segmented by experiment id, configHash, task class
                        --config <json> supplies a generation's qualityFloor/minimumTrials so a
                        leader may be named (repeatable); --experiment <id> filters to one experiment;
