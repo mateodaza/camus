@@ -422,6 +422,17 @@ function connectionBackendForWrite(name, entry, connections) {
   };
   if (entry.derivedFrom !== undefined) out.derivedFrom = entry.derivedFrom;
   if (entry.inferenceOperator !== undefined) out.inferenceOperator = entry.inferenceOperator;
+  // The operator-declared expected-reported alias mapping (§6.2) is a persisted
+  // property of the backend, not a derived one: reconstructing the entry on a
+  // connection edit must carry it forward verbatim, or saving a mapped backend —
+  // or merely editing its referenced connection — would silently delete the
+  // declaration and the next production call would reject the legitimate reported
+  // alias as a substitution. It may be an array, a `{ [model]: [...] }` map, or a
+  // bare string; anything else is not a mapping and is left off.
+  if (Array.isArray(entry.expectedReported) || typeof entry.expectedReported === 'string'
+    || (entry.expectedReported && typeof entry.expectedReported === 'object')) {
+    out.expectedReported = entry.expectedReported;
+  }
   if (typeof entry.why === 'string' && entry.why) out.why = entry.why;
   validateLegacyCompatEntry(name, out);
   return out;
@@ -445,7 +456,17 @@ export function listBackends(file = readFile()) {
   const connections = parseConnections(file);
   const out = { ...BUILTIN_BACKENDS };
   for (const [name, entry] of Object.entries(file.backends ?? {})) {
-    out[name] = validateCompatEntry(name, entry, connections);
+    const normalized = validateCompatEntry(name, entry, connections);
+    // Carry the operator-declared expected-reported alias mapping (§6.2) onto the
+    // normalized entry so it survives the load boundary and reaches BOTH doctor
+    // qualification and the runtime adapter's fail-closed reconciliation. It may
+    // be an array (aliases for every model), a `{ [model]: [...] }` per-model map,
+    // or a bare string; anything else is ignored rather than half-loaded.
+    if (Array.isArray(entry.expectedReported) || typeof entry.expectedReported === 'string'
+      || (entry.expectedReported && typeof entry.expectedReported === 'object')) {
+      normalized.expectedReported = entry.expectedReported;
+    }
+    out[name] = normalized;
   }
   // This is the single production load boundary for configurable backends.
   // Validate first so a malformed entry can never earn a snapshot merely by
@@ -586,6 +607,18 @@ export function enforceGrandfatherOnLoad(file = readFile()) {
   return legacyEntries;
 }
 
+// A seat's declared expected-reported alias mapping (or `aliases`), preserved
+// onto the snapshot so the engine can thread it to the adapter and doctor can
+// qualify a declared mapping endpoint. Absent → no key added.
+function seatExpectedReported(seat) {
+  if (!seat || typeof seat !== 'object') return {};
+  const v = seat.expectedReported ?? seat.aliases;
+  if (Array.isArray(v) || typeof v === 'string' || (v && typeof v === 'object')) {
+    return { expectedReported: v };
+  }
+  return {};
+}
+
 export function getModels() {
   const decision = readDecision();
   const file = decision.file;
@@ -629,12 +662,16 @@ export function getModels() {
       source: makerEnv ? 'env:CLAUDE_MODEL' : decisionSource,
       // Orthogonal identity facts, preserving every legacy key above.
       ...seatIdentityFacts(makerBackend, makerModel),
+      // A seat-level expected-reported alias mapping (§6.2) overrides/augments the
+      // backend-level one and must reach qualification + runtime reconciliation.
+      ...seatExpectedReported(file.maker),
     },
     reviewer: {
       backend: reviewerBackend.name,
       provider: reviewerBackend.provider,
       model: reviewerModel,
       ...seatIdentityFacts(reviewerBackend, reviewerModel),
+      ...seatExpectedReported(file.reviewer),
       // Effort is a requested knob only where the backend honors one (codex
       // today). Elsewhere it is null — a fabricated tier is not a decision.
       effort: reviewerBackend.effort ? (effortEnv || file.reviewer?.effort || 'medium') : null,
@@ -708,6 +745,16 @@ export function updateModels({ maker, reviewer, effort, roundCap, connections: c
     backendOf(next.backend, backends, seatName); // refuse an unknown backend at write time
     return next;
   };
+  // A seat-level expected-reported alias mapping (§6.2, declared as
+  // `expectedReported` or `aliases`) is bound to that seat's backend + model
+  // identity. Preserve it across identity-neutral edits (reviewer effort), but
+  // never carry it onto a different backend/model: doing so would let a stale
+  // alias authorize output from the previous identity.
+  const carrySeatAliases = (out, prev) => {
+    if (prev?.expectedReported !== undefined) out.expectedReported = prev.expectedReported;
+    if (prev?.aliases !== undefined) out.aliases = prev.aliases;
+    return out;
+  };
   const nextMaker = asSeat(maker, file.maker, 'maker');
   if (nextMaker && (nextMaker.model !== file.maker.model || nextMaker.backend !== (file.maker.backend || 'claude'))) {
     file.maker = { backend: nextMaker.backend, model: nextMaker.model, why: stamp };
@@ -716,12 +763,15 @@ export function updateModels({ maker, reviewer, effort, roundCap, connections: c
   const reviewerChanged = nextReviewer && (nextReviewer.model !== file.reviewer.model || nextReviewer.backend !== (file.reviewer.backend || 'codex'));
   const effortChanged = effort && effort !== file.reviewer.effort;
   if (reviewerChanged || effortChanged) {
-    file.reviewer = {
+    const updatedReviewer = {
       backend: nextReviewer?.backend ?? (file.reviewer.backend || 'codex'),
       model: nextReviewer?.model ?? file.reviewer.model,
       effort: effort || file.reviewer.effort,
       why: stamp,
     };
+    file.reviewer = reviewerChanged
+      ? updatedReviewer
+      : carrySeatAliases(updatedReviewer, file.reviewer);
   }
   if (roundCap && roundCap !== file.loop?.roundCap) {
     file.loop = { roundCap, why: stamp };
@@ -816,7 +866,19 @@ export function seatCatalog() {
   const codex = codexModels();
   const makerAliases = ['haiku', 'sonnet', 'opus'];
 
+  // The standing decision's seat object carries any operator-declared
+  // expected-reported alias mapping (§6.2), which lives on the SEAT, not the
+  // backend. A catalog entry built only from the backend omits it, so an explicit
+  // run pairing selecting that same backend+model would snapshot without the
+  // mapping and the runtime adapter would reject the legitimate reported alias as
+  // a substitution — even though the same seat-level mapping qualified through
+  // deep doctor. (Backend-level mappings survive regardless: the adapter reads
+  // them from the live backend.) So fold the standing seat mapping onto the one
+  // catalog entry that matches the seat's exact backend+model.
+  const seatDecisionFor = (seatName) => (seatName === 'maker' ? file.maker : file.reviewer);
   const entriesFor = (seatName) => {
+    const seatDecision = seatDecisionFor(seatName);
+    const seatBackendName = seatDecision?.backend || (seatName === 'maker' ? 'claude' : 'codex');
     const out = [];
     for (const backend of Object.values(backends)) {
       if (!backend.seats.includes(seatName)) continue;
@@ -827,7 +889,11 @@ export function seatCatalog() {
         : backend.name === 'codex' ? codex.source
           : decision.source;
       for (const model of models) {
-        out.push({ backend: backend.name, provider: backend.provider, model, source, effort: backend.effort, ...seatIdentityFacts(backend, model) });
+        const entry = { backend: backend.name, provider: backend.provider, model, source, effort: backend.effort, ...seatIdentityFacts(backend, model) };
+        if (backend.name === seatBackendName && seatDecision?.model === model) {
+          Object.assign(entry, seatExpectedReported(seatDecision));
+        }
+        out.push(entry);
       }
     }
     return out;

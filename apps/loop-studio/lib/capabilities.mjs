@@ -134,6 +134,15 @@ function capabilitiesDir() {
   return join(base, 'capabilities');
 }
 
+// Local diagnostics sink — a SIBLING of the receipts dir, never inside it, so a
+// stored diagnostic sample can never be mistaken for a receipt nor perturb the
+// receipts-dir listing. Used to retain bounded, credential-scrubbed samples
+// (e.g. a malformed structured-output reply) OUTSIDE the capability fingerprint
+// so operators can inspect why a qualification failed (§9.2).
+export function capabilityDiagnosticsDir() {
+  return join(capabilitiesDir(), '..', 'capability-diagnostics');
+}
+
 function ttlDays() {
   const raw = process.env.STUDIO_CAPABILITY_TTL_DAYS;
   if (raw === undefined) return DEFAULT_TTL_DAYS;
@@ -374,6 +383,17 @@ export function writeReceipt(input, { capabilities = {}, probeResults = {}, prob
 }
 
 // ---- read + validate -------------------------------------------------------
+
+// Network-free durable lookup: locate the receipt for a tuple by its 5 KEY axes
+// (never the credential salt, never the network-derived drift axes) and return
+// its stored payload with the on-disk integrity check already applied. The run
+// admission gate uses this to admit a seat on a previously-probed receipt without
+// re-probing: the stored component-9 server anchors are the qualification's own
+// recorded fact, so admission validates the operator-controlled identity axes and
+// expiry against that receipt rather than re-contacting the endpoint.
+export function readStoredReceipt(input) {
+  return loadPayload(input);
+}
 
 function loadPayload(input) {
   const path = receiptPath(input);

@@ -11,6 +11,7 @@ import { dirname, join, resolve } from 'node:path';
 import { getModels, modelsSummary, seatCatalog, listBackends, listConnections } from './models.mjs';
 import { CLAUDE_HIVEMIND_DISPLAY, hivemindStatus } from './adapters/hivemind.mjs';
 import { gateInstalled } from './code-lane.mjs';
+import { qualifyUsedSeats } from './capability-probes.mjs';
 
 // A skill is a directory holding SKILL.md, whose YAML frontmatter names it.
 // Only `name` is required; a directory without readable frontmatter still
@@ -324,18 +325,33 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
     for (const backend of Object.values(listBackends())) {
       if (backend.kind !== 'openai_compat') continue;
       const used = seatDecisions && (seatDecisions.maker.backend === backend.name || seatDecisions.reviewer.backend === backend.name);
-      const keyPresent = !!process.env[backend.apiKeyEnv];
+      // A normalized keyless backend (auth.kind:none, apiKeyEnv placeholder
+      // CAMUS_NO_AUTH) neither requires nor emits a credential — the adapter and
+      // the qualification runner send NO bearer, so requiring a dummy key here
+      // (which is explicitly forbidden) would mark usable keyless loopback as
+      // broken. The credential is a satisfied non-issue for it.
+      const keyless = backend.auth?.kind === 'none' || backend.apiKeyEnv === 'CAMUS_NO_AUTH';
+      const keyPresent = keyless || !!process.env[backend.apiKeyEnv];
       let reach = null; // null = not probed (deep only), true/false = probed
       if (deep && keyPresent) {
         reach = await fetch(`${backend.baseUrl}/models`, {
-          headers: { authorization: `Bearer ${process.env[backend.apiKeyEnv]}` },
+          headers: keyless ? {} : { authorization: `Bearer ${process.env[backend.apiKeyEnv]}` },
           signal: AbortSignal.timeout(5000),
         }).then((r) => r.ok, () => false);
       }
+      const credNote = keyless ? 'keyless (no credential required)' : keyPresent ? `${backend.apiKeyEnv} set` : `${backend.apiKeyEnv} NOT set`;
+      // §9.3: model DISCOVERY (/models) is INFORMATIONAL ONLY — it gates nothing.
+      // A disabled, missing, or transiently failing /models endpoint must not fail
+      // a used backend, because the real chat-completions qualification probes can
+      // still succeed against it. The check's health is credential presence alone;
+      // reachability is reported in the detail line as advisory context, never
+      // folded into `ok`.
+      const reachNote = reach === true ? ' · /models reachable'
+        : reach === false ? ' · /models unreachable (informational; chat-completions probes still qualify)' : '';
       add(
         `backend-${backend.name}`, `Backend "${backend.name}" (${backend.provider})`,
-        keyPresent && reach !== false,
-        `${backend.baseUrl} · ${backend.models.length} declared model${backend.models.length === 1 ? '' : 's'} · ${keyPresent ? `${backend.apiKeyEnv} set` : `${backend.apiKeyEnv} NOT set`}${reach === true ? ' · endpoint reachable' : reach === false ? ' · endpoint unreachable' : ''}${used ? '' : ' · not used by the current seat decisions'}`,
+        keyPresent,
+        `${backend.baseUrl} · ${backend.models.length} declared model${backend.models.length === 1 ? '' : 's'} · ${credNote}${reachNote}${used ? '' : ' · not used by the current seat decisions'}`,
         keyPresent ? null : `export ${backend.apiKeyEnv}=…   # the key never enters config or receipts`,
         used ? {} : { optional: true },
       );
@@ -343,6 +359,38 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   } catch (err) {
     add('backends', 'Configured backends', false, err.message, 'fix the active local model decision file (or the tracked defaults if no local file exists)');
   }
+
+  // Deep §9.2 capability qualification: the SAME operation the server exposes,
+  // run only under --deep for the openai_compat backends the current seat
+  // decisions actually use. Advisory — a probe failure is reported, never a
+  // thrown doctor, and it does not flip the overall preflight verdict.
+  // The §9.2 qualification fires REAL, spending streaming model probes and writes
+  // durable receipts. Under the mock engine — whose contract is "rehearsal, no
+  // model calls" — it is skipped entirely, even when deep is requested; the cheap
+  // deep connection/backend reachability probes above still run.
+  if (deep && engine !== 'mock') {
+    try {
+      const qualRows = await qualifyUsedSeats({ backends: Object.values(listBackends()), seatDecisions, deep: true });
+      // A qualification failure for a seat the current decision actually SELECTS
+      // is not advisory: the launch gate will categorically reject that run, so
+      // --doctor must fail rather than exit green. The row id qualifyUsedSeats
+      // mints is `qual-<backend>-<model>-<seatType>`; only the two currently
+      // selected (backend, model, seatType) tuples are required — every other
+      // declared/alternate candidate stays advisory (unused, cannot block).
+      const requiredIds = new Set(
+        seatDecisions
+          ? [
+              `qual-${seatDecisions.maker.backend}-${seatDecisions.maker.model}-words_maker`,
+              `qual-${seatDecisions.reviewer.backend}-${seatDecisions.reviewer.model}-words_reviewer`,
+            ]
+          : [],
+      );
+      for (const row of qualRows) add(row.id, row.label, row.ok, row.detail, row.fix, { advisory: !requiredIds.has(row.id) });
+    } catch (err) {
+      add('qualification', 'Seat qualification', false, err.message, null, { advisory: true });
+    }
+  }
+
   add(
     'git', 'git', !!gitV,
     gitV ?? 'not found; reviews would run outside a git repo (different conditions than camus)',

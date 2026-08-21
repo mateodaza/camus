@@ -312,6 +312,42 @@ try {
     );
   });
 
+  check('a connection edit preserves a backend expected-reported mapping (§6.2)', () => {
+    write(decision());
+    const fixture = validXai();
+    fixture.backends.grok.expectedReported = { 'grok-4.6': ['grok-4-latest'] };
+    updateModels({ connections: fixture.connections, backends: fixture.backends });
+    // Re-editing ONLY the referenced connection must not strip the mapping.
+    updateModels({ connections: fixture.connections });
+    const persisted = JSON.parse(readFileSync(modelsPath, 'utf8'));
+    assert.deepEqual(
+      persisted.backends.grok.expectedReported,
+      { 'grok-4.6': ['grok-4-latest'] },
+      'the operator-declared alias mapping survives a connection-only edit',
+    );
+    assert.deepEqual(listBackends().grok.expectedReported, { 'grok-4.6': ['grok-4-latest'] });
+  });
+
+  check('seat aliases clear on identity changes and survive identity-neutral edits', () => {
+    write(decision({
+      maker: { backend: 'claude', model: 'sonnet', expectedReported: ['sonnet-alias'], aliases: ['legacy-sonnet'] },
+      reviewer: { backend: 'codex', model: 'gpt-5.4', effort: 'low', expectedReported: ['review-alias'] },
+    }));
+    updateModels({ maker: { backend: 'claude', model: 'opus' } });
+    let persisted = JSON.parse(readFileSync(modelsPath, 'utf8'));
+    assert.equal(persisted.maker.model, 'opus', 'the maker model edit applied');
+    assert.equal(persisted.maker.expectedReported, undefined, 'a stale expected-reported mapping does not cross a model change');
+    assert.equal(persisted.maker.aliases, undefined, 'a stale legacy alias does not cross a model change');
+
+    updateModels({ effort: 'high' });
+    persisted = JSON.parse(readFileSync(modelsPath, 'utf8'));
+    assert.deepEqual(persisted.reviewer.expectedReported, ['review-alias'], 'an effort-only edit preserves the same reviewer identity mapping');
+
+    updateModels({ reviewer: { backend: 'codex', model: 'gpt-5.6-sol' } });
+    persisted = JSON.parse(readFileSync(modelsPath, 'utf8'));
+    assert.equal(persisted.reviewer.expectedReported, undefined, 'the reviewer mapping clears when its model identity changes');
+  });
+
   check('tracked public defaults remain byte-identical', () => {
     assert.deepEqual(readFileSync(trackedPath), trackedBefore);
   });

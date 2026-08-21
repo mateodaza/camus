@@ -2926,19 +2926,29 @@ Myosin Learns is a live session. A person decides when the evidence is enough.
     const text = mode === 'review' ? JSON.stringify({
       verdict: 'clean', findings: [], questions_for_human: [],
       claim_assessments: [], coverage_assessments: [], threshold_assessments: [],
-    }) : mode === 'garbage-review' ? 'I refuse to answer in JSON, here is prose instead.'
+    }) : mode === 'garbage-review' ? 'I refuse JSON; echoed Authorization: Bearer test-key-123'
       : `Drafted for ${parsed.model}: the deliverable body.`;
-    const half = Math.ceil(text.length / 2);
-    res.write(sse({ model: 'kimi-served', choices: [{ delta: { content: text.slice(0, half) } }] }));
-    res.write(sse({ model: 'kimi-served', choices: [{ delta: { content: text.slice(half) } }] }));
+    const served = mode === 'substitute' ? 'ghost-model-nobody-declared' : 'kimi-served';
+    // Split the fake credential itself across SSE frames on the malformed path:
+    // per-delta scrubbing would miss it, while post-assembly scrubbing must not.
+    const half = mode === 'garbage-review'
+      ? text.indexOf('test-key-123') + 'test-k'.length
+      : Math.ceil(text.length / 2);
+    res.write(sse({ model: served, choices: [{ delta: { content: text.slice(0, half) } }] }));
+    res.write(sse({ model: served, choices: [{ delta: { content: text.slice(half) } }] }));
     res.write(sse({ usage: { prompt_tokens: 120, completion_tokens: 45 }, choices: [] }));
     res.write('data: [DONE]\n\n');
     res.end();
   });
   await new Promise((r) => fixture.listen(0, '127.0.0.1', r));
-  const entry = { name: 'kimi', kind: 'openai_compat', provider: 'moonshot', baseUrl: `http://127.0.0.1:${fixture.address().port}`, apiKeyEnv: 'CLS_TEST_KIMI_KEY', models: ['kimi-k2'] };
+  // The fixture serves under the id "kimi-served" while the seat requests
+  // "kimi-k2"; that is a DECLARED mapping endpoint (expectedReported), so §6.2
+  // reconciliation maps it instead of refusing. An UNDECLARED served id is
+  // refused below — output from a substituted model is never consumed.
+  const entry = { name: 'kimi', kind: 'openai_compat', provider: 'moonshot', baseUrl: `http://127.0.0.1:${fixture.address().port}`, apiKeyEnv: 'CLS_TEST_KIMI_KEY', models: ['kimi-k2'], expectedReported: ['kimi-served'] };
   const prevKey = process.env.CLS_TEST_KIMI_KEY;
   const prevIdle = process.env.OPENAI_COMPAT_IDLE_MS;
+  const compatReceiptRoot = mkdtempSync(_join(_tmpdir(), 'cls-compat-receipt-'));
   process.env.CLS_TEST_KIMI_KEY = 'test-key-123';
   try {
     const maker = openAiCompatMaker(entry);
@@ -2946,7 +2956,13 @@ Myosin Learns is a live session. A person decides when the evidence is enough.
     const ok = await maker({ prompt: 'draft it', stage: 'make', model: 'kimi-k2', signal: new AbortController().signal, onSession: (l) => sessions.push(l) });
     assert.equal(ok.ok, true, `compat maker succeeds against the fixture (${ok.error})`);
     assert.match(ok.text, /^Drafted for kimi-k2/, 'the streamed deltas assemble into the deliverable');
-    assert.equal(ok.modelActual, 'moonshot:kimi-served', 'actual identity = declared provider + the SERVED model field');
+    // §5.2/§9.1: a reported alias is recorded in `reported` but does NOT become
+    // actual — the operator-documented mapped (requested) id is the actual.
+    assert.equal(ok.modelActual, 'moonshot:kimi-k2', 'actual identity = declared provider + the operator-mapped (requested) model, not the served alias');
+    // §9.1 identity evidence the engine seals: a declared alias mapping is
+    // mapped_by_operator_docs, carrying the raw reported id.
+    assert.equal(ok.modelReported, 'kimi-served', 'the raw reported alias rides the result in `reported`');
+    assert.equal(ok.modelActualEvidence, 'mapped_by_operator_docs', 'a declared alias seals as mapped_by_operator_docs');
     assert.deepEqual(ok.usage, { input_tokens: 120, cached_input_tokens: null, output_tokens: 45 }, 'usage is the endpoint observation, cached stays null when unreported');
     assert.equal(ok.costUsd, 0, 'no dollars are ever invented');
     assert.ok(sessions.some((l) => l.includes('tool surface: none')), 'the toolless surface is stated in the session trail');
@@ -2993,15 +3009,32 @@ Myosin Learns is a live session. A person decides when the evidence is enough.
     const verdict = await reviewer({ prompt: 'judge it', model: 'kimi-k2', signal: new AbortController().signal, claims: [], criteria: [], thresholds: [] });
     assert.equal(verdict.ran, true, `compat reviewer normalizes a clean verdict (${verdict.error})`);
     assert.equal(verdict.verdict, 'APPROVED');
-    assert.equal(verdict.reviewerIdentity, 'moonshot:kimi-served', 'the auditor identity is provider-qualified from the served model');
+    assert.equal(verdict.reviewerIdentity, 'moonshot:kimi-k2', 'the auditor identity is the operator-mapped (requested) model, not the served alias (§5.2)');
     assert.equal(verdict.reviewerEffort, null, 'no effort knob → no fabricated tier');
+    assert.equal(verdict.reviewerReportedModel, 'kimi-served', 'the raw reported reviewer model rides the verdict');
+    assert.equal(verdict.reviewerActualEvidence, 'mapped_by_operator_docs', 'the reviewer alias seals as mapped_by_operator_docs');
 
     mode = 'garbage-review';
-    const garbage = await reviewer({ prompt: 'judge it', model: 'kimi-k2', signal: new AbortController().signal, claims: [], criteria: [], thresholds: [] });
+    const garbageReceipt = _join(compatReceiptRoot, 'garbage');
+    const garbage = await reviewer({ prompt: 'judge it', model: 'kimi-k2', signal: new AbortController().signal, receiptDir: garbageReceipt, claims: [], criteria: [], thresholds: [] });
     assert.equal(garbage.ran, false, 'prose instead of the schema is an INFRA error, never a clean verdict');
+    assert.ok(!garbage.error.includes('test-key-123'), 'the malformed-verdict diagnostic never exposes the provider credential');
+    const capturedGarbage = _rfs(_join(garbageReceipt, 'last.json'), 'utf8');
+    assert.ok(!capturedGarbage.includes('test-key-123'), 'the raw-verdict receipt never persists an echoed provider credential');
+    assert.match(capturedGarbage, /redacted/, 'the receipt makes the scrub visible instead of silently dropping the diagnostic');
+
+    // §6.2 fail-closed: an UNDECLARED served model kills the call before its
+    // output is consumed — neither a maker draft nor a reviewer verdict.
+    mode = 'substitute';
+    const subMaker = await maker({ prompt: 'draft it', stage: 'make', model: 'kimi-k2', signal: new AbortController().signal });
+    assert.equal(subMaker.ok, false, 'a substituted maker model is refused, never drafted');
+    assert.match(subMaker.error, /ghost-model-nobody-declared|substituted model/, 'the refusal names the substitution');
+    const subReviewer = await reviewer({ prompt: 'judge it', model: 'kimi-k2', signal: new AbortController().signal, claims: [], criteria: [], thresholds: [] });
+    assert.equal(subReviewer.ran, false, 'a substituted reviewer model is an infra refusal, never a verdict');
   } finally {
     if (prevKey === undefined) delete process.env.CLS_TEST_KIMI_KEY; else process.env.CLS_TEST_KIMI_KEY = prevKey;
     if (prevIdle === undefined) delete process.env.OPENAI_COMPAT_IDLE_MS; else process.env.OPENAI_COMPAT_IDLE_MS = prevIdle;
+    _rmfs(compatReceiptRoot, { recursive: true, force: true });
     fixture.closeAllConnections?.();
     fixture.close();
   }

@@ -135,7 +135,11 @@ try {
   // presence check — both read the environment; neither may echo a value.
   const configRes = await fetch(`${base}/api/config`);
   const configText = await configRes.text();
-  const doctorRes = await fetch(`${base}/api/doctor?deep=1`);
+  // Deep qualification is an authorized POST now (a GET only runs the shallow,
+  // network-free doctor); no Origin is sent from node, so no token is required.
+  const doctorRes = await fetch(`${base}/api/doctor`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ deep: true }),
+  });
   const doctorText = await doctorRes.text();
   const doctor = JSON.parse(doctorText);
 

@@ -27,7 +27,8 @@ import { buildAuditReplayPack, createAuditReplayExperiment, finalizeAuditReplayE
 import { createParallelExperiment, finalizeParallelExperiment, knowledgeSnapshotMatches, markParallelArmRunning, outcomeFromArmReport, sealKnowledgeSnapshot } from './lib/comparison.mjs';
 import { validateExperimentRecord } from '../../packages/trust/lib/validate.mjs';
 import { deriveStatusDimensions, deriveHeadline } from './lib/status-dims.mjs';
-import { getModels, updateModels, modelsSummary, modelCatalog, seatCatalog, seatOffered, groundingNeedsClaudeMaker, gateModels, listConnections, EFFORTS } from './lib/models.mjs';
+import { getModels, updateModels, modelsSummary, modelCatalog, seatCatalog, seatOffered, groundingNeedsClaudeMaker, gateModels, listConnections, listBackends, EFFORTS } from './lib/models.mjs';
+import { seatQualification } from './lib/capability-probes.mjs';
 import { confirmClaudeRoute } from './lib/grandfather.mjs';
 import { reviewPrompt } from './lib/prompts.mjs';
 
@@ -104,6 +105,11 @@ const snapshotSeat = (entry, model) => ({
   inferenceOperator: entry.inferenceOperator,
   lineage: { source: entry.lineage.source, derivedFrom: entry.lineage.derivedFrom ?? null },
   originConfidence: entry.originConfidence,
+  // A seat/backend-level expected-reported alias mapping (§6.2) rides the
+  // snapshot so the runtime adapter reconciles the same declared alias that
+  // deep-doctor qualification accepted; dropping it here would make a qualified
+  // mapping endpoint fail closed on its first production call.
+  ...(entry.expectedReported !== undefined ? { expectedReported: entry.expectedReported } : {}),
   ...(entry.qualification ? { qualification: { ...entry.qualification } } : {}),
 });
 
@@ -218,6 +224,7 @@ async function startRun({
   idSalt = null,
   recovery = null,
   modelsSnapshot = null,
+  frozenBackends = null,
   frozenKnowledge = null,
   toolPolicy = null,
   publish = false,
@@ -347,7 +354,7 @@ async function startRun({
   // model lane does not.
   const adapters = recovery ? null
     : ENGINE === 'mock' ? (() => { const m = createMockAdapters(); return { maker: m.maker, reviewer: m.reviewer }; })()
-      : resolveSeatAdapters(models);
+      : resolveSeatAdapters(models, frozenBackends);
 
   emit('run', { run: { id, goal: displayGoal ?? goal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, recoveryOf: recovery?.sourceRunId ?? null, recovery: recovery ? { sourceRunId: recovery.sourceRunId ?? null, sourceReceiptId: recovery.sourceReceiptId ?? null, parkedSha: recovery.parkedSha ?? null, shaProvenance: recovery.shaProvenance ?? null } : null, engine: ENGINE, roundCap: models.loop.roundCap, experimentContext } });
   if (!gitOk) emit('log', { line: '⚠ git unavailable; codex reviews will run outside a git repo (different conditions than camus)' });
@@ -1188,8 +1195,27 @@ const server = http.createServer(async (req, res) => {
   try {
     // ---- API ----
     if (path === '/api/doctor' && req.method === 'GET') {
+      // A GET is reachable from an unauthenticated cross-origin drive-by
+      // (a bare `<img>`/navigation carries no Origin, so CORS never blocks the
+      // request from executing). It must therefore run ONLY the network-free
+      // shallow doctor — never the deep §9.2 qualification, which fires real,
+      // spending streaming probes and writes durable receipts. Deep probing is a
+      // POST guarded by the per-session token (authorize()), so `?deep=1` on a GET
+      // is deliberately ignored here.
       const { runDoctor } = await import('./lib/doctor.mjs');
-      return json(res, 200, await runDoctor({ deep: url.searchParams.get('deep') === '1', engine: ENGINE }));
+      return json(res, 200, await runDoctor({ deep: false, engine: ENGINE }));
+    }
+
+    if (path === '/api/doctor' && req.method === 'POST') {
+      // Deep qualification spends money (8K-token streaming probes) and mutates
+      // durable state (receipts), so it is authorized: a browser POST is refused
+      // by authorize() unless it carries the session token. runDoctor itself
+      // skips the spending §9.2 qualification under the mock engine (its
+      // "rehearsal, no model calls" contract), while still running the cheap deep
+      // connection/backend reachability probes.
+      const { runDoctor } = await import('./lib/doctor.mjs');
+      const body = await readBody(req);
+      return json(res, 200, await runDoctor({ deep: body?.deep === true, engine: ENGINE }));
     }
 
     if (path === '/api/config' && req.method === 'GET') {
@@ -1331,6 +1357,12 @@ const server = http.createServer(async (req, res) => {
       // decision record. Build runs the camus gate's own pairing, so an
       // override there is refused loudly rather than silently ignored.
       let modelsSnapshot = null;
+      // The backend objects the launch gate qualifies, captured BEFORE any
+      // network await and handed to the engine so the run resolves adapters
+      // against the EXACT objects qualification validated — never a live reload a
+      // concurrent /api/config edit could have swapped (RFC §9.2). Stays null for
+      // build/mock/CLI-only launches, which fall back to the live registry.
+      let frozenBackends = null;
       if (body.pairing !== undefined) {
         if (lane === 'build') return json(res, 400, { error: 'the Build lane runs the camus gate with its own model decisions; per-run pairing applies to the words lanes' });
         const p = body.pairing;
@@ -1407,11 +1439,73 @@ const server = http.createServer(async (req, res) => {
           targetToplevel = v.toplevel;
         }
       }
+      // Slice C launch gate (RFC §9.2/§9.4, docs:2627-2629): a configurable
+      // openai_compat seat may not launch without a VALID qual1 receipt for the
+      // run's seat type. The accepted fingerprint is copied into the run snapshot
+      // so the round events and sealed pairing carry it unchanged. Built-in CLI
+      // seats (claude/codex) are outside this gate; rehearsals never launch a real
+      // model, so the mock engine is exempt.
+      if (lane !== 'build' && ENGINE !== 'mock') {
+        // Freeze the EXACT decision we are about to qualify BEFORE any network
+        // await. A concurrent settings write must never swap the standing
+        // backend/model out from under the receipts we attach here: if we
+        // re-read getModels() after the probes, an old seat's fingerprint could
+        // be pinned by seat key onto a newly selected configurable backend that
+        // was never qualified, and downstream only checks the fingerprint is
+        // syntactically qual1 — so the swapped-in backend would launch
+        // unqualified. Materialize once, then qualify and attach against this
+        // single frozen snapshot, which also rides into run.models unchanged and
+        // resolves the run's adapters (resolveSeatAdapters keys off it).
+        const standing = modelsSnapshot ?? getModels();
+        const hasConfigurableSeat =
+          (standing.maker.backend !== 'claude' && standing.maker.backend !== 'codex') ||
+          (standing.reviewer.backend !== 'claude' && standing.reviewer.backend !== 'codex');
+        if (hasConfigurableSeat && !modelsSnapshot) {
+          const s = standing;
+          modelsSnapshot = {
+            maker: { ...snapshotSeat(s.maker, s.maker.model), source: s.maker.source },
+            reviewer: { ...snapshotSeat(s.reviewer, s.reviewer.model), effort: s.reviewer.effort, modelSource: s.reviewer.modelSource, effortSource: s.reviewer.effortSource },
+            loop: { ...s.loop },
+          };
+        }
+        const effective = modelsSnapshot ?? standing;
+        const backendsByName = listBackends();
+        const seatSpecs = [['maker', 'words_maker', effective.maker], ['reviewer', 'words_reviewer', effective.reviewer]];
+        const accepted = {};
+        for (const [seatKey, seatType, seat] of seatSpecs) {
+          if (seat.backend === 'claude' || seat.backend === 'codex') continue;
+          const entry = backendsByName[seat.backend];
+          if (!entry || entry.kind !== 'openai_compat') {
+            return json(res, 400, { error: `the ${seatKey} seat "${seat.backend}:${seat.model}" is not a qualifiable openai_compat backend and cannot launch` });
+          }
+          const q = await seatQualification({ entry, model: seat.model, seatType });
+          if (!q.qualified) {
+            return json(res, 400, { error: `${seat.backend}:${seat.model} has no valid ${seatType} qualification (${q.reason}${q.component ? `: ${q.component}` : ''}${q.missing?.length ? ` [${q.missing.join(', ')}]` : ''}). Run \`--doctor\` deep probes (or the connect flow) to qualify it, then retry.` });
+          }
+          accepted[seatKey] = q.fingerprint;
+        }
+        for (const [seatKey, fingerprint] of Object.entries(accepted)) {
+          modelsSnapshot[seatKey] = {
+            ...modelsSnapshot[seatKey],
+            qualification: { fingerprint, seatType: seatKey === 'maker' ? 'words_maker' : 'words_reviewer' },
+          };
+        }
+        // Freeze the SAME backend objects just qualified (from the pre-await
+        // snapshot `backendsByName`) so the engine resolves its adapters against
+        // them, not a live reload a concurrent config edit could have changed
+        // under an unchanged name. Only the configurable seats need it; a
+        // claude/codex seat resolves identically either way.
+        frozenBackends = {
+          maker: backendsByName[effective.maker.backend] ?? null,
+          reviewer: backendsByName[effective.reviewer.backend] ?? null,
+        };
+      }
+
       const admission = acquireAdmission(1);
       if (!admission.ok) return json(res, 429, { error: `${admission.used} runs are already active or starting — the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}.` });
       try {
         if (targetToplevel) activeBuilds.add(targetToplevel);
-        const id = await startRun({ goal, acceptanceContract, lane, depth: body.depth === 'standard' ? 'standard' : 'quick', ground: !!body.ground, targetPath, targetToplevel, modelsSnapshot, verifyCmd, publish: body.publish === true });
+        const id = await startRun({ goal, acceptanceContract, lane, depth: body.depth === 'standard' ? 'standard' : 'quick', ground: !!body.ground, targetPath, targetToplevel, modelsSnapshot, frozenBackends, verifyCmd, publish: body.publish === true });
         return json(res, 201, { id });
       } catch (err) {
         if (targetToplevel) activeBuilds.delete(targetToplevel);

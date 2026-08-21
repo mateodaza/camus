@@ -1,4 +1,5 @@
 {
+  "version": "review-schema-c1",
   "type": "object",
   "additionalProperties": false,
   "required": ["verdict", "findings", "questions_for_human", "claim_assessments", "coverage_assessments", "threshold_assessments"],
