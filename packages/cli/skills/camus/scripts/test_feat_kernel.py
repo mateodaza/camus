@@ -1244,6 +1244,57 @@ def test_direct_review_host_timeout_covers_the_high_effort_watchdog_chunk():
     assert K.DIRECT_REVIEW_HOST_TIMEOUT > 480
 
 
+def test_explicit_higher_budget_resumes_a_post_fix_stop_at_independent_review():
+    finding = {
+        "priority": 1, "title": "fix this", "body": "bounded finding",
+        "code_location": "direct.txt:1", "confidence_score": 0.99,
+    }
+    world = _direct_fixture(findings=[finding])
+    with mock.patch.object(K, "_run_direct_review", return_value=world["verdict"]):
+        reviewed = K.review_task(
+            world["feat_id"], world["node"]["taskId"], repo=world["repo"],
+            base=world["base"], now=103,
+        )
+    assert reviewed["clean"] is False
+    with open(os.path.join(world["worktree"], "direct.txt"), "a", encoding="utf-8") as fh:
+        fh.write("fixed\n")
+    receipt_path = os.path.join(world["base"], "fix.json")
+    _write(receipt_path, {
+        "is_error": False, "duration_ms": 20, "duration_api_ms": 10, "num_turns": 1,
+        "total_cost_usd": 0, "terminal_reason": "completed", "permission_denials": [],
+        "usage": {"output_tokens": 70},
+        "modelUsage": {"claude-opus-4-8": {"outputTokens": 70, "costUSD": 0}},
+    })
+    K.record_maker_usage(
+        world["feat_id"], world["node"]["taskId"], receipt_path, role="fix",
+        repo=world["repo"], base=world["base"], now=104,
+    )
+    state_path = os.path.join(world["base"], "feats", world["feat_id"] + ".json")
+    state = json.load(open(state_path, encoding="utf-8"))
+    state["kernel"]["budgets"]["tokens"] = 50
+    state["kernel"]["phase"] = "stopped"
+    state["kernel"]["stopReason"] = "direct output-token budget exhausted (70/50)"
+    state["status"] = "needs_human"
+    state["stage"] = "kernel_stop"
+    state["question"] = state["kernel"]["stopReason"]
+    state["tasks"][0]["status"] = "needs_human"
+    _write(state_path, state)
+
+    try:
+        K.resume_budget_stop(world["feat_id"], 60, base=world["base"], now=105)
+        assert False, "a budget below measured usage reopened the stopped task"
+    except K.Refusal as exc:
+        assert "must exceed" in str(exc)
+    resumed = K.resume_budget_stop(world["feat_id"], 1000, base=world["base"], now=106)
+    assert resumed["phase"] == "task_reviewing"
+    assert resumed["directOutputTokens"] == 70
+    state = K._validated_run(world["feat_id"], world["base"])["state"]
+    assert state["kernel"]["directReviewRound"] == 2
+    assert state["kernel"]["budgets"]["tokens"] == 1000
+    assert state["tasks"][0]["status"] == "running"
+    assert state["status"] == "running"
+
+
 def test_background_usage_refuses_observed_model_substitution():
     with tempfile.TemporaryDirectory() as root:
         path = os.path.join(root, "background.json")

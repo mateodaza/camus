@@ -15,6 +15,10 @@ from three conditions that occurred during that run.
   and transcript hash. Budget and eval metrics count the turn once; transcript or metric drift for
   a reused session fails closed. Existing 0.4.1 duplicate state is repaired on the next idempotent
   ingestion.
+- An explicit higher `camus run <featId> --token-budget <n>` reopens only a native direct-output
+  budget stop. It restores the exact safe checkpoint and sends an already-completed maker/fix to
+  independent review rather than launching another maker. Other human stops remain closed, and a
+  lower or still-insufficient ceiling refuses.
 
 ## Dogfood evidence
 
@@ -27,10 +31,14 @@ The Slice C task exposed all three failures without losing model work:
 3. Re-adopting the initial maker produced two 0.4.1 recovery wrappers for the same sealed session,
    falsely doubling its 90,316 output tokens. The new accounting identity reduces that evidence to
    one billable model turn without weakening transcript or metric custody checks.
+4. A later fix crossed its 300,000-token ceiling by 706 tokens and correctly stopped, but the native
+   CLI exposed no supported way to apply the operator's higher budget. The recovery path now accepts
+   that explicit decision and resumes at the pending review round without JSON surgery.
 
 The recovery patch adds regression coverage for committed-maker normalization, duplicate-wrapper
-repair, eval-metric deduplication, and the high-effort timeout invariant. The full CLI suite,
-including 633 workflow assertions, passes, and `git diff --check` is clean.
+repair, eval-metric deduplication, explicit budget-stop reopening, and the high-effort timeout
+invariant. The full CLI suite, including 633 workflow assertions, passes, and `git diff --check` is
+clean.
 
 ## Scope
 

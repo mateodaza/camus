@@ -350,6 +350,10 @@ def render(synth, now=None):
             lines.append("  resume: re-run with a HIGHER budgetTokens (or drop it) — done tasks skip")
         elif stage == "steer":
             lines.append("  resume: re-issue your guidance (camus steer ...), then re-run with the SAME args")
+        elif stage == "kernel_stop" and str(q).startswith("direct output-token budget exhausted ("):
+            lines.append("  resume: camus run %s --token-budget <higher> (plus the same --experiment, if used)" % (
+                s.get("featId") or "<featId>",
+            ))
         else:
             halted = next((t.get("taskId") for t in tasks if t.get("status") == "needs_human"), "<taskId>")
             lines.append('  resume: re-run the feat with  answers:{"%s":"<your answer>"}' % halted)

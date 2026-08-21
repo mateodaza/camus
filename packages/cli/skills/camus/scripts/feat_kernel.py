@@ -319,6 +319,36 @@ def _maker_usage_totals(receipts):
     return totals
 
 
+def _budget_resume_checkpoint(kernel_state, node):
+    """Recover the semantic checkpoint hidden by a persisted budget stop.
+
+    A maker/fix receipt newer than the last review means the only safe next action is a fresh
+    independent review. This also migrates early native stops that did not persist a resume phase.
+    """
+    direct = node.get("directMakerUsage") if isinstance(node, dict) else None
+    receipts = direct.get("receipts") if isinstance(direct, dict) else []
+    receipts = _unique_maker_receipts(receipts if isinstance(receipts, list) else [])
+    latest = receipts[-1] if receipts else None
+    review = node.get("directReview") if isinstance(node, dict) \
+        and isinstance(node.get("directReview"), dict) else None
+    if latest is not None and (
+            review is None
+            or latest.get("candidateFingerprint") != review.get("candidateFingerprint")):
+        prior_round = review.get("round") if isinstance(review, dict) else 0
+        prior_round = prior_round if isinstance(prior_round, int) \
+            and not isinstance(prior_round, bool) and prior_round >= 0 else 0
+        return "task_reviewing", prior_round + 1
+    saved = kernel_state.get("resumePhase")
+    if saved in ("task_open", "task_reviewed", "task_reviewing", "task_verify_failed"):
+        round_no = kernel_state.get("resumeReviewRound") if saved == "task_reviewing" else None
+        return saved, round_no
+    if review is not None:
+        return "task_reviewed", None
+    if node.get("worktree"):
+        return "task_open", None
+    raise Refusal("budget-stopped task has no safe native resume checkpoint")
+
+
 def _usage(state):
     value = _kernel(state).get("usage")
     value = value if isinstance(value, dict) else {}
@@ -941,6 +971,62 @@ def task_payload(run, task_id=None, repo=None):
     if repo:
         payload["repo"] = repo
     return payload
+
+
+def resume_budget_stop(feat_id, token_budget, base=None, now=None):
+    """Reopen only an explicit native direct-output budget stop with a higher ceiling."""
+    now = int(time.time()) if now is None else int(now)
+    if isinstance(token_budget, bool) or not isinstance(token_budget, int) or token_budget <= 0:
+        raise Refusal("resume token budget must be a positive integer")
+    base = base or camus_home()
+    with _locked(os.path.join(base, "feats"), feat_id):
+        run = _validated_run(feat_id, base)
+        state = run["state"]
+        kernel_state = _kernel(state)
+        reason = kernel_state.get("stopReason")
+        if kernel_state.get("phase") != "stopped" or not isinstance(reason, str) \
+                or not reason.startswith("direct output-token budget exhausted ("):
+            raise Refusal("only a native direct output-token budget stop can be resumed this way")
+        budgets = _budgets(run)
+        prior_budget = budgets.get("tokens")
+        if isinstance(prior_budget, bool) or not isinstance(prior_budget, int):
+            raise Refusal("budget-stopped task has no valid prior token ceiling")
+        direct_output = _usage(state).get("directOutputTokens")
+        if token_budget <= prior_budget or token_budget <= direct_output:
+            raise Refusal("resume token budget must exceed both the prior ceiling and measured usage")
+        active = kernel_state.get("activeTaskId")
+        node = next((item for item in run["nodes"] if item.get("taskId") == active), None)
+        if not isinstance(node, dict) or node.get("status") != "needs_human":
+            raise Refusal("budget-stopped task identity/status is not resumable")
+        phase, review_round = _budget_resume_checkpoint(kernel_state, node)
+        budgets["tokens"] = token_budget
+        kernel_state["budgets"] = budgets
+        kernel_state["phase"] = phase
+        kernel_state["updatedAt"] = now
+        kernel_state["budgetResumed"] = {
+            "priorBudget": prior_budget, "tokenBudget": token_budget,
+            "measuredDirectOutputTokens": direct_output, "resumedAt": now,
+        }
+        kernel_state.pop("stopReason", None)
+        kernel_state.pop("resumePhase", None)
+        kernel_state.pop("resumeReviewRound", None)
+        if phase == "task_reviewing":
+            kernel_state["directReviewRound"] = review_round
+        state["kernel"] = kernel_state
+        state["status"] = "running"
+        state["stage"] = "kernel_" + phase
+        state.pop("question", None)
+        node["status"] = "running"
+        _append_event(state, "Kernel %s resumed %s after explicit budget increase %d -> %d" % (
+            kernel_state.get("traceId"), active, prior_budget, token_budget,
+        ))
+        _atomic_write(run["statePath"], state)
+        return {
+            "schemaVersion": SCHEMA_VERSION, "traceId": kernel_state.get("traceId"),
+            "action": "budget_resumed", "taskId": active, "phase": phase,
+            "priorBudget": prior_budget, "tokenBudget": token_budget,
+            "directOutputTokens": direct_output,
+        }
 
 
 def dispatch_task(feat_id, task_id=None, repo=None, base=None, now=None):

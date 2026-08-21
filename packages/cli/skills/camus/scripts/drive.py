@@ -456,6 +456,16 @@ def _persist_driver_stop(run, reason):
     """Persist a typed host stop so a killed driver cannot leave a runnable task behind."""
     state = run["state"]
     kernel_state = kernel._kernel(state)
+    node = next((item for item in state.get("tasks", [])
+                 if item.get("taskId") == kernel_state.get("activeTaskId")), None)
+    if isinstance(node, dict):
+        try:
+            resume_phase, resume_round = kernel._budget_resume_checkpoint(kernel_state, node)
+            kernel_state["resumePhase"] = resume_phase
+            if resume_round is not None:
+                kernel_state["resumeReviewRound"] = resume_round
+        except kernel.Refusal:
+            pass
     kernel_state["phase"] = "stopped"
     kernel_state["stopReason"] = str(reason)[:500]
     kernel_state["updatedAt"] = int(time.time())
@@ -689,6 +699,12 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
         run = kernel._validated_run(feat_id, base)
         repo = kernel._resolve_repo(run, options.repo)
         current = kernel._kernel(run["state"])
+        if current.get("phase") == "stopped" and options.token_budget is not None \
+                and str(current.get("stopReason") or "").startswith(
+                    "direct output-token budget exhausted ("):
+            kernel.resume_budget_stop(feat_id, options.token_budget, base=base)
+            run = kernel._validated_run(feat_id, base)
+            current = kernel._kernel(run["state"])
         selected, blocked = kernel._selected_index(run)
         if current.get("phase") == "accepted" and isinstance(current.get("activeTaskId"), str):
             selected = next((index for index, item in enumerate(run["nodes"])
@@ -874,6 +890,7 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                     "featId": feat_id, "taskId": task_id,
                 }, terminal=True)
             review = kernel.review_task(feat_id, task_id, repo=repo, base=base)
+            round_no = review.get("reviewer", {}).get("round", round_no)
         elif phase == "ready":
             kernel.dispatch_task(feat_id, task_id, repo=repo, base=base)
             payload = kernel.open_task(feat_id, task_id, repo=repo, base=base)

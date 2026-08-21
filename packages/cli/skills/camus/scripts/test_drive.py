@@ -218,7 +218,59 @@ def test_direct_output_budget_stop_is_recorded_once_before_review_or_next_model(
         assert run["state"]["status"] == "needs_human"
         assert run["state"]["stage"] == "kernel_stop"
         assert run["state"]["kernel"]["phase"] == "stopped"
+        assert run["state"]["kernel"]["resumePhase"] == "task_open"
         assert node["status"] == "needs_human"
+
+
+def test_resumed_review_uses_the_adopted_round_for_the_round_cap():
+    with tempfile.TemporaryDirectory() as root:
+        task_id = "task-a"
+        node = {
+            "taskId": task_id, "brief": "bounded task", "status": "running",
+            "branch": "camus/feat/f/task-a", "worktree": os.path.join(root, "worktree"),
+            "reviewerRound": 2,
+        }
+        run = {
+            "state": {"featId": "feat-a", "feat": "F", "kernel": {
+                "phase": "task_reviewing", "traceId": "trace:a1", "activeTaskId": task_id,
+            }, "status": "running", "tasks": [node]},
+            "args": {"feat": "F", "tasks": ["bounded task"], "targetPath": root,
+                     "roundCap": 3},
+            "nodes": [node], "specs": ["bounded task"],
+            "statePath": os.path.join(root, "state.json"),
+        }
+        options = SimpleNamespace(
+            base=root, repo=None, experiment=None, ledger=os.path.join(root, "episodes.jsonl"),
+            maker_model="claude-opus-4-8", maker_effort="low", reviewer_backend="codex",
+            reviewer_model="gpt-5.6-sol", reviewer_effort="high", controller_model="sonnet",
+            wall_seconds=None, token_budget=None, retry_budget=None, verify_timeout=10,
+            controller_timeout=10, agent_timeout=10, round_cap=3, max_tasks=None,
+            direct_output_reserve=None, claude_binary="claude",
+        )
+        adopted = {
+            "action": "fix_then_seal", "taskId": task_id, "clean": False,
+            "blocking": [{"priority": 1, "title": "still wrong"}], "nonblocking": [],
+            "reviewer": {"round": 3},
+        }
+        controller_result = {"action": "human", "reason": "review round cap reached"}
+        with mock.patch.object(D.kernel, "_validated_run", return_value=run), \
+                mock.patch.object(D.kernel, "_resolve_repo", return_value=root), \
+                mock.patch.object(D.kernel, "_selected_index", return_value=(0, None)), \
+                mock.patch.object(D.kernel, "task_payload", return_value={
+                    "loopArgs": {"task": "bounded task"}, "repo": root,
+                }), \
+                mock.patch.object(D, "_post_agent_budget_stop", return_value=None), \
+                mock.patch.object(D, "_pre_agent_budget_stop", return_value=None), \
+                mock.patch.object(D, "_direct_output_budget_evidence", return_value={}), \
+                mock.patch.object(D.kernel, "review_task", return_value=adopted), \
+                mock.patch.object(D, "controller_decision", return_value=controller_result) as controller, \
+                mock.patch.object(D, "_record_incomplete_episode"), \
+                mock.patch.object(D, "run_agent") as maker:
+            result = D._drive_feature("feat-a", options)
+        assert result["action"] == "human"
+        assert controller.call_args.kwargs["attempt"] == 3
+        assert controller.call_args.kwargs["max_rounds"] == 3
+        maker.assert_not_called()
 
 
 def test_metrics_expose_unfinished_launched_session_without_inventing_usage():

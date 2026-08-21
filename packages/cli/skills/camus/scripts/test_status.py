@@ -139,6 +139,20 @@ def test_render_needs_human_budget_and_steer_stage_hints():
         assert "answers:{" not in out2
 
 
+def test_render_native_budget_stop_shows_the_supported_token_budget_override():
+    with tempfile.TemporaryDirectory() as base:
+        st = _feat_state("native-f", status="needs_human")
+        st["stage"] = "kernel_stop"
+        st["question"] = "direct output-token budget exhausted (300706/300000)"
+        st["tasks"][0]["status"] = "needs_human"
+        _write(os.path.join(base, "feats", "native-f.json"), st)
+        synth = S.synthesize(base, "native-f")
+        synth["live"] = []
+        out = "\n".join(S.render(synth))
+        assert "camus run native-f --token-budget <higher>" in out
+        assert "answers:{" not in out
+
+
 def test_render_needs_human_legacy_task_pause_byte_identical():
     # No stage, question on the TASK node (older states / real task pauses): the whole PAUSED
     # block renders byte-identical to what it always was — question + answers:{...} hint.
