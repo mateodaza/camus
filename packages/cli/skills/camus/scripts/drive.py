@@ -263,9 +263,13 @@ def _recover_completed(receipt):
         return dict(receipt)
     stored_hash = receipt.get("transcriptSha256")
     if stored_hash is not None and enriched.get("transcriptSha256") != stored_hash:
-        raise background_agent.BackgroundAgentError(
-            "completed background transcript hash drifted; refusing to rebind evidence"
-        )
+        if not background_agent.transcript_has_metadata_only_suffix(path, stored_hash):
+            raise background_agent.BackgroundAgentError(
+                "completed background transcript hash drifted; refusing to rebind evidence"
+            )
+        # The sealed hash covers the semantic turn. Keep it as the custody identity even though
+        # the provider appended harmless bookkeeping rows after the turn completed.
+        enriched["transcriptSha256"] = stored_hash
     recovered = {**receipt, **enriched}
     terminal_duration = enriched.get("terminalTurnDurationMs")
     if isinstance(terminal_duration, int) and terminal_duration >= 0:

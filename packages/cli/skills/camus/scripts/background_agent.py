@@ -30,6 +30,11 @@ SAFE_ENV_NAMES = (
     "TERM", "COLORTERM", "NVM_DIR", "VOLTA_HOME", "PNPM_HOME", "VIRTUAL_ENV",
     "UV_PROJECT_ENVIRONMENT", "GOPATH", "GOROOT", "CARGO_HOME", "RUSTUP_HOME", "JAVA_HOME",
 )
+# Claude may append these session bookkeeping rows after a completed turn. They carry no model
+# output or execution evidence, so they are safe to ignore when locating the terminal marker.
+POST_TURN_METADATA_TYPES = frozenset({
+    "last-prompt", "custom-title", "agent-name", "mode", "permission-mode", "atis-latch",
+})
 
 
 class BackgroundAgentError(Exception):
@@ -123,6 +128,31 @@ def _terminal_turn_evidence(row):
     return {"durationMs": duration, "timestamp": timestamp}
 
 
+def transcript_has_metadata_only_suffix(path, sealed_hash):
+    """Prove the current transcript is a sealed line prefix plus allowlisted metadata rows."""
+    if not path or not os.path.isfile(path) or not isinstance(sealed_hash, str):
+        return False
+    digest = hashlib.sha256()
+    prefix_found = False
+    try:
+        with open(path, "rb") as fh:
+            for raw_line in fh:
+                if prefix_found:
+                    try:
+                        row = json.loads(raw_line)
+                    except (TypeError, ValueError):
+                        return False
+                    if not isinstance(row, dict) or row.get("type") not in POST_TURN_METADATA_TYPES:
+                        return False
+                    continue
+                digest.update(raw_line)
+                if "sha256:" + digest.hexdigest() == sealed_hash:
+                    prefix_found = True
+    except OSError:
+        return False
+    return prefix_found
+
+
 def transcript_receipt(path, requested_model=None, requested_effort=None):
     """Extract stable metrics and the last assistant text from a Claude transcript.
 
@@ -146,7 +176,8 @@ def transcript_receipt(path, requested_model=None, requested_effort=None):
     }
     tool_calls = 0
     last_text = None
-    last_valid_row = None
+    last_semantic_row = None
+    parse_error = False
     try:
         with open(path, "rb") as raw:
             for chunk in iter(lambda: raw.read(1024 * 1024), b""):
@@ -156,10 +187,13 @@ def transcript_receipt(path, requested_model=None, requested_effort=None):
                 try:
                     row = json.loads(line)
                 except (TypeError, ValueError):
+                    parse_error = True
                     continue
                 if not isinstance(row, dict):
+                    parse_error = True
                     continue
-                last_valid_row = row
+                if row.get("type") not in POST_TURN_METADATA_TYPES:
+                    last_semantic_row = row
                 if row.get("type") != "assistant" or not isinstance(row.get("message"), dict):
                     continue
                 message = row["message"]
@@ -187,7 +221,7 @@ def transcript_receipt(path, requested_model=None, requested_effort=None):
             "terminalTurnMarker": False, "terminalTurnDurationMs": None,
             "terminalTurnAt": None,
         }
-    terminal = _terminal_turn_evidence(last_valid_row)
+    terminal = None if parse_error else _terminal_turn_evidence(last_semantic_row)
     return {
         "transcriptPath": path,
         "transcriptSha256": "sha256:" + digest.hexdigest(),

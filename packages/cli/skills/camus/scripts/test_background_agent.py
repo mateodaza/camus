@@ -46,6 +46,38 @@ def test_transcript_receipt_binds_hash_identity_usage_and_last_text():
         assert receipt["lastAssistantText"] == "done"
 
 
+def test_terminal_marker_survives_allowlisted_metadata_suffix_and_prefix_is_bound():
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "session.jsonl")
+        _write_jsonl(path, [
+            {"type": "assistant", "message": {
+                "model": "claude-opus-4-8", "usage": {"output_tokens": 5},
+                "content": [{"type": "text", "text": "done"}]}},
+            {"type": "system", "subtype": "turn_duration", "durationMs": 373737,
+             "timestamp": "2026-08-21T12:29:04.536Z"},
+        ])
+        sealed = B.transcript_receipt(path)["transcriptSha256"]
+        with open(path, "a", encoding="utf-8") as fh:
+            for kind in ("last-prompt", "custom-title", "agent-name", "mode",
+                         "permission-mode", "atis-latch"):
+                fh.write(json.dumps({"type": kind}) + "\n")
+        receipt = B.transcript_receipt(path)
+        assert receipt["terminalTurnMarker"] is True
+        assert receipt["terminalTurnDurationMs"] == 373737
+        assert B.transcript_has_metadata_only_suffix(path, sealed) is True
+
+
+def test_transcript_prefix_verifier_rejects_semantic_suffix():
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "session.jsonl")
+        _write_jsonl(path, [{"type": "system", "subtype": "turn_duration", "durationMs": 1,
+                            "timestamp": "2026-08-21T12:00:00.000Z"}])
+        sealed = B.transcript_receipt(path)["transcriptSha256"]
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "assistant", "message": {"content": []}}) + "\n")
+        assert B.transcript_has_metadata_only_suffix(path, sealed) is False
+
+
 def test_transcript_path_is_exact_and_rejects_non_uuid():
     with tempfile.TemporaryDirectory() as projects:
         cwd = "/tmp/a repo"

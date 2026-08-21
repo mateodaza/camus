@@ -261,6 +261,48 @@ def test_recovered_terminal_timing_overrides_adoption_wall():
     assert replay["durationMs"] == 373737 and replay["sessionWallMs"] == 1054805
 
 
+def test_recovery_accepts_metadata_suffix_and_preserves_sealed_hash():
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "session.jsonl")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "assistant", "message": {
+                "model": "claude-opus-4-8", "usage": {"output_tokens": 7},
+                "content": [{"type": "text", "text": "done"}]}}) + "\n")
+            fh.write(json.dumps({"type": "system", "subtype": "turn_duration",
+                                 "durationMs": 373737,
+                                 "timestamp": "2026-08-21T12:29:04.536Z"}) + "\n")
+        sealed = D.background_agent.transcript_receipt(path)["transcriptSha256"]
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "atis-latch"}) + "\n")
+        old = {"cwd": root, "sessionId": "12345678-1234-1234-1234-123456789abc",
+               "durationMs": 1054805, "transcriptSha256": sealed}
+        with mock.patch.object(D.background_agent, "transcript_path", return_value=path):
+            recovered = D._recover_completed(old)
+        assert recovered["transcriptSha256"] == sealed
+        assert recovered["durationMs"] == 373737
+
+
+def test_recovery_refuses_semantic_suffix_after_sealed_turn():
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "session.jsonl")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "system", "subtype": "turn_duration",
+                                 "durationMs": 373737,
+                                 "timestamp": "2026-08-21T12:29:04.536Z"}) + "\n")
+        sealed = D.background_agent.transcript_receipt(path)["transcriptSha256"]
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "assistant", "message": {"content": []}}) + "\n")
+        old = {"cwd": root, "sessionId": "12345678-1234-1234-1234-123456789abc",
+               "durationMs": 1054805, "transcriptSha256": sealed}
+        with mock.patch.object(D.background_agent, "transcript_path", return_value=path):
+            try:
+                D._recover_completed(old)
+            except D.background_agent.BackgroundAgentError as exc:
+                assert "hash drifted" in str(exc)
+            else:
+                raise AssertionError("semantic suffix must not rebind completed evidence")
+
+
 def test_metrics_rebuild_uses_validated_terminal_duration_for_old_event():
     with tempfile.TemporaryDirectory() as root:
         log = D.EventLog("feat-a", base=root)
