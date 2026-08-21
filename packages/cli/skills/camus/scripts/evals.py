@@ -19,6 +19,10 @@ import time
 
 SCHEMA_VERSION = 1
 
+# Sentinel distinguishing "do not filter on configHash" (the default) from an explicit
+# request to match a specific configHash value, including the unversioned `None` segment.
+_ANY_CONFIG_HASH = object()
+
 
 class EvalError(Exception):
     pass
@@ -203,13 +207,13 @@ def _median(values):
     return statistics.median(values) if values else None
 
 
-def arm_stats(records, experiment_id, arm_id, task_class=None, config_hash=None):
+def arm_stats(records, experiment_id, arm_id, task_class=None, config_hash=_ANY_CONFIG_HASH):
     rows = [
         row for row in records
         if isinstance(row.get("experiment"), dict)
         and row["experiment"].get("id") == experiment_id
         and row["experiment"].get("armId") == arm_id
-        and (config_hash is None or row["experiment"].get("configHash") == config_hash)
+        and (config_hash is _ANY_CONFIG_HASH or row["experiment"].get("configHash") == config_hash)
         and (task_class is None or row.get("taskClass") == task_class)
     ]
     passed = sum(1 for row in rows if _floor_pass(row))
@@ -248,9 +252,9 @@ def select_arm(plan, records, assignment_key):
         if eligible:
             candidates = sorted(eligible, key=lambda arm: (
                 stats[arm["id"]]["medianWallMs"] is None,
-                stats[arm["id"]]["medianWallMs"] or float("inf"),
+                stats[arm["id"]]["medianWallMs"] if stats[arm["id"]]["medianWallMs"] is not None else 0.0,
                 stats[arm["id"]]["medianOutputTokens"] is None,
-                stats[arm["id"]]["medianOutputTokens"] or float("inf"),
+                stats[arm["id"]]["medianOutputTokens"] if stats[arm["id"]]["medianOutputTokens"] is not None else 0.0,
                 arm["id"],
             ))
             candidates = [candidates[0]]
@@ -263,28 +267,156 @@ def select_arm(plan, records, assignment_key):
     return selected, {"reason": reason, "stats": stats}
 
 
-def summarize(records, experiment_id=None):
-    rows = [row for row in records if row.get("schemaVersion") == SCHEMA_VERSION]
-    if experiment_id:
-        rows = [row for row in rows if isinstance(row.get("experiment"), dict)
-                and row["experiment"].get("id") == experiment_id]
-    experiments = {}
+def experiment_segments(rows):
+    """Group experiment episodes by the exact (id, configHash, taskClass) they were run under.
+
+    Trials from different configurations (configHash) or task classes are never the same
+    comparison, so each becomes its own segment; arms are compared only within one.
+    """
+    segments = {}
     for row in rows:
         experiment = row.get("experiment")
         if not isinstance(experiment, dict) or not experiment.get("id") or not experiment.get("armId"):
             continue
-        experiments.setdefault(experiment["id"], set()).add(experiment["armId"])
+        key = (experiment["id"], experiment.get("configHash"), row.get("taskClass") or "unknown")
+        segments.setdefault(key, set()).add(experiment["armId"])
+    return segments
+
+
+def _matching_plan(plans, experiment_id, config_hash, task_class):
+    """A plan supplies qualityFloor/minimumTrials only for the exact generation it configures.
+
+    Match is exact on (id, configHash, taskClass): a plan for one task class must never supply
+    thresholds to a different task-class segment sharing the same id/hash, or it could authorize a
+    leader for a reported task class that has no matching configuration (fail-closed).
+    """
+    if config_hash is None:
+        return None
+    for plan in plans or []:
+        if (
+            plan.get("id") == experiment_id
+            and plan.get("configHash") == config_hash
+            and plan.get("taskClass") == task_class
+        ):
+            return plan
+    return None
+
+
+def _rank_eligible(stats, arm_ids, quality_floor):
+    """Lexicographic quality-first ranking: floor first, then latency, then token pressure."""
+    eligible = [arm for arm in arm_ids if (stats[arm]["qualityFloorRate"] or 0) >= quality_floor]
+    eligible.sort(key=lambda arm: (
+        stats[arm]["medianWallMs"] is None,
+        stats[arm]["medianWallMs"] if stats[arm]["medianWallMs"] is not None else 0.0,
+        stats[arm]["medianOutputTokens"] is None,
+        stats[arm]["medianOutputTokens"] if stats[arm]["medianOutputTokens"] is not None else 0.0,
+        arm,
+    ))
+    return eligible
+
+
+def _segment_report(rows, experiment_id, config_hash, task_class, arm_ids, plan):
+    # Report every configured plan arm plus any observed arm, so a configured arm with zero trials
+    # still appears (and blocks coverage) rather than silently vanishing from the per-arm report.
+    plan_arm_ids = [arm["id"] for arm in plan.get("arms", [])] if plan else []
+    report_arm_ids = sorted(set(arm_ids) | set(plan_arm_ids))
+    stats = {
+        arm: arm_stats(rows, experiment_id, arm, task_class=task_class, config_hash=config_hash)
+        for arm in report_arm_ids
+    }
+    segment = {
+        "experimentId": experiment_id,
+        "configHash": config_hash,
+        "taskClass": task_class,
+        "arms": stats,
+        "trials": sum(item["trials"] for item in stats.values()),
+        "experimentMode": None,
+        "minimumTrials": None,
+        "qualityFloor": None,
+        "coverageComplete": None,
+        "routingConfigured": False,
+        "routingEligible": False,
+        "leader": None,
+    }
+    if plan is None:
+        # Without the matching configured qualityFloor and minimumTrials we cannot name a
+        # leader or routing winner — only report exploratory coverage.
+        segment["standing"] = "exploratory_only"
+        return segment
+    minimum = plan["minimumTrials"]
+    segment["experimentMode"] = plan["mode"]
+    segment["minimumTrials"] = minimum
+    segment["qualityFloor"] = plan["qualityFloor"]
+    segment["routingConfigured"] = plan.get("mode") == "route"
+    # Coverage is complete only when every *configured* arm reaches minimumTrials. Observed but
+    # unconfigured ("rogue") arms can never substitute for a missing configured arm.
+    covered = (
+        bool(plan_arm_ids)
+        and all(stats[arm]["trials"] >= minimum for arm in plan_arm_ids)
+    )
+    segment["coverageComplete"] = covered
+    if not covered:
+        segment["standing"] = "coverage_incomplete"
+        return segment
+    # A leader may only be named among the configured arms.
+    eligible = _rank_eligible(stats, plan_arm_ids, plan["qualityFloor"])
+    if not eligible:
+        segment["standing"] = "no_arm_clears_quality_floor"
+        return segment
+    segment["leader"] = eligible[0]
+    segment["routingEligible"] = segment["routingConfigured"]
+    segment["standing"] = "routing_leader" if segment["routingEligible"] else "exploratory_leader"
+    return segment
+
+
+def summarize(records, experiment_id=None, plans=None):
+    rows = [row for row in records if row.get("schemaVersion") == SCHEMA_VERSION]
+    if experiment_id:
+        rows = [row for row in rows if isinstance(row.get("experiment"), dict)
+                and row["experiment"].get("id") == experiment_id]
+    segment_arms = experiment_segments(rows)
+    # A supplied plan is itself useful coverage context. Show all configured arms at n=0 even
+    # before the first episode rather than making a valid experiment disappear from the report.
+    for plan in plans or []:
+        if experiment_id and plan.get("id") != experiment_id:
+            continue
+        key = (plan.get("id"), plan.get("configHash"), plan.get("taskClass"))
+        segment_arms.setdefault(key, set())
+    segments = []
+    generations = {}
+    for (exp_id, config_hash, task_class) in sorted(
+            segment_arms, key=lambda key: (key[0], key[1] or "", key[2])):
+        plan = _matching_plan(plans, exp_id, config_hash, task_class)
+        segments.append(_segment_report(
+            rows, exp_id, config_hash, task_class, segment_arms[(exp_id, config_hash, task_class)], plan,
+        ))
+        generations.setdefault(exp_id, set()).add(config_hash)
+    experiments = {}
+    for exp_id, hashes in sorted(generations.items()):
+        # Standing is never aggregated across generations: differing configHashes are different
+        # experiments that happen to share an id, so the cross-generation standing is suppressed.
+        experiments[exp_id] = {
+            "generations": len(hashes),
+            "standing": "mixed_generations" if len(hashes) > 1 else "single_generation",
+        }
+    mixed = any(info["standing"] == "mixed_generations" for info in experiments.values())
+    experiment_episodes = sum(
+        1 for row in rows
+        if isinstance(row.get("experiment"), dict)
+        and row["experiment"].get("id")
+        and row["experiment"].get("armId")
+    )
     return {
         "schemaVersion": SCHEMA_VERSION,
         "episodes": len(rows),
+        "experimentEpisodes": experiment_episodes,
         "qualityFloorPasses": sum(1 for row in rows if _floor_pass(row)),
-        "experiments": {
-            exp: {arm: arm_stats(rows, exp, arm) for arm in sorted(arms)}
-            for exp, arms in sorted(experiments.items())
-        },
+        "segments": segments,
+        "experiments": experiments,
         "standing": (
-            "exploratory_only" if experiments
-            else "no_experiments"
+            "no_experiments" if not experiments
+            else "mixed_generations" if mixed
+            else "segmented_only"
         ),
         "note": (
             "Operational quality uses deterministic verification plus an independent clean review. "
@@ -293,25 +425,62 @@ def summarize(records, experiment_id=None):
     }
 
 
+def _short_hash(config_hash):
+    if not isinstance(config_hash, str):
+        return "unversioned"
+    return config_hash.split(":", 1)[-1][:10] or "unversioned"
+
+
+def _standing_line(segment):
+    if segment["leader"] is not None:
+        kind = "routing winner" if segment["routingEligible"] else "quality-first leader"
+        return "%s: %s (this generation and task class only)" % (kind, segment["leader"])
+    reasons = {
+        "exploratory_only": "no leader — configured qualityFloor/minimumTrials unavailable",
+        "coverage_incomplete": "no leader — minimumTrials coverage not yet reached",
+        "no_arm_clears_quality_floor": "no leader — no arm clears the quality floor",
+    }
+    return reasons.get(segment["standing"], segment["standing"])
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Camus local eval and A/B ledger")
     parser.add_argument("--ledger", default=None)
-    parser.add_argument("--experiment", default=None)
+    parser.add_argument("--experiment", default=None, help="filter the report to one experiment id")
+    parser.add_argument("--config", action="append", default=[], metavar="JSON",
+                        help="experiment config supplying qualityFloor/minimumTrials for its generation "
+                             "(repeatable); required before any leader can be named")
     parser.add_argument("--json", action="store_true")
     options = parser.parse_args(argv)
-    report = summarize(Ledger(options.ledger).records(), experiment_id=options.experiment)
+    try:
+        plans = [load_experiment(path) for path in options.config]
+    except EvalError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    report = summarize(Ledger(options.ledger).records(),
+                       experiment_id=options.experiment, plans=plans)
     if options.json:
         print(canonical(report))
     else:
-        print("Camus evals · %d episode(s) · %d quality-floor pass(es)" % (
-            report["episodes"], report["qualityFloorPasses"],
+        print("Camus evals · %d ledger episode(s) · %d experiment trial(s) · "
+              "%d quality-floor pass(es)" % (
+                  report["episodes"], report["experimentEpisodes"],
+                  report["qualityFloorPasses"],
         ))
-        for experiment, arms in report["experiments"].items():
-            print("\n%s" % experiment)
-            for arm, stats in arms.items():
+        for segment in report["segments"]:
+            mixed = report["experiments"].get(segment["experimentId"], {}).get("generations", 1) > 1
+            print("\n%s · gen %s · task %s%s" % (
+                segment["experimentId"], _short_hash(segment["configHash"]),
+                segment["taskClass"], "  [mixed generations — not aggregated]" if mixed else "",
+            ))
+            minimum = segment["minimumTrials"]
+            for arm, stats in segment["arms"].items():
                 rate = "—" if stats["qualityFloorRate"] is None else "%.0f%%" % (100 * stats["qualityFloorRate"])
                 wall = "—" if stats["medianWallMs"] is None else "%.1fm" % (stats["medianWallMs"] / 60000)
-                print("  %-18s n=%d quality=%s median=%s" % (arm, stats["trials"], rate, wall))
+                coverage = "n=%d" % stats["trials"] if minimum is None \
+                    else "n=%d/%d" % (stats["trials"], minimum)
+                print("  %-18s %s quality=%s median=%s" % (arm, coverage, rate, wall))
+            print("  → %s" % _standing_line(segment))
         print("\n" + report["note"])
     return 0
 

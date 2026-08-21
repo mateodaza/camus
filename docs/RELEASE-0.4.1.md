@@ -14,9 +14,27 @@ publication.
   relays no longer consume model context.
 - Background receipts prove session/model/transcript identity and available usage without copying
   prompts, diffs, transcript prose, credentials, or environment dumps into run state.
-- `camus eval` reads an append-only local episode ledger. `--experiment` performs persistent,
-  quality-gated sequential A/B assignment of complete model pairings for a declared task class.
+- `camus eval` reads an append-only local episode ledger and reports per-arm evidence by exact
+  experiment generation and task class. `camus run --experiment` performs persistent,
+  quality-gated sequential A/B assignment of complete model pairings for that declared task class.
 - Legacy `/camus-feat` and `/camus-loop` stay installed as rollback surfaces for this candidate.
+
+## Reading eval and A/B evidence
+
+`camus eval` without a config is deliberately exploratory: it shows the exact observed segments
+but cannot recover a generation's configured `qualityFloor` or `minimumTrials`, so it names no
+leader. Supply the frozen config with `camus eval --config experiment.json`; repeat `--config` to
+inspect several generations. `camus eval --experiment <id>` filters the report by experiment ID.
+
+The text and `--json` forms use the same fail-closed ladder. `coverage_incomplete` includes every
+configured arm, even arms at zero trials. `no_arm_clears_quality_floor` blocks promotion after
+coverage. `exploratory_leader` is quality-first evidence but cannot route. Only `routing_leader`
+sets `routingEligible:true`, and only for its exact `(id, configHash, taskClass)` segment.
+`routingConfigured:true` says the frozen config requested route mode; it is not by itself route
+eligibility. Mixed config hashes are reported as `mixed_generations` and never aggregated.
+Top-level `segmented_only` likewise names no winner: consumers must inspect `segments[]`.
+`episodes` is the ledger-row count in scope; `experimentEpisodes` is the subset with experiment
+evidence.
 
 ## Release gate
 

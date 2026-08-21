@@ -198,6 +198,10 @@ rejected loudly, never silently downgraded.
   interrupted work remains evidence; a cheap failure never wins. Studio continues to own
   parallel same-input comparisons, while CLI uses sequential assignment to avoid paying twice for
   every real feature.
+- **Eval reporting fails closed by generation.** `camus eval` groups evidence by the exact
+  `(experiment id, configHash, taskClass)` tuple. Without the matching config it reports observed
+  coverage but no leader. Configured arms with no trials remain visible at `n=0`, and records from
+  changed configs or task classes are never pooled into a complete-looking result.
 
 - **Plan it first (optional).** `/camus-plan "<request>"` reframes a vague or large
   request into a quality-gated, ordered task list before any code is written: it grounds
@@ -402,6 +406,33 @@ Use `camus run <featId> --experiment experiment.json`. The safer default mode is
 keeps assignments balanced after the minimum instead of changing routing. `route` is explicit and
 requires at least five trials per arm before quality-gated exploitation. Even then, promotion is
 local evidence for that declared task class, never a universal model leaderboard.
+
+Read the evidence with the same frozen config:
+
+```bash
+camus eval --config experiment.json
+camus eval --config experiment.json --json
+camus eval --experiment coding-feature-v1 --config experiment.json
+```
+
+For `camus run`, `--experiment` names a config file; for `camus eval`, it filters by experiment
+ID. In JSON, each `segments[]` entry is one exact generation and task class. Interpret it as
+follows:
+
+- `exploratory_only`: observed trials exist, but the matching configured floor and trial minimum
+  were not supplied; `leader` is null.
+- `coverage_incomplete`: the config matches, but at least one configured arm is below
+  `minimumTrials`; zero-trial arms are included and `routingEligible` is false.
+- `no_arm_clears_quality_floor`: coverage is complete, but quality blocks promotion.
+- `exploratory_leader`: the configured quality-first leader is visible for learning, while
+  `routingConfigured` and `routingEligible` remain false.
+- `routing_leader`: route mode, complete coverage, and the quality floor all hold;
+  `routingEligible` is true for this generation and task class only.
+
+Top-level `segmented_only` means standing exists only inside `segments[]`; `mixed_generations` is
+an additional warning, never an aggregate winner. `episodes` counts ledger rows in scope, while
+`experimentEpisodes` counts rows carrying experiment evidence. Inspect the individual segments;
+Camus will not combine their trials or standing.
 
 From a checkout: `npm i -g ./packages/cli` from the repo root, or run `./install.sh`
 directly inside `packages/cli/`. The CLI and the shell script are the same entrypoints.
