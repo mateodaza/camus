@@ -69,6 +69,7 @@ usage: npx camus-cli <command>
                        kernel dispatch <featId>   atomically mark selected task running + emit it
                        kernel prepare <featId>    checkout + env + baseline + receipt recovery
                        kernel usage <featId> ...  checkpoint monotonic tokens/retries/phase
+                       kernel seats <featId> ...  pin next-task seats without rerunning baseline
                        kernel accept <featId> <taskId> --result-file <path>
                                                   validate result/reviewer/Git/verify evidence
                        kernel land <featId> <taskId>
@@ -82,6 +83,10 @@ usage: npx camus-cli <command>
                                                   run one bound reviewer with no model relay
                        kernel seal <featId> <taskId> [--fixed-unreviewed]
                                                   deterministic commit + HEAD-bound verify
+  start <spec.json>  initialize a native feature run without spending a model turn
+  run <featId>       drive it with durable Claude background makers + direct independent review
+                       --experiment <json> assigns model pairings and records quality/cost/latency
+  eval [--json]      summarize the local append-only eval and A/B ledger
   resume       list interrupted feat runs (canonical resumeArgs, JSON)
   retro        read-only run-history analytics over ~/.camus/reports: per-feat lines,
                  aggregates (status/posture mix, rounds, token p50/p90), evidence-gated
@@ -95,8 +100,9 @@ per-run recipe (from your repo):
   npx camus-cli check
   export CAMUS_REPO_ROOT="$(pwd -P)"
   export CAMUS_VERIFY_CMD="<type-check && tests>"   # include TESTS, not just types
-  claude --permission-mode auto
-  # then: /camus-feat with your task list, or /camus-loop <one task>
+  camus start feature.json                           # model-free initialization
+  camus run <featId>                                 # durable maker + direct review
+  # compatibility/rollback: /camus-feat or /camus-loop from an interactive Claude session
 
 upgrading (the gate is a FROZEN copy — updating npm alone is not enough):
   npm i -g camus-cli@latest   # or use npx camus-cli@latest below
@@ -138,6 +144,16 @@ switch (cmd) {
     break;
   case 'kernel':
     py('feat_kernel.py', rest);
+    break;
+  case 'start':
+    py('drive.py', ['start', ...rest]);
+    break;
+  case 'run':
+    py('drive.py', ['run', ...rest]);
+    break;
+  case 'eval':
+  case 'evals':
+    py('evals.py', rest);
     break;
   case 'retro':
     py('retro.py', rest);

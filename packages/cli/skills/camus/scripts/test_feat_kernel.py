@@ -406,6 +406,37 @@ def test_prepare_is_idempotent_and_writes_one_trace_attempt():
     assert loop_args["reviewerEffort"] == "high"
 
 
+def test_ready_boundary_reconfigures_seats_without_rerunning_baseline():
+    base = tempfile.mkdtemp(prefix="camus_kernel_")
+    repo = _repo()
+    feat_id, _args, state = _fixture(
+        base, tasks=["run me"], statuses=["pending"], extra_args={"targetPath": repo},
+    )
+    _git(repo, "branch", state["featBranch"])
+    _git(repo, "checkout", "-q", state["featBranch"])
+    state["kernel"] = {
+        "schemaVersion": 1, "traceId": feat_id + ":a1", "attempt": 1,
+        "phase": "ready", "activeTaskId": state["tasks"][0]["taskId"],
+        "repoHead": _git(repo, "rev-parse", "HEAD"),
+        "budgets": {"wallSeconds": 1000, "tokens": 100, "retries": 2},
+        "seats": {"makerModel": "sonnet", "reviewerBackend": "codex",
+                  "reviewerModel": "gpt-5.6-sol", "reviewerEffort": "medium"},
+        "usage": {"startedAt": 100, "tokens": 0, "retries": 0},
+    }
+    _write(os.path.join(base, "feats", feat_id + ".json"), state)
+    with mock.patch.object(K, "_run_verify") as verify:
+        changed = K.configure_seats(
+            feat_id, "claude-opus-4-8", "codex", "gpt-5.6-sol", "high",
+            repo=repo, base=base, now=101,
+        )
+    assert verify.called is False
+    assert changed["seatsChanged"] is True
+    assert changed["seats"]["makerModel"] == "claude-opus-4-8"
+    persisted = K._validated_run(feat_id, base)["state"]
+    assert persisted["kernel"]["phase"] == "ready"
+    assert persisted["kernel"]["repoHead"] == state["kernel"]["repoHead"]
+
+
 def test_prepare_refuses_green_verification_bound_to_another_head():
     base = tempfile.mkdtemp(prefix="camus_kernel_")
     repo = _repo()
@@ -1082,6 +1113,55 @@ def test_integrate_refuses_budget_exhaustion_and_non_descendant_tip():
         assert False, "non-descendant integration tip was accepted"
     except K.Refusal as exc:
         assert "no longer descends" in str(exc)
+
+
+def test_background_usage_receipt_is_model_bound_and_content_free():
+    world = _direct_fixture()
+    path = os.path.join(world["base"], "background.json")
+    _write(path, {
+        "source": "claude_background_session",
+        "state": "done",
+        "sessionId": "12345678-1234-1234-1234-123456789abc",
+        "shortId": "12345678",
+        "modelRequested": "claude-opus-4-8",
+        "modelActual": "claude-opus-4-8",
+        "modelsObserved": ["claude-opus-4-8"],
+        "transcriptSha256": "sha256:" + "a" * 64,
+        "durationMs": 42,
+        "toolCalls": 3,
+        "usage": {"inputTokens": 5, "cacheCreationInputTokens": 7,
+                  "cacheReadInputTokens": 11, "outputTokens": 13},
+        "billingMode": "claude_ai_account_quota",
+    })
+    recorded = K.record_maker_usage(
+        world["feat_id"], world["node"]["taskId"], path, source="background",
+        repo=world["repo"], base=world["base"], now=103,
+    )
+    assert recorded["receipt"]["source"] == "claude_background_session"
+    assert recorded["receipt"]["transcriptSha256"].startswith("sha256:")
+    assert recorded["totals"]["outputTokens"] == 13
+    assert recorded["budgetUsage"]["directOutputTokens"] == 13
+    assert "lastAssistantText" not in recorded["receipt"]
+
+
+def test_background_usage_refuses_observed_model_substitution():
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "background.json")
+        _write(path, {
+            "source": "claude_background_session", "state": "done",
+            "sessionId": "12345678-1234-1234-1234-123456789abc",
+            "modelRequested": "claude-opus-4-8", "modelActual": "claude-haiku-4-5",
+            "modelsObserved": ["claude-haiku-4-5"],
+            "transcriptSha256": "sha256:" + "b" * 64,
+            "durationMs": 1, "toolCalls": 0,
+            "usage": {"inputTokens": 1, "outputTokens": 2},
+            "billingMode": "claude_ai_account_quota",
+        })
+        try:
+            K._background_usage_receipt(path, "claude-opus-4-8")
+            assert False, "observed model substitution accepted"
+        except K.Refusal as exc:
+            assert "pinned model" in str(exc)
 
 
 if __name__ == "__main__":

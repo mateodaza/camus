@@ -958,6 +958,44 @@ def record_usage(feat_id, tokens=None, retries=None, phase=None, base=None, now=
         return _envelope(_validated_run(feat_id, base), now=now)
 
 
+def configure_seats(feat_id, maker_model, reviewer_backend, reviewer_model, reviewer_effort,
+                    repo=None, base=None, now=None):
+    """Change the next task's pinned seats at a clean ready boundary without rerunning baseline."""
+    now = int(time.time()) if now is None else int(now)
+    base = base or camus_home()
+    with _locked(os.path.join(base, "feats"), feat_id):
+        run = _validated_run(feat_id, base)
+        repo = _resolve_repo(run, repo)
+        state = run["state"]
+        current = _kernel(state)
+        if current.get("phase") != "ready":
+            raise Refusal("seat configuration requires a ready task boundary")
+        if _git_ok(repo, "branch", "--show-current") != state.get("featBranch"):
+            raise Refusal("checkout moved before seat configuration")
+        if _git_ok(repo, "rev-parse", "HEAD") != current.get("repoHead"):
+            raise Refusal("feature HEAD moved before seat configuration")
+        if _git_ok(repo, "status", "--porcelain", "--untracked-files=all"):
+            raise Refusal("repository is dirty before seat configuration")
+        seats = _seats(run, {
+            "makerModel": maker_model,
+            "reviewerBackend": reviewer_backend,
+            "reviewerModel": reviewer_model,
+            "reviewerEffort": reviewer_effort,
+        })
+        changed = seats != current.get("seats")
+        current["seats"] = seats
+        current["updatedAt"] = now
+        state["kernel"] = current
+        if changed:
+            _append_event(state, "Kernel %s configured seats for %s" % (
+                current.get("traceId"), current.get("activeTaskId"),
+            ))
+        _atomic_write(run["statePath"], state)
+        out = _envelope(_validated_run(feat_id, base), repo=repo, now=now)
+        out["seatsChanged"] = changed
+        return out
+
+
 def _direct_task(run, task_id):
     kernel = _kernel(run["state"])
     if kernel.get("activeTaskId") != task_id:
@@ -1115,7 +1153,72 @@ def _claude_usage_receipt(path, requested_model):
     }
 
 
-def record_maker_usage(feat_id, task_id, result_file, role="maker", repo=None, base=None, now=None):
+def _background_usage_receipt(path, requested_model):
+    """Validate a content-free receipt from a durable Claude background session."""
+    result = _read_json(path)
+    if result.get("source") != "claude_background_session":
+        raise Refusal("maker result is not a Claude background-session receipt")
+    if result.get("state") != "done":
+        raise Refusal("background maker did not reach done")
+    if result.get("modelRequested") != requested_model:
+        raise Refusal("background maker receipt does not bind the pinned model")
+    transcript_sha = result.get("transcriptSha256")
+    if not isinstance(transcript_sha, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", transcript_sha):
+        raise Refusal("background maker receipt lacks a transcript hash")
+    session_id = result.get("sessionId")
+    if not isinstance(session_id, str) or not re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", session_id):
+        raise Refusal("background maker receipt lacks a session identity")
+    usage = result.get("usage")
+    if usage is not None and not isinstance(usage, dict):
+        raise Refusal("background maker usage is malformed")
+    usage = usage or {}
+    normalized_usage = {
+        key: _nonnegative_int(usage.get(key, 0), "background %s" % key)
+        for key in ("inputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens")
+    }
+    model_actual = result.get("modelActual")
+    models = result.get("modelsObserved")
+    if not isinstance(models, list):
+        models = [model_actual] if isinstance(model_actual, str) and model_actual else []
+    if not models or not all(isinstance(model, str) and model for model in models):
+        raise Refusal("background maker receipt proves no model identity")
+    requested_norm = requested_model.lower()
+    observed_norm = [model.lower() for model in models]
+    if requested_norm in ("opus", "sonnet", "haiku"):
+        model_bound = any(("-" + requested_norm + "-") in ("-" + model + "-")
+                          for model in observed_norm)
+    else:
+        model_bound = requested_norm in observed_norm
+    if not model_bound:
+        raise Refusal("background maker observed models do not include the pinned model")
+    if normalized_usage["outputTokens"] <= 0:
+        raise Refusal("background maker proves no output from the pinned model")
+    if result.get("billingMode") != "claude_ai_account_quota":
+        raise Refusal("background maker receipt does not prove claude.ai account quota")
+    return {
+        "source": "claude_background_session",
+        "receiptSha256": _sha256_file(path),
+        "transcriptSha256": transcript_sha,
+        "sessionId": session_id,
+        "shortId": result.get("shortId") if isinstance(result.get("shortId"), str) else None,
+        "modelRequested": requested_model,
+        "models": [{"model": model, "canonicalModel": None, "provider": "anthropic"}
+                   for model in models if isinstance(model, str) and model],
+        "usage": normalized_usage,
+        "durationMs": _nonnegative_int(result.get("durationMs", 0), "background durationMs"),
+        "apiDurationMs": 0,
+        "turns": 0,
+        "toolCalls": _nonnegative_int(result.get("toolCalls", 0), "background toolCalls"),
+        "isError": False,
+        "terminalReason": "done",
+        "permissionDenials": 0,
+        "billingMode": "claude_ai_account_quota",
+    }
+
+
+def record_maker_usage(feat_id, task_id, result_file, role="maker", repo=None, base=None, now=None,
+                       source="print"):
     """Persist direct-maker metrics without folding unlike token units into kernel.usage.tokens."""
     now = int(time.time()) if now is None else int(now)
     if role not in ("maker", "fix"):
@@ -1128,7 +1231,13 @@ def record_maker_usage(feat_id, task_id, result_file, role="maker", repo=None, b
         if kernel.get("phase") not in ("task_open", "task_reviewed", "task_verify_failed"):
             raise Refusal("kernel is not at a direct maker-usage phase")
         worktree, head = _validated_worktree(repo, node, node.get("worktree"))
-        receipt = _claude_usage_receipt(result_file, _seats(run).get("makerModel"))
+        requested_model = _seats(run).get("makerModel")
+        if source == "background":
+            receipt = _background_usage_receipt(result_file, requested_model)
+        elif source == "print":
+            receipt = _claude_usage_receipt(result_file, requested_model)
+        else:
+            raise Refusal("maker usage source must be print|background")
 
         existing = node.get("directMakerUsage")
         receipts = existing.get("receipts") if isinstance(existing, dict) else []
@@ -1156,14 +1265,19 @@ def record_maker_usage(feat_id, task_id, result_file, role="maker", repo=None, b
             "inputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens",
         )
         totals = {key: sum(item.get("usage", {}).get(key, 0) for item in receipts) for key in metric_keys}
+        costs = [item.get("costUsd") for item in receipts]
         totals.update({
-            "costUsd": sum(item.get("costUsd", 0) for item in receipts),
+            "costUsd": sum(costs) if all(isinstance(cost, (int, float)) and not isinstance(cost, bool)
+                                          for cost in costs) else None,
             "durationMs": sum(item.get("durationMs", 0) for item in receipts),
             "turns": sum(item.get("turns", 0) for item in receipts),
             "calls": len(receipts),
         })
         node["directMakerUsage"] = {
-            "metric": "claude_print_json_usage_v1",
+            "metric": (
+                "claude_background_session_usage_v1"
+                if source == "background" else "claude_print_json_usage_v1"
+            ),
             "receipts": receipts,
             "totals": totals,
         }
@@ -1946,6 +2060,14 @@ def _parser():
     p.add_argument("--retries", type=int, default=None)
     p.add_argument("--phase", default=None)
     p.add_argument("--dir", dest="base", default=None, help=argparse.SUPPRESS)
+    p = sub.add_parser("seats")
+    p.add_argument("feat_id")
+    p.add_argument("--maker-model", required=True)
+    p.add_argument("--reviewer-backend", required=True)
+    p.add_argument("--reviewer-model", required=True)
+    p.add_argument("--reviewer-effort", required=True)
+    p.add_argument("--repo", default=None)
+    p.add_argument("--dir", dest="base", default=None, help=argparse.SUPPRESS)
     p = sub.add_parser("accept")
     p.add_argument("feat_id")
     p.add_argument("task_id")
@@ -1976,6 +2098,7 @@ def _parser():
     p.add_argument("task_id")
     p.add_argument("--result-file", required=True)
     p.add_argument("--role", choices=("maker", "fix"), default="maker")
+    p.add_argument("--source", choices=("print", "background"), default="print")
     p.add_argument("--repo", default=None)
     p.add_argument("--dir", dest="base", default=None, help=argparse.SUPPRESS)
     p = sub.add_parser("seal")
@@ -2004,6 +2127,12 @@ def main(argv=None):
                 options.feat_id, tokens=options.tokens, retries=options.retries,
                 phase=options.phase, base=options.base,
             )
+        elif options.command == "seats":
+            value = configure_seats(
+                options.feat_id, options.maker_model, options.reviewer_backend,
+                options.reviewer_model, options.reviewer_effort,
+                repo=options.repo, base=options.base,
+            )
         elif options.command == "accept":
             value = accept_task(
                 options.feat_id, options.task_id, options.result_file,
@@ -2030,7 +2159,7 @@ def main(argv=None):
         elif options.command == "maker-usage":
             value = record_maker_usage(
                 options.feat_id, options.task_id, options.result_file, role=options.role,
-                repo=options.repo, base=options.base,
+                repo=options.repo, base=options.base, source=options.source,
             )
         elif options.command == "seal":
             value = seal_task(

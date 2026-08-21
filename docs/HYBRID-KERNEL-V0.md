@@ -1,6 +1,6 @@
 # Technical Specification: Hybrid Kernel v0
 
-**Status:** Shipped in Camus 0.4.0
+**Status:** Kernel primitives shipped in Camus 0.4.0; native driver added in the 0.4.1 candidate
 **Target release:** Camus 0.4.0
 **Date:** 2026-08-19
 
@@ -183,6 +183,51 @@ The direct lane removes the legacy thin-agent relays without removing the gates:
 
 This is the preferred v0 path. The full `camus-loop` adapter remains available for rollback and
 compatibility, but it is no longer required to execute a hybrid-kernel task.
+
+### Native host driver (0.4.1)
+
+`camus start <spec.json>` creates the canonical args sidecar, compact feature state, feature branch,
+and task identities with ordinary code. It does not check out the branch or call a model.
+
+`camus run <featId>` is the missing host above the v0 primitives. It launches the maker as a
+named Claude Code background session in the exact kernel-owned worktree. The session survives the
+launching terminal and can be adopted by name/session ID after a driver restart. Ambient API keys,
+base URLs, provider switches, proxies, and user/project/local settings are excluded; launch requires
+`claude auth status` to prove `authMethod: claude.ai`, otherwise Camus stops before spend. The
+driver's explicit settings turn on Claude Code's Concise output style. Content-free
+receipts bind requested/observed model identity, transcript hash, timing, usage, tool count, and
+subscription-quota billing mode to the candidate; prompt and transcript prose stay out of Camus
+state. Codex review, seal, HEAD-bound verify, merge, and integration remain kernel calls.
+
+The driver does not use a model for polling, state mutation, Git, retry counters, verification,
+merge, or experiment assignment. A low-effort controller model is invoked only when evidence
+creates a semantic choice. Its output is one constrained action: `fix_recheck`, `fix_verify`,
+`retry_verify`, `human`, or `stop`. Malformed output becomes `human`, never a guessed transition.
+Verification failure is therefore not an unconditional retry: a subsequent invocation asks the
+controller whether retrying unchanged evidence is meaningful or a fresh fix/re-review is needed.
+
+`~/.camus/sessions/<featId>.events.jsonl` is the append-only orchestration log. It checkpoints
+intents, session identities, durable A/B assignment, controller decisions, and land events without
+storing prompts or diffs. This protects the orchestration state that cannot be reconstructed from
+one model context while keeping kernel state authoritative for custody.
+
+### Eval and A/B contract (0.4.1)
+
+Each sealed CLI task appends one content-addressed episode to
+`~/.camus/evals/episodes.jsonl`. The quality floor is code-defined: deterministic verification
+passes, the independent reviewer is clean, and no human intervention was needed. Fixed-unreviewed
+work remains useful outcome evidence but cannot clear that floor. Economics include end-to-end
+wall time and the background models' available usage; reviewer token usage is explicitly marked
+unavailable where the backend does not expose it.
+
+An experiment config declares a task class and two or more complete maker/reviewer/controller arms.
+Assignment is balanced until every arm reaches `minimumTrials`. Default `explore` mode stays
+balanced; explicit `route` mode requires at least five trials per arm, after which only an arm whose
+observed floor-pass rate clears `qualityFloor` may be preferred for lower median latency and token
+pressure. The normalized config is hashed, assignments are persisted before execution, config drift
+refuses, failures are never dropped, and no result is called human-calibrated or globally best.
+Studio retains parallel frozen-input comparison; CLI uses
+sequential assignment over real tasks so learning does not automatically double execution spend.
 
 ## Persistent state
 
