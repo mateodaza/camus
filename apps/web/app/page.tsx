@@ -29,7 +29,7 @@ export default function Home() {
               <a className="cta-ghost" href="#proof">See a real catch ↓</a>
             </div>
             <div className="hero-proof" aria-label="What Camus gives you">
-              <b>public alpha 0.4.0</b>
+              <b>public alpha 0.4.1</b>
               <b>deterministic local control</b>
               <b>an independent second opinion</b>
               <b>tests and sources attached</b>
@@ -163,8 +163,8 @@ receipt        0b8960d2e40d`}
               </Reveal>
               <Reveal className="flow-step">
                 <span>2</span>
-                <h3>Let the model orchestrate</h3>
-                <p>Use one model or its native agents. Camus treats the whole system as the maker.</p>
+                <h3>Let the maker work</h3>
+                <p>A durable model session owns the semantic work. The local kernel handles the plumbing.</p>
               </Reveal>
               <Reveal className="flow-step">
                 <span>3</span>
@@ -229,8 +229,8 @@ receipt        0b8960d2e40d`}
                 <p className="direction-tag">Available now</p>
                 <h3>Hybrid control, independent trust</h3>
                 <p>
-                  Models plan, make, and review. The 0.4 kernel controls dispatch, budgets,
-                  Git, verification, recovery, and the sealed evidence for the exact result.
+                  Models plan, make, and review. The 0.4.1 driver keeps dispatch, budgets,
+                  Git, verification, recovery, and sealed evidence out of model context.
                 </p>
               </Reveal>
               <Reveal className="direction-card">
@@ -324,13 +324,15 @@ receipt        0b8960d2e40d`}
             <Reveal>
               <div className="term">
                 <pre>
-{`$ npm i -g camus-cli@0.4.0
+{`$ npm i -g camus-cli@0.4.1
 $ camus install
 $ camus check
 
-> /camus-feat { feat: "Harden input boundaries", tasks: [...] }
+$ camus start feature.json
+`}<span className="g">✓</span>{` feature initialized without a model turn
+$ camus run <featId>
 
-`}<span className="g">✓</span>{` executor finished in an isolated worktree
+`}<span className="g">✓</span>{` durable maker finished in an isolated worktree
 `}<span className="r">✗</span>{` independent review found a missing guard
 `}<span className="g">✓</span>{` repair passed 163 tests
 `}<span className="g">✓</span>{` verified receipt bound to commit a1f9c2e`}
