@@ -16,12 +16,14 @@ compatibility: `/camus-plan` turns a raw request into a quality-gated task list,
 v2; v1 remains archived at [mateodaza/nightcrawler](https://github.com/mateodaza/nightcrawler).
 Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMUS-SPEC.md).
 
-> **0.4.1 candidate.** The Hybrid Kernel now has an actual host driver. Claude background
+> **0.4.1 is released.** The Hybrid Kernel now has an actual host driver. Claude background
 > sessions persist independently of the launching terminal and use Claude subscription quota;
 > the driver adopts them after interruption. An append-only local eval ledger supports sequential
 > A/B assignment of model pairings. Arms must clear deterministic verification plus independent
-> clean review before latency or token pressure can influence routing. The legacy workflows remain
-> rollback surfaces while 0.4.1 is dogfooded.
+> clean review before latency or token pressure can influence routing. The release dogfood landed
+> two clean, HEAD-bound tasks in 9m13s, including an interrupted maker adopted without duplication.
+> The legacy workflows remain available for compatibility.
+> [Read the release evidence.](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.1.md)
 
 ```
 plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep → verify
@@ -177,8 +179,8 @@ task ends `done_with_findings` itself: ◈ on the board, never plain done.
 Selection is one contract: an explicit `posture` is used verbatim and never re-asked.
 Absent one, a classifier recommends from the task briefs — asking policies confirm a
 speed posture once (`needs_human`), while `autonomous` applies `full|oneshot` and puts
-the choice on the record. `bookend` and `forward` land in 0.3; until then they are
-rejected loudly, never silently downgraded.
+the choice on the record. Only `full` and `oneshot` are recognized; unsupported
+postures are rejected loudly, never silently downgraded.
 
 ## Autonomy controls
 
@@ -276,8 +278,7 @@ rejected loudly, never silently downgraded.
   the last 10 steps, review rounds, and tokens, auto-refreshing. `camus status` is the
   one-shot version. _(Live steering — `watch`'s `p`/`g`/`c` keys and
   `camus steer "<guidance>"`, which scripts the same notes — is EXPERIMENTAL and
-  opt-in: a feat consumes steer notes only when run with steering enabled. Hardened
-  across the 0.2.x line; a race-free redesign lands in 0.3.)_
+  opt-in: a feat consumes steer notes only when run with steering enabled.)_
 - **"Running" must mean running.** Every phase touches a heartbeat file under
   `~/.camus/feats/`, so `status` and `watch` show `last heartbeat Xs ago` and warn
   loudly when a "running" feat has been quiet for over 10 minutes. The board also names

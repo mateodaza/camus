@@ -12,9 +12,12 @@ review loops are bounded, a stalled review becomes a decision on your desk inste
 burned rounds, and a crash at any point resumes without redoing proven work.
 *A craftsman knows how to work; an artist knows when to stop.*
 
-It runs as three Claude Code workflows plus a skill: `/camus-plan` turns a raw
-request into a quality-gated task list, `/camus-loop` takes one task, and `/camus-feat`
-ships an ordered task list as one feature branch with a report.
+The preferred runtime is now a native local driver: `camus start` creates canonical
+feature state without a model turn, and `camus run` gives each task to a durable maker,
+calls the independent reviewer directly, and lets code own Git, recovery, verification,
+and landing. The original Claude Code workflows remain available as compatibility
+surfaces: `/camus-plan` turns a raw request into a quality-gated task list,
+`/camus-loop` takes one task, and `/camus-feat` ships an ordered task list.
 
 **New here? Start with the [five-minute quickstart](QUICKSTART.md)** for code, Loop
 Studio, or agent-supervised operation.
@@ -31,12 +34,23 @@ You need [Claude Code](https://code.claude.com) and the [Codex CLI](https://gith
 (`codex login`) — the cross-vendor pairing is the product, so both halves are required.
 
 ```bash
-npm i -g camus-cli@0.4.0
+npm i -g camus-cli@0.4.1
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
-cd your-repo && claude
-# then, inside Claude Code:
-/camus-loop {"task": "your task, with an acceptance criterion the tests can judge"}
+```
+
+```json
+{
+  "feat": "Harden input boundaries",
+  "tasks": ["Validate the boundary and add regression coverage."],
+  "targetPath": "/absolute/path/to/your-repo"
+}
+```
+
+```bash
+camus start feature.json   # model-free initialization; prints the featId
+camus run <featId>         # durable Claude maker + direct Codex review
+camus eval                 # local quality, speed, and usage evidence
 ```
 
 The run ends in a report, never a shrug: `done` is earned by a clean review plus your
@@ -44,14 +58,19 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.4.0
+### Public alpha: 0.4.1
 
-Camus 0.4.0 moves feature control into a deterministic local kernel: task dispatch, budgets,
-maker/reviewer evidence, model-free land, and final integration no longer need a model to relay
-operational facts. It also lands the identity, connection-migration, and sealed trust foundation
-for open-model seats. Qualified Grok/Kimi/Qwen/local seats, generic CLI backends, and managed SSH
-remain explicit later slices rather than being advertised early. See the
-[0.4.0 release notes](docs/RELEASE-0.4.0.md).
+Camus 0.4.1 makes that deterministic kernel the executable default. Durable Claude Code sessions
+survive the launching terminal, restarts adopt rather than duplicate them, and a model controller
+appears only for real semantic closure choices. A local append-only eval ledger can compare complete
+maker/reviewer pairings by exact experiment generation and task class, but names no routing winner
+until every configured arm clears its declared quality floor. The release dogfood completed two
+review-clean, HEAD-bound tasks in 9m13s—an 87% reduction in comparable end-to-end trace time versus
+the previous model-orchestrated run. See the [0.4.1 release notes](docs/RELEASE-0.4.1.md).
+
+The identity, connection-migration, and sealed trust foundation for open-model seats is present,
+but qualified Grok/Kimi/Qwen/local seats, generic CLI backends, and managed SSH remain explicit
+later slices rather than being advertised early.
 
 ## Makes it work
 
@@ -74,6 +93,9 @@ remain explicit later slices rather than being advertised early. See the
   refused conflict, or "fixes" the code under verification, buys a halt, not a green.
 - **Gate-owned git runs hookless and unsigned**, so repo hooks and forced signing
   cannot abort unattended commits — and Camus never pushes, by construction.
+- **Real tasks become local eval evidence.** Assignment and reporting stay segmented by exact
+  experiment generation and task class. Deterministic verification plus independent clean review
+  is the quality floor; only then may latency or token pressure influence routing.
 
 ## Knows when to stop
 
@@ -101,7 +123,7 @@ remain explicit later slices rather than being advertised early. See the
   heartbeat Xs ago", a loud warning when a "running" feat goes quiet) and honest token
   totals. Landed a task by hand? `camus reconcile` records it, with git evidence
   required. _(Live steering — `camus steer` / `watch`'s `p`·`g`·`c` keys — is
-  experimental and opt-in; a race-free redesign lands in 0.3.)_
+  experimental and opt-in.)_
 - **It studies its own history — and checks its own pulse.** `camus retro` reads your
   run reports back (read-only, never a model call) and recommends only what ≥3 data
   points support, evidence cited inline. `camus canary` proves the local toolchain
@@ -120,8 +142,8 @@ packages/cli/             # the npm package "camus-cli"
   bin/camus.js            # CLI; thin dispatcher over install.sh + the gate scripts
   install.sh              # install / check / auto-setup / env-check
   merge_settings.py       # permission-profile merger (preserves your settings)
-  workflows/              # camus-loop + camus-feat + camus-plan (the engine)
-  skills/camus/           # SKILL.md, review prompt, schema, gate scripts (unit-tested)
+  workflows/              # compatibility: camus-loop + camus-feat + camus-plan
+  skills/camus/           # native driver, evals, kernel, review prompt, gate scripts
 apps/loop-studio/         # local visual operator: words lanes + Build recovery
 apps/web/                 # the marketing site (Next.js, static export)
 brand/                    # logo SVGs + BRAND.md
@@ -132,7 +154,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.4.0
+npm i -g camus-cli@0.4.1
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```

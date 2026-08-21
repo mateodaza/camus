@@ -3,7 +3,7 @@
 Camus adds independent review, deterministic verification, bounded recovery, and an
 honest receipt around AI-made work. Choose the smallest surface that fits the job:
 
-- **Code:** use the public CLI and its Claude Code workflows.
+- **Code:** use the public CLI's native driver; Claude Code workflows remain compatible.
 - **Written or research work:** run Loop Studio locally in the browser.
 - **Agent-supervised work:** let another agent operate Camus, but not implement beside it.
 
@@ -22,7 +22,7 @@ standing.
 Requirements: Node 18+, Claude Code signed in, Codex CLI signed in, Python 3, and Git.
 
 ```bash
-npm install -g camus-cli@0.4.0
+npm install -g camus-cli@0.4.1
 codex login
 camus install
 camus check
@@ -82,24 +82,37 @@ export CAMUS_VERIFY_CMD='./scripts/verify.sh'
 
 Include the real tests, not only compilation or linting.
 
-### 3. Start Claude Code
+### 3. Create and run a native feature
 
-```bash
-claude --permission-mode auto
-```
+Write the bounded contract to `feature.json`:
 
-For one bounded task:
-
-```text
-/camus-loop {
-  "task": "Implement <feature>. Acceptance criteria: <observable behavior and tests>. Exclude: <out-of-scope work>. Handoff: leave a verified commit for review.",
+```json
+{
+  "feat": "Harden input boundaries",
+  "tasks": [
+    "Validate the boundary, add regression coverage, and preserve existing behavior."
+  ],
+  "targetPath": "/absolute/path/to/your-repo",
   "posture": "full",
   "roundCap": 2,
-  "policy": "ask_on_ambiguity"
+  "taskClass": "bounded_feature"
 }
 ```
 
-For a feature that genuinely needs decomposition:
+Then start it without spending a model turn and run the returned feature ID:
+
+```bash
+camus start feature.json
+camus run <featId>
+```
+
+`camus run` launches the durable Claude maker, calls Codex directly for independent review,
+and lets the local kernel own verification, commits, recovery, and landing. If the launching
+terminal is interrupted, rerun the same command: Camus adopts the exact background session rather
+than buying a duplicate turn.
+
+For a feature that genuinely needs decomposition, `/camus-plan` remains an optional compatibility
+surface inside Claude Code:
 
 ```text
 /camus-plan {
@@ -108,8 +121,9 @@ For a feature that genuinely needs decomposition:
 }
 ```
 
-Review the emitted plan, then run the `/camus-feat` command Camus produces. Do not add a
-planning phase to a task that is already small and fully specified.
+Review the emitted plan, then copy its bounded tasks into the native feature spec above or run the
+emitted `/camus-feat` compatibility command. Do not add a planning phase to a task that is already
+small and fully specified.
 
 ### 4. Pick the review posture
 
@@ -120,6 +134,8 @@ planning phase to a task that is already small and fully specified.
   as `done_with_findings` / `fixed_unreviewed`, never “review clean.”
 - Start with **`roundCap: 2`**. Increase it only when the work genuinely benefits from
   another review round; do not spend rounds optimizing style.
+
+These values work in the native JSON spec and the compatibility workflows.
 
 ## Path B: written and research work in Loop Studio
 
@@ -180,12 +196,15 @@ camus watch
 camus status
 camus resume
 camus retro
+camus eval
 ```
 
 - `watch` is the live dashboard.
 - `status` is a read-only snapshot.
 - `resume` lists interrupted feature runs with their original arguments.
 - `retro` reads prior reports and recommends improvements without modifying code or config.
+- `eval` reports quality, timing, and usage by exact experiment generation and task class. It does
+  not promote a pairing until the configured coverage and quality floor are both satisfied.
 
 ## Read terminal states honestly
 
