@@ -39,3 +39,9 @@ performs the same scrub and proof itself and refuses to launch otherwise.
 
 The A/B selector may report exploratory local evidence. It must not name a universal winner, call
 an uncalibrated judge calibrated, or choose a faster arm that has not cleared the quality floor.
+
+Native spend admission reserves `max(10,000, 25% of budgetTokens)` direct-output tokens before each
+maker or fix launch. `camus run --direct-output-reserve 0` explicitly disables that admission
+reserve. Claude background sessions do not expose a per-turn output cap, so an in-flight turn may
+still overshoot; the post-receipt direct-output ceiling prevents subsequent model calls and records
+the exact measured overage.

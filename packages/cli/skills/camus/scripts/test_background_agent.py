@@ -217,7 +217,8 @@ def test_idle_working_with_terminal_turn_marker_is_done():
             {"type": "assistant", "message": {
                 "model": "claude-opus-4-8", "usage": {"output_tokens": 7},
                 "content": [{"type": "text", "text": "finished"}]}},
-            {"type": "system", "subtype": "turn_duration", "durationMs": 1234},
+            {"type": "system", "subtype": "turn_duration", "durationMs": 1234,
+             "timestamp": "2026-08-21T12:00:00.000Z"},
         ])
         clock_values = iter([1.0, 2.0])
         client = B.BackgroundAgentClient(
@@ -233,6 +234,8 @@ def test_idle_working_with_terminal_turn_marker_is_done():
             }, timeout_seconds=10, stale_after_seconds=1)
         assert receipt["state"] == "done"
         assert receipt["terminalTurnMarker"] is True
+        assert receipt["terminalTurnDurationMs"] == 1234
+        assert receipt["terminalTurnAt"] is not None
         assert receipt["usage"]["outputTokens"] == 7
 
 
@@ -260,6 +263,29 @@ def test_idle_working_without_terminal_turn_marker_remains_nonterminal():
             }, timeout_seconds=10, stale_after_seconds=1)
         assert receipt["state"] == "stale"
         assert "stale-session bound" in receipt["terminalReason"]
+
+
+def test_busy_working_with_valid_terminal_marker_is_done():
+    with tempfile.TemporaryDirectory() as projects:
+        cwd = "/tmp/repo"
+        sid = "12345678-1234-1234-1234-123456789abc"
+        path = os.path.join(projects, B.project_slug(cwd), sid + ".jsonl")
+        _write_jsonl(path, [{"type": "system", "subtype": "turn_duration",
+                             "durationMs": 196292, "timestamp": "2026-08-21T12:46:45.977Z"}])
+        client = B.BackgroundAgentClient(
+            projects_dir=projects, clock=lambda: 2.0, sleeper=lambda _n: None,
+        )
+        with mock.patch.object(client, "find", return_value={
+            "id": "12345678", "sessionId": sid, "name": "n",
+            "status": "busy", "state": "working",
+        }):
+            receipt = client.wait({
+                "cwd": cwd, "shortId": "12345678", "sessionId": sid, "name": "n",
+                "startedAt": 1000, "modelRequested": "claude-opus-4-8", "effortRequested": "medium",
+            }, timeout_seconds=10, stale_after_seconds=1)
+        assert receipt["state"] == "done"
+        assert receipt["durationMs"] == 196292
+        assert receipt["terminalTurnAt"] == "2026-08-21T12:46:45.977Z"
 
 
 def test_permission_denied_pid_probe_is_alive():

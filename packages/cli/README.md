@@ -228,6 +228,11 @@ rejected loudly, never silently downgraded.
   boundary, and once more after the final task before integration, against per-task
   totals that persist across resumes. Past the cap the run halts as a question —
   continue with a higher budget, or stop here — never a silent overrun.
+- **Native direct-output admission is conservative.** `camus run` reserves
+  `max(10,000, 25% of budgetTokens)` direct-output tokens before each maker/fix; pass
+  `--direct-output-reserve 0` to disable that admission reserve. Claude background sessions do
+  not expose a per-turn output cap, so an in-flight turn can still overshoot; the post-receipt
+  ceiling stops every later model call and records the exact overage.
 - **Costs are stated honestly.** `camus watch` prices the Claude side of a live run at
   the published API rate card, labeled as an estimate, never an invoice. The Codex
   review settles in your ChatGPT plan credits, and Camus does not fabricate a dollar

@@ -25,6 +25,8 @@ import resume_scan
 
 
 DRIVER_SCHEMA = 1
+DIRECT_OUTPUT_RESERVE_MIN = 10_000
+DIRECT_OUTPUT_RESERVE_FRACTION = 0.25
 ALLOWED_SPEC_FIELDS = {
     "feat", "tasks", "targetPath", "policy", "model", "modelTier", "roundCap",
     "budgetTokens", "verifyCmd", "posture", "answers", "taskClass",
@@ -241,7 +243,7 @@ def _public_receipt(receipt):
         "shortId", "sessionId", "name", "cwd", "state", "startedAt", "endedAt", "durationMs",
         "modelRequested", "modelActual", "modelsObserved", "effortRequested", "billingMode",
         "surface", "transcriptSha256", "usage", "toolCalls", "terminalReason",
-        "terminalTurnMarker",
+        "terminalTurnMarker", "terminalTurnDurationMs", "terminalTurnAt", "sessionWallMs",
     }
     out = {key: receipt[key] for key in allowed if key in receipt}
     out["source"] = "claude_background_session"
@@ -254,7 +256,13 @@ def _recover_completed(receipt):
         path, requested_model=receipt.get("modelRequested"),
         requested_effort=receipt.get("effortRequested"),
     )
-    return {**receipt, **enriched}
+    recovered = {**receipt, **enriched}
+    terminal_duration = enriched.get("terminalTurnDurationMs")
+    if isinstance(terminal_duration, int) and terminal_duration >= 0:
+        if "sessionWallMs" not in receipt:
+            recovered["sessionWallMs"] = receipt.get("durationMs")
+        recovered["durationMs"] = terminal_duration
+    return recovered
 
 
 def run_agent(client, log, *, trace_id, feat_id, task_id, role, attempt, cwd, prompt,
@@ -378,6 +386,61 @@ def _post_agent_budget_stop(feat_id, base):
     run = kernel._validated_run(feat_id, base)
     stop = kernel._budget_stop(kernel._budgets(run), kernel._usage(run["state"]))
     return stop
+
+
+def _direct_output_budget_evidence(feat_id, base, reserve_tokens=None):
+    if reserve_tokens is not None and (
+            isinstance(reserve_tokens, bool) or not isinstance(reserve_tokens, int)
+            or reserve_tokens < 0):
+        raise DriverError("direct output reserve must be a non-negative integer")
+    run = kernel._validated_run(feat_id, base)
+    budgets = kernel._budgets(run)
+    usage = kernel._usage(run["state"])
+    limit = budgets.get("tokens")
+    direct_output = usage.get("directOutputTokens", 0)
+    reserve = reserve_tokens
+    if reserve is None and limit is not None:
+        reserve = max(DIRECT_OUTPUT_RESERVE_MIN, int(limit * DIRECT_OUTPUT_RESERVE_FRACTION))
+    remaining = max(0, limit - direct_output) if limit is not None else None
+    return {
+        "budgetTokens": limit,
+        "directOutputTokens": direct_output,
+        "remainingDirectOutputTokens": remaining,
+        "reserveTokens": reserve,
+        "reserveAvailable": remaining is None or reserve is None or remaining > reserve,
+    }
+
+
+def _pre_agent_budget_stop(feat_id, base, reserve_tokens=None):
+    """Fail closed before a maker/fix when the remaining direct-output runway is too small."""
+    stop = _post_agent_budget_stop(feat_id, base)
+    if stop:
+        return stop
+    evidence = _direct_output_budget_evidence(feat_id, base, reserve_tokens=reserve_tokens)
+    remaining = evidence["remainingDirectOutputTokens"]
+    reserve = evidence["reserveTokens"]
+    if remaining is not None and reserve is not None and remaining <= reserve:
+        return "direct output reserve exhausted (%d remaining; %d reserved of %d)" % (
+            remaining, reserve, evidence["budgetTokens"],
+        )
+    return None
+
+
+def _persist_driver_stop(run, reason):
+    """Persist a typed host stop so a killed driver cannot leave a runnable task behind."""
+    state = run["state"]
+    kernel_state = kernel._kernel(state)
+    kernel_state["phase"] = "stopped"
+    kernel_state["stopReason"] = str(reason)[:500]
+    kernel_state["updatedAt"] = int(time.time())
+    state["kernel"] = kernel_state
+    state["status"] = "needs_human"
+    state["stage"] = "kernel_stop"
+    state["question"] = str(reason)[:500]
+    for node in state.get("tasks", []):
+        if node.get("taskId") == kernel_state.get("activeTaskId") and node.get("status") == "running":
+            node["status"] = "needs_human"
+    kernel._atomic_write(run["statePath"], state)
 
 
 def _review_from_node(node):
@@ -680,10 +743,16 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
         phase = current.get("phase")
         node = next(item for item in run["nodes"] if item["taskId"] == task_id)
         trace_id = current.get("traceId") or feat_id
+        if phase == "stopped":
+            return {
+                "action": "stop",
+                "reason": current.get("stopReason") or "driver stopped; human resume required",
+                "featId": feat_id, "taskId": task_id,
+            }
         log.append("task.started", trace_id=trace_id, task_id=task_id, key=task_id,
                    data={"pairing": experiment["armId"] if experiment else "explicit"})
 
-        def incomplete(value, review_evidence=None):
+        def incomplete(value, review_evidence=None, terminal=False):
             log.append("task.incomplete", trace_id=trace_id, task_id=task_id, key=task_id,
                        data={"action": value.get("action") or "stop"})
             stopped_run = kernel._validated_run(feat_id, base)
@@ -692,6 +761,11 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                 ledger, log, stopped_run, stopped_node, pairing, experiment, value,
                 review=review_evidence,
             )
+            reason = value.get("reason") or value.get("action") or "stop"
+            # Human/input and verifier-failure stops are intentionally resumable. Only callers
+            # with deterministic terminal admission evidence may park the persisted run.
+            if terminal:
+                _persist_driver_stop(stopped_run, reason)
             return value
 
         round_cap = options.round_cap or run["args"].get("roundCap") or 3
@@ -716,18 +790,24 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                 verify_timeout=options.verify_timeout, base=base,
             )
         elif phase == "task_verify_failed":
-            budget_stop = _post_agent_budget_stop(feat_id, base)
+            budget_stop = _pre_agent_budget_stop(
+                feat_id, base, reserve_tokens=getattr(options, "direct_output_reserve", None),
+            )
             if budget_stop:
                 return incomplete({
                     "action": "stop", "reason": budget_stop,
                     "featId": feat_id, "taskId": task_id,
-                })
+                }, terminal=True)
             intent = node.get("directSeal") if isinstance(node.get("directSeal"), dict) else {}
             fixed_unreviewed = intent.get("provenStatus") == "done_with_findings"
+            budget_evidence = _direct_output_budget_evidence(
+                feat_id, base, reserve_tokens=getattr(options, "direct_output_reserve", None),
+            )
             verify_decision = controller_decision(
                 client, log, trace_id=trace_id, feat_id=feat_id, task_id=task_id,
                 attempt=max(1, round_no), cwd=repo,
-                review={"verificationFailed": True, "review": _review_from_node(node)},
+                review={"verificationFailed": True, "review": _review_from_node(node),
+                        "budgetEvidence": budget_evidence},
                 model=pairing["orchestratorModel"], timeout=options.controller_timeout,
                 max_rounds=round_cap, verify_failure=True,
             )
@@ -736,7 +816,7 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
             ), flush=True)
             log.append("controller.decision", trace_id=trace_id, task_id=task_id,
                        key="%s:verify-decision:%d" % (task_id, max(1, round_no)),
-                       data=verify_decision)
+                       data={**verify_decision, "budgetEvidence": budget_evidence})
             if verify_decision["action"] in ("human", "stop"):
                 return incomplete({
                     "action": verify_decision["action"], "reason": verify_decision["reason"],
@@ -757,7 +837,7 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                 return incomplete({
                     "action": "stop", "reason": budget_stop,
                     "featId": feat_id, "taskId": task_id,
-                })
+                }, terminal=True)
             review = kernel.review_task(feat_id, task_id, repo=repo, base=base)
         elif phase == "ready":
             kernel.dispatch_task(feat_id, task_id, repo=repo, base=base)
@@ -771,12 +851,14 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
             raise DriverError("cannot resume unknown kernel phase %s" % phase)
 
         if seal is None and review is None and phase in ("ready", "task_running", "task_open"):
-            budget_stop = _post_agent_budget_stop(feat_id, base)
+            budget_stop = _pre_agent_budget_stop(
+                feat_id, base, reserve_tokens=getattr(options, "direct_output_reserve", None),
+            )
             if budget_stop:
                 return incomplete({
                     "action": "stop", "reason": budget_stop,
                     "featId": feat_id, "taskId": task_id,
-                })
+                }, terminal=True)
             receipt = run_agent(
                 client, log, trace_id=trace_id, feat_id=feat_id, task_id=task_id,
                 role="maker", attempt=1, cwd=payload["worktree"],
@@ -801,7 +883,7 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                 return incomplete({
                     "action": "stop", "reason": budget_stop,
                     "featId": feat_id, "taskId": task_id,
-                })
+                }, terminal=True)
             review = kernel.review_task(feat_id, task_id, repo=repo, base=base)
             round_no = review.get("reviewer", {}).get("round", 1)
 
@@ -811,12 +893,14 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
             round_no += 1
             usage = kernel._usage(kernel._validated_run(feat_id, base)["state"])
             kernel.record_usage(feat_id, retries=usage["retries"] + 1, base=base)
-            budget_stop = _post_agent_budget_stop(feat_id, base)
+            budget_stop = _pre_agent_budget_stop(
+                feat_id, base, reserve_tokens=getattr(options, "direct_output_reserve", None),
+            )
             if budget_stop:
                 return incomplete({
                     "action": "stop", "reason": budget_stop,
                     "featId": feat_id, "taskId": task_id,
-                }, review_evidence=review)
+                }, review_evidence=review, terminal=True)
             receipt = run_agent(
                 client, log, trace_id=trace_id, feat_id=feat_id, task_id=task_id,
                 role="fix", attempt=round_no, cwd=payload["worktree"],
@@ -839,24 +923,31 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                 return incomplete({
                     "action": "stop", "reason": budget_stop,
                     "featId": feat_id, "taskId": task_id,
-                }, review_evidence=review)
+                }, review_evidence=review, terminal=True)
             review = kernel.review_task(feat_id, task_id, repo=repo, base=base)
             fixed_unreviewed = False
 
         while seal is None and review is not None and not review.get("clean"):
-            budget_stop = _post_agent_budget_stop(feat_id, base)
+            budget_stop = _pre_agent_budget_stop(
+                feat_id, base, reserve_tokens=getattr(options, "direct_output_reserve", None),
+            )
             if budget_stop:
                 return incomplete({
                     "action": "stop", "reason": budget_stop,
                     "featId": feat_id, "taskId": task_id,
-                }, review_evidence=review)
+                }, review_evidence=review, terminal=True)
+            budget_evidence = _direct_output_budget_evidence(
+                feat_id, base, reserve_tokens=getattr(options, "direct_output_reserve", None),
+            )
             decision = controller_decision(
                 client, log, trace_id=trace_id, feat_id=feat_id, task_id=task_id,
                 attempt=max(1, round_no), cwd=repo, review={
-                    "blocking": review.get("blocking"), "nonblocking": review.get("nonblocking")
+                    "blocking": review.get("blocking"), "nonblocking": review.get("nonblocking"),
+                    "budgetEvidence": budget_evidence,
                 }, model=pairing["orchestratorModel"], timeout=options.controller_timeout,
                 max_rounds=round_cap,
             )
+            decision["budgetEvidence"] = budget_evidence
             log.append("controller.decision", trace_id=trace_id, task_id=task_id,
                        key="%s:decision:%d" % (task_id, max(1, round_no)), data=decision)
             print("  controller → %s (%s)" % (decision["action"], decision["reason"]), flush=True)
@@ -868,6 +959,14 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
             round_no += 1
             usage = kernel._usage(kernel._validated_run(feat_id, base)["state"])
             kernel.record_usage(feat_id, retries=usage["retries"] + 1, base=base)
+            budget_stop = _pre_agent_budget_stop(
+                feat_id, base, reserve_tokens=getattr(options, "direct_output_reserve", None),
+            )
+            if budget_stop:
+                return incomplete({
+                    "action": "stop", "reason": budget_stop,
+                    "featId": feat_id, "taskId": task_id,
+                }, review_evidence=review, terminal=True)
             receipt = run_agent(
                 client, log, trace_id=trace_id, feat_id=feat_id, task_id=task_id,
                 role="fix", attempt=round_no, cwd=payload["worktree"],
@@ -888,7 +987,7 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                 return incomplete({
                     "action": "stop", "reason": budget_stop,
                     "featId": feat_id, "taskId": task_id,
-                }, review_evidence=review)
+                }, review_evidence=review, terminal=True)
             if decision["action"] == "fix_verify":
                 fixed_unreviewed = True
                 break
@@ -917,6 +1016,16 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
             return {"action": "paused", "reason": "max-tasks reached", "next": landed}
 
 
+def _nonnegative_int(value):
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("must be a non-negative integer")
+    if value < 0:
+        raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return value
+
+
 def _parser():
     parser = argparse.ArgumentParser(description="Camus native background-session driver")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -935,6 +1044,10 @@ def _parser():
     run.add_argument("--round-cap", type=int, default=None)
     run.add_argument("--wall-seconds", type=int, default=None)
     run.add_argument("--token-budget", type=int, default=None)
+    run.add_argument(
+        "--direct-output-reserve", type=_nonnegative_int, default=None,
+        help="minimum direct-output runway before a maker/fix (0 disables the reserve; not a hard cap)",
+    )
     run.add_argument("--retry-budget", type=int, default=None)
     run.add_argument("--verify-timeout", type=int, default=3600)
     run.add_argument("--agent-timeout", type=int, default=14400)

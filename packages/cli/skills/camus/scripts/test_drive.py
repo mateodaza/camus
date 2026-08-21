@@ -142,7 +142,7 @@ def test_direct_output_budget_stop_is_recorded_once_before_review_or_next_model(
         run = {
             "state": {"featId": "feat-a", "feat": "F", "kernel": {
                 "phase": "task_open", "traceId": "trace:a1", "activeTaskId": task_id,
-            }, "status": "running"},
+            }, "status": "running", "tasks": [node]},
             "args": {"feat": "F", "tasks": ["bounded task"], "targetPath": root},
             "nodes": [node], "specs": ["bounded task"], "statePath": os.path.join(root, "state.json"),
         }
@@ -198,6 +198,10 @@ def test_direct_output_budget_stop_is_recorded_once_before_review_or_next_model(
         assert len(episodes) == 1
         assert episodes[0]["outcome"]["verificationPass"] is False
         assert episodes[0]["economics"]["outputTokens"] == 53357
+        assert run["state"]["status"] == "needs_human"
+        assert run["state"]["stage"] == "kernel_stop"
+        assert run["state"]["kernel"]["phase"] == "stopped"
+        assert node["status"] == "needs_human"
 
 
 def test_metrics_expose_unfinished_launched_session_without_inventing_usage():
@@ -222,6 +226,53 @@ def test_metrics_expose_unfinished_launched_session_without_inventing_usage():
         assert metrics["incompleteSessions"] == 1
         assert metrics["measurementCoverage"] == "incomplete_background_models_missing_terminal_receipts"
         assert metrics["outputTokens"] == 53357
+
+
+def test_prelaunch_direct_output_reserve_is_typed_and_exposed():
+    run = {"args": {}, "state": {"tasks": [{"directMakerUsage": {
+        "receipts": [{"usage": {"outputTokens": 69793}}],
+    }}], "kernel": {
+        "budgets": {"tokens": 80000}, "usage": {"tokens": 0, "retries": 0},
+    }}}
+    with mock.patch.object(D.kernel, "_validated_run", return_value=run):
+        evidence = D._direct_output_budget_evidence("feat-a", "/tmp")
+        stop = D._pre_agent_budget_stop("feat-a", "/tmp")
+    assert evidence["remainingDirectOutputTokens"] == 10207
+    assert evidence["reserveTokens"] == 20000
+    assert evidence["reserveAvailable"] is False
+    assert "direct output reserve exhausted" in stop
+
+
+def test_recovered_terminal_timing_overrides_adoption_wall():
+    old = {"durationMs": 1054805, "modelRequested": "claude-opus-4-8",
+           "effortRequested": "medium", "cwd": "/tmp/repo", "sessionId": "sid"}
+    enriched = {
+        "terminalTurnMarker": True, "terminalTurnDurationMs": 373737,
+        "terminalTurnAt": "2026-08-21T12:29:04.536Z", "usage": {"outputTokens": 7},
+    }
+    with mock.patch.object(D.background_agent, "transcript_path", return_value="/tmp/t.jsonl"), \
+            mock.patch.object(D.background_agent, "transcript_receipt", return_value=enriched):
+        recovered = D._recover_completed(old)
+    assert recovered["durationMs"] == 373737
+    assert recovered["sessionWallMs"] == 1054805
+    assert recovered["terminalTurnAt"] == "2026-08-21T12:29:04.536Z"
+    replay = D._recover_completed({**old, "durationMs": 373737, "sessionWallMs": 1054805})
+    assert replay["durationMs"] == 373737 and replay["sessionWallMs"] == 1054805
+
+
+def test_direct_output_reserve_rejects_negative_and_allows_zero_disable():
+    run = {"args": {}, "state": {"tasks": [], "kernel": {
+        "budgets": {"tokens": 80000}, "usage": {"tokens": 0, "retries": 0},
+    }}}
+    with mock.patch.object(D.kernel, "_validated_run", return_value=run):
+        try:
+            D._direct_output_budget_evidence("feat-a", "/tmp", reserve_tokens=-1)
+        except D.DriverError as exc:
+            assert "non-negative integer" in str(exc)
+        else:
+            raise AssertionError("negative reserve must be refused")
+        evidence = D._direct_output_budget_evidence("feat-a", "/tmp", reserve_tokens=0)
+    assert evidence["reserveTokens"] == 0 and evidence["reserveAvailable"] is True
 
 
 def test_feature_driver_lease_refuses_duplicate_host():

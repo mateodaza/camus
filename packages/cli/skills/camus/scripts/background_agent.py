@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import time
+from datetime import datetime
 
 
 TERMINAL_STATES = {"done", "failed", "stopped"}
@@ -104,6 +105,24 @@ def _text_blocks(content):
     ]
 
 
+def _terminal_turn_evidence(row):
+    """Return validated terminal-turn timing from one exact top-level transcript row."""
+    if not isinstance(row, dict) or row.get("type") != "system" \
+            or row.get("subtype") != "turn_duration":
+        return None
+    duration = row.get("durationMs")
+    timestamp = row.get("timestamp")
+    if isinstance(duration, bool) or not isinstance(duration, int) or duration < 0:
+        return None
+    if not isinstance(timestamp, str) or not timestamp.strip():
+        return None
+    try:
+        datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return {"durationMs": duration, "timestamp": timestamp}
+
+
 def transcript_receipt(path, requested_model=None, requested_effort=None):
     """Extract stable metrics and the last assistant text from a Claude transcript.
 
@@ -114,7 +133,8 @@ def transcript_receipt(path, requested_model=None, requested_effort=None):
         return {
             "transcriptPath": None, "transcriptSha256": None, "modelActual": None,
             "usage": None, "toolCalls": None, "lastAssistantText": None,
-            "terminalTurnMarker": False,
+            "terminalTurnMarker": False, "terminalTurnDurationMs": None,
+            "terminalTurnAt": None,
         }
     digest = hashlib.sha256()
     models = []
@@ -137,8 +157,9 @@ def transcript_receipt(path, requested_model=None, requested_effort=None):
                     row = json.loads(line)
                 except (TypeError, ValueError):
                     continue
-                if isinstance(row, dict):
-                    last_valid_row = row
+                if not isinstance(row, dict):
+                    continue
+                last_valid_row = row
                 if row.get("type") != "assistant" or not isinstance(row.get("message"), dict):
                     continue
                 message = row["message"]
@@ -163,8 +184,10 @@ def transcript_receipt(path, requested_model=None, requested_effort=None):
         return {
             "transcriptPath": None, "transcriptSha256": None, "modelActual": None,
             "usage": None, "toolCalls": None, "lastAssistantText": None,
-            "terminalTurnMarker": False,
+            "terminalTurnMarker": False, "terminalTurnDurationMs": None,
+            "terminalTurnAt": None,
         }
+    terminal = _terminal_turn_evidence(last_valid_row)
     return {
         "transcriptPath": path,
         "transcriptSha256": "sha256:" + digest.hexdigest(),
@@ -175,11 +198,9 @@ def transcript_receipt(path, requested_model=None, requested_effort=None):
         "usage": usage,
         "toolCalls": tool_calls,
         "lastAssistantText": last_text,
-        "terminalTurnMarker": (
-            isinstance(last_valid_row, dict)
-            and last_valid_row.get("type") == "system"
-            and last_valid_row.get("subtype") == "turn_duration"
-        ),
+        "terminalTurnMarker": terminal is not None,
+        "terminalTurnDurationMs": terminal.get("durationMs") if terminal else None,
+        "terminalTurnAt": terminal.get("timestamp") if terminal else None,
     }
 
 
@@ -312,17 +333,20 @@ class BackgroundAgentClient:
                     path, requested_model=session.get("modelRequested"),
                     requested_effort=session.get("effortRequested"),
                 )
+                session_wall_ms = max(0, ended - int(session.get("startedAt") or ended))
+                terminal_duration = receipt.get("terminalTurnDurationMs")
                 receipt.update({
                     **session,
                     "state": state,
                     "endedAt": ended,
-                    "durationMs": max(0, ended - int(session.get("startedAt") or ended)),
+                    "sessionWallMs": session_wall_ms,
+                    "durationMs": terminal_duration if terminal_duration is not None else session_wall_ms,
                 })
                 return receipt
             # Claude can leave a completed turn published as supervisor `status=idle` while the
             # row's state remains `working`. Only a terminal `system/turn_duration` row at the
             # end of this exact session transcript proves completion; prose is not evidence.
-            if state == "working" and live.get("status") == "idle":
+            if state == "working":
                 path = transcript_path(
                     session["cwd"], live.get("sessionId") or session.get("sessionId"),
                     projects_dir=self.projects_dir,
@@ -333,9 +357,11 @@ class BackgroundAgentClient:
                 )
                 if marker_receipt.get("terminalTurnMarker") is True:
                     ended = int(self.clock() * 1000)
+                    session_wall_ms = max(0, ended - int(session.get("startedAt") or ended))
                     marker_receipt.update({
                         **session, "state": "done", "endedAt": ended,
-                        "durationMs": max(0, ended - int(session.get("startedAt") or ended)),
+                        "sessionWallMs": session_wall_ms,
+                        "durationMs": marker_receipt["terminalTurnDurationMs"],
                     })
                     return marker_receipt
             # A supervisor row can remain `working` after the child was externally terminated.

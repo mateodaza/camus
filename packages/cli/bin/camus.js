@@ -86,6 +86,8 @@ usage: npx camus-cli <command>
   start <spec.json>  initialize a native feature run without spending a model turn
   run <featId>       drive it with durable Claude background makers + direct independent review
                        --experiment <json> assigns model pairings and records quality/cost/latency
+                       --direct-output-reserve <n> reserves direct-output runway before maker/fix
+                                                  (0 disables the reserve; not a hard cap)
   eval [--json]      summarize the local append-only eval and A/B ledger
   resume       list interrupted feat runs (canonical resumeArgs, JSON)
   retro        read-only run-history analytics over ~/.camus/reports: per-feat lines,
