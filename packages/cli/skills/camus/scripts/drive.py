@@ -273,6 +273,11 @@ def _recover_completed(receipt):
     recovered = {**receipt, **enriched}
     terminal_duration = enriched.get("terminalTurnDurationMs")
     if isinstance(terminal_duration, int) and terminal_duration >= 0:
+        # A prior driver may have sealed the supervisor disappearance as `stale` before the
+        # transcript's terminal row became visible. The exact-session terminal marker upgrades
+        # that transport observation to a completed turn on replay; it does not launch a new turn.
+        recovered["state"] = "done"
+        recovered["terminalReason"] = "terminal transcript marker"
         if "sessionWallMs" not in receipt:
             recovered["sessionWallMs"] = receipt.get("durationMs")
         recovered["durationMs"] = terminal_duration

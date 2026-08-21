@@ -243,8 +243,9 @@ def test_prelaunch_direct_output_reserve_is_typed_and_exposed():
     assert "direct output reserve exhausted" in stop
 
 
-def test_recovered_terminal_timing_overrides_adoption_wall():
-    old = {"durationMs": 1054805, "modelRequested": "claude-opus-4-8",
+def test_recovered_terminal_timing_overrides_adoption_wall_and_stale_transport_state():
+    old = {"durationMs": 1054805, "state": "stale", "terminalReason": "supervisor disappeared",
+           "modelRequested": "claude-opus-4-8",
            "effortRequested": "medium", "cwd": "/tmp/repo", "sessionId": "sid"}
     enriched = {
         "transcriptPath": "/tmp/t.jsonl", "transcriptSha256": "sha256:" + "1" * 64,
@@ -257,6 +258,8 @@ def test_recovered_terminal_timing_overrides_adoption_wall():
     assert recovered["durationMs"] == 373737
     assert recovered["sessionWallMs"] == 1054805
     assert recovered["terminalTurnAt"] == "2026-08-21T12:29:04.536Z"
+    assert recovered["state"] == "done"
+    assert recovered["terminalReason"] == "terminal transcript marker"
     replay = D._recover_completed({**old, "durationMs": 373737, "sessionWallMs": 1054805})
     assert replay["durationMs"] == 373737 and replay["sessionWallMs"] == 1054805
 
