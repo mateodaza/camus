@@ -100,7 +100,9 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
       const body = await res.text().catch(() => '');
       // Redact any echoed credential from the endpoint's error body before it is
       // sealed into the Error the engine retries on and writes to session output.
-      const err = new Error(`${requestEntry.baseUrl} answered ${res.status}: ${redactSecret(body, apiKey).slice(0, 200)}`);
+      const label = requestEntry.connection ? `connection "${requestEntry.connection}"` : `backend "${requestEntry.name}"`;
+      const detail = requestEntry.transport === 'ssh_tunnel' ? 'remote inference endpoint returned an HTTP error' : redactSecret(body, apiKey).slice(0, 200);
+      const err = new Error(`${label} answered ${res.status}: ${detail}`);
       err.code = 'http';
       throw err;
     }

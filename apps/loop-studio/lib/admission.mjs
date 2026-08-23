@@ -86,7 +86,7 @@ function qualifyEntry(entry, backend, seatType, now) {
   const discoveryStatus = result.receipt?.probeResults?.discoveryStatus ?? 'not_recorded';
   const reason = reasonFor(result, seatType, entry);
   const qualifiable = backend?.kind === 'openai_compat'
-    && ['loopback', 'direct_https'].includes(backend.transport);
+    && ['loopback', 'direct_https', 'ssh_tunnel'].includes(backend.transport);
   return {
     ...entry,
     admission: {

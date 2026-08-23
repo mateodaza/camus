@@ -32,6 +32,8 @@ import { deepQualifyModel, expectedReportedFor, seatQualification, storedSeatQua
 import { admissionCatalog, admittedSeat, pairingPresentation } from './lib/admission.mjs';
 import { confirmClaudeRoute } from './lib/grandfather.mjs';
 import { reviewPrompt } from './lib/prompts.mjs';
+import { getSharedTunnelManager } from './lib/ssh-tunnel.mjs';
+import { installTunnelLifecycle } from './lib/tunnel-lifecycle.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dirname, 'public');
@@ -1240,8 +1242,8 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: `${seatKey} "${backendName}:${model}" is not a declared seat tuple; nothing was probed` });
       }
       const backend = listBackends()[backendName];
-      if (!backend || backend.kind !== 'openai_compat' || !['loopback', 'direct_https'].includes(backend.transport)) {
-        return json(res, 400, { error: `${backendName}:${model} is not a Slice C loopback/direct_https chat-completions backend` });
+      if (!backend || backend.kind !== 'openai_compat' || !['loopback', 'direct_https', 'ssh_tunnel'].includes(backend.transport)) {
+        return json(res, 400, { error: `${backendName}:${model} is not a supported managed chat-completions backend` });
       }
       const seatType = seatKey === 'maker' ? 'words_maker' : 'words_reviewer';
       const expectedReported = expectedReportedFor(backend, catalogEntry, model);
@@ -2056,6 +2058,14 @@ server.on('error', (err) => {
   }
   throw err;
 });
+
+// The server owns the process-local tunnel manager. Handlers are installed by
+// this application boundary (never by the reusable manager module) and are
+// removable/testable through closeStudioResources().
+export async function closeStudioResources() {
+  await getSharedTunnelManager().close();
+}
+const tunnelLifecycle = installTunnelLifecycle({ manager: getSharedTunnelManager(), server });
 
 server.listen(PORT, BIND, () => {
   const hm = hivemind.hivemindStatus();

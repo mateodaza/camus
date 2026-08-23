@@ -233,12 +233,20 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
     const label = `Connection "${name}"${conn.anonymous ? ' (migrated)' : ''}`;
     if (conn.kind === 'ssh_tunnel') {
       let tunnelState = null;
+      const controlEvidence = [];
       if (deep) {
         try {
-          const manager = getSharedTunnelManager({ onEvidence: (fact) => { tunnelState = fact; } });
+          const manager = getSharedTunnelManager({ onEvidence: (fact) => controlEvidence.push(fact) });
           await manager.sweepOrphans();
           const lease = await manager.acquire(conn);
-          tunnelState = { ok: true, lease };
+          tunnelState = { ok: true, lease, steps: [...lease.steps,
+            { number: 7, id: 'model_discovery', outcome: 'pending', detail: 'backend/model checks follow connection preflight' },
+            { number: 8, id: 'declared_model_visibility', outcome: 'pending', detail: 'backend/model checks follow connection preflight' },
+            { number: 9, id: 'protocol_compatibility', outcome: 'pending', detail: 'qualification probe' },
+            { number: 10, id: 'structured_output', outcome: 'pending', detail: 'qualification probe' },
+            { number: 11, id: 'tool_calling', outcome: 'not_applicable', detail: 'words seats are toolless' },
+            { number: 12, id: 'context_window', outcome: 'pending', detail: 'qualification probe' },
+          ] };
           await lease.release();
         } catch (error) {
           tunnelState = { ok: false, error };
@@ -250,7 +258,7 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
           : ok ? `OpenSSH preflight, forward, and ${conn.basePath}/models reachable`
             : `SSH tunnel preflight failed: ${tunnelState.error?.message || 'unknown failure'}`,
         ok ? null : `run ssh ${conn.sshHostAlias} interactively to establish host trust/auth, then fix connections.${name}`,
-        { optional: true, connection: name, transport: 'ssh_tunnel', controlEvidence: tunnelState?.controlEvidence ?? null },
+        { optional: true, connection: name, transport: 'ssh_tunnel', steps: tunnelState?.steps ?? [{ number: 1, id: 'config', outcome: ok ? 'declared' : 'failed' }], controlEvidence },
       );
     } else if (conn.kind === 'loopback') {
       const url = new URL(conn.baseUrl);

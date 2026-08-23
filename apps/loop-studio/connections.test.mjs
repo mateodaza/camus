@@ -12,6 +12,7 @@ import {
   updateModels,
   validateLegacyCompatEntry,
 } from './lib/models.mjs';
+import { admissionCatalog } from './lib/admission.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const trackedPath = join(here, 'checks', 'models.json');
@@ -119,6 +120,16 @@ try {
       () => parseConnections({ connections: { remote: { kind: 'remote_executor' } } }),
       (error) => /remote_executor is not yet supported/.test(error.message) && /see ADR/.test(error.message),
     );
+  });
+
+  check('admission catalog keeps managed SSH tuples qualifiable', () => {
+    write(decision({
+      connections: { gpu: { kind: 'ssh_tunnel', sshHostAlias: 'camus-gpu', remoteAddress: '127.0.0.1', remotePort: 11434, basePath: '/v1' } },
+      backends: { remote: { kind: 'openai_compat', provider: 'lab', connection: 'gpu', protocol: 'chat_completions', trainingOrg: 'alibaba', modelFamily: 'qwen', derivedFrom: null, inferenceOperator: 'self_hosted', auth: { kind: 'none' }, models: ['qwen'], seats: ['reviewer'] } },
+      reviewer: { backend: 'remote', model: 'qwen' },
+    }));
+    const entry = admissionCatalog().reviewer.find((row) => row.backend === 'remote' && row.model === 'qwen');
+    assert.equal(entry.admission.qualifiable, true);
   });
 
   check('SSH remoteAddress refuses a pivot before the unsupported-kind refusal', () => {
