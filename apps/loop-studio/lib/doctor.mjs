@@ -148,7 +148,7 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   add('ssh-tunnel-sweep', 'Managed SSH lease sweep', inconclusiveSweep.length === 0,
     inconclusiveSweep.length ? 'lease cleanup was inconclusive; inspect the named connection and repair its local lease' : 'completed before doctor checks',
     inconclusiveSweep.length ? 'remove or repair the named connection’s local tunnel lease, then rerun doctor' : null,
-    { optional: true, controlEvidence: sweepEvidence });
+    { controlEvidence: sweepEvidence });
 
   add('node', 'Node.js', true, process.version, null);
 
