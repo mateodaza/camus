@@ -37,6 +37,10 @@ schema="$skill_dir/sev.schema.json"
 prompt_file="$skill_dir/review-prompt.md"
 review_dir="${CAMUS_REVIEW_DIR:-$HOME/.camus/reviews}"
 idle_s="${CAMUS_REVIEW_IDLE_S:-360}"
+# Executor-owned protocol version. It is deliberately available before any replay/adopt
+# branch so a persisted watch can never make an older executor claim a newer contract (or
+# vice versa) by echoing the value stored in meta.json.
+review_contract="rc1"
 
 # Interpret a review_watch envelope into the gate contract. Args: envelope, watch_dir,
 # target_dir, round, exit-context. Emits gate JSON (or pending JSON) on stdout.
@@ -62,13 +66,46 @@ print(v if isinstance(v, str) and v else "")' "$watch_dir/meta.json" 2>/dev/null
 try: v = json.load(open(sys.argv[1])).get("effort")
 except Exception: v = None
 print(v if isinstance(v, str) and v else "")' "$watch_dir/meta.json" 2>/dev/null)"
+  # The round-sealed contract/scope/qualification/provenance ride the SAME meta.json authority
+  # as model/effort. Contract version is also compiled into this executor, but a reattach must
+  # first prove the stored version equals that constant; overwriting an rc0 watch with rc1 here
+  # would launder a partial-upgrade skew before the caller could detect it.
+  local meta_contract
+  meta_contract="$(python3 -c 'import json,sys
+try:
+    m = json.load(open(sys.argv[1]))
+    assert isinstance(m, dict)
+except Exception:
+    m = {}
+print(json.dumps({k: m.get(k) for k in
+    ("contract","scope","qualification","origin","operator","transport","connection")}))' \
+    "$watch_dir/meta.json" 2>/dev/null || echo '{}')"
   case "$state" in
     done)
       local exit_code raw
       exit_code="$(printf '%s' "$envelope" | python3 -c 'import json,sys; print(int(json.load(sys.stdin).get("exit",1)))' 2>/dev/null || echo 1)"
       raw="$(cat "$watch_dir/last.txt" 2>/dev/null)"
+      local stored_contract
+      stored_contract="$(printf '%s' "$meta_contract" | python3 -c 'import json,sys
+try: v = json.load(sys.stdin).get("contract")
+except Exception: v = None
+print(v if isinstance(v, str) and v else "")' 2>/dev/null)"
+      if [[ "$stored_contract" != "$review_contract" ]]; then
+        python3 -c 'import json,sys
+stored = sys.argv[1] or "missing"
+current = sys.argv[2]
+print(json.dumps({
+    "ran": False,
+    "infra_error": "review-contract-drift",
+    "error": "review contract drift: stored %s, executor %s; refusing to relabel the completed review" % (stored, current),
+    "clean": False,
+    "blocking": [],
+    "nonblocking": [],
+}))' "$stored_contract" "$review_contract"
+        return 0
+      fi
       mkdir -p "$review_dir" 2>/dev/null && \
-        printf '%s' "$raw" | python3 "$here/_review_audit.py" "$audit_file" "$target_dir" "$round" "$exit_code" "$reviewer_model" "$reviewer_effort" 2>/dev/null || true
+        printf '%s' "$raw" | python3 "$here/_review_audit.py" "$audit_file" "$target_dir" "$round" "$exit_code" "$reviewer_model" "$reviewer_effort" "$meta_contract" 2>/dev/null || true
       # Gate JSON + the honest codex-side usage from turn.completed (estimate source, never a bill)
       # + the BINDING: what this invocation ACTUALLY ran (round, effort, model, backend, canonical
       # worktree, gate nonce). The audit file already recorded it, but the audit file is not what
@@ -89,6 +126,9 @@ try:
     parsed = json.loads(os.environ.get("CAMUS_REVIEW_BINDING") or "{}")
     if isinstance(parsed, dict) and not parsed.get("error"): requested = parsed
 except ValueError: pass
+try: mc = json.loads(sys.argv[6] or "{}")
+except Exception: mc = {}
+if not isinstance(mc, dict): mc = {}
 g["binding"] = {
     "round": _int(sys.argv[2]),
     "effort": (sys.argv[3] or None),
@@ -98,8 +138,17 @@ g["binding"] = {
     "nonce": (requested.get("nonce") or os.environ.get("CAMUS_GATE_NONCE") or None),
     "round_requested": requested.get("round"),
     "effort_requested": requested.get("effort"),
+    # REVIEW-CONTRACT (rc1) actuals, from the sealed meta.json — asGate compares each
+    # against the workflow-computed expectation and refuses any drift.
+    "contract": mc.get("contract"),
+    "scope": mc.get("scope"),
+    "qualification": mc.get("qualification"),
+    "origin": mc.get("origin"),
+    "operator": mc.get("operator"),
+    "transport": mc.get("transport"),
+    "connection": mc.get("connection"),
 }
-print(json.dumps(g))' "$envelope" "$round" "$reviewer_effort" "$reviewer_model" "$target_dir"
+print(json.dumps(g))' "$envelope" "$round" "$reviewer_effort" "$reviewer_model" "$target_dir" "$meta_contract"
       ;;
     pending)
       printf '%s' "$envelope" | python3 -c 'import json,sys
@@ -110,7 +159,7 @@ print(json.dumps({"pending": True, "handle": sys.argv[1],
     idle_killed|aborted|error|*)
       # Killed / never started / unreadable envelope → INFRA, never a verdict (adapter discipline).
       mkdir -p "$review_dir" 2>/dev/null && \
-        printf '' | python3 "$here/_review_audit.py" "$audit_file" "$target_dir" "$round" 124 "$reviewer_model" "$reviewer_effort" 2>/dev/null || true
+        printf '' | python3 "$here/_review_audit.py" "$audit_file" "$target_dir" "$round" 124 "$reviewer_model" "$reviewer_effort" "$meta_contract" 2>/dev/null || true
       printf '%s' "$envelope" | python3 -c 'import json,sys
 try: e = json.load(sys.stdin)
 except Exception: e = {}
@@ -199,6 +248,9 @@ if rnd is None:
 eff = m.get("effort") if isinstance(m.get("effort"), str) else None
 # An env nonce WINS so a mismatching one stays visible; meta.json only fills an absent one.
 nonce = env_nonce or (m.get("gate_nonce") if isinstance(m.get("gate_nonce"), str) else None)
+def _s(k):
+    v = m.get(k)
+    return v if isinstance(v, str) and v else None
 print(json.dumps({
     "round": rnd,
     "effort": eff,
@@ -207,6 +259,15 @@ print(json.dumps({
     # Provenance: this envelope was rebuilt on reattach, not read from a live request file.
     "round_sources": {"meta.json (await reattach)": str(rnd)},
     "effort_sources": ({"meta.json (await reattach)": eff} if eff else {}),
+    # REVIEW-CONTRACT (rc1) fields carried across the reattach boundary from the sealed
+    # meta.json, so the audit CAMUS_REVIEW_BINDING stays bound (not just the nonce).
+    "scope": _s("scope"),
+    "contract": _s("contract"),
+    "qualification": _s("qualification"),
+    "origin": _s("origin"),
+    "operator": _s("operator"),
+    "transport": _s("transport"),
+    "connection": _s("connection"),
 }))
 PYB
 )"
@@ -266,6 +327,17 @@ if ! cd "$target_dir" 2>/dev/null; then
   printf '' | python3 "$here/adapter.py" from-codex --exit 1
   exit 0
 fi
+# Codex loads trusted project `.codex/config.toml` layers above user configuration. A reviewer
+# run must not inherit a repository's model/provider pin and then claim builtin1. Mark this exact
+# canonical worktree untrusted for the child only; keep the override in an array so paths with
+# spaces remain one argv value. JSON string quoting is TOML-compatible for this dotted key.
+target_canonical="$(pwd -P)"
+target_toml_key="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$target_canonical" 2>/dev/null)"
+if [[ -z "$target_canonical" || -z "$target_toml_key" ]]; then
+  printf '' | python3 "$here/adapter.py" from-codex --exit 1
+  exit 0
+fi
+project_trust_args=(-c "projects.${target_toml_key}.trust_level=\"untrusted\"")
 
 # NEW files must be reviewable (run feedback 2026-06-10: 6 of 9 deliverables were untracked,
 # and plain `git diff` omits untracked files — most of the change was INVISIBLE to the
@@ -382,10 +454,11 @@ effort_argv="${4:-}"
 # reviewer's ACTUAL binding against expectations the workflow itself computed and
 # fails closed on any mismatch, independent of what this script accepted.
 request_file="$review_dir/$(basename "$target_dir")-request.json"
-binding="$(python3 - "$request_file" "$target_dir" "$round_argv" "$effort_argv" <<'PY'
+binding="$(python3 - "$request_file" "$target_dir" "$round_argv" "$effort_argv" "$scope" <<'PY'
 import json, os, sys
-request_path, target_dir, round_argv, effort_argv = sys.argv[1:5]
+request_path, target_dir, round_argv, effort_argv, scope_argv = sys.argv[1:6]
 VALID_EFFORT = ("low", "medium", "high", "xhigh")
+VALID_SCOPE = ("full", "light")
 
 req = {}
 if os.path.exists(request_path):
@@ -462,6 +535,19 @@ if len(distinct_effort) > 1:
     raise SystemExit(0)
 effort_value = distinct_effort[0] if distinct_effort else "medium"
 
+# SCOPE consistency (REVIEW-CONTRACT.md). scope drives the reviewer field of view
+# via argv (arg 5, already normalized to full|light by the caller). The request file
+# carries the requester intended scope; a DISAGREEMENT between them is a partial
+# mangle — refuse rather than review at a scope nobody asked for. A request that omits
+# scope (legacy/direct call) does not constrain, and the argv value stands.
+scope_value = scope_argv.strip() if scope_argv.strip() in VALID_SCOPE else "full"
+req_scope = req.get("scope")
+if req_scope and str(req_scope).strip() != scope_value:
+    print(json.dumps({"error": "review scope disagrees across channels (request file=%r, argv=%r); "
+                               "the requested invocation and the actual one must match" %
+                               (req_scope, scope_value)}))
+    raise SystemExit(0)
+
 print(json.dumps({
     "round": round_value,
     "effort": effort_value,
@@ -469,6 +555,13 @@ print(json.dumps({
     "nonce": str(req.get("gate_nonce") or os.environ.get("CAMUS_GATE_NONCE") or ""),
     "round_sources": ",".join(sorted(sources)),
     "effort_sources": ",".join(sorted(effort_sources)) or "default",
+    "scope": scope_value,
+    # Contract-carried provenance ECHOED from the caller (request file, then env). These
+    # describe the caller/delivery, so the executor cannot know them independently; asGate
+    # compares them against the workflow own constants. connection/qualification are
+    # DERIVED later from what actually ran, not echoed here.
+    "origin": (req.get("origin") or os.environ.get("CAMUS_REVIEW_ORIGIN") or None),
+    "operator": (req.get("operator") or os.environ.get("CAMUS_REVIEW_OPERATOR") or None),
 }))
 PY
 )"
@@ -496,6 +589,24 @@ print(b["round"], b["effort"], str(b["effort_specified"]).lower(),
 export CAMUS_REVIEW_BINDING="$binding"
 export CAMUS_REVIEW_BACKEND="${CAMUS_REVIEWER:-codex}"
 
+# ── REVIEW-CONTRACT (rc1) fields — carried through meta.json, the audit, the emitted
+# binding, adoption, replay and await. `contract` and `transport` are executor
+# CONSTANTS (a version skew or wrong delivery path is a loud mismatch, not a silent
+# field). scope was resolved above (argv, cross-checked against the request). origin
+# and operator describe the caller and are echoed (binding, then env, else `cli`).
+# connection/qualification are DERIVED below, after the effective reviewer model is
+# known — they must reflect what ACTUALLY ran, not what was requested.
+review_transport="cli-detached"
+review_scope="$scope"
+review_origin="$(printf '%s' "$binding" | python3 -c 'import json,os,sys
+try: v = json.load(sys.stdin).get("origin")
+except Exception: v = None
+print(v if isinstance(v, str) and v else (os.environ.get("CAMUS_REVIEW_ORIGIN") or "cli"))' 2>/dev/null || echo cli)"
+review_operator="$(printf '%s' "$binding" | python3 -c 'import json,os,sys
+try: v = json.load(sys.stdin).get("operator")
+except Exception: v = None
+print(v if isinstance(v, str) and v else (os.environ.get("CAMUS_REVIEW_OPERATOR") or "cli"))' 2>/dev/null || echo cli)"
+
 # ── Resume determination + reviewer identity, BOTH resolved before the model args ──
 # Two questions must be answered before codex_review_args is assembled, because the
 # model codex ACTUALLY runs with is decided here: (1) is this invocation resuming a
@@ -521,10 +632,11 @@ watch_dir="$review_dir/$(basename "$target_dir")-r${round}.watch"
 # A mismatch (different effort/model/nonce) is NOT adopted: that is a genuinely
 # different review, and the normal fresh/resume path below owns it.
 if [[ -f "$watch_dir/handle.json" ]]; then
-  adopt_reason="$(python3 - "$watch_dir" "$round" "$effort" "${CAMUS_CODEX_MODEL:-}" "${CAMUS_GATE_NONCE:-}" "${input_fp:-}" <<'PY'
+  adopt_reason="$(python3 - "$watch_dir" "$round" "$effort" "${CAMUS_CODEX_MODEL:-}" "${CAMUS_GATE_NONCE:-}" "${input_fp:-}" "$scope" <<'PY'
 import json, os, subprocess, sys, time
 watch, want_round, want_effort, want_model, want_nonce = sys.argv[1:6]
 want_fp = sys.argv[6] if len(sys.argv) > 6 else ""
+want_scope = sys.argv[7] if len(sys.argv) > 7 else ""
 def jload(p):
     try:
         with open(p, encoding="utf-8") as fh:
@@ -607,6 +719,8 @@ def same(field, want):
 if str(meta.get("round", want_round)) != str(want_round): print("round-mismatch"); raise SystemExit(0)
 if not same("effort", want_effort): print("effort-mismatch"); raise SystemExit(0)
 if not same("reviewer_model", want_model): print("model-mismatch"); raise SystemExit(0)
+# A different SCOPE (full vs light) is a different review, not one to adopt (REVIEW-CONTRACT.md).
+if not same("scope", want_scope): print("scope-mismatch"); raise SystemExit(0)
 # The gate nonce is REQUIRED, not merely compared. Adoption skips a fresh review,
 # so it must rest on POSITIVE run identity: if either side lacks a nonce we cannot
 # prove this watch belongs to the invocation now asking, and the normal
@@ -682,6 +796,7 @@ fi
 # thread.started does not distinguish a killed thread from a still-running pending one.
 prior_thread_id=""
 prior_reviewer_model=""
+prior_contract='{}'
 if [[ -f "$watch_dir/meta.json" ]]; then
   prior_thread_id="$(python3 -c 'import json,sys
 try: tid = json.load(open(sys.argv[1])).get("thread_id")
@@ -691,6 +806,14 @@ print(tid if isinstance(tid, str) and tid else "")' "$watch_dir/meta.json" 2>/de
 try: v = json.load(open(sys.argv[1])).get("reviewer_model")
 except Exception: v = None
 print(v if isinstance(v, str) and v else "")' "$watch_dir/meta.json" 2>/dev/null)"
+  prior_contract="$(python3 -c 'import json,sys
+try:
+    m = json.load(open(sys.argv[1])); assert isinstance(m, dict)
+except Exception:
+    m = {}
+print(json.dumps({k: m.get(k) for k in
+    ("contract","scope","qualification","origin","operator","transport","connection")}))' \
+    "$watch_dir/meta.json" 2>/dev/null || echo '{}')"
 fi
 # FAIL-CLOSED resume gate: a thread_id alone is NOT enough — resume fires ONLY on the
 # aborted/abandoned SHAPE (thread_id present AND NO completion evidence). Completion
@@ -733,6 +856,11 @@ if [[ -n "$effective_reviewer_model" && ! "$effective_reviewer_model" =~ ^[A-Za-
   exit 2
 fi
 
+# ── Assemble the ACTUAL codex args FIRST (before deriving connection/qualification) ──
+# The trust tier is derived from what codex REALLY runs, and a model can be pinned by more
+# than CAMUS_CODEX_MODEL: a `-m`/`--model` folded into CAMUS_CODEX_ARGS, or the light-model
+# ladder below. So the args (and the model-flag detector) must be finalized here, ahead of
+# the derivation — otherwise a pinned override would be falsely certified vendor_managed/builtin1.
 codex_review_args="${CAMUS_CODEX_ARGS:--c model_reasoning_effort=$effort}"
 
 # ── Additive speed levers (2026-06-11, VELOCITY-DIRECTION §2) — both default-OFF: with the env
@@ -761,14 +889,59 @@ fi
 # Appending to the ACTUAL command here — fresh AND resume — is what keeps codex's -m
 # identical to the model the audit seals. Use this dedicated channel (or the pin the
 # caller recorded), not a -m folded into CAMUS_CODEX_ARGS/CAMUS_CODEX_LIGHT_MODEL.
-# Boundary-aware model-flag detection: a whole -m / --model / --model=… token at
-# ANY position (a substring check for " -m " missed a leading -m and the --model
-# spelling, both valid ways to fold a conflicting model into CAMUS_CODEX_ARGS).
+# Boundary-aware model-flag detection covers every supported Codex spelling: separate,
+# attached, and equals forms of -m/--model, plus generic config overrides written as
+# `-c model=…`, `-cmodel=…`, `-c=model=…`, `--config model=…`, or `--config=model=…`.
+# A custom `model_catalog_json` changes the startup model catalog and is identity-affecting too.
+# `model_reasoning_effort=`/`model_provider=` are different keys and do not match.
 _has_model_flag() {
   local a
   for a in $1; do
-    case "$a" in -m|--model|--model=*) return 0 ;; esac
+    case "$a" in
+      -m|--model|--model=*|-m?*|model=*|model_catalog_json=*|\
+      -cmodel=*|-c=model=*|--config=model=*|\
+      -cmodel_catalog_json=*|-c=model_catalog_json=*|--config=model_catalog_json=*) return 0 ;;
+    esac
   done
+  return 1
+}
+# Non-vendor routing includes CLI selectors/profiles and every supported generic-config spelling for
+# model_provider/oss_provider, model_providers.* definitions, and openai_base_url. These are not
+# necessarily model pins, but each disqualifies vendor_managed/builtin1: the reviewer can be
+# routed away from the built-in vendor connection.
+_selects_nonvendor_connection() {
+  local a
+  for a in $1; do
+    case "$a" in
+      --oss|--local-provider|--local-provider=*|-p|--profile|--profile=*|-p?*|model_provider=*|oss_provider=*|model_providers.*|openai_base_url=*|\
+      -cmodel_provider=*|-c=model_provider=*|--config=model_provider=*|\
+      -coss_provider=*|-c=oss_provider=*|--config=oss_provider=*|\
+      -cmodel_providers.*|-c=model_providers.*|--config=model_providers.*|\
+      -copenai_base_url=*|-c=openai_base_url=*|--config=openai_base_url=*) return 0 ;;
+    esac
+  done
+  return 1
+}
+# System and managed configuration can override even CLI values. We cannot erase those layers,
+# and no stable model name can stand in for Codex's moving built-in default. Conservatively
+# disqualify builtin1 whenever any local admin layer is present: parsing only today's routing keys
+# would become a bypass when Codex adds another identity-affecting setting. The additive evidence
+# path exists for hermetic tests and custom deployments; it can only downgrade, never bypass a
+# real system/MDM check.
+_managed_or_system_config_present() {
+  local p
+  for p in /etc/codex/config.toml /etc/codex/managed_config.toml /etc/codex/requirements.toml \
+           "${CAMUS_CODEX_MANAGED_CONFIG_EVIDENCE:-}"; do
+    [[ -n "$p" && -f "$p" ]] && return 0
+  done
+  if [[ -n "${ProgramData:-${PROGRAMDATA:-}}" ]]; then
+    p="${ProgramData:-${PROGRAMDATA:-}}/OpenAI/Codex"
+    [[ -f "$p/managed_config.toml" || -f "$p/requirements.toml" ]] && return 0
+  fi
+  if [[ "$(uname -s 2>/dev/null)" == "Darwin" && -x /usr/bin/defaults ]]; then
+    /usr/bin/defaults read com.openai.codex config_toml_base64 >/dev/null 2>&1 && return 0
+    /usr/bin/defaults read com.openai.codex requirements_toml_base64 >/dev/null 2>&1 && return 0
+  fi
   return 1
 }
 if [[ -n "$effective_reviewer_model" ]]; then
@@ -778,6 +951,69 @@ if [[ -n "$effective_reviewer_model" ]]; then
   fi
   codex_review_args="$codex_review_args -m $effective_reviewer_model"
 fi
+
+# ── DERIVE connection + qualification from what ACTUALLY runs (REVIEW-CONTRACT.md) ──
+# Every fresh/resumed Codex child below receives --ignore-user-config, a per-call untrusted-project
+# override, and OPENAI_BASE_URL removal; authentication still comes from CODEX_HOME. Therefore
+# user/project config or a shell redirect cannot silently re-point a supposedly builtin1 review.
+# Explicit CLI profiles/overrides and identity-affecting system config remain supported but are
+# classified configured/qual1 above.
+# connection is `vendor_managed` only when the built-in codex backend runs with NO pinned
+# model AT ALL and over the built-in vendor connection — not merely no CAMUS_CODEX_MODEL, but
+# no `-m`/`--model` (including compact/attached config forms) folded in via CAMUS_CODEX_ARGS, no
+# light-model ladder, and no non-vendor connection selector (`--oss`/`--local-provider`/
+# provider/base-URL config override) either (all checked against the FINAL args above). Any pinned model
+# (from any source), alternate connection, or alternate backend is `configured`. qualification is
+# `builtin1` ONLY for the exact built-in codex backend over a vendor_managed connection — the
+# unmodified built-in gate; everything configurable is `qual1`. Derived here (not echoed from
+# the request), AFTER the real args are assembled, so a model pinned by any lever downgrades the
+# tier truthfully and asGate catches a review whose actual reviewer drifted from the requested one.
+if [[ "${CAMUS_REVIEW_BACKEND:-codex}" == "codex" ]] \
+   && ! _has_model_flag "$codex_review_args" \
+   && ! _selects_nonvendor_connection "$codex_review_args" \
+   && ! _managed_or_system_config_present; then
+  review_connection="vendor_managed"
+else
+  review_connection="configured"
+fi
+if [[ "${CAMUS_REVIEW_BACKEND:-codex}" == "codex" && "$review_connection" == "vendor_managed" ]]; then
+  review_qualification="builtin1"
+else
+  review_qualification="qual1"
+fi
+# A resumed thread keeps the prompt and execution context it started with. Relabeling it with
+# today's request would let an rc0/light/qual1 attempt masquerade as rc1/full/builtin1. Compare
+# every carried field before meta.json is rewritten or `codex exec resume` is launched; missing
+# legacy fields are drift too. Refuse rather than resume or silently pay for a fresh review.
+if [[ -n "$will_resume" ]]; then
+  resume_contract_drift="$(python3 -c 'import json,sys
+names = ("contract","scope","qualification","origin","operator","transport","connection")
+try: prior = json.loads(sys.argv[1]); assert isinstance(prior, dict)
+except Exception: prior = {}
+current = dict(zip(names, sys.argv[2:]))
+bad = ["%s: prior=%r current=%r" % (k, prior.get(k), current[k])
+       for k in names if prior.get(k) != current[k]]
+print("; ".join(bad))' "$prior_contract" "$review_contract" "$review_scope" \
+    "$review_qualification" "$review_origin" "$review_operator" \
+    "$review_transport" "$review_connection" 2>/dev/null || echo 'unreadable prior contract')"
+  if [[ -n "$resume_contract_drift" ]]; then
+    echo "codex_review: resume contract drift — $resume_contract_drift; refusing rather than relabel the prior thread" >&2
+    exit 2
+  fi
+fi
+# Fold the full contract bundle into CAMUS_REVIEW_BINDING so the AUDIT record (which reads
+# it from the environment) carries the actuals too, not just round/effort/nonce.
+export CAMUS_REVIEW_BINDING="$(printf '%s' "$binding" | python3 -c 'import json,sys
+try: b = json.load(sys.stdin)
+except Exception: b = {}
+b.update({
+    "contract": sys.argv[1], "scope": sys.argv[2], "qualification": sys.argv[3],
+    "origin": sys.argv[4], "operator": sys.argv[5], "transport": sys.argv[6],
+    "connection": sys.argv[7],
+})
+print(json.dumps(b))' "$review_contract" "$review_scope" "$review_qualification" \
+  "$review_origin" "$review_operator" "$review_transport" "$review_connection" 2>/dev/null || printf '%s' "$binding")"
+
 # SERVICE-TIER PIN (experiment 3 mechanism — the billing DECISION stays the user's): since
 # codex 0.124, eligible ChatGPT plans default to the FAST service tier (2.5x credit burn on
 # GPT-5.5). This pin makes the review lane's tier deliberate — e.g. CAMUS_CODEX_TIER=standard
@@ -880,8 +1116,15 @@ if len(sys.argv) > 7 and sys.argv[7]:
 # WHAT was reviewed, not just who by. A replay is only valid for identical input.
 if len(sys.argv) > 8 and sys.argv[8]:
     m["input_fingerprint"] = sys.argv[8]
+# REVIEW-CONTRACT (rc1) fields sealed here so await/adopt/replay rebuild the emitted
+# binding from meta.json with identical values across every boundary.
+for _i, _k in ((9, "contract"), (10, "qualification"), (11, "origin"),
+               (12, "operator"), (13, "transport"), (14, "connection")):
+    if len(sys.argv) > _i and sys.argv[_i]:
+        m[_k] = sys.argv[_i]
 json.dump(m, open(sys.argv[1], "w"), indent=2)' \
-  "$watch_dir/meta.json" "$target_dir" "$round" "$effort" "$scope" "$effective_reviewer_model" "${CAMUS_GATE_NONCE:-}" "${input_fp:-}"
+  "$watch_dir/meta.json" "$target_dir" "$round" "$effort" "$scope" "$effective_reviewer_model" "${CAMUS_GATE_NONCE:-}" "${input_fp:-}" \
+  "$review_contract" "$review_qualification" "$review_origin" "$review_operator" "$review_transport" "$review_connection"
 
 # FAST START, BOUNDED AWAITS. This first chunk used to be the FULL window (300s
 # medium / 480s high), so the thin reviewer agent sat holding an eight-minute
@@ -914,7 +1157,7 @@ if [[ -n "$will_resume" ]]; then
   resume_prompt="Resume this review and emit the final verdict JSON per the schema now."
   # shellcheck disable=SC2086
   r_start="$(python3 "$here/review_watch.py" start --handle "$watch_dir" --last "$resume_last" -- \
-    codex exec resume "$will_resume" --json ${codex_review_args} --output-schema "$schema" -o "$resume_last" "$resume_prompt" 2>>"$watch_dir/err.log")"
+    env -u OPENAI_BASE_URL codex exec resume "$will_resume" --ignore-user-config "${project_trust_args[@]}" --json ${codex_review_args} --output-schema "$schema" -o "$resume_last" "$resume_prompt" 2>>"$watch_dir/err.log")"
   if printf '%s' "$r_start" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("state")=="started" else 1)' 2>/dev/null; then
     r_env="$(python3 "$here/review_watch.py" await --handle "$watch_dir" --chunk "$chunk" --idle "$idle_s" 2>/dev/null)"
     # Accept the resume when it finished with a usable verdict (ran:true), OR hand back a pending
@@ -956,7 +1199,7 @@ fi
 
 # shellcheck disable=SC2086
 start_env="$(python3 "$here/review_watch.py" start --handle "$watch_dir" --last "$last_file" -- \
-  codex exec --json -s read-only ${codex_review_args} --output-schema "$schema" -o "$last_file" "$prompt" 2>>"$watch_dir/err.log")"
+  env -u OPENAI_BASE_URL codex exec --ignore-user-config "${project_trust_args[@]}" --json -s read-only ${codex_review_args} --output-schema "$schema" -o "$last_file" "$prompt" 2>>"$watch_dir/err.log")"
 if ! printf '%s' "$start_env" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("state")=="started" else 1)' 2>/dev/null; then
   emit_outcome "${start_env:-{\"state\":\"error\",\"error\":\"start produced no envelope\"}}" "$watch_dir" "$target_dir" "$round"
   exit 0

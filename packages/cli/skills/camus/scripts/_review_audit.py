@@ -2,8 +2,8 @@
 """Write a per-round Codex review AUDIT record — proof the cross-vendor review actually ran.
 
 Called best-effort by codex_review.sh (never raises into the review path):
-  _review_audit.py <audit_path> <worktree> <round> <codex_exit> [reviewer_model] [reviewer_effort]
-  # raw Codex stdout on STDIN; model/effort come from the round's meta.json (the sealed identity)
+  _review_audit.py <audit_path> <worktree> <round> <codex_exit> [reviewer_model] [reviewer_effort] [meta_contract_json]
+  # raw Codex stdout on STDIN; model/effort/rc1-fields come from the round's meta.json (the sealed identity)
 
 The record captures Codex's raw response + metadata. A human (or a post-run check) can confirm every
 review round produced a file with a real Codex response — and the ABSENCE of a file for a round means
@@ -65,10 +65,45 @@ def binding_from_env(env=None):
         "round_sources": parsed.get("round_sources") or None,
         "effort_sources": parsed.get("effort_sources") or None,
         "reviewer_backend": env.get("CAMUS_REVIEW_BACKEND") or None,
+        # REVIEW-CONTRACT (rc1) carried fields, so the forensic per-round record proves
+        # the scope, qualification, and provenance the review actually ran under — not
+        # just its round/effort. A missing field is left null (unbound), never guessed.
+        "contract": parsed.get("contract") or None,
+        "scope": parsed.get("scope") or None,
+        "qualification": parsed.get("qualification") or None,
+        "origin": parsed.get("origin") or None,
+        "operator": parsed.get("operator") or None,
+        "transport": parsed.get("transport") or None,
+        "connection": parsed.get("connection") or None,
     }
 
 
-def build_record(wt, rnd, status, raw, reviewer_model=None, reviewer_effort=None, env=None):
+RC1_FIELDS = ("contract", "scope", "qualification", "origin", "operator", "transport", "connection")
+
+
+def _meta_contract(meta_contract):
+    """Parse the rc1 carried fields codex_review.sh reads from the round's sealed meta.json.
+
+    meta.json is the SAME authority emit_outcome uses for the stdout binding, and it is
+    written at review START — so it carries these fields on every boundary the audit is
+    rewritten (fresh terminal emit, REPLAY of a finished round, live-review ADOPTION, await
+    reattach). Sourcing the audit's rc1 fields from it — rather than from CAMUS_REVIEW_BINDING,
+    which is only enriched with them AFTER the replay/adopt early-exits — is what keeps a
+    replay/adopt from overwriting a previously complete audit with null contract fields.
+    """
+    if isinstance(meta_contract, dict):
+        return meta_contract
+    if not isinstance(meta_contract, str) or not meta_contract.strip():
+        return {}
+    try:
+        parsed = json.loads(meta_contract)
+    except (ValueError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def build_record(wt, rnd, status, raw, reviewer_model=None, reviewer_effort=None, env=None,
+                 meta_contract=None):
     try:
         parsed = json.loads(raw) if raw.strip() else None
     except (ValueError, TypeError):
@@ -103,6 +138,16 @@ def build_record(wt, rnd, status, raw, reviewer_model=None, reviewer_effort=None
         "codex_parsed": parsed,
     }
     if binding is not None:
+        # rc1 fields from the sealed meta.json WIN over the env-derived binding: on a replay or a
+        # live-review adoption the env (CAMUS_REVIEW_BINDING) is not yet enriched with them, but
+        # meta.json always carries them — so the per-round audit stays complete across every
+        # boundary instead of being overwritten with nulls. A missing/blank meta field falls back
+        # to whatever the env binding already had (never downgrades a present value to null).
+        meta = _meta_contract(meta_contract)
+        for key in RC1_FIELDS:
+            value = meta.get(key)
+            if isinstance(value, str) and value:
+                binding[key] = value
         record["binding"] = dict(
             binding,
             round_actual=actual_round,
@@ -126,8 +171,12 @@ def main(argv=None):
     audit_path, wt, rnd, status = argv[0], argv[1], argv[2], argv[3]
     reviewer_model = argv[4] if len(argv) > 4 else None
     reviewer_effort = argv[5] if len(argv) > 5 else None
+    # The rc1 carried fields from the round's sealed meta.json (codex_review.sh passes them as a
+    # JSON blob). Optional and best-effort: an absent/blank arg falls back to CAMUS_REVIEW_BINDING.
+    meta_contract = argv[6] if len(argv) > 6 else None
     raw = sys.stdin.read()
-    rec = build_record(wt, rnd, status, raw, reviewer_model, reviewer_effort)
+    rec = build_record(wt, rnd, status, raw, reviewer_model, reviewer_effort,
+                       meta_contract=meta_contract)
     # Atomic publish: write a same-directory temp file, fsync, then os.replace()
     # onto the final path — a reader (e.g. the Studio watcher) ever sees the OLD
     # complete file or the NEW complete file, never a truncated mid-write JSON.

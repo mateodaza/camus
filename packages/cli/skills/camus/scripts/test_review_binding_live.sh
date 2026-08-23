@@ -85,6 +85,14 @@ check "and its stdout publishes the actuals the loop compares against" \
   "$(printf '%s' "$out" | python3 -c 'import json,sys
 b = (json.loads(sys.stdin.read().strip().splitlines()[-1]) or {}).get("binding") or {}
 print("|".join(str(b.get(k)) for k in ("round","effort","model","backend","nonce")))')"
+# …and the REVIEW-CONTRACT (rc1) fields the real script derives/echoes. A pinned model
+# (CAMUS_CODEX_MODEL=gpt-5.6-sol here) is a CONFIGURED connection → qual1, not the
+# built-in tier — proving qualification/connection are DERIVED from what actually ran.
+check "the live stdout publishes the contract-carried fields (derived + echoed)" \
+  "rc1|full|qual1|configured|cli-detached" \
+  "$(printf '%s' "$out" | python3 -c 'import json,sys
+b = (json.loads(sys.stdin.read().strip().splitlines()[-1]) or {}).get("binding") or {}
+print("|".join(str(b.get(k)) for k in ("contract","scope","qualification","connection","transport")))')"
 
 # ── BREAK-TEST 1 — requested r2/high, relay runs r2/MEDIUM.
 # This is the case the previous round could not catch: internally self-consistent.
@@ -166,6 +174,62 @@ check "the receipt's actual effort is low, not an escalated value" \
   "low" "$(printf '%s' "$out" | python3 -c 'import json,sys
 b=(json.loads(sys.stdin.read().strip().splitlines()[-1]) or {}).get("binding") or {}
 print(b.get("effort"))')"
+
+# ── REVIEW-CONTRACT (rc1) fields — asGate compares every one independently and
+# refuses drift in BOTH directions (skills/camus/REVIEW-CONTRACT.md). These feed the
+# REAL asGate a hand-built reviewer verdict (expected + binding both explicit JSON),
+# so each axis is exercised on its own without needing a live reviewer per case.
+# args: <expected-json> ; stdin: reviewer stdout (a {ran,binding,...} object)
+gate_full() {
+  node --input-type=module -e '
+import fs from "node:fs";
+const src = fs.readFileSync(process.argv[1], "utf8");
+const fns = src.slice(src.indexOf("function extractJsonObject"), src.indexOf("function asVerify"));
+const mod = new Function("return (() => { " + fns + " return { asGate }; })()")();
+let raw = ""; process.stdin.setEncoding("utf8");
+process.stdin.on("data", (d) => { raw += d; });
+process.stdin.on("end", () => { const g = mod.asGate(raw, JSON.parse(process.argv[2])); console.log(g.ran ? "accepted" : "refused"); });
+' "$WORKFLOW" "$1"
+}
+# The expectation the full-posture, built-in, vendor-managed workflow computes.
+EXP_FULL='{"round":2,"effort":"high","reviewerModel":"","backend":"codex","worktreeName":"'"$(basename "$WT")"'","nonce":"'"$NONCE"'","contract":"rc1","scope":"full","qualification":"builtin1","origin":"camus-loop","operator":"claude-code","transport":"cli-detached","connection":"vendor_managed"}'
+# A faithful built-in binding that matches EXP_FULL on every axis.
+bind() { # override key=value pairs applied over the faithful binding
+  python3 - "$NONCE" "$(basename "$WT")" "$@" <<'PY'
+import json, sys
+nonce, wt = sys.argv[1], sys.argv[2]
+b = {"round":2,"effort":"high","model":None,"backend":"codex","worktree":wt,"nonce":nonce,
+     "round_requested":2,"effort_requested":"high","contract":"rc1","scope":"full",
+     "qualification":"builtin1","origin":"camus-loop","operator":"claude-code",
+     "transport":"cli-detached","connection":"vendor_managed"}
+for kv in sys.argv[3:]:
+    k, _, v = kv.partition("=")
+    b[k] = None if v == "__del__" else v
+print(json.dumps({"ran":True,"clean":True,"blocking":[],"nonblocking":[],"binding":b}))
+PY
+}
+check "honest built-in/full review is ACCEPTED" \
+  "accepted" "$(bind | gate_full "$EXP_FULL")"
+check "contract VERSION skew is REFUSED (install copied one half)" \
+  "refused" "$(bind contract=rc0 | gate_full "$EXP_FULL")"
+check "a review with NO contract field is REFUSED" \
+  "refused" "$(bind contract=__del__ | gate_full "$EXP_FULL")"
+check "light-behind-full: a light review cannot satisfy a full request (REFUSED)" \
+  "refused" "$(bind scope=light | gate_full "$EXP_FULL")"
+check "full does not silently satisfy a light request either (REFUSED)" \
+  "refused" "$(bind | gate_full "$(printf '%s' "$EXP_FULL" | python3 -c 'import json,sys;e=json.load(sys.stdin);e["scope"]="light";print(json.dumps(e))')")"
+check "qualification drift builtin1→qual1 is REFUSED (built-in gate reconfigured)" \
+  "refused" "$(bind qualification=qual1 connection=configured | gate_full "$EXP_FULL")"
+check "qualification drift qual1→builtin1 is REFUSED (claims a tier not requested)" \
+  "refused" "$(bind | gate_full "$(printf '%s' "$EXP_FULL" | python3 -c 'import json,sys;e=json.load(sys.stdin);e["qualification"]="qual1";e["connection"]="configured";print(json.dumps(e))')")"
+check "origin drift is REFUSED" \
+  "refused" "$(bind origin=someone-else | gate_full "$EXP_FULL")"
+check "operator drift is REFUSED" \
+  "refused" "$(bind operator=rogue | gate_full "$EXP_FULL")"
+check "transport drift is REFUSED" \
+  "refused" "$(bind transport=smuggled | gate_full "$EXP_FULL")"
+check "connection drift is REFUSED" \
+  "refused" "$(bind connection=configured | gate_full "$EXP_FULL")"
 
 echo
 echo "$pass passed, $fail failed"

@@ -291,6 +291,85 @@ const GATE_NONCE = TRACE_ID ? `${TRACE_ID}:${RUN_ID}` : `${IDENTITY_SALT || 'cam
 // checks are skipped rather than guessed — round, effort and nonce still bind.
 const REVIEWER_MODEL = (args && typeof args === 'object' && typeof args.reviewerModel === 'string' && shellSafe(args.reviewerModel)) ? args.reviewerModel : ''
 const REVIEWER_BACKEND = (args && typeof args === 'object' && typeof args.reviewerBackend === 'string' && shellSafe(args.reviewerBackend)) ? args.reviewerBackend : 'codex'
+// The workflow runtime intentionally has no process/env authority. Identity-affecting Codex
+// settings therefore travel in the run-start args and are exported explicitly into the one
+// reviewer command (including empty values, which isolate it from runner ambient state).
+const REVIEWER_CODEX_ARGS = (args && typeof args === 'object' && typeof args.reviewerCodexArgs === 'string')
+  ? args.reviewerCodexArgs.trim().slice(0, 2048) : ''
+const REVIEWER_LIGHT_MODEL = (args && typeof args === 'object' && typeof args.reviewerLightModel === 'string'
+  && /^[A-Za-z0-9._/-]+$/.test(args.reviewerLightModel.trim())) ? args.reviewerLightModel.trim() : ''
+// ── REVIEW CONTRACT (skills/camus/REVIEW-CONTRACT.md, version rc1) ────────────
+// The contract version, review scope, reviewer qualification, and the
+// origin/operator/transport/connection provenance travel with every review and are
+// re-checked, field by field, by asGate against these workflow-computed constants.
+// The version is load-bearing: the gate script emits its OWN compiled-in `contract`,
+// so a skew between an installed script and this workflow is a loud refusal, not a
+// silent field mismatch. Keep this string in lockstep with review_request.py /
+// codex_review.sh when the carried fields change.
+const REVIEW_CONTRACT = 'rc1'
+// Scope follows the posture: oneshot judges the diff (light); full audits the repo.
+// codex_review.sh derives the ACTUAL scope from argv, so a drift is caught.
+const REVIEW_SCOPE = POSTURE === 'oneshot' ? 'light' : 'full'
+// Provenance the workflow OWNS: origin (what composed the request) and operator (the
+// harness executing it) describe the caller; transport is how the review reaches the
+// reviewer. The gate echoes origin/operator and emits transport as its own constant.
+const REVIEW_ORIGIN = 'camus-loop'
+const REVIEW_OPERATOR = 'claude-code'
+const REVIEW_TRANSPORT = 'cli-detached'
+// connection + qualification are DERIVED (here for the EXPECTATION, and independently by the
+// gate for the ACTUAL). vendor_managed = the built-in codex backend with NO pinned model at all;
+// anything configurable is `configured`. qualification is `builtin1` ONLY for the exact built-in
+// codex backend over a vendor_managed connection — the unmodified built-in gate; else `qual1`.
+//
+// A model can be pinned by MORE than args.reviewerModel, and codex_review.sh derives its tier from
+// the FINAL codex args (skills/camus/codex_review.sh: _has_model_flag over $codex_review_args), so
+// the expectation MUST mirror EVERY lever or asGate false-refuses a valid configurable review as
+// drift: (1) args.reviewerModel (⇒ CAMUS_CODEX_MODEL), (2) a -m/--model OR a `-c model=` config
+// override folded into CAMUS_CODEX_ARGS, (3) the light-model ladder CAMUS_CODEX_LIGHT_MODEL — which
+// the executor applies ONLY at `medium` effort, so this must be computed PER-ROUND, not as one
+// constant, (4) a non-vendor connection selector (--oss/--local-provider/`-c model_provider=`) in
+// CAMUS_CODEX_ARGS, which is connection-only (not a model pin) but still ⇒ configured. Those
+// settings cannot be inferred from process.env: this runtime has no environment authority, and
+// tests must not gain one accidentally from Node. They arrive above as run-start arguments.
+const _argTokens = (s) => (typeof s === 'string' ? s.trim().split(/\s+/).filter(Boolean) : [])
+const _configAssignment = (token) => {
+  if (token.startsWith('--config=')) return token.slice('--config='.length)
+  if (token.startsWith('-c') && token !== '-c') return token.slice(2).replace(/^=/, '')
+  return token
+}
+// Every supported Codex spelling: separate/attached/equals -m and --model, plus generic
+// config overrides in separated or attached -c/--config form. A custom model_catalog_json is
+// also identity-affecting. Exact key matching leaves model_reasoning_effort/model_provider alone.
+const _hasModelFlag = (s) => {
+  return _argTokens(s).some((token) => token === '-m' || token === '--model'
+    || token.startsWith('--model=') || (token.startsWith('-m') && token.length > 2)
+    || _configAssignment(token).startsWith('model=')
+    || _configAssignment(token).startsWith('model_catalog_json='))
+}
+// Non-vendor routing includes CLI selectors plus model_provider/oss_provider,
+// model_providers.* definitions, and openai_base_url in any generic-config spelling.
+const _selectsNonvendorConnection = (s) => {
+  return _argTokens(s).some((token) => {
+    if (token === '--oss' || token === '--local-provider' || token.startsWith('--local-provider=')
+      || token === '-p' || token === '--profile' || token.startsWith('--profile=')
+      || (token.startsWith('-p') && token.length > 2)) return true
+    const assignment = _configAssignment(token)
+    return assignment.startsWith('model_provider=') || assignment.startsWith('oss_provider=')
+      || assignment.startsWith('model_providers.') || assignment.startsWith('openai_base_url=')
+  })
+}
+// Pins that hold for EVERY round. The light-model ladder is effort-gated, so it is added per-round below.
+// The workflow explicitly exports REVIEWER_MODEL (including an empty value) into the actual
+// command. Ambient CAMUS_CODEX_MODEL is therefore not an input: identity must arrive as an arg.
+const MODEL_PINNED_ALWAYS = REVIEWER_MODEL !== '' || _hasModelFlag(REVIEWER_CODEX_ARGS)
+const CONN_NONVENDOR = _selectsNonvendorConnection(REVIEWER_CODEX_ARGS)
+const LIGHT_MODEL_SET = REVIEWER_LIGHT_MODEL !== ''
+function reviewContractFor(effort) {
+  const modelPinned = MODEL_PINNED_ALWAYS || (LIGHT_MODEL_SET && effort === 'medium')
+  const connection = (!modelPinned && !CONN_NONVENDOR && REVIEWER_BACKEND === 'codex') ? 'vendor_managed' : 'configured'
+  const qualification = (REVIEWER_BACKEND === 'codex' && connection === 'vendor_managed') ? 'builtin1' : 'qual1'
+  return { connection, qualification }
+}
 const STATUS_SCRIPT = `python3 ${SKILL_SCRIPTS}/status_record.py`
 const REQUEST_SCRIPT = `python3 ${SKILL_SCRIPTS}/review_request.py`
 // The heartbeat's mtime says "a phase started". It does NOT say which phase, in
@@ -451,6 +530,49 @@ function asGate(raw, expected) {
   // this gate run's identity, so nothing ties it to the work in front of us.
   if (!b.nonce) mismatches.push('gate nonce: the review recorded none, so it cannot be tied to this run')
   else want('gate nonce', b.nonce, expected.nonce)
+
+  // ── REVIEW-CONTRACT (rc1) fields — compared INDEPENDENTLY, refused in BOTH
+  // directions (skills/camus/REVIEW-CONTRACT.md) ─────────────────────────────
+  // Each field is enforced only when the caller SUPPLIES the expectation (the
+  // `want()` philosophy — an absent expectation cannot drift). The production
+  // workflow always supplies all of them below, so a real gate run compares every
+  // field; a leaner external caller stays compatible. When an expectation IS given,
+  // a MISSING carried field is drift too (an unbindable/legacy review), so it is
+  // required-then-compared by exact equality. Messages are field-specific.
+  // Contract VERSION skew — the gate script and this workflow disagree on the
+  // contract. That is an install that copied one half; a loud refusal, never a
+  // silent per-field mismatch downstream.
+  if (expected.contract != null && expected.contract !== '') {
+    if (!b.contract) mismatches.push('contract: the review recorded no contract version, so it cannot be checked against this gate')
+    else if (b.contract !== expected.contract) mismatches.push(`contract: ran ${JSON.stringify(b.contract)}, this gate speaks ${JSON.stringify(expected.contract)} — version skew, reinstall the gate (camus install)`)
+  }
+  // SCOPE — exact equality both ways. In particular a light review can never satisfy
+  // a full request ("light-behind-full" is a coverage downgrade), and a full review
+  // does not silently satisfy a light request either.
+  if (expected.scope != null && expected.scope !== '') {
+    if (!b.scope) mismatches.push('scope: the review recorded no scope, so full-vs-light coverage cannot be confirmed')
+    else if (b.scope !== expected.scope) mismatches.push(`scope: ran ${JSON.stringify(b.scope)}, requested ${JSON.stringify(expected.scope)}${b.scope === 'light' && expected.scope === 'full' ? ' (light-behind-full: a diff-primary review cannot satisfy a full-repository request)' : ''}`)
+  }
+  // QUALIFICATION — exact equality, refused in BOTH builtin1 directions: a request
+  // expecting builtin1 is not met by a qual1 review (the built-in gate was quietly
+  // reconfigured), and a request expecting qual1 is not met by a builtin1 review (a
+  // receipt claiming a tier the run did not request).
+  if (expected.qualification != null && expected.qualification !== '') {
+    if (!b.qualification) mismatches.push('qualification: the review recorded no qualification tier, so builtin1-vs-qual1 cannot be confirmed')
+    else if (b.qualification !== expected.qualification) mismatches.push(`qualification: ran ${JSON.stringify(b.qualification)}, requested ${JSON.stringify(expected.qualification)} — reviewer trust tier drifted`)
+  }
+  // Provenance — origin/operator/transport/connection, each its own exact-equality axis.
+  // `want()` already skips an unsupplied expectation; the extra guard is the required
+  // presence of the carried field when the expectation IS supplied.
+  if (expected.origin != null && expected.origin !== '' && !b.origin) mismatches.push('origin: the review recorded none, so it cannot be tied to the requesting workflow')
+  else want('origin', b.origin, expected.origin)
+  if (expected.operator != null && expected.operator !== '' && !b.operator) mismatches.push('operator: the review recorded none, so its executing harness is unproven')
+  else want('operator', b.operator, expected.operator)
+  if (expected.transport != null && expected.transport !== '' && !b.transport) mismatches.push('transport: the review recorded none, so its delivery path is unproven')
+  else want('transport', b.transport, expected.transport)
+  if (expected.connection != null && expected.connection !== '' && !b.connection) mismatches.push('connection: the review recorded none, so vendor_managed-vs-configured cannot be confirmed')
+  else want('connection', b.connection, expected.connection)
+
   if (mismatches.length) {
     return infra(`reviewer ran a different review than the one requested — ${mismatches.join('; ')}. `
       + 'Treated as reviewer infrastructure failure; the round is retried and the loop does not advance.')
@@ -984,11 +1106,14 @@ function reviewerPrompt(attempt) {
   const backoff = attempt > 1
     ? `This is reviewer attempt ${attempt} after an infra failure. First run \`sleep ${attempt * 5}\` to back off, then proceed.\n`
     : ''
+  // Per-round tier: the light-model ladder is effort-gated in codex_review.sh, so the requested
+  // qualification/connection must be derived from THIS round's effort, not a run-wide constant.
+  const { connection: reviewConnection, qualification: reviewQualification } = reviewContractFor(currentEffort)
   return `You are a THIN reviewer. Your ONLY job is to run the Camus Codex review on
 the worktree and return its stdout. Do NOT interpret, summarize, re-judge, or reformat.
 
 ${backoff}Run EXACTLY this one command (the worktree path is the argument — do NOT cd, do NOT add anything else):
-  ${HB_TOUCH}${statusPhase('Review', `--round ${round} --effort ${currentEffort} --model ${JSON.stringify(REVIEWER_MODEL)} --backend ${JSON.stringify(REVIEWER_BACKEND)} --worktree ${JSON.stringify(WT)}`)}${REQUEST_SCRIPT} write --worktree ${JSON.stringify(WT)} --round ${round} --effort ${currentEffort} --nonce ${JSON.stringify(GATE_NONCE)} --model ${JSON.stringify(REVIEWER_MODEL)} --backend ${JSON.stringify(REVIEWER_BACKEND)} >/dev/null && CAMUS_GATE_NONCE=${JSON.stringify(GATE_NONCE)} CAMUS_REVIEW_ROUND=${round} CAMUS_REVIEW_EFFORT=${currentEffort} ${REVIEW_CMD} ${JSON.stringify(WT)} ${shq(REVIEW_TASK_CTX)} ${round} ${currentEffort}${POSTURE === 'oneshot' ? ' light' : ''}
+  ${HB_TOUCH}${statusPhase('Review', `--round ${round} --effort ${currentEffort} --model ${JSON.stringify(REVIEWER_MODEL)} --backend ${JSON.stringify(REVIEWER_BACKEND)} --worktree ${JSON.stringify(WT)}`)}${REQUEST_SCRIPT} write --worktree ${JSON.stringify(WT)} --round ${round} --effort ${currentEffort} --nonce ${JSON.stringify(GATE_NONCE)} --model ${JSON.stringify(REVIEWER_MODEL)} --backend ${JSON.stringify(REVIEWER_BACKEND)} --contract ${REVIEW_CONTRACT} --scope ${REVIEW_SCOPE} --qualification ${reviewQualification} --origin ${REVIEW_ORIGIN} --operator ${REVIEW_OPERATOR} --transport ${REVIEW_TRANSPORT} --connection ${reviewConnection} >/dev/null && CAMUS_CODEX_ARGS=${shq(REVIEWER_CODEX_ARGS)} CAMUS_CODEX_LIGHT_MODEL=${shq(REVIEWER_LIGHT_MODEL)} CAMUS_CODEX_MODEL=${JSON.stringify(REVIEWER_MODEL)} CAMUS_GATE_NONCE=${JSON.stringify(GATE_NONCE)} CAMUS_REVIEW_ROUND=${round} CAMUS_REVIEW_EFFORT=${currentEffort} CAMUS_REVIEW_SCOPE=${REVIEW_SCOPE} CAMUS_REVIEW_ORIGIN=${REVIEW_ORIGIN} CAMUS_REVIEW_OPERATOR=${REVIEW_OPERATOR} ${REVIEW_CMD} ${JSON.stringify(WT)} ${shq(REVIEW_TASK_CTX)} ${round} ${currentEffort} ${REVIEW_SCOPE}
 
 The round and effort appear THREE times in that command on purpose: in a request file, in
 environment variables, and as arguments. The reviewer refuses if they disagree, so retyping,
@@ -1078,9 +1203,20 @@ const reviewerReceiptFields = () => ({
   reviewerEffort: reviewerReceipt ? reviewerReceipt.effort : null,
   reviewerRound: reviewerReceipt ? reviewerReceipt.round : null,
   reviewerModelStatus: reviewerReceipt ? (reviewerReceipt.model ? 'recorded' : 'not_recorded') : 'not_run',
+  // REVIEW-CONTRACT (rc1) terminal provenance — derived ONLY from a binding asGate
+  // ACCEPTED (reviewerReceipt is set only after gate.ran on a passing binding), so a
+  // rejected/unbindable review contributes nothing here.
+  reviewContract: reviewerReceipt ? reviewerReceipt.contract : null,
+  reviewScope: reviewerReceipt ? reviewerReceipt.scope : null,
+  reviewerQualification: reviewerReceipt ? reviewerReceipt.qualification : null,
+  reviewOrigin: reviewerReceipt ? reviewerReceipt.origin : null,
+  reviewOperator: reviewerReceipt ? reviewerReceipt.operator : null,
+  reviewTransport: reviewerReceipt ? reviewerReceipt.transport : null,
+  reviewConnection: reviewerReceipt ? reviewerReceipt.connection : null,
 })
 const reviewerReceiptNote = () => reviewerReceipt
   ? ` Reviewer receipt: backend ${reviewerReceipt.backend || 'not recorded'}; model ${reviewerReceipt.model || 'not recorded'}; effort ${reviewerReceipt.effort || 'not recorded'}; round ${reviewerReceipt.round}.`
+    + ` Review contract ${reviewerReceipt.contract || 'not recorded'}; scope ${reviewerReceipt.scope || 'not recorded'}; qualification ${reviewerReceipt.qualification || 'not recorded'} (${reviewerReceipt.connection || 'connection not recorded'}).`
   : ' Reviewer receipt: no completed review.'
 // ONESHOT (VELOCITY §1): the single review's blocking findings, preserved VERBATIM for the
 // honest report — they were fixed once and never re-reviewed, and the result must say so.
@@ -1245,6 +1381,9 @@ while (round < ROUND_CAP) {
     }
     // The expectation is this workflow's own: computed here, inlined into the
     // command, never round-tripped through the runner that executed it.
+    // Per-round expectation: derived from THIS round's effort, so the light-model ladder
+    // (medium-only in codex_review.sh) does not make the expectation drift from the actual.
+    const { connection: expectConnection, qualification: expectQualification } = reviewContractFor(currentEffort)
     gate = asGate(raw, {
       round,
       effort: currentEffort,
@@ -1252,6 +1391,14 @@ while (round < ROUND_CAP) {
       backend: REVIEWER_BACKEND,
       worktreeName: WT_NAME,
       nonce: GATE_NONCE,
+      // REVIEW-CONTRACT (rc1): every field compared independently, drift refused both ways.
+      contract: REVIEW_CONTRACT,
+      scope: REVIEW_SCOPE,
+      qualification: expectQualification,
+      origin: REVIEW_ORIGIN,
+      operator: REVIEW_OPERATOR,
+      transport: REVIEW_TRANSPORT,
+      connection: expectConnection,
     })
     if (gate.ran) break
     log(`Round ${round}/${ROUND_CAP}: reviewer infra failure (${gate.error}) — attempt ${attempt}/${INFRA_RETRIES + 1}.`)
@@ -1264,11 +1411,21 @@ while (round < ROUND_CAP) {
   }
 
   const receiptBinding = gate.binding || {}
+  const receiptStr = (v) => (typeof v === 'string' && v) ? v : null
   reviewerReceipt = {
-    backend: (typeof receiptBinding.backend === 'string' && receiptBinding.backend) ? receiptBinding.backend : null,
-    model: (typeof receiptBinding.model === 'string' && receiptBinding.model) ? receiptBinding.model : null,
-    effort: (typeof receiptBinding.effort === 'string' && receiptBinding.effort) ? receiptBinding.effort : null,
+    backend: receiptStr(receiptBinding.backend),
+    model: receiptStr(receiptBinding.model),
+    effort: receiptStr(receiptBinding.effort),
     round: Number.isInteger(receiptBinding.round) ? receiptBinding.round : null,
+    // REVIEW-CONTRACT (rc1) provenance — this binding already PASSED asGate, so these
+    // are the accepted actuals; preserve exactly what the gate recorded, never a guess.
+    contract: receiptStr(receiptBinding.contract),
+    scope: receiptStr(receiptBinding.scope),
+    qualification: receiptStr(receiptBinding.qualification),
+    origin: receiptStr(receiptBinding.origin),
+    operator: receiptStr(receiptBinding.operator),
+    transport: receiptStr(receiptBinding.transport),
+    connection: receiptStr(receiptBinding.connection),
   }
 
   // 3c: clean → done with review

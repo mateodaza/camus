@@ -120,6 +120,13 @@ unresolved finding or prove untested contract behavior. Two behaviors:
 ## How the pieces fit
 
 - `review-prompt.md` — the adversarial audit persona + severity rubric handed to Codex.
+- `REVIEW-CONTRACT.md` — the versioned (rc1) agreement for what a review carries: contract
+  version, scope (full/light), reviewer qualification (builtin1/qual1), and
+  origin/operator/transport/connection provenance. `asGate` compares every field against
+  workflow-computed expectations and refuses drift; terminal provenance comes only from an
+  accepted binding. The hardened `builtin1` tier also excludes user/project/system/managed
+  configuration and custom model catalogs; managed hosts fail closed unless the run explicitly
+  requests a configurable (`qual1`) reviewer.
 - `sev.schema.json` — the Codex `--output-schema` (findings[] with priority 0–3 + verdict).
 - `scripts/codex_review.sh` — reviewer agent runs this → normalized gate JSON.
 - `scripts/verify.sh` — verifier agent runs this → `{pass, failures}` JSON.
@@ -234,8 +241,9 @@ contract, watches host-owned evidence, and hands the result back.
   round: `medium` for the cheap first pass (most reviews are simple → ~3× faster), `high` when
   the change is hard (complex tier, or a prior round didn't clear), `xhigh` when CRITICAL (a P0
   surfaced) — mirroring the model-escalation signals, and visible in the run log. Only camus's
-  own review effort moves; interactive codex is untouched. Force a constant effort with
-  `export CAMUS_CODEX_ARGS="-c model_reasoning_effort=xhigh"` (it wins over the dynamic pick).
+  own review effort moves; interactive codex is untouched. Workflow runs pin this explicitly in
+  their run-start JSON (`reviewerEffort: "xhigh"`); their reviewer child is isolated from ambient
+  `CAMUS_CODEX_ARGS`. Native/direct gate calls may still use that environment variable.
 
 ## Cost model (audited 2026-06-11)
 
@@ -249,8 +257,11 @@ Two vendors, two meters — never conflated:
   `OPENAI_API_KEY` it bills OpenAI API tokens instead. Camus never converts this to dollars.
   The levers that matter are already default: dynamic reasoning effort (medium→high→xhigh by
   stakes), `roundCap`, stuck-finding early-stop, and smaller diffs via `/camus-plan`. To pin a
-  cheaper/faster reviewer model explicitly: `export CAMUS_CODEX_ARGS="-c model=<model> -c
-  model_reasoning_effort=medium"` (wins over the dynamic pick). Fast-mode credit multipliers
+  cheaper/faster reviewer model in a workflow, pass `reviewerModel` plus `reviewerEffort` in its
+  run-start JSON (or `reviewerCodexArgs` for an advanced Codex CLI/provider override). These
+  fields are snapshotted and explicitly exported; mutable runner environment is not identity.
+  Native/direct calls may use `CAMUS_CODEX_ARGS="-c model=<model> -c
+  model_reasoning_effort=medium"`. Fast-mode credit multipliers
   (2–2.5×) have not applied on camus's `codex exec` review path as validated (codex-cli 0.137.0
   exposed no exec fast lane) — OpenAI docs suggest Fast mode may persist to the CLI generally,
   so re-check on codex upgrades rather than treating this as a blanket CLI rule.

@@ -14,7 +14,9 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 
 function load(p) {
   const src = fs.readFileSync(p, 'utf8').replace(/^export\s+const\s+meta/m, 'const meta')
-  return new AsyncFunction('args', 'agent', 'phase', 'log', 'workflow', 'budget', src)
+  // Production workflows have no process/env authority. Shadow Node's global explicitly so a
+  // test cannot accidentally make ambient state available to code that production cannot read.
+  return new AsyncFunction('args', 'agent', 'phase', 'log', 'workflow', 'budget', 'process', src)
 }
 const key = (label) => (label || '').split(':')[0]
 
@@ -86,9 +88,54 @@ function bindReviewOutput(out, prompt) {
       return JSON.stringify(g)
     })()
   }
+  // REVIEW-CONTRACT (rc1) fields, faithful to codex_review.sh: contract/transport are
+  // constants; scope/origin/operator are carried from the command; connection and
+  // qualification are DERIVED from the reviewer identity exactly as the script derives
+  // them (vendor_managed = built-in codex with no pinned model; builtin1 = that alone).
+  const contract = (prompt.match(/--contract (\S+)/) || [])[1] || 'rc1'
+  const scope = (prompt.match(/--scope (\S+)/) || [])[1]
+    || (prompt.match(/CAMUS_REVIEW_SCOPE=(\S+)/) || [])[1] || 'full'
+  const origin = (prompt.match(/--origin (\S+)/) || [])[1]
+    || (prompt.match(/CAMUS_REVIEW_ORIGIN=(\S+)/) || [])[1] || 'cli'
+  const operator = (prompt.match(/--operator (\S+)/) || [])[1]
+    || (prompt.match(/CAMUS_REVIEW_OPERATOR=(\S+)/) || [])[1] || 'cli'
+  // A model can be pinned by MORE than --model: the user's CAMUS_CODEX_MODEL, a -m/--model OR a
+  // `-c model=` config override folded into CAMUS_CODEX_ARGS, or the light-model ladder
+  // (CAMUS_CODEX_LIGHT_MODEL, applied by codex_review.sh ONLY at medium effort); and a non-vendor
+  // connection selector (--oss/--local-provider/`-c model_provider=`) takes the reviewer off the
+  // vendor connection without pinning a model. The real gate derives its tier from the FINAL codex
+  // args, so this faithful spy mirrors every lever — otherwise it would report vendor_managed/
+  // builtin1 for a review the real gate ran as configured/qual1 (finding: configurable pins).
+  // Actual reviewer inputs are exported explicitly in the workflow command. Read those values,
+  // not this test process's environment, so the spy models the production child boundary.
+  const codexArgs = (prompt.match(/CAMUS_CODEX_ARGS='([^']*)'/) || [])[1] || ''
+  const lightModel = (prompt.match(/CAMUS_CODEX_LIGHT_MODEL='([^']*)'/) || [])[1] || ''
+  const argTokens = (s) => (typeof s === 'string' ? s.trim().split(/\s+/).filter(Boolean) : [])
+  const configAssignment = (token) => {
+    if (token.startsWith('--config=')) return token.slice('--config='.length)
+    if (token.startsWith('-c') && token !== '-c') return token.slice(2).replace(/^=/, '')
+    return token
+  }
+  const hasModelFlag = (s) => argTokens(s).some((token) => token === '-m' || token === '--model'
+    || token.startsWith('--model=') || (token.startsWith('-m') && token.length > 2)
+    || configAssignment(token).startsWith('model=')
+    || configAssignment(token).startsWith('model_catalog_json='))
+  const nonvendorConn = (s) => argTokens(s).some((token) => {
+    if (token === '--oss' || token === '--local-provider' || token.startsWith('--local-provider=')
+      || token === '-p' || token === '--profile' || token.startsWith('--profile=')
+      || (token.startsWith('-p') && token.length > 2)) return true
+    const assignment = configAssignment(token)
+    return assignment.startsWith('model_provider=') || assignment.startsWith('oss_provider=')
+      || assignment.startsWith('model_providers.') || assignment.startsWith('openai_base_url=')
+  })
+  const modelPinned = !!model || hasModelFlag(codexArgs)
+    || (effort === 'medium' && lightModel.trim() !== '')
+  const connection = (!modelPinned && !nonvendorConn(codexArgs) && backend === 'codex') ? 'vendor_managed' : 'configured'
+  const qualification = (backend === 'codex' && connection === 'vendor_managed') ? 'builtin1' : 'qual1'
   g.binding = {
     round: Number.isFinite(round) ? round : null, effort, model, backend, nonce, worktree,
     round_requested: Number.isFinite(round) ? round : null, effort_requested: effort,
+    contract, scope, qualification, origin, operator, transport: 'cli-detached', connection,
   }
   lastStartBinding = g.binding      // what a later AWAIT reconstructs from meta.json
   return J(g)
@@ -97,7 +144,7 @@ async function runLoop(args, scripts, budget) {
   const calls = []
   const capture = {}
   const res = await load(LOOP)(args, makeAgent(scripts, calls, capture), () => {}, () => {},
-    async () => { throw new Error('loop must not call workflow') }, budget)
+    async () => { throw new Error('loop must not call workflow') }, budget, undefined)
   return { res, calls, prompts: capture.prompts || {} }
 }
 async function runFeat(args, scripts, loopResults, budget) {
@@ -106,7 +153,7 @@ async function runFeat(args, scripts, loopResults, budget) {
   const loopArgs = []
   let li = 0
   const res = await load(FEAT)(args, makeAgent(scripts, calls, capture), () => {}, () => {},
-    async (name, a) => { loopArgs.push(a); return loopResults[li++] }, budget)
+    async (name, a) => { loopArgs.push(a); return loopResults[li++] }, budget, undefined)
   return {
     res, calls, loopArgs, workflowCalls: li,
     stateJSON: capture.state ? extractBraces(capture.state) : null,
@@ -174,7 +221,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       `${JSON.stringify(res.reviewerModel)}/${res.reviewerModelStatus}/${res.note}`)
   }
   {
-    const { res } = await runLoop(
+    const { res, calls, prompts } = await runLoop(
       { task: 't', reviewerBackend: 'codex', reviewerModel: 'gpt-5.4', reviewerEffort: 'low' },
       { ...cls, ...planOf('clear', ''), ...happyTail },
     )
@@ -182,6 +229,9 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       res.reviewerBackend === 'codex' && res.reviewerModel === 'gpt-5.4'
         && res.reviewerEffort === 'low' && res.reviewerModelStatus === 'recorded',
       `${res.reviewerBackend}/${res.reviewerModel}/${res.reviewerEffort}/${res.reviewerModelStatus}`)
+    const reviewPrompt = Object.values(prompts).find((p) => typeof p === 'string' && p.includes('/review.sh')) || ''
+    ok('S1 pinned reviewer model is exported to the ACTUAL review command',
+      /CAMUS_CODEX_MODEL="gpt-5\.4"/.test(reviewPrompt), reviewPrompt.slice(0, 260))
   }
   {
     const { res, calls } = await runLoop({ task: 't' }, { ...clsStd, ...planOf('ambiguous', 'Which X?', ['a', 'b']) })
@@ -848,6 +898,66 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('S23e full posture → no light scope arg on the review command', !/ light\b/.test(prompts[reviewLbl(calls, 1)] || ''))
     // VELOCITY §2: reviews go through the backend DISPATCHER — the loop never names a vendor.
     ok('S23f review command routes through review.sh (backend dispatcher)', (prompts[reviewLbl(calls, 1)] || '').includes('/review.sh'), (prompts[reviewLbl(calls, 1)] || '').slice(0, 200))
+  }
+  // S23g (finding: workflow runtime has no process/env authority). Identity-affecting Codex
+  // settings arrive through the run-start snapshot and the command explicitly exports them,
+  // including empty values that isolate the child from a runner's ambient environment.
+  {
+    const { res, calls, prompts } = await runLoop(
+      { task: 't', reviewerCodexArgs: '-c model_reasoning_effort=medium -m gpt-5.4' },
+      { ...clsStd, ...planOf('clear', ''), ...happyTail },
+    )
+    const cmd = prompts[reviewLbl(calls, 1)] || ''
+    ok('S23g explicit reviewerCodexArgs → expectation is qual1/configured', / --qualification qual1 /.test(cmd) && / --connection configured\b/.test(cmd), cmd.slice(0, 260))
+    ok('S23g reviewerCodexArgs reaches the ACTUAL child environment', /CAMUS_CODEX_ARGS='-c model_reasoning_effort=medium -m gpt-5\.4'/.test(cmd), cmd.slice(0, 300))
+    ok('S23g …and the review is ACCEPTED (loop reaches done, not infra drift)', res.status === 'done', res.status)
+  }
+  {
+    const prev = process.env.CAMUS_CODEX_ARGS
+    process.env.CAMUS_CODEX_ARGS = '-m ambient-must-not-leak'
+    try {
+      const { res, calls, prompts } = await runLoop({ task: 't' }, { ...clsStd, ...planOf('clear', ''), ...happyTail })
+      const cmd = prompts[reviewLbl(calls, 1)] || ''
+      ok('S23g production-no-process path ignores ambient reviewer args', /CAMUS_CODEX_ARGS=''/.test(cmd) && / --qualification builtin1 /.test(cmd) && / --connection vendor_managed\b/.test(cmd), cmd.slice(0, 300))
+      ok('S23g isolated ambient path still reaches done', res.status === 'done', res.status)
+    } finally {
+      if (prev === undefined) delete process.env.CAMUS_CODEX_ARGS; else process.env.CAMUS_CODEX_ARGS = prev
+    }
+  }
+  // S23h: reviewerLightModel is effort-gated (medium only) in codex_review.sh, so the
+  // expectation MUST be per-round: qual1/configured on a medium round, builtin1/vendor_managed on
+  // a high round — a single run-wide constant would drift on one of them.
+  {
+    // Default tier: round 1 medium (light model applies → configured); round 2 high (rnd>=2 →
+    // high, so the light model is NOT appended → vendor_managed).
+    const twoRounds = {
+      ...clsStd, ...planOf('clear', ''), implement: happyTail.implement, fix: '',
+      review: (p) => J({ ran: true, clean: /CAMUS_REVIEW_ROUND=2/.test(p), blocking: /CAMUS_REVIEW_ROUND=2/.test(p) ? [] : [{ priority: 1, title: 'x', code_location: 'a:1' }], nonblocking: [] }),
+      commit: J({ committed: true, sha: h40('l1ghtm0') }), ...cleanVerify, verify: J({ pass: true, failures: [], head: h40('l1ghtm0') }),
+    }
+    const { res, calls, prompts } = await runLoop({ task: 't', roundCap: 3, reviewerLightModel: 'gpt-5.4-mini' }, twoRounds)
+    const r1 = prompts[reviewLbl(calls, 1)] || '', r2 = prompts[reviewLbl(calls, 2)] || ''
+    ok('S23h medium round → qual1/configured (light model applies)', / medium\b/.test(r1) && / --qualification qual1 /.test(r1) && / --connection configured\b/.test(r1), r1.slice(0, 200))
+    ok('S23h high round → builtin1/vendor_managed (light model NOT applied)', / high\b/.test(r2) && / --qualification builtin1 /.test(r2) && / --connection vendor_managed\b/.test(r2), r2.slice(0, 200))
+    ok('S23h light model reaches the explicit child environment', /CAMUS_CODEX_LIGHT_MODEL='gpt-5\.4-mini'/.test(r1), r1.slice(0, 260))
+    ok('S23h both rounds ACCEPTED → reaches done', res.status === 'done', res.status)
+  }
+
+  // S23i (finding: a model pinned via codex's generic `-c model=` config override, or a non-vendor
+  // connection selector like --oss, must ALSO make the workflow EXPECTATION qual1/configured — the
+  // -m/--model detector alone missed both, so asGate would falsely refuse the valid review as drift).
+  for (const bypass of [
+    '-c model="o3"', '-mo3', '--config=model="o3"',
+    '-c model_catalog_json="/tmp/camus-models.json"',
+    '--oss --local-provider ollama', '--config=model_provider=ollama',
+    '--profile local-review', '-plocal-review',
+    '-c model_providers.camus_local.base_url="http://127.0.0.1:11434/v1"',
+    '-copenai_base_url="http://127.0.0.1:11434/v1"',
+  ]) {
+    const { res, calls, prompts } = await runLoop({ task: 't', reviewerCodexArgs: bypass }, { ...clsStd, ...planOf('clear', ''), ...happyTail })
+    const cmd = prompts[reviewLbl(calls, 1)] || ''
+    ok(`S23i reviewerCodexArgs='${bypass}' → expectation is qual1/configured`, / --qualification qual1 /.test(cmd) && / --connection configured\b/.test(cmd), cmd.slice(0, 260))
+    ok(`S23i …and the review is ACCEPTED (loop reaches done, not infra drift) [${bypass}]`, res.status === 'done', res.status)
   }
 
   // S24 (smoke 2026-06-12): ONESHOT carries the fix agent's CLAIMED resolution per finding —
@@ -1747,18 +1857,29 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F3 prior noop carried in report', !!(r2.res && r2.res.tasks.find((t) => t.taskId === aId && t.status === 'noop')))
   }
 
-  // F4: model / modelTier passthrough — forwarded UNCHANGED into each per-task loop call.
+  // F4: model and reviewer run-start identity passthrough — forwarded UNCHANGED into each
+  // per-task loop call. The loop cannot recover these values from a process environment.
   {
-    const { loopArgs } = await runFeat({ feat: 'F', tasks: ['only task'], model: 'opus', modelTier: 'high' }, featBase,
+    const { loopArgs } = await runFeat({ feat: 'F', tasks: ['only task'], model: 'opus', modelTier: 'high',
+      reviewerModel: 'gpt-5.6-sol', reviewerBackend: 'codex', reviewerEffort: 'high',
+      reviewerCodexArgs: '--config=model_provider=proxy', reviewerLightModel: 'gpt-5.4-mini' }, featBase,
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F4 model forwarded to loop', loopArgs.length === 1 && loopArgs[0].model === 'opus', J(loopArgs[0]))
     ok('F4 modelTier forwarded to loop', loopArgs[0] && loopArgs[0].modelTier === 'high')
+    ok('F4 reviewer identity/settings forwarded to loop', loopArgs[0]
+      && loopArgs[0].reviewerModel === 'gpt-5.6-sol' && loopArgs[0].reviewerBackend === 'codex'
+      && loopArgs[0].reviewerEffort === 'high'
+      && loopArgs[0].reviewerCodexArgs === '--config=model_provider=proxy'
+      && loopArgs[0].reviewerLightModel === 'gpt-5.4-mini', J(loopArgs[0]))
   }
   {
     // No override → loop call must NOT carry model/modelTier (loop keeps its own defaults).
     const { loopArgs } = await runFeat({ feat: 'F', tasks: ['only task'] }, featBase,
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
-    ok('F4 no model key when unset', loopArgs[0] && !('model' in loopArgs[0]) && !('modelTier' in loopArgs[0]))
+    ok('F4 no model/reviewer keys when unset', loopArgs[0] && !('model' in loopArgs[0]) && !('modelTier' in loopArgs[0])
+      && !('reviewerModel' in loopArgs[0]) && !('reviewerBackend' in loopArgs[0])
+      && !('reviewerEffort' in loopArgs[0]) && !('reviewerCodexArgs' in loopArgs[0])
+      && !('reviewerLightModel' in loopArgs[0]))
     ok('F4 no roundCap key when unset', loopArgs[0] && !('roundCap' in loopArgs[0]))
   }
   {

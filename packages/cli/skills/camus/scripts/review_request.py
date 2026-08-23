@@ -42,6 +42,11 @@ import tempfile
 import time
 
 VALID_EFFORT = ("low", "medium", "high", "xhigh")
+VALID_SCOPE = ("full", "light")
+VALID_QUALIFICATION = ("builtin1", "qual1")
+# The REVIEW-CONTRACT.md version this writer speaks. Recorded so a request that
+# outlives a contract bump is a visible mismatch downstream, never a silent one.
+REVIEW_CONTRACT = "rc1"
 
 
 def review_dir():
@@ -52,7 +57,9 @@ def request_path(worktree):
     return os.path.join(review_dir(), "%s-request.json" % os.path.basename(os.path.normpath(worktree)))
 
 
-def build_request(worktree, round_value, effort=None, nonce=None, model=None, backend=None, now=None):
+def build_request(worktree, round_value, effort=None, nonce=None, model=None, backend=None,
+                  scope=None, qualification=None, origin=None, operator=None, transport=None,
+                  connection=None, contract=None, now=None):
     """Returns (record, error). Refuses anything the reviewer would have to guess about."""
     if not worktree:
         return None, "a review request needs the worktree it is for"
@@ -64,8 +71,15 @@ def build_request(worktree, round_value, effort=None, nonce=None, model=None, ba
         return None, "review rounds start at 1; %d is not a round" % rnd
     if effort is not None and effort not in VALID_EFFORT:
         return None, "review effort %r is not one of %s" % (effort, "|".join(VALID_EFFORT))
+    if scope is not None and scope not in VALID_SCOPE:
+        return None, "review scope %r is not one of %s" % (scope, "|".join(VALID_SCOPE))
+    if qualification is not None and qualification not in VALID_QUALIFICATION:
+        return None, "review qualification %r is not one of %s" % (qualification, "|".join(VALID_QUALIFICATION))
     return {
         "schema_version": 1,
+        # The REVIEW-CONTRACT.md version these fields belong to (carried so a later
+        # reader can tell which contract a request was written under).
+        "contract": contract or REVIEW_CONTRACT,
         "requested_at": int(time.time()) if now is None else now,
         # realpath so a symlinked worktree still matches the directory the
         # reviewer resolves; basename identity alone is not enough.
@@ -75,6 +89,16 @@ def build_request(worktree, round_value, effort=None, nonce=None, model=None, ba
         "gate_nonce": nonce or None,
         "reviewer_model": model or None,
         "reviewer_backend": backend or None,
+        # Contract-carried provenance + coverage. scope/qualification/connection are
+        # the reviewer's ACTUALS as the requester intends them; origin/operator/transport
+        # describe the caller and delivery path. codex_review.sh cross-checks its own
+        # derived actuals against these; asGate is the load-bearing comparator.
+        "scope": scope or None,
+        "qualification": qualification or None,
+        "origin": origin or None,
+        "operator": operator or None,
+        "transport": transport or None,
+        "connection": connection or None,
     }, None
 
 
@@ -88,13 +112,24 @@ def main(argv=None):
     parser.add_argument("--nonce", default=None)
     parser.add_argument("--model", default=None)
     parser.add_argument("--backend", default=None)
+    parser.add_argument("--scope", default=None)
+    parser.add_argument("--qualification", default=None)
+    parser.add_argument("--origin", default=None)
+    parser.add_argument("--operator", default=None)
+    parser.add_argument("--transport", default=None)
+    parser.add_argument("--connection", default=None)
+    parser.add_argument("--contract", default=None)
     try:
         opts = parser.parse_args(argv)
     except SystemExit:
         print(json.dumps({"ok": False, "error": "bad review_request arguments"}))
         return 0
 
-    record, error = build_request(opts.worktree, opts.round, opts.effort, opts.nonce, opts.model, opts.backend)
+    record, error = build_request(
+        opts.worktree, opts.round, opts.effort, opts.nonce, opts.model, opts.backend,
+        scope=opts.scope, qualification=opts.qualification, origin=opts.origin,
+        operator=opts.operator, transport=opts.transport, connection=opts.connection,
+        contract=opts.contract)
     if error:
         print(json.dumps({"ok": False, "error": error}))
         return 0
