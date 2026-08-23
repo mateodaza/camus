@@ -29,7 +29,7 @@ import { validateExperimentRecord } from '../../packages/trust/lib/validate.mjs'
 import { deriveStatusDimensions, deriveHeadline } from './lib/status-dims.mjs';
 import { getModels, updateModels, modelsSummary, modelCatalog, seatCatalog, seatOffered, groundingNeedsClaudeMaker, gateModels, listConnections, listBackends, EFFORTS } from './lib/models.mjs';
 import { deepQualifyModel, expectedReportedFor, seatQualification, storedSeatQualification } from './lib/capability-probes.mjs';
-import { admissionCatalog, admittedSeat, pairingPresentation } from './lib/admission.mjs';
+import { admissionCatalog, admittedSeat, pairingPresentation, isQualifiableTransport } from './lib/admission.mjs';
 import { confirmClaudeRoute } from './lib/grandfather.mjs';
 import { reviewPrompt } from './lib/prompts.mjs';
 import { getSharedTunnelManager } from './lib/ssh-tunnel.mjs';
@@ -1242,7 +1242,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: `${seatKey} "${backendName}:${model}" is not a declared seat tuple; nothing was probed` });
       }
       const backend = listBackends()[backendName];
-      if (!backend || backend.kind !== 'openai_compat' || !['loopback', 'direct_https', 'ssh_tunnel'].includes(backend.transport)) {
+      if (!backend || backend.kind !== 'openai_compat' || !isQualifiableTransport(backend.transport)) {
         return json(res, 400, { error: `${backendName}:${model} is not a supported managed chat-completions backend` });
       }
       const seatType = seatKey === 'maker' ? 'words_maker' : 'words_reviewer';
@@ -2070,7 +2070,11 @@ const tunnelLifecycle = installTunnelLifecycle({ manager: getSharedTunnelManager
 // Startup orphan cleanup is part of readiness, even when this Studio process
 // has not yet admitted a tunnel. The manager remains a library with no import-
 // time signal handlers; this application boundary owns the awaited sweep.
-await getSharedTunnelManager().startup();
+const startupSweep = await getSharedTunnelManager().startup();
+for (const result of startupSweep) {
+  if (result.action === 'closed') console.warn(`Camus: closed orphaned SSH tunnel for connection "${result.connection}" during startup.`);
+  if (result.action === 'corrupt_inconclusive') console.warn(`Camus: could not conclusively inspect the local SSH lease for connection "${result.connection}" during startup.`);
+}
 server.listen(PORT, BIND, () => {
   const hm = hivemind.hivemindStatus();
   const p = actualPort();

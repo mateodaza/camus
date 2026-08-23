@@ -235,9 +235,11 @@ await test('stderr classes are fixed presentation only and each handshake failur
 await test('fresh-port bind race is occupancy-probed, retries once, then refuses', async () => {
   const h = fakeHarness();
   const ports = [40210, 40211, 40212];
+  const attemptedPorts = [];
   let spawnCount = 0;
   const spawnImpl = (file, args, opts) => {
     spawnCount += 1;
+    attemptedPorts.push(portFrom(args));
     const child = h.spawnImpl(file, args, opts);
     queueMicrotask(() => { child.stderr.emit('data', 'untrusted banner without control meaning'); child.emit('exit', 255, null); });
     return child;
@@ -245,7 +247,8 @@ await test('fresh-port bind race is occupancy-probed, retries once, then refuses
   const manager = createTunnelManager({ ...h, spawnImpl, processOps: { alive: () => true }, portOccupancyProbe: async () => true, allocatePortImpl: async () => ports.shift(), fetchImpl: async () => ({ ok: true, json: async () => ({ data: [] }) }), tunnelDir: join(temp, 'bind-refuse') });
   await assert.rejects(manager.acquire({ ...connection, name: 'bind-refuse' }), (error) => error.code === 'bind_collision' && error.failureClass === 'forward_bind_failed');
   assert.equal(spawnCount, 2);
-  assert.notEqual(ports[0], ports[1]);
+  assert.equal(attemptedPorts.length, 2);
+  assert.notEqual(attemptedPorts[0], attemptedPorts[1]);
 });
 
 await test('concurrent first acquires coalesce behind one in-flight transport', async () => {
@@ -279,6 +282,54 @@ await test('timeout aborts a hung response body, not just fetch headers', async 
   assert.equal(aborted, true);
 });
 
+await test('liveness failure uses bounded TERM/KILL teardown and removes the lease', async () => {
+  const h = fakeHarness();
+  const killed = [];
+  const spawnImpl = (file, args, opts) => {
+    const child = h.spawnImpl(file, args, opts);
+    child.kill = (signal) => { killed.push(signal); if (signal === 'SIGKILL') child.emit('exit', null, signal); };
+    queueMicrotask(() => child.stderr.emit('data', 'service unavailable'));
+    return child;
+  };
+  const dir = join(temp, 'stubborn');
+  const manager = createTunnelManager({ ...h, spawnImpl, processOps: { alive: () => true }, allocatePortImpl: async () => 40235, fetchImpl: async () => ({ ok: false, json: async () => ({}) }), tunnelDir: dir });
+  await assert.rejects(manager.acquire({ ...connection, name: 'stubborn' }), /did not answer/);
+  assert.deepEqual(killed, ['SIGTERM', 'SIGKILL']);
+  assert.equal(existsSync(join(dir, 'stubborn', 'lease.json')), false);
+  assert.equal(manager.active.size, 0);
+});
+
+await test('close gates new acquires, drains an in-flight start, and leaves no child', async () => {
+  const h = fakeHarness();
+  let entered; const enteredPromise = new Promise((resolve) => { entered = resolve; });
+  let release; const barrier = new Promise((resolve) => { release = resolve; });
+  const manager = createTunnelManager({ ...h, processOps: { alive: () => true }, allocatePortImpl: async () => { entered(); await barrier; return 40236; }, fetchImpl: async () => ({ ok: true, json: async () => ({ data: [] }) }), tunnelDir: join(temp, 'close-drain') });
+  const first = manager.acquire({ ...connection, name: 'close-drain' });
+  await enteredPromise;
+  const closing = manager.close();
+  await assert.rejects(manager.acquire({ ...connection, name: 'after-close' }), (error) => error.code === 'closed');
+  release();
+  await Promise.allSettled([first, closing]);
+  assert.equal(manager.active.size, 0);
+  assert.equal(manager.inflight.size, 0);
+});
+
+await test('an aborted coalesced waiter rejects without cancelling the shared borrower', async () => {
+  const h = fakeHarness();
+  let release; const barrier = new Promise((resolve) => { release = resolve; });
+  const manager = createTunnelManager({ ...h, processOps: { alive: () => true }, allocatePortImpl: async () => { await barrier; return 40237; }, fetchImpl: async () => ({ ok: true, json: async () => ({ data: [] }) }), tunnelDir: join(temp, 'waiter-abort') });
+  const first = manager.acquire({ ...connection, name: 'waiter-abort' });
+  await new Promise((resolve) => setImmediate(resolve));
+  const controller = new AbortController();
+  const second = manager.acquire({ ...connection, name: 'waiter-abort' }, { signal: controller.signal });
+  controller.abort();
+  await assert.rejects(second, (error) => error.code === 'aborted');
+  release();
+  const lease = await first;
+  assert.equal(h.starts, 1);
+  await lease.release();
+});
+
 await test('runtime root base path joins model URL without a double slash', async () => {
   const h = fakeHarness();
   const manager = createTunnelManager({ ...h, processOps: { alive: () => true }, allocatePortImpl: async () => 40240, fetchImpl: async (url) => { assert.equal(url, 'http://127.0.0.1:40240/models'); return { ok: true, json: async () => ({ data: [] }) }; }, tunnelDir: join(temp, 'root-path') });
@@ -301,6 +352,28 @@ await test('pre-existing tunnel directories and evidence files are tightened', a
   assert.equal(statSync(join(dir, 'modes', 'events.jsonl')).mode & 0o777, 0o600);
   assert.equal(statSync(join(dir, 'modes', 'lease.json')).mode & 0o777, 0o600);
   await lease.release();
+});
+
+await test('explicit raw debug warning names only the local tunnel directory and writes 0600 raw output', async () => {
+  const previous = process.env.STUDIO_TUNNEL_DEBUG;
+  process.env.STUDIO_TUNNEL_DEBUG = '1';
+  const dir = join(temp, 'raw-root');
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (message) => warnings.push(String(message));
+  try {
+    const h = fakeHarness();
+    const fetchImpl = async () => { h.children[0]?.stderr.emit('data', 'alice@private.example 10.2.3.4 /Users/alice/.ssh/key'); return { ok: false, json: async () => ({}) }; };
+    const manager = createTunnelManager({ ...h, processOps: { alive: () => true }, allocatePortImpl: async () => 40255, fetchImpl, tunnelDir: dir });
+    const acquire = manager.acquire({ ...connection, name: 'raw-debug' });
+    await assert.rejects(acquire);
+  } finally {
+    console.warn = originalWarn;
+    if (previous === undefined) delete process.env.STUDIO_TUNNEL_DEBUG;
+    else process.env.STUDIO_TUNNEL_DEBUG = previous;
+  }
+  assert.ok(warnings.some((message) => message.includes(dir) && message.includes('raw SSH diagnostics')));
+  assert.equal(statSync(join(dir, 'raw-debug', 'diagnostics.raw.log')).mode & 0o777, 0o600);
 });
 
 await test('matching orphan receives bounded TERM then KILL and durable evidence', async () => {
@@ -346,7 +419,7 @@ await test('installed OpenSSH ClearAllForwardings regression probe is local and 
   const version = await run(['-V']);
   if (version.error) return;
   const result = await run(['-G', '-o', 'ClearAllForwardings=yes', '-L', '127.0.0.1:40123:127.0.0.1:11434', '--', 'camus-nonexistent']);
-  if (result.error) return;
+  assert.equal(result.error, null, result.error?.message || 'ssh -G failed');
   const forwards = result.stdout.split(/\r?\n/).filter((line) => /^localforward\s/i.test(line));
   assert.equal(forwards.length, 0);
 });

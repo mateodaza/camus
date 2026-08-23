@@ -8,6 +8,7 @@ import { storedSeatQualification } from './capability-probes.mjs';
 import { providerTemplates, plannedProtocols } from './provider-templates.mjs';
 
 const SEAT_TYPE = Object.freeze({ maker: 'words_maker', reviewer: 'words_reviewer' });
+export const isQualifiableTransport = (transport) => ['loopback', 'direct_https', 'ssh_tunnel'].includes(transport);
 
 const transportLabel = (value) => ({
   vendor_managed: 'managed',
@@ -86,7 +87,7 @@ function qualifyEntry(entry, backend, seatType, now) {
   const discoveryStatus = result.receipt?.probeResults?.discoveryStatus ?? 'not_recorded';
   const reason = reasonFor(result, seatType, entry);
   const qualifiable = backend?.kind === 'openai_compat'
-    && ['loopback', 'direct_https', 'ssh_tunnel'].includes(backend.transport);
+    && isQualifiableTransport(backend.transport);
   return {
     ...entry,
     admission: {

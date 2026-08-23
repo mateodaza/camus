@@ -329,13 +329,15 @@ export function createTunnelManager({
     while (Date.now() < deadline && await processAlive(pid)) await new Promise((resolve) => setTimeout(resolve, 25));
   });
   const startupSweep = { promise: null };
+  let closing = false;
+  let closePromise = null;
   const ensureDir = (name) => join(tunnelDir, safeName(name));
   const emitEvidence = (fact) => {
     emit(onEvidence, fact);
     for (const subscriber of evidenceSubscribers) emit(subscriber, fact);
   };
   if (process.env.STUDIO_TUNNEL_DEBUG === '1') {
-    console.warn('Camus: raw SSH diagnostics are enabled; tunnel debug files may contain hostnames and usernames.');
+    console.warn(`Camus: raw SSH diagnostics are enabled; debug files may contain hostnames and usernames under ${tunnelDir}.`);
   }
 
   async function diagnostics(name, stderr, event) {
@@ -441,28 +443,34 @@ export function createTunnelManager({
   }
 
   async function stop(record, reason = 'release') {
-    if (record.timer) clearTimeout(record.timer);
-    record.stopping = true;
-    try { record.child.kill('SIGTERM'); } catch { /* already gone */ }
-    await new Promise((resolve) => {
-      const timer = setTimeout(() => { try { record.child.kill('SIGKILL'); } catch {} resolve(); }, 1500);
-      if (record.exited) { clearTimeout(timer); resolve(); }
-      else record.child.once('exit', () => { clearTimeout(timer); resolve(); });
-    });
-    try { await rm(join(ensureDir(record.connection.name), 'lease.json'), { force: true }); } catch {}
-    emitEvidence({ control: 'teardown', checkpoint: 'action_authorization', outcome: 'released', connection: record.connection.name, reason });
-    try { await lifecycleEvent(record.connection.name, { event: 'teardown', reason }); } catch { /* evidence is best effort */ }
-    active.delete(record.key);
+    if (record.stopPromise) return record.stopPromise;
+    record.stopPromise = (async () => {
+      if (record.timer) clearTimeout(record.timer);
+      record.timer = null;
+      record.stopping = true;
+      try { record.child.kill('SIGTERM'); } catch { /* already gone */ }
+      await new Promise((resolve) => {
+        let settled = false;
+        const finish = () => { if (!settled) { settled = true; clearTimeout(timer); resolve(); } };
+        const timer = setTimeout(() => {
+          try { record.child.kill('SIGKILL'); } catch { /* already gone */ }
+          // The wait is bounded even for a fake or broken child that never
+          // emits exit after SIGKILL; lease cleanup must not hang shutdown.
+          setTimeout(finish, 50);
+        }, 1500);
+        if (record.exited) finish();
+        else record.child.once('exit', finish);
+      });
+      try { await rm(join(ensureDir(record.connection.name), 'lease.json'), { force: true }); } catch {}
+      emitEvidence({ control: 'teardown', checkpoint: 'action_authorization', outcome: 'released', connection: record.connection.name, reason });
+      try { await lifecycleEvent(record.connection.name, { event: 'teardown', reason }); } catch { /* evidence is best effort */ }
+      active.delete(record.key);
+    })();
+    return record.stopPromise;
   }
 
   async function cleanupFailedRecord(record) {
-    if (record.timer) { clearTimeout(record.timer); record.timer = null; }
-    record.stopping = true;
-    if (active.get(record.key) === record) active.delete(record.key);
-    if (!record.exited) {
-      try { record.child.kill('SIGTERM'); } catch { /* already gone */ }
-    }
-    try { await rm(join(ensureDir(record.connection.name), 'lease.json'), { force: true }); } catch { /* best effort */ }
+    await stop(record, 'acquire_failed');
   }
 
   async function startAcquire(connection, { signal, discoveryPath, localPort } = {}) {
@@ -510,16 +518,26 @@ export function createTunnelManager({
       throw new TunnelError(`managed SSH tunnel for connection "${c.name}" has no usable PID/start identity`, 'tunnel');
     }
     const dir = ensureDir(c.name);
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    await chmod(dir, 0o700);
-    await writeJsonAtomic(join(dir, 'lease.json'), {
-      schemaVersion: 1, pid: child.pid, startIdentity, localPort: record.localPort,
-      connection: c.name, connectionFingerprint: key, ownerPid: process.pid, createdAt: now(),
-    });
+    try {
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      await chmod(dir, 0o700);
+      await writeJsonAtomic(join(dir, 'lease.json'), {
+        schemaVersion: 1, pid: child.pid, startIdentity, localPort: record.localPort,
+        connection: c.name, connectionFingerprint: key, ownerPid: process.pid, createdAt: now(),
+      });
+    } catch (error) {
+      await cleanupFailedRecord(record);
+      throw error;
+    }
     emitEvidence({ control: 'authoritative_spawn', checkpoint: 'action_authorization', outcome: 'spawned', connection: c.name });
     active.set(key, record);
     try { await lifecycleEvent(c.name, { event: 'lease_open' }); } catch { /* evidence is best effort */ }
-    if (!(await processAlive(child.pid))) { record.exited = true; record.unusable = true; }
+    try {
+      if (!(await processAlive(child.pid))) { record.exited = true; record.unusable = true; }
+    } catch (error) {
+      await cleanupFailedRecord(record);
+      throw error;
+    }
     if (record.exited || record.unusable) {
       const occupied = await portOccupancyProbe(record.localPort);
       await cleanupFailedRecord(record);
@@ -584,13 +602,24 @@ export function createTunnelManager({
   }
 
   async function acquire(connection, options = {}) {
+    if (closing) throw new TunnelError('managed SSH tunnel manager is closing', 'closed');
     if (!startupSweep.promise) startupSweep.promise = sweepOrphans();
     await startupSweep.promise;
+    if (closing) throw new TunnelError('managed SSH tunnel manager is closing', 'closed');
     const c = validateSshTunnelConfig(connection);
     const key = `${c.name || ''}:${connectionFingerprint(c)}`;
     const pending = inflight.get(key);
     if (pending) {
-      await pending;
+      if (options.signal?.aborted) throw new TunnelError('managed SSH tunnel acquisition was aborted', 'aborted');
+      await new Promise((resolve, reject) => {
+        let done = false;
+        const finish = (fn, value) => { if (done) return; done = true; options.signal?.removeEventListener('abort', onAbort); fn(value); };
+        const onAbort = () => finish(reject, new TunnelError('managed SSH tunnel acquisition was aborted', 'aborted'));
+        options.signal?.addEventListener('abort', onAbort, { once: true });
+        pending.then((value) => finish(resolve, value), (error) => finish(reject, error));
+      });
+      if (closing) throw new TunnelError('managed SSH tunnel manager is closing', 'closed');
+      if (options.signal?.aborted) throw new TunnelError('managed SSH tunnel acquisition was aborted', 'aborted');
       return startAcquire(c, options);
     }
     const operation = (async () => {
@@ -627,11 +656,20 @@ export function createTunnelManager({
   }
 
   async function close() {
-    await Promise.all([...active.values()].map((record) => stop(record, 'manager_close')));
+    if (closePromise) return closePromise;
+    closing = true;
+    closePromise = (async () => {
+      while (inflight.size) {
+        await Promise.allSettled([...inflight.values()]);
+        await Promise.all([...active.values()].map((record) => stop(record, 'manager_close')));
+      }
+      await Promise.all([...active.values()].map((record) => stop(record, 'manager_close')));
+    })();
+    return closePromise;
   }
 
-  async function startup() {
-    if (!startupSweep.promise) startupSweep.promise = sweepOrphans();
+  async function startup({ force = false } = {}) {
+    if (force || !startupSweep.promise) startupSweep.promise = sweepOrphans();
     return startupSweep.promise;
   }
 
@@ -643,7 +681,7 @@ export function createTunnelManager({
 
   // Every first acquire waits for the complete sweep. Reusable-library imports
   // install no process handlers and cannot race orphan cleanup.
-  return Object.freeze({ acquire, preflight, sweepOrphans, startup, subscribe, close, active });
+  return Object.freeze({ acquire, preflight, sweepOrphans, startup, subscribe, close, active, inflight });
 }
 
 let shared;

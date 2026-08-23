@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { admissionCatalog, admittedSeat, pairingPresentation } from './admission.mjs';
+import { admissionCatalog, admittedSeat, pairingPresentation, isQualifiableTransport } from './admission.mjs';
 import { deepQualifyModel } from './capability-probes.mjs';
 import { listBackends } from './models.mjs';
 import { providerTemplates, plannedProtocols } from './provider-templates.mjs';
@@ -71,6 +71,11 @@ async function check(name, fn) {
 
 try {
   const backend = () => listBackends().qwen_local;
+
+  await check('the handler-owned qualification predicate admits managed SSH', () => {
+    assert.equal(isQualifiableTransport('ssh_tunnel'), true);
+    assert.equal(isQualifiableTransport('legacy_http'), false);
+  });
 
   await check('built-ins are admitted while every unprobed custom tuple is disabled', () => {
     const catalog = admissionCatalog();

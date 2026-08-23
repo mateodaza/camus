@@ -854,8 +854,8 @@ export async function qualifyUsedSeats({ backends, seatDecisions, deep, streamIm
   if (!deep) return rows;
   for (const entry of backends ?? []) {
     if (entry.kind !== 'openai_compat') continue;
-    // SSH tunnels and legacy_http are out of Slice C scope: never probe them,
-    // never mint a qual1 receipt for them (§9.2 transport scope).
+    // Legacy HTTP remains out of qualification scope; managed SSH is probed
+    // through its runtime lease by deepQualifyModel.
     if (!isSupportedTransport(entry)) continue;
     const keyless = entry.auth?.kind === 'none';
     if (!keyless && !process.env[entry.apiKeyEnv]) continue; // no key → the backend check already says so
@@ -878,6 +878,10 @@ export async function qualifyUsedSeats({ backends, seatDecisions, deep, streamIm
           rows.push({
             id,
             label,
+            backend: entry.name,
+            model,
+            seatType,
+            connection: entry.connection || entry.connectionDetails?.name || null,
             ok: res.qualified,
             // §9.3 discovery status is appended as informational context on every
             // row (qualified or not); it never changes `ok`.
@@ -885,6 +889,7 @@ export async function qualifyUsedSeats({ backends, seatDecisions, deep, streamIm
               ? `${model} qualified (identity ${res.identity?.mode}, discovery ${res.discoveryStatus})`
               : `${model} not qualified: ${res.reason}${res.missing?.length ? ` [${res.missing.join(', ')}]` : ''} (discovery ${res.discoveryStatus})${res.error ? ` — ${res.error.message}` : ''}`,
             discoveryStatus: res.discoveryStatus,
+            capabilities: res.capabilities ?? null,
             fix: res.qualified ? null : 'run the words-seat probes and fix the failing capability before launch',
             advisory: true,
           });

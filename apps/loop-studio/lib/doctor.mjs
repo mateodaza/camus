@@ -134,12 +134,21 @@ export function loopbackTcpTarget(baseUrl) {
 // deep=true adds the slow managed-connector health round-trip.
 export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   const checks = [];
+  const sshDoctorRows = new Map();
   const add = (id, label, ok, detail, fix = null, extra = {}) => checks.push({ id, label, ok, detail, fix, ...extra });
 
-  // Doctor is also an application boundary: perform the one gated orphan
-  // sweep even when this configuration has no SSH connection to inspect.
+  // Doctor is also an application boundary. Subscribe before forcing exactly
+  // one sweep so a shared singleton created by Studio cannot hide its outcome.
   const doctorTunnelManager = getSharedTunnelManager();
-  await doctorTunnelManager.sweepOrphans();
+  const sweepEvidence = [];
+  const removeSweepSubscription = doctorTunnelManager.subscribe((fact) => sweepEvidence.push(fact));
+  await doctorTunnelManager.startup({ force: true });
+  removeSweepSubscription();
+  const inconclusiveSweep = sweepEvidence.filter((fact) => fact.control === 'lease_sweep' && fact.outcome === 'inconclusive');
+  add('ssh-tunnel-sweep', 'Managed SSH lease sweep', inconclusiveSweep.length === 0,
+    inconclusiveSweep.length ? 'lease cleanup was inconclusive; inspect the named connection and repair its local lease' : 'completed before doctor checks',
+    inconclusiveSweep.length ? 'remove or repair the named connection’s local tunnel lease, then rerun doctor' : null,
+    { optional: true, controlEvidence: sweepEvidence });
 
   add('node', 'Node.js', true, process.version, null);
 
@@ -238,23 +247,22 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
     const label = `Connection "${name}"${conn.anonymous ? ' (migrated)' : ''}`;
     if (conn.kind === 'ssh_tunnel') {
       let tunnelState = null;
-      const controlEvidence = [];
+      const controlEvidence = sweepEvidence.filter((fact) => fact.connection === name);
       if (deep) {
         let unsubscribe = null;
         try {
           const manager = doctorTunnelManager;
           unsubscribe = manager.subscribe((fact) => controlEvidence.push(fact));
-          // Capture this operation's sweep as well as preflight evidence. The
-          // application may have created the shared singleton before doctor.
-          await manager.sweepOrphans();
+          // The single doctor sweep ran above; this subscription captures the
+          // shared manager's preflight/spawn/liveness evidence for this row.
           const lease = await manager.acquire(conn);
           tunnelState = { ok: true, lease, steps: [...lease.steps,
-            { number: 7, id: 'model_discovery', outcome: 'deferred_to_qualification', detail: 'reported by the qualification operation' },
-            { number: 8, id: 'declared_model_visibility', outcome: 'deferred_to_qualification', detail: 'reported by the qualification operation' },
-            { number: 9, id: 'protocol_compatibility', outcome: 'deferred_to_qualification', detail: 'reported by the qualification operation' },
-            { number: 10, id: 'structured_output', outcome: 'deferred_to_qualification', detail: 'reported by the qualification operation' },
+            { number: 7, id: 'model_discovery', outcome: 'not_run', detail: 'qualification operation not yet run' },
+            { number: 8, id: 'declared_model_visibility', outcome: 'not_run', detail: 'qualification operation not yet run' },
+            { number: 9, id: 'protocol_compatibility', outcome: 'not_run', detail: 'qualification operation not yet run' },
+            { number: 10, id: 'structured_output', outcome: 'not_run', detail: 'qualification operation not yet run' },
             { number: 11, id: 'tool_calling', outcome: 'not_applicable', detail: 'words seats are toolless' },
-            { number: 12, id: 'context_window', outcome: 'deferred_to_qualification', detail: 'reported by the qualification operation' },
+            { number: 12, id: 'context_window', outcome: 'not_run', detail: 'qualification operation not yet run' },
           ] };
           await lease.release();
         } catch (error) {
@@ -271,6 +279,7 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
         ok ? null : `run the SSH alias for connection "${name}" interactively to establish host trust/auth, then fix this connection`,
         { optional: true, connection: name, transport: 'ssh_tunnel', steps: tunnelState?.steps ?? [{ number: 1, id: 'config', outcome: ok ? 'declared' : 'failed' }], controlEvidence },
       );
+      sshDoctorRows.set(name, checks.at(-1));
     } else if (conn.kind === 'loopback') {
       const url = new URL(conn.baseUrl);
       // URL.hostname retains brackets for IPv6 literals in Node. net.connect
@@ -437,7 +446,44 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
             ]
           : [],
       );
-      for (const row of qualRows) add(row.id, row.label, row.ok, row.detail, row.fix, { advisory: !requiredIds.has(row.id) });
+      for (const row of qualRows) add(row.id, row.label, row.ok, row.detail, row.fix, { advisory: !requiredIds.has(row.id), qualification: row });
+      const sshBackends = Object.values(listBackends()).filter((backend) => backend.transport === 'ssh_tunnel');
+      for (const backend of sshBackends) {
+        const connectionName = backend.connection || backend.connectionDetails?.name;
+        const doctorRow = sshDoctorRows.get(connectionName);
+        if (!doctorRow) continue;
+        const rows = qualRows.filter((row) => row.backend === backend.name);
+        const models = [...new Set(rows.map((row) => row.model).filter(Boolean))];
+        const stepsFor = (modelRows, model) => {
+          const status = (key) => {
+            const values = modelRows.map((row) => row.capabilities?.[key]?.status).filter(Boolean);
+            if (!values.length) return 'not_run';
+            if (values.every((value) => value === 'demonstrated' || value === 'not_applicable')) return 'passed';
+            return 'failed';
+          };
+          const discovery = modelRows.map((row) => row.discoveryStatus).filter(Boolean);
+          return [
+            { number: 7, id: 'model_discovery', outcome: discovery.length && discovery.every((value) => value !== 'discovery_unavailable') ? 'passed' : 'not_run', detail: `${model}: ${discovery.join(', ') || 'not run'}` },
+            { number: 8, id: 'declared_model_visibility', outcome: modelRows.length ? 'passed' : 'not_run', detail: `${model}: declared qualification tuple` },
+            { number: 9, id: 'protocol_compatibility', outcome: status('streaming'), detail: `${model}: streaming capability` },
+            { number: 10, id: 'structured_output', outcome: status('structuredOutput'), detail: `${model}: structured-output capability` },
+            { number: 11, id: 'tool_calling', outcome: 'not_applicable', detail: `${model}: words seats are toolless` },
+            { number: 12, id: 'context_window', outcome: status('contextWindow'), detail: `${model}: measured context window` },
+          ];
+        };
+        const qualificationSteps = {};
+        for (const model of models) qualificationSteps[model] = stepsFor(rows.filter((row) => row.model === model), model);
+        if (!models.length) qualificationSteps.unprobed = stepsFor([], 'no credential or qualification run');
+        doctorRow.qualificationSteps = qualificationSteps;
+        const allSteps = Object.values(qualificationSteps).flat();
+        doctorRow.steps = [...(doctorRow.steps || []).filter((step) => step.number < 7), ...[7, 8, 9, 10, 11, 12].map((number) => {
+          const candidates = allSteps.filter((step) => step.number === number);
+          const outcome = candidates.length && candidates.every((step) => step.outcome === 'passed' || step.outcome === 'not_applicable')
+            ? (candidates.every((step) => step.outcome === 'not_applicable') ? 'not_applicable' : 'passed')
+            : candidates.some((step) => step.outcome === 'failed') ? 'failed' : 'not_run';
+          return { number, id: candidates[0]?.id || `qualification_${number}`, outcome, detail: candidates.map((step) => step.detail).join('; ') || 'not run' };
+        })];
+      }
     } catch (err) {
       add('qualification', 'Seat qualification', false, err.message, null, { advisory: true });
     }
