@@ -21,4 +21,3 @@ export function installTunnelLifecycle({ manager, server, processRef = process, 
     processRef.off?.('SIGTERM', handlers.SIGTERM);
   } });
 }
-
