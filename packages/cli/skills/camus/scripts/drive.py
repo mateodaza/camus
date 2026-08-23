@@ -866,6 +866,11 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
             kernel.resume_retry_budget_stop(feat_id, options.retry_budget, base=base)
             run = kernel._validated_run(feat_id, base)
             current = kernel._kernel(run["state"])
+        if current.get("phase") == "stopped" and options.wall_seconds is not None \
+                and str(current.get("stopReason") or "").startswith("wall-clock budget exhausted ("):
+            kernel.resume_wall_budget_stop(feat_id, options.wall_seconds, base=base)
+            run = kernel._validated_run(feat_id, base)
+            current = kernel._kernel(run["state"])
         if run["state"].get("stage") == "native_controller":
             active = current.get("activeTaskId")
             node = next((item for item in run["nodes"] if item.get("taskId") == active), None)

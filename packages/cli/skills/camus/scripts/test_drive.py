@@ -471,6 +471,44 @@ def test_retry_stop_reopens_before_normal_driver_dispatch():
         resume.assert_called_once_with("feat-a", 3, base=root)
 
 
+def test_wall_stop_reopens_before_normal_driver_dispatch():
+    with tempfile.TemporaryDirectory() as root:
+        stopped = {
+            "state": {
+                "featId": "feat-a", "status": "needs_human", "stage": "kernel_stop",
+                "kernel": {
+                    "phase": "stopped", "activeTaskId": "task-a",
+                    "stopReason": "wall-clock budget exhausted (120s/100s)",
+                },
+                "tasks": [{"taskId": "task-a", "status": "needs_human"}],
+            },
+            "args": {"tasks": ["bounded task"], "targetPath": root},
+            "nodes": [{"taskId": "task-a", "status": "needs_human"}],
+        }
+        resumed = {
+            "state": {
+                "featId": "feat-a", "status": "running", "stage": "kernel_ready",
+                "kernel": {"phase": "ready", "activeTaskId": None}, "tasks": [],
+            },
+            "args": stopped["args"], "nodes": [], "specs": [],
+        }
+        options = SimpleNamespace(
+            base=root, repo=None, experiment=None, ledger=os.path.join(root, "episodes.jsonl"),
+            token_budget=None, retry_budget=None, wall_seconds=200,
+            human_action=None, verify_timeout=10,
+        )
+        with mock.patch.object(D.kernel, "_validated_run", side_effect=[stopped, resumed]), \
+                mock.patch.object(D.kernel, "_resolve_repo", return_value=root), \
+                mock.patch.object(D.kernel, "resume_wall_budget_stop") as resume, \
+                mock.patch.object(D.kernel, "_selected_index", return_value=(None, None)), \
+                mock.patch.object(D.kernel, "integrate_feature", return_value={
+                    "action": "feature_complete", "status": "done",
+                }):
+            result = D._drive_feature("feat-a", options, client=object())
+        assert result["action"] == "feature_complete"
+        resume.assert_called_once_with("feat-a", 200, base=root)
+
+
 def test_post_agent_budget_check_can_finish_the_review_at_the_retry_ceiling():
     run = {
         "state": {"kernel": {"usage": {"startedAt": 100, "tokens": 0, "retries": 2}}},

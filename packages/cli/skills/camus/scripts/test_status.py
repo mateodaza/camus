@@ -177,6 +177,21 @@ def test_render_native_terminal_stop_does_not_invent_a_resume_command():
         assert "answers:{" not in out
 
 
+def test_render_native_wall_stop_shows_the_supported_higher_total_override():
+    with tempfile.TemporaryDirectory() as base:
+        st = _feat_state("native-wall", status="needs_human")
+        st["stage"] = "kernel_stop"
+        st["question"] = "wall-clock budget exhausted (7442s/7200s)"
+        st["tasks"][0]["status"] = "needs_human"
+        _write(os.path.join(base, "feats", "native-wall.json"), st)
+        synth = S.synthesize(base, "native-wall")
+        synth["live"] = []
+        out = "\n".join(S.render(synth))
+        assert "camus run native-wall --wall-seconds <higher total>" in out
+        assert "resume: none automatic" not in out
+        assert "answers:{" not in out
+
+
 def test_render_native_controller_handoff_shows_the_supported_human_action():
     with tempfile.TemporaryDirectory() as base:
         st = _feat_state("native-human", status="needs_human")

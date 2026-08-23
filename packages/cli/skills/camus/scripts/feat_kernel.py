@@ -1133,6 +1133,72 @@ def resume_retry_budget_stop(feat_id, retry_budget, base=None, now=None):
         }
 
 
+def resume_wall_budget_stop(feat_id, wall_seconds, base=None, now=None):
+    """Reopen a wall-clock stop only with an explicit, genuinely higher ceiling.
+
+    The original startedAt remains authoritative: extending the ceiling grants more total
+    elapsed time; it never resets the clock or disguises prior runtime. The semantic checkpoint
+    and any sealed controller authorization survive unchanged.
+    """
+    now = int(time.time()) if now is None else int(now)
+    if isinstance(wall_seconds, bool) or not isinstance(wall_seconds, int) or wall_seconds <= 0:
+        raise Refusal("resume wall budget must be a positive integer")
+    base = base or camus_home()
+    with _locked(os.path.join(base, "feats"), feat_id):
+        run = _validated_run(feat_id, base)
+        state = run["state"]
+        kernel_state = _kernel(state)
+        reason = str(kernel_state.get("stopReason") or "")
+        if kernel_state.get("phase") != "stopped" \
+                or not reason.startswith("wall-clock budget exhausted ("):
+            raise Refusal("only a native wall-clock budget stop can be resumed this way")
+        budgets = _budgets(run)
+        prior_budget = budgets.get("wallSeconds")
+        started = _usage(state).get("startedAt")
+        if isinstance(prior_budget, bool) or not isinstance(prior_budget, int):
+            raise Refusal("budget-stopped task has no valid prior wall ceiling")
+        if isinstance(started, bool) or not isinstance(started, int):
+            raise Refusal("budget-stopped task has no valid wall-clock start")
+        elapsed = max(0, now - started)
+        if wall_seconds <= prior_budget or wall_seconds <= elapsed:
+            raise Refusal("resume wall budget must exceed both the prior ceiling and elapsed time")
+        active = kernel_state.get("activeTaskId")
+        node = next((item for item in run["nodes"] if item.get("taskId") == active), None)
+        if not isinstance(node, dict) or node.get("status") != "needs_human":
+            raise Refusal("budget-stopped task identity/status is not resumable")
+        phase, review_round = _budget_resume_checkpoint(kernel_state, node)
+        budgets["wallSeconds"] = wall_seconds
+        kernel_state["budgets"] = budgets
+        kernel_state["phase"] = phase
+        kernel_state["updatedAt"] = now
+        kernel_state["budgetResumed"] = {
+            "kind": "wallSeconds", "priorBudget": prior_budget,
+            "wallSeconds": wall_seconds, "measuredElapsedSeconds": elapsed,
+            "resumedAt": now,
+        }
+        kernel_state.pop("stopReason", None)
+        kernel_state.pop("stopKind", None)
+        kernel_state.pop("resumePhase", None)
+        kernel_state.pop("resumeReviewRound", None)
+        if phase == "task_reviewing":
+            kernel_state["directReviewRound"] = review_round
+        state["kernel"] = kernel_state
+        state["status"] = "running"
+        state["stage"] = "kernel_" + phase
+        state.pop("question", None)
+        node["status"] = "running"
+        _append_event(state, "Kernel %s resumed %s after explicit wall budget increase %d -> %d" % (
+            kernel_state.get("traceId"), active, prior_budget, wall_seconds,
+        ))
+        _atomic_write(run["statePath"], state)
+        return {
+            "schemaVersion": SCHEMA_VERSION, "traceId": kernel_state.get("traceId"),
+            "action": "budget_resumed", "taskId": active, "phase": phase,
+            "priorWallSeconds": prior_budget, "wallSeconds": wall_seconds,
+            "elapsedSeconds": elapsed, "resumedStopKind": "wall_budget",
+        }
+
+
 def dispatch_task(feat_id, task_id=None, repo=None, base=None, now=None):
     """Atomically bind the current trace to one task before its model call begins."""
     now = int(time.time()) if now is None else int(now)

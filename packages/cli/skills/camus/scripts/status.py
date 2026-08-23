@@ -373,6 +373,10 @@ def render(synth, now=None):
             lines.append("  resume: camus run %s --token-budget <higher> (plus the same --experiment, if used)" % (
                 s.get("featId") or "<featId>",
             ))
+        elif stage == "kernel_stop" and str(q).startswith("wall-clock budget exhausted ("):
+            lines.append("  resume: camus run %s --wall-seconds <higher total> (plus the same prior args)" % (
+                s.get("featId") or "<featId>",
+            ))
         elif stage == "kernel_stop":
             lines.append("  resume: none automatic — inspect the terminal stop reason before deciding next work")
         elif stage == "native_controller":
