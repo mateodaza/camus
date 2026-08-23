@@ -1458,6 +1458,109 @@ def test_explicit_higher_budget_resumes_a_post_fix_stop_at_independent_review():
     assert state["status"] == "running"
 
 
+def test_explicit_higher_retry_budget_resumes_a_bound_controller_fix():
+    finding = {
+        "priority": 1, "title": "fix this", "body": "bounded finding",
+        "code_location": "direct.txt:1", "confidence_score": 0.99,
+    }
+    world = _direct_fixture(findings=[finding])
+    with mock.patch.object(K, "_run_direct_review", return_value=world["verdict"]):
+        K.review_task(
+            world["feat_id"], world["node"]["taskId"], repo=world["repo"],
+            base=world["base"], now=103,
+        )
+    state_path = os.path.join(world["base"], "feats", world["feat_id"] + ".json")
+    state = json.load(open(state_path, encoding="utf-8"))
+    state["kernel"]["budgets"]["retries"] = 2
+    state["kernel"]["usage"]["retries"] = 2
+    state["kernel"]["phase"] = "stopped"
+    state["kernel"]["stopReason"] = "retry budget exhausted (2/2)"
+    state["kernel"]["resumePhase"] = "task_reviewed"
+    state["status"] = "needs_human"
+    state["stage"] = "kernel_stop"
+    state["tasks"][0]["status"] = "needs_human"
+    state["tasks"][0]["directMakerUsage"] = {
+        "receipts": [{
+            "role": "fix", "sequence": 2, "receiptSha256": "c" * 64,
+            "usage": {"outputTokens": 1},
+            "candidateFingerprint": state["tasks"][0]["directReview"]["candidateFingerprint"],
+        }],
+    }
+    authorization = {
+        "schemaVersion": 1, "action": "fix_recheck", "reviewRound": 1,
+        "kernelPhase": "task_reviewed",
+        "candidateFingerprint": state["tasks"][0]["directReview"]["candidateFingerprint"],
+        "reviewReceiptSha256": state["tasks"][0]["directReview"]["receiptSha256"],
+        "authorizedRoundCap": 3,
+    }
+    state["tasks"][0]["nativeControllerAuthorization"] = authorization
+    _write(state_path, state)
+
+    try:
+        K.resume_retry_budget_stop(world["feat_id"], 2, base=world["base"], now=104)
+        assert False, "the same retry ceiling reopened the stopped task"
+    except K.Refusal as exc:
+        assert "must exceed" in str(exc)
+    resumed = K.resume_retry_budget_stop(world["feat_id"], 3, base=world["base"], now=105)
+    assert resumed["phase"] == "task_reviewed"
+    assert resumed["measuredRetries"] == 1
+    assert resumed["recordedRetriesBeforeRecovery"] == 2
+    state = K._validated_run(world["feat_id"], world["base"])["state"]
+    assert state["kernel"]["budgets"]["retries"] == 3
+    assert state["kernel"]["usage"]["retries"] == 1
+    assert state["tasks"][0]["nativeControllerAuthorization"] == authorization
+    assert state["tasks"][0]["status"] == "running"
+    assert state["status"] == "running"
+
+
+def test_explicit_higher_wall_budget_resumes_a_bound_controller_fix_without_resetting_clock():
+    finding = {
+        "priority": 1, "title": "fix this", "body": "bounded finding",
+        "code_location": "direct.txt:1", "confidence_score": 0.99,
+    }
+    world = _direct_fixture(findings=[finding])
+    with mock.patch.object(K, "_run_direct_review", return_value=world["verdict"]):
+        K.review_task(
+            world["feat_id"], world["node"]["taskId"], repo=world["repo"],
+            base=world["base"], now=103,
+        )
+    state_path = os.path.join(world["base"], "feats", world["feat_id"] + ".json")
+    state = json.load(open(state_path, encoding="utf-8"))
+    state["kernel"]["budgets"]["wallSeconds"] = 100
+    state["kernel"]["usage"]["startedAt"] = 10
+    state["kernel"]["phase"] = "stopped"
+    state["kernel"]["stopReason"] = "wall-clock budget exhausted (100s/100s)"
+    state["kernel"]["resumePhase"] = "task_reviewed"
+    state["status"] = "needs_human"
+    state["stage"] = "kernel_stop"
+    state["tasks"][0]["status"] = "needs_human"
+    authorization = {
+        "schemaVersion": 1, "action": "fix_recheck", "reviewRound": 1,
+        "kernelPhase": "task_reviewed",
+        "candidateFingerprint": state["tasks"][0]["directReview"]["candidateFingerprint"],
+        "reviewReceiptSha256": state["tasks"][0]["directReview"]["receiptSha256"],
+        "authorizedRoundCap": 4,
+    }
+    state["tasks"][0]["nativeControllerAuthorization"] = authorization
+    _write(state_path, state)
+
+    for invalid in (100, 105):
+        try:
+            K.resume_wall_budget_stop(world["feat_id"], invalid, base=world["base"], now=115)
+            assert False, "a non-increasing wall ceiling reopened the stopped task"
+        except K.Refusal as exc:
+            assert "must exceed" in str(exc)
+    resumed = K.resume_wall_budget_stop(world["feat_id"], 200, base=world["base"], now=115)
+    assert resumed["phase"] == "task_reviewed"
+    assert resumed["elapsedSeconds"] == 105
+    state = K._validated_run(world["feat_id"], world["base"])["state"]
+    assert state["kernel"]["budgets"]["wallSeconds"] == 200
+    assert state["kernel"]["usage"]["startedAt"] == 10
+    assert state["tasks"][0]["nativeControllerAuthorization"] == authorization
+    assert state["tasks"][0]["status"] == "running"
+    assert state["status"] == "running"
+
+
 def test_direct_output_stop_kind_migrates_both_published_reason_strings():
     assert K.direct_output_stop_kind({
         "stopReason": "direct output-token budget exhausted (70/50)",
