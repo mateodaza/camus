@@ -386,6 +386,16 @@ export function createTunnelManager({
       const current = alive ? await processStartIdentity(execFileImpl, lease.pid) : null;
       const same = alive && lease.startIdentity && current && lease.startIdentity === current;
       if (same) {
+        const managed = [...active.values()].find((record) => !record.stopping
+          && record.child.pid === lease.pid
+          && record.startIdentity === lease.startIdentity
+          && record.key === lease.connectionFingerprint);
+        if (managed) {
+          await lifecycleEvent(lease.connection, { event: 'lease_sweep', outcome: 'active_managed' });
+          emitEvidence({ control: 'lease_sweep', checkpoint: 'action_authorization', outcome: 'active_managed', connection: lease.connection });
+          swept.push({ connection: lease.connection, action: 'active_managed' });
+          continue;
+        }
         try { await processKill(lease.pid, 'SIGTERM'); await processWait(lease.pid, 1500); } catch { /* already gone */ }
         if (await processAlive(lease.pid)) {
           try { await processKill(lease.pid, 'SIGKILL'); } catch { /* already gone */ }
@@ -464,7 +474,7 @@ export function createTunnelManager({
       try { await rm(join(ensureDir(record.connection.name), 'lease.json'), { force: true }); } catch {}
       emitEvidence({ control: 'teardown', checkpoint: 'action_authorization', outcome: 'released', connection: record.connection.name, reason });
       try { await lifecycleEvent(record.connection.name, { event: 'teardown', reason }); } catch { /* evidence is best effort */ }
-      active.delete(record.key);
+      if (active.get(record.key) === record) active.delete(record.key);
     })();
     return record.stopPromise;
   }
@@ -489,7 +499,7 @@ export function createTunnelManager({
     emitEvidence({ control: 'forward_only_argv', checkpoint: 'action_authorization', outcome: 'passed', connection: c.name, argvShape: 'hardened-local-forward' });
     const record = {
       key, connection: c, localPort: info.localPort, child, refs: 1, stderr: '', exited: false, stopping: false,
-      death: null, timer: null,
+      death: null, timer: null, startIdentity: null,
     };
     record.death = new Promise((resolve, reject) => { record.rejectDeath = reject; record.resolveDeath = resolve; });
     child.stderr?.on?.('data', (chunk) => {
@@ -517,6 +527,7 @@ export function createTunnelManager({
       await cleanupFailedRecord(record);
       throw new TunnelError(`managed SSH tunnel for connection "${c.name}" has no usable PID/start identity`, 'tunnel');
     }
+    record.startIdentity = startIdentity;
     const dir = ensureDir(c.name);
     try {
       await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -639,6 +650,7 @@ export function createTunnelManager({
   }
 
   function leaseFor(record, steps = []) {
+    let released = false;
     return {
       connection: record.connection.name,
       connectionDetails: { ...record.connection },
@@ -647,6 +659,8 @@ export function createTunnelManager({
       death: record.death,
       steps,
       release: async () => {
+        if (released) return;
+        released = true;
         if (record.timer) { clearTimeout(record.timer); record.timer = null; }
         if (record.refs > 0) record.refs -= 1;
         if (record.refs > 0) return;

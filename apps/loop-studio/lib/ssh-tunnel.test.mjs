@@ -143,6 +143,53 @@ await test('reacquiring during linger cancels teardown and preserves the active 
   await second.release();
 });
 
+await test('force doctor-style sweep leaves an active manager-owned lease untouched', async () => {
+  const dir = join(temp, 'active-managed');
+  const h = fakeHarness();
+  const killed = [];
+  const manager = createTunnelManager({ ...h, processOps: { alive: () => true, kill: async (_pid, signal) => killed.push(signal) }, allocatePortImpl: async () => 40205, fetchImpl: async () => ({ ok: true, json: async () => ({ data: [] }) }), tunnelDir: dir, lingerMs: 1 });
+  const lease = await manager.acquire({ ...connection, name: 'active-managed' });
+  const result = await manager.startup({ force: true });
+  assert.equal(result[0].action, 'active_managed');
+  assert.deepEqual(killed, []);
+  assert.equal(existsSync(join(dir, 'active-managed', 'lease.json')), true);
+  await lease.release();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(manager.active.size, 0);
+});
+
+await test('double release is idempotent and cannot consume another borrower reference', async () => {
+  const h = fakeHarness();
+  const manager = createTunnelManager({ ...h, processOps: { alive: () => true }, allocatePortImpl: async () => 40206, fetchImpl: async () => ({ ok: true, json: async () => ({ data: [] }) }), tunnelDir: join(temp, 'double-release'), lingerMs: 5 });
+  const first = await manager.acquire({ ...connection, name: 'double-release' });
+  const second = await manager.acquire({ ...connection, name: 'double-release' });
+  await first.release();
+  await first.release();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(manager.active.size, 1);
+  await second.release();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(manager.active.size, 0);
+});
+
+await test('an acquire during active stop survives the old record completion', async () => {
+  const h = fakeHarness();
+  const killed = [];
+  const manager = createTunnelManager({ ...h, processOps: { alive: () => true }, allocatePortImpl: async () => 40207, fetchImpl: async () => ({ ok: true, json: async () => ({ data: [] }) }), tunnelDir: join(temp, 'stop-race'), lingerMs: 0 });
+  const first = await manager.acquire({ ...connection, name: 'stop-race' });
+  const oldChild = h.children[0];
+  oldChild.kill = (signal) => { killed.push(signal); if (signal === 'SIGKILL') { oldChild.emit('exit', null, signal); } };
+  await first.release();
+  while (!killed.length) await new Promise((resolve) => setImmediate(resolve));
+  const second = await manager.acquire({ ...connection, name: 'stop-race' });
+  assert.equal(manager.active.size, 1);
+  // The old child is still intentionally TERM-stubborn; bounded KILL ends it.
+  await new Promise((resolve) => setTimeout(resolve, 1650));
+  assert.equal(manager.active.size, 1);
+  await second.release();
+  await manager.close();
+});
+
 await test('orphan sweep requires PID start identity and leaves a reused PID alone', async () => {
   const dir = join(temp, 'reuse');
   mkdirSync(join(dir, 'old',), { recursive: true });
