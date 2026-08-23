@@ -2067,6 +2067,10 @@ export async function closeStudioResources() {
 }
 const tunnelLifecycle = installTunnelLifecycle({ manager: getSharedTunnelManager(), server });
 
+// Startup orphan cleanup is part of readiness, even when this Studio process
+// has not yet admitted a tunnel. The manager remains a library with no import-
+// time signal handlers; this application boundary owns the awaited sweep.
+await getSharedTunnelManager().startup();
 server.listen(PORT, BIND, () => {
   const hm = hivemind.hivemindStatus();
   const p = actualPort();

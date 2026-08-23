@@ -50,11 +50,6 @@ function redactSecret(message, secretValue) {
 // One SSE stream in, { text, usage, responseModel } out — or a thrown Error
 // whose .code says which kill path fired (abort | idle | timeout | http).
 export async function streamChatCompletion({ entry, model, prompt, signal, timeoutMs, onDelta }) {
-  let tunnelLease = entry.tunnelLease || null;
-  if (!tunnelLease && (entry.transport === 'ssh_tunnel' || entry.connectionDetails?.kind === 'ssh_tunnel')) {
-    tunnelLease = await getSharedTunnelManager().acquire(entry.connectionDetails || entry, { signal });
-  }
-  const requestEntry = tunnelLease ? { ...entry, baseUrl: tunnelLease.url } : entry;
   // auth.kind:none (keyless loopback, e.g. a bare Ollama) neither requires nor
   // emits a bearer credential — no env var is read and no Authorization header
   // is sent. Every other backend reads its key ONLY from the environment.
@@ -65,6 +60,11 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
     err.code = 'missing_key';
     throw err;
   }
+  let tunnelLease = entry.tunnelLease || null;
+  if (!tunnelLease && (entry.transport === 'ssh_tunnel' || entry.connectionDetails?.kind === 'ssh_tunnel')) {
+    tunnelLease = await getSharedTunnelManager().acquire(entry.connectionDetails || entry, { signal });
+  }
+  const requestEntry = tunnelLease ? { ...entry, baseUrl: tunnelLease.url } : entry;
 
   const controller = new AbortController();
   let killedBy = null;

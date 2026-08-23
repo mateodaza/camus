@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync, existsSync, statSync, chmodSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { screenSshConfig, buildSshArgv, connectionFingerprint, createTunnelManager, redactSshDiagnostics, validateSshTunnelConfig, advisoryHostKeyLookup } from './ssh-tunnel.mjs';
+import { screenSshConfig, buildSshArgv, connectionFingerprint, createTunnelManager, redactSshDiagnostics, validateSshTunnelConfig, advisoryHostKeyLookup, classifySshFailure } from './ssh-tunnel.mjs';
 import { installTunnelLifecycle } from './tunnel-lifecycle.mjs';
 
 const connection = { name: 'gpu_lab', kind: 'ssh_tunnel', sshHostAlias: 'camus-gpu', remoteAddress: '127.0.0.1', remotePort: 11434, basePath: '/v1' };
@@ -189,7 +190,7 @@ await test('a local bind collision retries exactly once with a fresh port', asyn
     if (spawnCount === 1) queueMicrotask(() => { child.stderr.emit('data', 'bind: Address already in use'); child.emit('exit', 255, null); });
     return child;
   };
-  const manager = createTunnelManager({ ...h, spawnImpl, processOps: { alive: () => true }, allocatePortImpl: async () => ports.shift(), fetchImpl: async () => ({ ok: true, json: async () => ({ data: [] }) }), tunnelDir: join(temp, 'retry'), lingerMs: 1 });
+  const manager = createTunnelManager({ ...h, spawnImpl, portOccupancyProbe: async (port) => port === 40130, processOps: { alive: () => true }, allocatePortImpl: async () => ports.shift(), fetchImpl: async () => ({ ok: true, json: async () => ({ data: [] }) }), tunnelDir: join(temp, 'retry'), lingerMs: 1 });
   const lease = await manager.acquire({ ...connection, name: 'retry' });
   assert.equal(spawnCount, 2);
   assert.match(lease.url, /40131/);
@@ -209,6 +210,145 @@ await test('service-down and hung /models responses fail closed with bounded liv
   const h2 = fakeHarness();
   const hung = createTunnelManager({ ...h2, processOps: { alive: () => true }, livenessTimeoutMs: 10, allocatePortImpl: async () => 40137, fetchImpl: async () => new Promise(() => {}), tunnelDir: join(temp, 'hung') });
   await assert.rejects(hung.acquire({ ...connection, name: 'hung' }), /did not answer/);
+});
+
+await test('stderr classes are fixed presentation only and each handshake failure spawns once', async () => {
+  for (const [name, stderr, failureClass] of [
+    ['unknown', 'ssh: Could not resolve hostname secret.example: Name or service not known', 'unknown_host_key'],
+    ['changed', '@@@@@@@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@@@@@@@', 'host_key_changed'],
+    ['auth', 'Permission denied (publickey,password).', 'authentication_refused'],
+  ]) {
+    const h = fakeHarness();
+    const spawnImpl = (file, args, opts) => {
+      const child = h.spawnImpl(file, args, opts);
+      queueMicrotask(() => { child.stderr.emit('data', stderr); child.emit('exit', 255, null); });
+      return child;
+    };
+    const manager = createTunnelManager({ ...h, spawnImpl, processOps: { alive: () => true }, portOccupancyProbe: async () => false, allocatePortImpl: async () => 40200, fetchImpl: async () => ({ ok: true, json: async () => ({ data: [] }) }), tunnelDir: join(temp, `class-${name}`) });
+    await assert.rejects(manager.acquire({ ...connection, name }), (error) => error.code === 'tunnel' && error.failureClass === failureClass && typeof error.fix === 'string' && !error.message.includes('secret.example'));
+    assert.equal(h.starts, 1);
+    assert.equal(existsSync(join(temp, `class-${name}`, name, 'known_hosts')), false);
+  }
+  assert.equal(classifySshFailure('unknown banner with user@example.com 192.0.2.2 /home/user/.ssh/key').failureClass, 'ssh_diagnostic');
+});
+
+await test('fresh-port bind race is occupancy-probed, retries once, then refuses', async () => {
+  const h = fakeHarness();
+  const ports = [40210, 40211, 40212];
+  let spawnCount = 0;
+  const spawnImpl = (file, args, opts) => {
+    spawnCount += 1;
+    const child = h.spawnImpl(file, args, opts);
+    queueMicrotask(() => { child.stderr.emit('data', 'untrusted banner without control meaning'); child.emit('exit', 255, null); });
+    return child;
+  };
+  const manager = createTunnelManager({ ...h, spawnImpl, processOps: { alive: () => true }, portOccupancyProbe: async () => true, allocatePortImpl: async () => ports.shift(), fetchImpl: async () => ({ ok: true, json: async () => ({ data: [] }) }), tunnelDir: join(temp, 'bind-refuse') });
+  await assert.rejects(manager.acquire({ ...connection, name: 'bind-refuse' }), (error) => error.code === 'bind_collision' && error.failureClass === 'forward_bind_failed');
+  assert.equal(spawnCount, 2);
+  assert.notEqual(ports[0], ports[1]);
+});
+
+await test('concurrent first acquires coalesce behind one in-flight transport', async () => {
+  const h = fakeHarness();
+  let releasePort;
+  const barrier = new Promise((resolve) => { releasePort = resolve; });
+  let allocations = 0;
+  const manager = createTunnelManager({ ...h, processOps: { alive: () => true }, allocatePortImpl: async () => {
+    allocations += 1;
+    if (allocations === 1) await barrier;
+    return 40220;
+  }, fetchImpl: async () => ({ ok: true, json: async () => ({ data: [] }) }), tunnelDir: join(temp, 'concurrent') });
+  const first = manager.acquire({ ...connection, name: 'concurrent' });
+  await new Promise((resolve) => setImmediate(resolve));
+  const second = manager.acquire({ ...connection, name: 'concurrent' });
+  releasePort();
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(h.starts, 1);
+  assert.equal(a.localPort, b.localPort);
+  await a.release(); await b.release();
+});
+
+await test('timeout aborts a hung response body, not just fetch headers', async () => {
+  const h = fakeHarness();
+  let aborted = false;
+  const manager = createTunnelManager({ ...h, processOps: { alive: () => true }, livenessTimeoutMs: 10, allocatePortImpl: async () => 40230, fetchImpl: async (_url, { signal }) => {
+    signal.addEventListener('abort', () => { aborted = true; }, { once: true });
+    return { ok: true, json: () => new Promise(() => {}) };
+  }, tunnelDir: join(temp, 'body-timeout') });
+  await assert.rejects(manager.acquire({ ...connection, name: 'body-timeout' }), /did not answer/);
+  assert.equal(aborted, true);
+});
+
+await test('runtime root base path joins model URL without a double slash', async () => {
+  const h = fakeHarness();
+  const manager = createTunnelManager({ ...h, processOps: { alive: () => true }, allocatePortImpl: async () => 40240, fetchImpl: async (url) => { assert.equal(url, 'http://127.0.0.1:40240/models'); return { ok: true, json: async () => ({ data: [] }) }; }, tunnelDir: join(temp, 'root-path') });
+  const lease = await manager.acquire({ ...connection, name: 'root-path', basePath: '/' });
+  assert.equal(lease.url, 'http://127.0.0.1:40240');
+  await lease.release();
+});
+
+await test('pre-existing tunnel directories and evidence files are tightened', async () => {
+  const dir = join(temp, 'modes');
+  mkdirSync(join(dir, 'modes'), { recursive: true, mode: 0o777 });
+  chmodSync(dir, 0o777); chmodSync(join(dir, 'modes'), 0o777);
+  writeFileSync(join(dir, 'modes', 'events.jsonl'), 'old\n', { mode: 0o666 });
+  chmodSync(join(dir, 'modes', 'events.jsonl'), 0o666);
+  const h = fakeHarness();
+  const manager = createTunnelManager({ ...h, processOps: { alive: () => true }, allocatePortImpl: async () => 40250, fetchImpl: async () => ({ ok: true, json: async () => ({ data: [] }) }), tunnelDir: dir, lingerMs: 1 });
+  const lease = await manager.acquire({ ...connection, name: 'modes' });
+  assert.equal(statSync(dir).mode & 0o777, 0o700);
+  assert.equal(statSync(join(dir, 'modes')).mode & 0o777, 0o700);
+  assert.equal(statSync(join(dir, 'modes', 'events.jsonl')).mode & 0o777, 0o600);
+  assert.equal(statSync(join(dir, 'modes', 'lease.json')).mode & 0o777, 0o600);
+  await lease.release();
+});
+
+await test('matching orphan receives bounded TERM then KILL and durable evidence', async () => {
+  const dir = join(temp, 'matching');
+  mkdirSync(join(dir, 'old'), { recursive: true });
+  writeFileSync(join(dir, 'old', 'lease.json'), JSON.stringify({ schemaVersion: 1, pid: 6000, startIdentity: 'same-start', connection: 'old' }));
+  let alive = true; const killed = [];
+  const h = fakeHarness({ psOutput: 'same-start' });
+  const manager = createTunnelManager({ ...h, tunnelDir: dir, processOps: { alive: () => alive, kill: async (_pid, signal) => { killed.push(signal); if (signal === 'SIGKILL') alive = false; }, wait: async () => {} } });
+  const result = await manager.sweepOrphans();
+  assert.deepEqual(killed, ['SIGTERM', 'SIGKILL']);
+  assert.equal(result[0].action, 'closed');
+  assert.match(readFileSync(join(dir, 'old', 'events.jsonl'), 'utf8'), /orphan_closed/);
+});
+
+await test('startup sweep runs even when no tunnel is acquired', async () => {
+  const dir = join(temp, 'startup-only');
+  mkdirSync(join(dir, 'bad'), { recursive: true });
+  writeFileSync(join(dir, 'bad', 'lease.json'), '{broken');
+  const manager = createTunnelManager({ tunnelDir: dir });
+  await manager.startup();
+  assert.equal(existsSync(join(dir, 'bad', 'lease.json')), false);
+});
+
+await test('per-operation evidence subscription sees sweep and preflight on a shared manager', async () => {
+  const evidence = [];
+  const h = fakeHarness();
+  const dir = join(temp, 'evidence-subscribe');
+  mkdirSync(join(dir, 'bad'), { recursive: true });
+  writeFileSync(join(dir, 'bad', 'lease.json'), '{broken');
+  const manager = createTunnelManager({ ...h, tunnelDir: dir });
+  const remove = manager.subscribe((fact) => evidence.push(fact));
+  await manager.sweepOrphans();
+  await manager.preflight({ ...connection, name: 'evidence-subscribe' }, { localPort: 40260 });
+  remove();
+  assert.ok(evidence.some((fact) => fact.control === 'config_validate'));
+  assert.ok(evidence.some((fact) => fact.control === 'lease_sweep'));
+  assert.ok(evidence.some((fact) => fact.control === 'directive_screen'));
+});
+
+await test('installed OpenSSH ClearAllForwardings regression probe is local and skip-safe', async () => {
+  const run = (args) => new Promise((resolve) => execFile('ssh', args, { timeout: 3000 }, (error, stdout) => resolve({ error, stdout: String(stdout || '') })));
+  const version = await run(['-V']);
+  if (version.error) return;
+  const result = await run(['-G', '-o', 'ClearAllForwardings=yes', '-L', '127.0.0.1:40123:127.0.0.1:11434', '--', 'camus-nonexistent']);
+  if (result.error) return;
+  const forwards = result.stdout.split(/\r?\n/).filter((line) => /^localforward\s/i.test(line));
+  assert.equal(forwards.length, 0);
 });
 
 rmSync(temp, { recursive: true, force: true });

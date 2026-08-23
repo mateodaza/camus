@@ -136,6 +136,11 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   const checks = [];
   const add = (id, label, ok, detail, fix = null, extra = {}) => checks.push({ id, label, ok, detail, fix, ...extra });
 
+  // Doctor is also an application boundary: perform the one gated orphan
+  // sweep even when this configuration has no SSH connection to inspect.
+  const doctorTunnelManager = getSharedTunnelManager();
+  await doctorTunnelManager.sweepOrphans();
+
   add('node', 'Node.js', true, process.version, null);
 
   // The seat decisions drive which CLIs a run will actually spawn. A broken
@@ -235,29 +240,35 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
       let tunnelState = null;
       const controlEvidence = [];
       if (deep) {
+        let unsubscribe = null;
         try {
-          const manager = getSharedTunnelManager({ onEvidence: (fact) => controlEvidence.push(fact) });
+          const manager = doctorTunnelManager;
+          unsubscribe = manager.subscribe((fact) => controlEvidence.push(fact));
+          // Capture this operation's sweep as well as preflight evidence. The
+          // application may have created the shared singleton before doctor.
           await manager.sweepOrphans();
           const lease = await manager.acquire(conn);
           tunnelState = { ok: true, lease, steps: [...lease.steps,
-            { number: 7, id: 'model_discovery', outcome: 'pending', detail: 'backend/model checks follow connection preflight' },
-            { number: 8, id: 'declared_model_visibility', outcome: 'pending', detail: 'backend/model checks follow connection preflight' },
-            { number: 9, id: 'protocol_compatibility', outcome: 'pending', detail: 'qualification probe' },
-            { number: 10, id: 'structured_output', outcome: 'pending', detail: 'qualification probe' },
+            { number: 7, id: 'model_discovery', outcome: 'deferred_to_qualification', detail: 'reported by the qualification operation' },
+            { number: 8, id: 'declared_model_visibility', outcome: 'deferred_to_qualification', detail: 'reported by the qualification operation' },
+            { number: 9, id: 'protocol_compatibility', outcome: 'deferred_to_qualification', detail: 'reported by the qualification operation' },
+            { number: 10, id: 'structured_output', outcome: 'deferred_to_qualification', detail: 'reported by the qualification operation' },
             { number: 11, id: 'tool_calling', outcome: 'not_applicable', detail: 'words seats are toolless' },
-            { number: 12, id: 'context_window', outcome: 'pending', detail: 'qualification probe' },
+            { number: 12, id: 'context_window', outcome: 'deferred_to_qualification', detail: 'reported by the qualification operation' },
           ] };
           await lease.release();
         } catch (error) {
           tunnelState = { ok: false, error };
+        } finally {
+          unsubscribe?.();
         }
       }
       const ok = tunnelState ? tunnelState.ok : true;
       add(`connection-${name}`, `${label} (ssh_tunnel)`, ok,
-        !deep ? `ssh ${conn.sshHostAlias} · declared (run --doctor --deep for the twelve-step preflight)`
-          : ok ? `OpenSSH preflight, forward, and ${conn.basePath}/models reachable`
-            : `SSH tunnel preflight failed: ${tunnelState.error?.message || 'unknown failure'}`,
-        ok ? null : `run ssh ${conn.sshHostAlias} interactively to establish host trust/auth, then fix connections.${name}`,
+        !deep ? `managed SSH connection declared (run --doctor --deep for the twelve-step preflight)`
+          : ok ? 'OpenSSH preflight, forward, and model discovery reachable'
+            : 'SSH tunnel preflight failed; inspect the named connection with the fixed SSH guidance',
+        ok ? null : `run the SSH alias for connection "${name}" interactively to establish host trust/auth, then fix this connection`,
         { optional: true, connection: name, transport: 'ssh_tunnel', steps: tunnelState?.steps ?? [{ number: 1, id: 'config', outcome: ok ? 'declared' : 'failed' }], controlEvidence },
       );
     } else if (conn.kind === 'loopback') {

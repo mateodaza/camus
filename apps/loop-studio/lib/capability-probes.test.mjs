@@ -63,7 +63,9 @@ const REVIEW_JSON = JSON.stringify({
 // headers so keyless behavior is assertable.
 function startServer(route) {
   const seenAuth = [];
+  const seenUrls = [];
   const server = http.createServer((req, res) => {
+    seenUrls.push(req.url);
     if (req.method === 'GET' && req.url.endsWith('/models')) {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ data: [{ id: 'served-alias', context_length: 32768 }] }));
@@ -105,7 +107,7 @@ function startServer(route) {
     server.listen(0, '127.0.0.1', () => {
       servers.push(server);
       const { port } = server.address();
-      resolve({ baseUrl: `http://127.0.0.1:${port}/v1`, seenAuth, server });
+      resolve({ baseUrl: `http://127.0.0.1:${port}/v1`, seenAuth, seenUrls, server });
     });
   });
 }
@@ -509,7 +511,7 @@ await test('seatQualification voids the receipt when live server anchors drift',
 await test('seatQualification refuses a seat with no receipt (a seat may not launch unqualified)', async () => {
   freshEnv();
   process.env.CAP_TEST_KEY = SECRET;
-  const { baseUrl } = await startServer((kind) => ({ body: kind === 'structured' ? REVIEW_JSON : 'ok', model: 'served-alias' }));
+  const { baseUrl, seenUrls } = await startServer((kind) => ({ body: kind === 'structured' ? REVIEW_JSON : 'ok', model: 'served-alias' }));
   const admit = await seatQualification({ entry: envEntry(baseUrl), model: 'never-probed', seatType: 'words_reviewer' });
   assert.equal(admit.qualified, false);
   assert.equal(admit.reason, 'missing');
@@ -519,14 +521,17 @@ await test('seatQualification refuses a seat with no receipt (a seat may not lau
 await test('managed ssh_tunnel is supported while legacy_http remains refused', async () => {
   freshEnv();
   process.env.CAP_TEST_KEY = SECRET;
-  const { baseUrl } = await startServer((kind) => ({ body: kind === 'structured' ? REVIEW_JSON : 'ok', model: 'served-alias' }));
-  const ssh = { ...envEntry(baseUrl), transport: 'ssh_tunnel', connectionDetails: { kind: 'ssh_tunnel', name: 'gpu', sshHostAlias: 'gpu', remoteAddress: '127.0.0.1', remotePort: 11434, basePath: '/v1' } };
+  const { baseUrl, seenUrls } = await startServer((kind) => ({ body: kind === 'structured' ? REVIEW_JSON : 'ok', model: 'served-alias' }));
+  const ssh = { ...envEntry('http://127.0.0.1:9/static'), transport: 'ssh_tunnel', connectionDetails: { kind: 'ssh_tunnel', name: 'gpu', sshHostAlias: 'gpu', remoteAddress: '127.0.0.1', remotePort: 11434, basePath: '/v1' } };
   assert.equal(isSupportedTransport(ssh), true);
   assert.equal(isSupportedTransport({ ...envEntry(baseUrl), transport: 'legacy_http' }), false);
   assert.equal(isSupportedTransport(envEntry(baseUrl)), true);
-  const fakeManager = { acquire: async () => ({ url: baseUrl, death: new Promise(() => {}), release: async () => {} }) };
+  let acquired = 0;
+  const fakeManager = { acquire: async () => { acquired += 1; return { url: baseUrl, death: new Promise(() => {}), release: async () => {} }; } };
   const qualified = await deepQualifyModel({ entry: ssh, model: 'served-alias', seatType: 'words_reviewer', contextProbeTokens: 64, tunnelManager: fakeManager });
   assert.equal(qualified.qualified, true, qualified.reason);
+  assert.equal(acquired, 1);
+  assert.ok(seenUrls.length > 0 && seenUrls.every((url) => !url?.includes('/static')), `qualification used runtime lease URL: ${seenUrls.join(', ')}`);
   const legacy = { ...envEntry(baseUrl), transport: 'legacy_http' };
   assert.equal((await seatQualification({ entry: legacy, model: 'served-alias', seatType: 'words_reviewer' })).reason, 'unsupported_transport');
 });

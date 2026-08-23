@@ -7,7 +7,7 @@
 
 import { execFile as nodeExecFile, spawn as nodeSpawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, readdir, rm, writeFile, rename, open, appendFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, writeFile, rename, open, appendFile, chmod } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer, connect as netConnect } from 'node:net';
 import { homedir, networkInterfaces } from 'node:os';
@@ -35,10 +35,12 @@ const HARDENING = Object.freeze([
 export const TUNNEL_CONTRACT_VERSION = 'ssh-tunnel-1';
 
 export class TunnelError extends Error {
-  constructor(message, code = 'tunnel') {
+  constructor(message, code = 'tunnel', { failureClass = null, fix = null } = {}) {
     super(message);
     this.name = 'TunnelError';
     this.code = code;
+    this.failureClass = failureClass;
+    this.fix = fix;
   }
 }
 
@@ -193,28 +195,54 @@ export async function advisoryHostKeyLookup({ execFileImpl = nodeExecFile, effec
 }
 
 export function redactSshDiagnostics(stderr, { maxBytes = 64 * 1024 } = {}) {
-  const classify = (line) => {
-    const value = text(line);
-    if (/remote host identification has changed|offending .*key|man-in-the-middle/i.test(value)) return 'host_key_changed';
-    if (/host key verification failed|could not resolve hostname|known_hosts|no matching host key/i.test(value)) return 'host_key_refused';
-    if (/permission denied|authentication failed|too many authentication failures|passphrase|password/i.test(value)) return 'authentication_refused';
-    if (/address already in use|bind .*failed|forwarding request failed|connect failed.*forward/i.test(value)) return 'forward_bind_failed';
-    if (/connection timed out|operation timed out|connection refused/i.test(value)) return 'peer_unreachable';
-    if (/warning|error|fatal|refused|failed/i.test(value)) return 'ssh_failure';
-    return 'ssh_diagnostic';
-  };
+  const classify = (line) => classifySshFailure(line).failureClass;
   const lines = text(stderr).slice(-maxBytes).split(/\r?\n/).filter(Boolean).map(classify);
   return lines.join('\n').slice(-maxBytes);
 }
 
+// SSH output is untrusted operator input. It can select only one of these
+// fixed, redacted presentation classes; it never controls retry or spawning.
+export function classifySshFailure(stderr) {
+  const value = text(stderr);
+  if (/remote host identification has changed|offending .*key|man-in-the-middle/i.test(value)) {
+    return { failureClass: 'host_key_changed', fix: 'review the Camus SSH alias host key and remove only the stale entry you recognize' };
+  }
+  if (/could not resolve hostname|name or service not known|host key verification failed|known_hosts|no matching host key/i.test(value)) {
+    return { failureClass: 'unknown_host_key', fix: 'run the named SSH alias interactively, verify its host, and confirm host trust' };
+  }
+  if (/permission denied|authentication failed|too many authentication failures|passphrase|password/i.test(value)) {
+    return { failureClass: 'authentication_refused', fix: 'run the named SSH alias interactively and repair its BatchMode credential setup' };
+  }
+  if (/address already in use|bind .*failed|forwarding request failed|connect failed.*forward/i.test(value)) {
+    return { failureClass: 'forward_bind_failed', fix: 'retry with a fresh local port; keep the SSH alias dedicated to Camus' };
+  }
+  if (/connection timed out|operation timed out|connection refused/i.test(value)) {
+    return { failureClass: 'peer_unreachable', fix: 'verify the named SSH alias and that its remote inference service is listening' };
+  }
+  if (/warning|error|fatal|refused|failed/i.test(value)) {
+    return { failureClass: 'ssh_failure', fix: 'run the named SSH alias interactively and review its fixed SSH configuration' };
+  }
+  return { failureClass: 'ssh_diagnostic', fix: 'run the named SSH alias interactively and review its fixed SSH configuration' };
+}
+
+function classifiedTunnelError(connectionName, stderr, code = 'tunnel', override = null) {
+  const { failureClass, fix } = override || classifySshFailure(stderr);
+  return new TunnelError(`managed SSH tunnel for connection "${connectionName}" failed (${failureClass})`, code, { failureClass, fix });
+}
+
 function defaultTunnelDir() { return process.env.STUDIO_TUNNEL_DIR || join(homedir(), '.camus', 'studio', 'tunnels'); }
 function safeName(name) { return String(name || 'connection').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80); }
+function joinRuntimePath(basePath, suffix) {
+  return `${String(basePath || '/').replace(/\/+$/, '')}/${String(suffix || '').replace(/^\/+/, '')}`.replace(/^$/, '/');
+}
 
 async function writeJsonAtomic(path, value) {
   const temp = `${path}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
   await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  await chmod(temp, 0o600);
   try { const handle = await open(temp, 'r'); await handle.sync(); await handle.close(); } catch { /* best effort on platforms without fsync */ }
   await rename(temp, path);
+  await chmod(path, 0o600);
 }
 
 function allocatePort() {
@@ -238,6 +266,18 @@ function nonLoopbackForwardReachable(port) {
     socket.once('timeout', () => finish(false));
     socket.once('error', () => finish(false));
   }))).then((results) => results.some(Boolean));
+}
+
+function localPortOccupied(port) {
+  return new Promise((resolve) => {
+    const socket = netConnect({ host: '127.0.0.1', port });
+    let settled = false;
+    const finish = (value) => { if (settled) return; settled = true; socket.destroy(); resolve(value); };
+    socket.setTimeout(250);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+  });
 }
 
 function execFilePromise(execFileImpl, file, args, options = {}) {
@@ -276,9 +316,12 @@ export function createTunnelManager({
   allocatePortImpl = allocatePort,
   processOps = {},
   nonLoopbackProbe = nonLoopbackForwardReachable,
+  portOccupancyProbe = localPortOccupied,
   livenessTimeoutMs = 5000,
 } = {}) {
   const active = new Map();
+  const inflight = new Map();
+  const evidenceSubscribers = new Set();
   const processAlive = processOps.alive || defaultProcessAlive;
   const processKill = processOps.kill || ((pid, signal) => process.kill(Number(pid), signal));
   const processWait = processOps.wait || (async (pid, timeoutMs = 1500) => {
@@ -287,6 +330,10 @@ export function createTunnelManager({
   });
   const startupSweep = { promise: null };
   const ensureDir = (name) => join(tunnelDir, safeName(name));
+  const emitEvidence = (fact) => {
+    emit(onEvidence, fact);
+    for (const subscriber of evidenceSubscribers) emit(subscriber, fact);
+  };
   if (process.env.STUDIO_TUNNEL_DEBUG === '1') {
     console.warn('Camus: raw SSH diagnostics are enabled; tunnel debug files may contain hostnames and usernames.');
   }
@@ -294,22 +341,29 @@ export function createTunnelManager({
   async function diagnostics(name, stderr, event) {
     const dir = ensureDir(name);
     await mkdir(dir, { recursive: true, mode: 0o700 });
+    await chmod(dir, 0o700);
     const path = join(dir, 'diagnostics.log');
     const redacted = redactSshDiagnostics(stderr);
     await appendFile(path, `${redacted ? `${redacted}\n` : ''}${JSON.stringify(event)}\n`, { mode: 0o600 });
+    await chmod(path, 0o600);
     if (process.env.STUDIO_TUNNEL_DEBUG === '1' && stderr) {
       await writeFile(join(dir, 'diagnostics.raw.log'), `${text(stderr).slice(-64 * 1024)}\n`, { mode: 0o600 });
-      emit(onEvidence, { control: 'diagnostics', checkpoint: 'output_screen', outcome: 'raw_debug_enabled', connection: name });
+      await chmod(join(dir, 'diagnostics.raw.log'), 0o600);
+      emitEvidence({ control: 'diagnostics', checkpoint: 'output_screen', outcome: 'raw_debug_enabled', connection: name });
     }
     return path;
   }
   async function lifecycleEvent(name, event) {
     const dir = ensureDir(name);
     await mkdir(dir, { recursive: true, mode: 0o700 });
-    await appendFile(join(dir, 'events.jsonl'), `${JSON.stringify({ at: now(), connection: name, ...event })}\n`, { mode: 0o600 });
+    await chmod(dir, 0o700);
+    const path = join(dir, 'events.jsonl');
+    await appendFile(path, `${JSON.stringify({ at: now(), connection: name, ...event })}\n`, { mode: 0o600 });
+    await chmod(path, 0o600);
   }
 
   async function sweepOrphans() {
+    try { await mkdir(tunnelDir, { recursive: true, mode: 0o700 }); await chmod(tunnelDir, 0o700); } catch { /* a later acquire reports the usable failure */ }
     let dirs = [];
     try { dirs = await readdir(tunnelDir, { withFileTypes: true }); } catch { return []; }
     const swept = [];
@@ -319,8 +373,10 @@ export function createTunnelManager({
       let lease;
       try { lease = JSON.parse(await readFile(path, 'utf8')); } catch { lease = null; }
       if (!lease || lease.schemaVersion !== 1 || !Number.isInteger(lease.pid) || typeof lease.startIdentity !== 'string' || !lease.startIdentity) {
-        emit(onEvidence, { control: 'lease_sweep', checkpoint: 'action_authorization', outcome: 'inconclusive', connection: lease?.connection ?? item.name, reason: 'corrupt_lease' });
-        swept.push({ connection: lease?.connection ?? item.name, action: 'corrupt_inconclusive' });
+        const connection = lease?.connection ?? item.name;
+        await lifecycleEvent(connection, { event: 'lease_sweep', outcome: 'inconclusive', reason: 'corrupt_lease' });
+        emitEvidence({ control: 'lease_sweep', checkpoint: 'action_authorization', outcome: 'inconclusive', connection, reason: 'corrupt_lease' });
+        swept.push({ connection, action: 'corrupt_inconclusive' });
         try { await rm(path, { force: true }); } catch { /* leave evidence in control report */ }
         continue;
       }
@@ -332,10 +388,12 @@ export function createTunnelManager({
         if (await processAlive(lease.pid)) {
           try { await processKill(lease.pid, 'SIGKILL'); } catch { /* already gone */ }
         }
-        emit(onEvidence, { control: 'lease_sweep', checkpoint: 'action_authorization', outcome: 'orphan_closed', connection: lease.connection });
+        await lifecycleEvent(lease.connection, { event: 'lease_sweep', outcome: 'orphan_closed' });
+        emitEvidence({ control: 'lease_sweep', checkpoint: 'action_authorization', outcome: 'orphan_closed', connection: lease.connection });
         swept.push({ connection: lease.connection, action: 'closed' });
       } else if (alive && lease.startIdentity && current && lease.startIdentity !== current) {
-        emit(onEvidence, { control: 'lease_sweep', checkpoint: 'action_authorization', outcome: 'pid_reuse_refused', connection: lease.connection });
+        await lifecycleEvent(lease.connection, { event: 'lease_sweep', outcome: 'pid_reuse_refused' });
+        emitEvidence({ control: 'lease_sweep', checkpoint: 'action_authorization', outcome: 'pid_reuse_refused', connection: lease.connection });
         swept.push({ connection: lease.connection, action: 'pid_reuse_left_alone' });
       }
       try { await rm(path, { force: true }); } catch { /* best effort */ }
@@ -346,13 +404,13 @@ export function createTunnelManager({
   async function preflight(connection, { localPort, signal } = {}) {
     const c = validateSshTunnelConfig(connection);
     const port = localPort ?? await allocatePortImpl();
-    emit(onEvidence, { control: 'config_validate', checkpoint: 'input_screen', outcome: 'passed', connection: c.name });
+    emitEvidence({ control: 'config_validate', checkpoint: 'input_screen', outcome: 'passed', connection: c.name });
     let version;
     try {
       const v = await execFilePromise(execFileImpl, 'ssh', ['-V'], { timeout: 3000, signal });
       version = (v.stderr || v.stdout).trim().split('\n')[0] || null;
     } catch (error) {
-      emit(onEvidence, { control: 'ssh_version', checkpoint: 'input_screen', outcome: 'refused', connection: c.name, reason: 'ssh_unavailable' });
+      emitEvidence({ control: 'ssh_version', checkpoint: 'input_screen', outcome: 'refused', connection: c.name, reason: 'ssh_unavailable' });
       throw new TunnelError('OpenSSH ssh(1) is not available; install a system OpenSSH client', 'preflight');
     }
     const configArgs = buildSshArgv(c, port, { config: true });
@@ -360,23 +418,23 @@ export function createTunnelManager({
     try { configOutput = await execFilePromise(execFileImpl, 'ssh', configArgs, { timeout: 10_000, maxBuffer: 128 * 1024, signal }); }
     catch (error) {
       await diagnostics(c.name, error.stderr, { at: now(), event: 'ssh-g-failed' });
-      emit(onEvidence, { control: 'directive_screen', checkpoint: 'action_authorization', outcome: 'refused', connection: c.name, reason: 'ssh_g_failed' });
+      emitEvidence({ control: 'directive_screen', checkpoint: 'action_authorization', outcome: 'refused', connection: c.name, reason: 'ssh_g_failed' });
       throw new TunnelError('OpenSSH configuration evaluation failed; check the Camus SSH alias and its config', 'preflight');
     }
     let effective;
     try { effective = screenSshConfig(configOutput.stdout, { localPort: port, connection: c }); }
     catch (error) {
       await diagnostics(c.name, configOutput.stderr, { at: now(), event: 'directive-refused' });
-      emit(onEvidence, { control: 'directive_screen', checkpoint: 'action_authorization', outcome: 'refused', connection: c.name, reason: error.message });
+      emitEvidence({ control: 'directive_screen', checkpoint: 'action_authorization', outcome: 'refused', connection: c.name, reason: 'configuration directive refused' });
       throw error;
     }
-    emit(onEvidence, { control: 'directive_screen', checkpoint: 'action_authorization', outcome: 'passed', connection: c.name, trustedProxy: Boolean(effective.proxyCommand || effective.proxyJump) });
+    emitEvidence({ control: 'directive_screen', checkpoint: 'action_authorization', outcome: 'passed', connection: c.name, trustedProxy: Boolean(effective.proxyCommand || effective.proxyJump) });
     const hostKeys = await advisoryHostKeyLookup({ execFileImpl, effective, port: effective.port });
-    emit(onEvidence, { control: 'host_key_advisory', checkpoint: 'input_screen', outcome: hostKeys.found ? 'hit' : 'miss', connection: c.name });
+    emitEvidence({ control: 'host_key_advisory', checkpoint: 'input_screen', outcome: hostKeys.found ? 'hit' : 'miss', connection: c.name });
     return { connection: c, localPort: port, version, effective, hostKeys, argv: buildSshArgv(c, port),
       steps: [
-        { number: 1, id: 'ssh_version', outcome: 'passed', detail: version },
-        { number: 2, id: 'config_evaluation', outcome: 'passed', detail: effective.hostname },
+        { number: 1, id: 'ssh_version', outcome: 'passed', detail: 'OpenSSH available' },
+        { number: 2, id: 'config_evaluation', outcome: 'passed', detail: 'effective configuration screened' },
         { number: 3, id: 'directive_screen', outcome: 'passed', detail: 'forward-only configuration' },
         { number: 4, id: 'host_key_advisory', outcome: hostKeys.found ? 'hit' : 'miss', detail: hostKeys.found ? 'known host entry found' : 'advisory miss; handshake remains authoritative' },
       ] };
@@ -392,9 +450,19 @@ export function createTunnelManager({
       else record.child.once('exit', () => { clearTimeout(timer); resolve(); });
     });
     try { await rm(join(ensureDir(record.connection.name), 'lease.json'), { force: true }); } catch {}
-    emit(onEvidence, { control: 'teardown', checkpoint: 'action_authorization', outcome: 'released', connection: record.connection.name, reason });
+    emitEvidence({ control: 'teardown', checkpoint: 'action_authorization', outcome: 'released', connection: record.connection.name, reason });
     try { await lifecycleEvent(record.connection.name, { event: 'teardown', reason }); } catch { /* evidence is best effort */ }
     active.delete(record.key);
+  }
+
+  async function cleanupFailedRecord(record) {
+    if (record.timer) { clearTimeout(record.timer); record.timer = null; }
+    record.stopping = true;
+    if (active.get(record.key) === record) active.delete(record.key);
+    if (!record.exited) {
+      try { record.child.kill('SIGTERM'); } catch { /* already gone */ }
+    }
+    try { await rm(join(ensureDir(record.connection.name), 'lease.json'), { force: true }); } catch { /* best effort */ }
   }
 
   async function startAcquire(connection, { signal, discoveryPath, localPort } = {}) {
@@ -404,13 +472,13 @@ export function createTunnelManager({
     if (existing && !existing.stopping) {
       if (existing.timer) { clearTimeout(existing.timer); existing.timer = null; }
       existing.refs += 1;
-      emit(onEvidence, { control: 'ownership', checkpoint: 'action_authorization', outcome: 'shared', connection: c.name, refs: existing.refs });
+      emitEvidence({ control: 'ownership', checkpoint: 'action_authorization', outcome: 'shared', connection: c.name, refs: existing.refs });
       return leaseFor(existing);
     }
     const info = await preflight(c, { signal, localPort });
     const child = spawnImpl('ssh', info.argv, { shell: false, stdio: ['ignore', 'ignore', 'pipe'] });
     if (!child || typeof child.once !== 'function') throw new TunnelError('OpenSSH did not produce an observable child process', 'tunnel');
-    emit(onEvidence, { control: 'forward_only_argv', checkpoint: 'action_authorization', outcome: 'passed', connection: c.name, argvShape: 'hardened-local-forward' });
+    emitEvidence({ control: 'forward_only_argv', checkpoint: 'action_authorization', outcome: 'passed', connection: c.name, argvShape: 'hardened-local-forward' });
     const record = {
       key, connection: c, localPort: info.localPort, child, refs: 1, stderr: '', exited: false, stopping: false,
       death: null, timer: null,
@@ -423,70 +491,93 @@ export function createTunnelManager({
       record.exited = true;
       record.unusable = true;
       if (active.get(record.key) === record) active.delete(record.key);
-      record.resolveDeath(new TunnelError(`managed SSH tunnel failed to start (${error.code || 'spawn'})`, 'tunnel'));
+      record.resolveDeath(classifiedTunnelError(c.name, error?.stderr, 'tunnel'));
     });
     child.once('exit', async (code, signalName) => {
       record.exited = true;
-      record.exitCode = code;
       record.unusable = true;
       if (active.get(record.key) === record) active.delete(record.key);
-      const death = new TunnelError(`managed SSH tunnel exited (${code ?? signalName ?? 'unknown'})`, 'tunnel');
-      if (/bind|address already in use|forward.*failed/i.test(record.stderr)) death.code = 'bind_collision';
+      const death = classifiedTunnelError(c.name, record.stderr, 'tunnel');
       record.resolveDeath(death);
       if (!record.stopping) {
         try { await diagnostics(c.name, record.stderr, { at: now(), event: 'unexpected-exit', code, signal: signalName }); } catch { /* bounded diagnostics are best effort */ }
-        emit(onEvidence, { control: 'tunnel_death', checkpoint: 'output_screen', outcome: 'infrastructure_failed', connection: c.name, reason: 'tunnel_death' });
+        emitEvidence({ control: 'tunnel_death', checkpoint: 'output_screen', outcome: 'infrastructure_failed', connection: c.name, reason: 'tunnel_death' });
       }
     });
     const startIdentity = await processStartIdentity(execFileImpl, child.pid);
     if (!child.pid || !startIdentity || !(await processAlive(child.pid))) {
-      try { child.kill('SIGTERM'); } catch {}
+      await cleanupFailedRecord(record);
       throw new TunnelError(`managed SSH tunnel for connection "${c.name}" has no usable PID/start identity`, 'tunnel');
     }
     const dir = ensureDir(c.name);
     await mkdir(dir, { recursive: true, mode: 0o700 });
+    await chmod(dir, 0o700);
     await writeJsonAtomic(join(dir, 'lease.json'), {
       schemaVersion: 1, pid: child.pid, startIdentity, localPort: record.localPort,
       connection: c.name, connectionFingerprint: key, ownerPid: process.pid, createdAt: now(),
     });
-    emit(onEvidence, { control: 'authoritative_spawn', checkpoint: 'action_authorization', outcome: 'spawned', connection: c.name });
+    emitEvidence({ control: 'authoritative_spawn', checkpoint: 'action_authorization', outcome: 'spawned', connection: c.name });
     active.set(key, record);
-    try { await lifecycleEvent(c.name, { event: 'lease_open', pid: child.pid, startIdentity, localPort: record.localPort }); } catch { /* evidence is best effort */ }
+    try { await lifecycleEvent(c.name, { event: 'lease_open' }); } catch { /* evidence is best effort */ }
+    if (!(await processAlive(child.pid))) { record.exited = true; record.unusable = true; }
     if (record.exited || record.unusable) {
-      active.delete(key);
-      const failure = new TunnelError(`managed SSH tunnel for connection "${c.name}" exited during spawn`, record.exitCode === 255 ? 'bind_collision' : 'tunnel');
-      throw failure;
+      const occupied = await portOccupancyProbe(record.localPort);
+      await cleanupFailedRecord(record);
+      if (occupied) throw classifiedTunnelError(c.name, record.stderr, 'bind_collision', { failureClass: 'forward_bind_failed', fix: 'retry with a fresh local port; keep the SSH alias dedicated to Camus' });
+      throw classifiedTunnelError(c.name, record.stderr, 'tunnel');
     }
-    emit(onEvidence, { control: 'ownership', checkpoint: 'action_authorization', outcome: 'leased', connection: c.name, refs: 1 });
+    emitEvidence({ control: 'ownership', checkpoint: 'action_authorization', outcome: 'leased', connection: c.name, refs: 1 });
     let livenessTimeoutId;
+    let livenessController;
+    let onCallerAbort;
     try {
-      const path = discoveryPath || `${c.basePath}/models`.replace('//', '/');
+      const path = discoveryPath || joinRuntimePath(c.basePath, 'models');
       if (await nonLoopbackProbe(record.localPort)) {
         throw new TunnelError('managed SSH forward is reachable on a non-loopback local address; refusing the tunnel', 'preflight');
       }
-      const timeout = new Promise((_, reject) => { livenessTimeoutId = setTimeout(() => reject(new TunnelError('forwarded /models request timed out', 'liveness_timeout')), livenessTimeoutMs); });
-      const response = await Promise.race([fetchImpl(`http://127.0.0.1:${record.localPort}${path}`, { signal }), timeout]);
-      clearTimeout(livenessTimeoutId);
-      if (!response || !response.ok || typeof response.json !== 'function') throw new TunnelError('forwarded /models response was not a successful JSON response', 'liveness');
-      const body = await response.json();
+      livenessController = new AbortController();
+      let timedOut = false;
+      onCallerAbort = () => livenessController.abort();
+      signal?.addEventListener('abort', onCallerAbort, { once: true });
+      if (signal?.aborted) livenessController.abort();
+      const timeout = new Promise((_, reject) => {
+        livenessTimeoutId = setTimeout(() => {
+          timedOut = true;
+          livenessController.abort();
+          reject(new TunnelError('forwarded /models request timed out', 'liveness_timeout'));
+        }, livenessTimeoutMs);
+      });
+      let response;
+      const body = await Promise.race([ (async () => {
+        try {
+          response = await fetchImpl(`http://127.0.0.1:${record.localPort}${path}`, { signal: livenessController.signal });
+        } catch (fetchError) {
+          if (timedOut) throw new TunnelError('forwarded /models request timed out', 'liveness_timeout');
+          throw fetchError;
+        }
+        if (!response || !response.ok || typeof response.json !== 'function') throw new TunnelError('forwarded /models response was not a successful JSON response', 'liveness');
+        return response.json();
+      })(), timeout ]);
       if (!body || !Array.isArray(body.data)) throw new TunnelError('forwarded /models response was not a parseable model list', 'liveness');
+      clearTimeout(livenessTimeoutId);
+      signal?.removeEventListener('abort', onCallerAbort);
       if (record.exited || !(await processAlive(record.child.pid))) throw new TunnelError('managed SSH tunnel exited during application liveness; no direct fallback is permitted', 'tunnel');
-      emit(onEvidence, { control: 'application_liveness', checkpoint: 'input_screen', outcome: 'passed', connection: c.name });
+      emitEvidence({ control: 'application_liveness', checkpoint: 'input_screen', outcome: 'passed', connection: c.name });
       try { await lifecycleEvent(c.name, { event: 'application_liveness', outcome: 'passed' }); } catch { /* evidence is best effort */ }
     } catch (error) {
       clearTimeout(livenessTimeoutId);
+      signal?.removeEventListener('abort', onCallerAbort);
       if (record.exited) {
-        if (/bind|address already in use|forward.*failed/i.test(record.stderr)) {
-          active.delete(record.key);
-          throw new TunnelError('OpenSSH could not bind the requested local forward; retrying once with a fresh port', 'bind_collision');
-        }
-        throw new TunnelError('managed SSH tunnel died before application liveness completed; no direct fallback is permitted', 'tunnel');
+        const occupied = await portOccupancyProbe(record.localPort);
+        await cleanupFailedRecord(record);
+        if (occupied) throw classifiedTunnelError(c.name, record.stderr, 'bind_collision', { failureClass: 'forward_bind_failed', fix: 'retry with a fresh local port; keep the SSH alias dedicated to Camus' });
+        throw classifiedTunnelError(c.name, record.stderr, 'tunnel');
       }
       try { await diagnostics(c.name, record.stderr, { at: now(), event: 'application-liveness-failed' }); } catch { /* best effort */ }
-      await stop(record, 'application_liveness_failed');
-      emit(onEvidence, { control: 'application_liveness', checkpoint: 'input_screen', outcome: 'inconclusive', connection: c.name });
+      await cleanupFailedRecord(record);
+      emitEvidence({ control: 'application_liveness', checkpoint: 'input_screen', outcome: 'inconclusive', connection: c.name });
       if (error instanceof TunnelError && error.code === 'preflight') throw error;
-      throw new TunnelError(`forwarded inference service did not answer ${c.basePath}/models`, 'tunnel');
+      throw new TunnelError(`forwarded inference service did not answer ${joinRuntimePath(c.basePath, 'models')}`, 'tunnel');
     }
     const steps = [...info.steps, { number: 5, id: 'authoritative_spawn', outcome: 'passed', detail: 'hardened foreground child' }, { number: 6, id: 'loopback_liveness', outcome: 'passed', detail: 'loopback-only listener and application response' }];
     return leaseFor(record, steps);
@@ -495,15 +586,27 @@ export function createTunnelManager({
   async function acquire(connection, options = {}) {
     if (!startupSweep.promise) startupSweep.promise = sweepOrphans();
     await startupSweep.promise;
-    let last;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try { return await startAcquire(connection, options); }
-      catch (error) {
-        last = error;
-        if (error?.code !== 'bind_collision' || attempt !== 0) throw error;
-      }
+    const c = validateSshTunnelConfig(connection);
+    const key = `${c.name || ''}:${connectionFingerprint(c)}`;
+    const pending = inflight.get(key);
+    if (pending) {
+      await pending;
+      return startAcquire(c, options);
     }
-    throw last;
+    const operation = (async () => {
+      let last;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try { return await startAcquire(c, options); }
+        catch (error) {
+          last = error;
+          if (error?.code !== 'bind_collision' || attempt !== 0) throw error;
+        }
+      }
+      throw last;
+    })();
+    inflight.set(key, operation);
+    try { return await operation; }
+    finally { if (inflight.get(key) === operation) inflight.delete(key); }
   }
 
   function leaseFor(record, steps = []) {
@@ -511,7 +614,7 @@ export function createTunnelManager({
       connection: record.connection.name,
       connectionDetails: { ...record.connection },
       localPort: record.localPort,
-      url: `http://127.0.0.1:${record.localPort}${record.connection.basePath}`,
+      url: `http://127.0.0.1:${record.localPort}${record.connection.basePath === '/' ? '' : record.connection.basePath}`,
       death: record.death,
       steps,
       release: async () => {
@@ -527,9 +630,20 @@ export function createTunnelManager({
     await Promise.all([...active.values()].map((record) => stop(record, 'manager_close')));
   }
 
+  async function startup() {
+    if (!startupSweep.promise) startupSweep.promise = sweepOrphans();
+    return startupSweep.promise;
+  }
+
+  function subscribe(callback) {
+    if (typeof callback !== 'function') throw new TypeError('evidence subscriber must be a function');
+    evidenceSubscribers.add(callback);
+    return () => evidenceSubscribers.delete(callback);
+  }
+
   // Every first acquire waits for the complete sweep. Reusable-library imports
   // install no process handlers and cannot race orphan cleanup.
-  return Object.freeze({ acquire, preflight, sweepOrphans, close, active });
+  return Object.freeze({ acquire, preflight, sweepOrphans, startup, subscribe, close, active });
 }
 
 let shared;
