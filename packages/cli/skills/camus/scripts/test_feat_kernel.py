@@ -131,6 +131,15 @@ def _accept_fixture(result_status="verify_inconclusive"):
         "reviewerEffort": "high",
         "reviewerRound": 1,
         "reviewerModelStatus": "recorded",
+        # rc1 terminal provenance the workflow derives from the asGate-accepted binding: a pinned
+        # reviewer model is configured/qual1, and camus-loop's default full posture is full scope.
+        "reviewContract": "rc1",
+        "reviewScope": "full",
+        "reviewerQualification": "qual1",
+        "reviewOrigin": "camus-loop",
+        "reviewOperator": "claude-code",
+        "reviewTransport": "cli-detached",
+        "reviewConnection": "configured",
         "commit_sha": commit,
     }
     output_path = os.path.join(base, "workflow.output.json")
@@ -158,6 +167,15 @@ def _accept_fixture(result_status="verify_inconclusive"):
             "effort_actual": "high",
             "reviewer_model": "gpt-5.6-sol",
             "reviewer_backend": "codex",
+            # rc1 carried fields, matching the workflow result's terminal provenance above, so the
+            # adoption path's expected_contract cross-check accepts this binding.
+            "contract": "rc1",
+            "scope": "full",
+            "qualification": "qual1",
+            "origin": "camus-loop",
+            "operator": "claude-code",
+            "transport": "cli-detached",
+            "connection": "configured",
         },
     })
     return {
@@ -215,6 +233,15 @@ def _direct_fixture(findings=None):
             "effort_actual": "high",
             "reviewer_model": "gpt-5.6-sol",
             "reviewer_backend": "codex",
+            # rc1 carried fields, as codex_review.sh emits them for this pinned-model run:
+            # a pinned reviewer model is configured/qual1, and the direct lane runs light scope.
+            "contract": "rc1",
+            "scope": "light",
+            "qualification": "qual1",
+            "origin": "camus-feat",
+            "operator": "claude-code",
+            "transport": "cli-detached",
+            "connection": "configured",
         },
     })
     verdict = {
@@ -601,6 +628,15 @@ def test_accept_ingests_runtime_metric_and_preserves_review_provenance_then_land
     assert pending["status"] == "ready_to_merge"
     assert pending["provenStatus"] == "done_with_findings"
     assert pending["kernelEvidence"]["verification"]["head"] == world["commit"]
+    # rc1 carried provenance survives the workflow-adoption path onto the node (not dropped like the
+    # earlier cut, which persisted only backend/model/effort/round) — taken from the accepted binding.
+    assert pending["reviewContract"] == "rc1"
+    assert pending["reviewScope"] == "full"
+    assert pending["reviewerQualification"] == "qual1"
+    assert pending["reviewConnection"] == "configured"
+    assert pending["reviewOrigin"] == "camus-loop"
+    assert pending["reviewOperator"] == "claude-code"
+    assert pending["reviewTransport"] == "cli-detached"
 
     # A crash/replay at the accept boundary revalidates evidence but does not duplicate audit rows.
     with mock.patch.object(K, "_run_verify", return_value=green):
@@ -643,6 +679,52 @@ def test_accept_refuses_result_finding_drift_without_mutating_state():
             assert False, "drifted findings accepted"
         except K.Refusal as exc:
             assert "findings" in str(exc)
+    assert not verify.called
+    assert open(state_path, encoding="utf-8").read() == before
+
+
+def test_accept_refuses_rc1_contract_drift_without_mutating_state():
+    # Finding: the workflow-adoption path must cross-check the receipt binding's rc1 fields against
+    # the provenance the workflow result carries, exactly like the direct path's expected_contract.
+    # A receipt whose connection/qualification drifted from the accepted workflow result is refused
+    # BEFORE verification runs, and terminal state is never derived from an unchecked binding.
+    world = _accept_fixture()
+    review = json.load(open(world["receipt_path"], encoding="utf-8"))
+    review["binding"]["connection"] = "vendor_managed"   # drifts from the result's "configured"
+    _write(world["receipt_path"], review)
+    state_path = os.path.join(world["base"], "feats", world["feat_id"] + ".json")
+    before = open(state_path, encoding="utf-8").read()
+    with mock.patch.object(K, "_run_verify") as verify:
+        try:
+            K.accept_task(
+                world["feat_id"], world["node"]["taskId"], world["result_path"],
+                repo=world["repo"], base=world["base"], now=200,
+            )
+            assert False, "drifted rc1 binding accepted"
+        except K.Refusal as exc:
+            assert "connection" in str(exc)
+    assert not verify.called
+    assert open(state_path, encoding="utf-8").read() == before
+
+
+def test_accept_refuses_workflow_result_missing_rc1_provenance():
+    # A workflow result that carries no rc1 provenance (a pre-contract or tampered result) cannot be
+    # adopted: without it there is nothing to check the receipt binding against, so it is refused.
+    world = _accept_fixture()
+    output = json.load(open(world["result_path"], encoding="utf-8"))
+    output["result"].pop("reviewConnection")
+    _write(world["result_path"], output)
+    state_path = os.path.join(world["base"], "feats", world["feat_id"] + ".json")
+    before = open(state_path, encoding="utf-8").read()
+    with mock.patch.object(K, "_run_verify") as verify:
+        try:
+            K.accept_task(
+                world["feat_id"], world["node"]["taskId"], world["result_path"],
+                repo=world["repo"], base=world["base"], now=200,
+            )
+            assert False, "result missing rc1 provenance accepted"
+        except K.Refusal as exc:
+            assert "rc1 contract provenance" in str(exc)
     assert not verify.called
     assert open(state_path, encoding="utf-8").read() == before
 
@@ -946,6 +1028,34 @@ def test_direct_clean_review_refuses_a_late_untracked_file():
             assert "changed after its clean review" in str(exc)
     assert not verify.called
     assert open(state_path, encoding="utf-8").read() == before
+
+
+def test_direct_review_refuses_a_receipt_missing_rc1_contract_fields():
+    # A receipt whose binding drops (or drifts) an rc1 carried field must be refused by the
+    # native direct path — its acceptance gate is the direct analogue of the workflow's asGate.
+    for mutate in (
+        lambda b: b.pop("qualification"),                 # missing → cannot confirm the tier
+        lambda b: b.update(qualification="builtin1"),      # drifted → pinned model is not builtin1
+        lambda b: b.update(scope="full"),                  # drifted → the direct lane runs light
+        lambda b: b.pop("contract"),                       # missing → version cannot be checked
+        lambda b: b.update(origin="camus-loop"),           # drifted → wrong requester
+    ):
+        world = _direct_fixture()
+        review = json.load(open(world["receipt_path"], encoding="utf-8"))
+        mutate(review["binding"])
+        _write(world["receipt_path"], review)
+        with mock.patch.object(K, "_run_direct_review", return_value=world["verdict"]):
+            try:
+                K.review_task(
+                    world["feat_id"], world["node"]["taskId"],
+                    repo=world["repo"], base=world["base"], now=103,
+                )
+                assert False, "direct path accepted an rc1-noncompliant receipt"
+            except K.Refusal:
+                pass
+        # The refused receipt never seals: the task is not left at a reviewed phase.
+        node = K._validated_run(world["feat_id"], world["base"])["nodes"][0]
+        assert "directReview" not in node
 
 
 def test_direct_fixed_candidate_preserves_blocking_findings():
@@ -1266,6 +1376,35 @@ def test_direct_review_host_timeout_covers_the_high_effort_watchdog_chunk():
     assert K.DIRECT_REVIEW_HOST_TIMEOUT > 480
 
 
+def test_unpinned_direct_review_finalizes_child_env_before_deriving_builtin1():
+    run = {
+        "base": "/tmp/camus", "state": {"kernel": {"traceId": "feat:a1"}},
+        "nodes": [{"taskId": "task-abc123"}], "specs": ["bounded task"],
+    }
+    calls = [
+        {"ok": True},
+        {"ran": True, "clean": True, "blocking": [], "nonblocking": []},
+    ]
+    # A seat-level None is a real unpinned reviewer. It must clear an inherited model before
+    # deriving the request and must never pass None into subprocess argv/env.
+    with mock.patch.dict(os.environ, {"CAMUS_CODEX_MODEL": "ambient-model"}):
+        with mock.patch.object(K, "_json_command", side_effect=calls) as command:
+            verdict = K._run_direct_review(
+                run, "/tmp/repo", run["nodes"][0], "/tmp/worktree",
+                "codex", None, "high", round_no=1,
+            )
+    assert verdict["ran"] is True
+    request_call = command.call_args_list[0]
+    request_argv = request_call.args[0]
+    child_env = request_call.kwargs["env"]
+    assert child_env["CAMUS_CODEX_MODEL"] == ""
+    assert request_argv[request_argv.index("--model") + 1] == ""
+    assert request_argv[request_argv.index("--qualification") + 1] == "builtin1"
+    assert request_argv[request_argv.index("--connection") + 1] == "vendor_managed"
+    assert all(isinstance(value, str) for value in child_env.values())
+    assert all(isinstance(value, str) for value in request_argv)
+
+
 def test_explicit_higher_budget_resumes_a_post_fix_stop_at_independent_review():
     finding = {
         "priority": 1, "title": "fix this", "body": "bounded finding",
@@ -1350,6 +1489,51 @@ def test_background_usage_refuses_observed_model_substitution():
             assert False, "observed model substitution accepted"
         except K.Refusal as exc:
             assert "pinned model" in str(exc)
+
+
+def test_direct_review_contract_derives_tier_from_every_pin_lever():
+    """The native direct path must mirror codex_review.sh: vendor_managed/builtin1 hold ONLY for
+    the built-in codex backend with NO pinned model and over the vendor connection. A model pinned
+    via CAMUS_CODEX_MODEL, a -m/--model or a `-c model=` config override in CAMUS_CODEX_ARGS, the
+    medium-only light-model ladder, OR a non-vendor connection selector (--oss/--local-provider/
+    `-c model_provider=`), OR a system config each downgrades to configured/qual1."""
+    def tier(env, backend="codex", model="", effort=None, system_config_present=False):
+        c = K._direct_review_contract(
+            backend, model, env=env, effort=effort,
+            system_config_present=system_config_present,
+        )
+        return c["connection"], c["qualification"]
+
+    # Unpinned built-in codex over the vendor connection: the ONLY builtin1 case.
+    assert tier({}) == ("vendor_managed", "builtin1")
+    # Model pinned by each lever ⇒ configured/qual1.
+    assert tier({}, model="gpt-5.5") == ("configured", "qual1")
+    assert tier({"CAMUS_CODEX_MODEL": "gpt-5.5"}) == ("configured", "qual1")
+    assert tier({"CAMUS_CODEX_ARGS": "-c model_reasoning_effort=medium -m gpt-5.4"}) == ("configured", "qual1")
+    # Codex's GENERIC config override pins the model just as surely as -m (the finding's bypass).
+    assert tier({"CAMUS_CODEX_ARGS": '-c model="o3"'}) == ("configured", "qual1")
+    assert tier({"CAMUS_CODEX_ARGS": "-mo3"}) == ("configured", "qual1")
+    assert tier({"CAMUS_CODEX_ARGS": '--config=model="o3"'}) == ("configured", "qual1")
+    assert tier({"CAMUS_CODEX_ARGS": '-c model_catalog_json="/tmp/models.json"'}) == ("configured", "qual1")
+    assert tier({"CAMUS_CODEX_ARGS": '--config=model_catalog_json="/tmp/models.json"'}) == ("configured", "qual1")
+    # model_reasoning_effort= is a DIFFERENT key — it must NOT be read as a model pin.
+    assert tier({"CAMUS_CODEX_ARGS": "-c model_reasoning_effort=high"}) == ("vendor_managed", "builtin1")
+    # A NON-VENDOR connection selector (not a model pin) still disqualifies builtin1.
+    assert tier({"CAMUS_CODEX_ARGS": "--oss --local-provider ollama"}) == ("configured", "qual1")
+    assert tier({"CAMUS_CODEX_ARGS": "-c model_provider=ollama"}) == ("configured", "qual1")
+    assert tier({"CAMUS_CODEX_ARGS": "--config=model_provider=ollama"}) == ("configured", "qual1")
+    assert tier({"CAMUS_CODEX_ARGS": "--profile local-review"}) == ("configured", "qual1")
+    assert tier({"CAMUS_CODEX_ARGS": "-plocal-review"}) == ("configured", "qual1")
+    assert tier({"CAMUS_CODEX_ARGS": '-c model_providers.camus_local.base_url="http://127.0.0.1:11434/v1"'}) == ("configured", "qual1")
+    assert tier({"CAMUS_CODEX_ARGS": '-copenai_base_url="http://127.0.0.1:11434/v1"'}) == ("configured", "qual1")
+    # The light-model ladder is effort-gated: configured at medium, vendor_managed elsewhere.
+    assert tier({"CAMUS_CODEX_LIGHT_MODEL": "gpt-5.4-mini"}, effort="medium") == ("configured", "qual1")
+    assert tier({"CAMUS_CODEX_LIGHT_MODEL": "gpt-5.4-mini"}, effort="high") == ("vendor_managed", "builtin1")
+    # System/managed config sits above built-in defaults and cannot be disabled by the user-config
+    # or project controls. Its presence is conservatively configurable.
+    assert tier({}, system_config_present=True) == ("configured", "qual1")
+    # An alternate backend is configured/qual1 regardless of pins.
+    assert tier({}, backend="claude") == ("configured", "qual1")
 
 
 if __name__ == "__main__":

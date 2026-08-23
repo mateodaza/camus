@@ -83,6 +83,125 @@ REVIEWED_STATUSES = ("done", "done_with_findings", "verify_inconclusive")
 SEAT_VALUE_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 DIRECT_REVIEW_AWAITS = 20
 DIRECT_REVIEW_HOST_TIMEOUT = 540
+
+# REVIEW-CONTRACT.md (version rc1) — the fields that must travel with every review.
+# The native direct-review path is its OWN requester and acceptor (there is no workflow
+# asGate here), so it computes these expectations, seals them into the review REQUEST, and
+# re-checks the emitted BINDING against them field by field — exactly as camus-loop's asGate
+# does for the workflow path. Keep these in lockstep with review_request.py / codex_review.sh
+# / camus-loop.workflow.js; a mismatch is a version skew, not a silent field drift.
+REVIEW_CONTRACT = "rc1"
+# The direct reviewer always runs review.sh at `light` scope (diff-primary); origin/operator
+# name this caller and the harness executing it; transport is the executor's own constant.
+DIRECT_REVIEW_SCOPE = "light"
+DIRECT_REVIEW_ORIGIN = "camus-feat"
+DIRECT_REVIEW_OPERATOR = "claude-code"
+DIRECT_REVIEW_TRANSPORT = "cli-detached"
+
+
+def _args_has_model_flag(args):
+    """Detect supported separate/attached model flags and generic-config spellings."""
+    for token in (args or "").split():
+        assignment = _config_assignment(token)
+        if token in ("-m", "--model") or token.startswith("--model=") \
+                or (token.startswith("-m") and len(token) > 2) \
+                or assignment.startswith("model=") \
+                or assignment.startswith("model_catalog_json="):
+            return True
+    return False
+
+
+def _config_assignment(token):
+    """Return a generic config assignment from separated or attached -c/--config syntax."""
+    if token.startswith("--config="):
+        return token[len("--config="):]
+    if token.startswith("-c") and token != "-c":
+        return token[2:].lstrip("=")
+    return token
+
+
+def _args_selects_nonvendor_connection(args):
+    """Detect CLI/provider/base-URL routing that disqualifies vendor_managed/builtin1."""
+    for token in (args or "").split():
+        assignment = _config_assignment(token)
+        if token in ("--oss", "--local-provider", "-p", "--profile") \
+                or token.startswith("--local-provider=") \
+                or token.startswith("--profile=") \
+                or (token.startswith("-p") and len(token) > 2) \
+                or assignment.startswith("model_provider=") \
+                or assignment.startswith("oss_provider=") \
+                or assignment.startswith("model_providers.") \
+                or assignment.startswith("openai_base_url="):
+            return True
+    return False
+
+
+def _managed_or_system_config_present(env):
+    """Conservative local evidence that Codex can receive admin-managed identity settings."""
+    paths = [
+        "/etc/codex/config.toml",
+        "/etc/codex/managed_config.toml",
+        "/etc/codex/requirements.toml",
+    ]
+    extra = (env.get("CAMUS_CODEX_MANAGED_CONFIG_EVIDENCE") or "").strip()
+    if extra:
+        paths.append(extra)
+    program_data = (env.get("ProgramData") or env.get("PROGRAMDATA") or "").strip()
+    if program_data:
+        paths.extend([
+            os.path.join(program_data, "OpenAI", "Codex", "managed_config.toml"),
+            os.path.join(program_data, "OpenAI", "Codex", "requirements.toml"),
+        ])
+    if any(os.path.isfile(path) for path in paths):
+        return True
+    if sys.platform == "darwin" and os.path.isfile("/usr/bin/defaults"):
+        for key in ("config_toml_base64", "requirements_toml_base64"):
+            try:
+                result = subprocess.run(
+                    ["/usr/bin/defaults", "read", "com.openai.codex", key],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=2, check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if result.returncode == 0:
+                return True
+    return False
+
+
+def _direct_review_contract(backend, model, env=None, effort=None, system_config_present=None):
+    """The rc1 carried fields the native direct path REQUESTS and then re-checks against
+    the emitted binding. connection/qualification are DERIVED the SAME way codex_review.sh
+    (and asGate) derive them from the FINAL codex args — a model can be pinned by MORE than
+    the reviewer-model seat: the user's CAMUS_CODEX_MODEL, a -m/--model folded into
+    CAMUS_CODEX_ARGS, or the light-model ladder (CAMUS_CODEX_LIGHT_MODEL, applied by the
+    executor ONLY at medium effort). vendor_managed/builtin1 hold ONLY for the built-in codex
+    backend with NO pinned model from ANY of those levers; any pin or alternate backend is
+    configured/qual1. Examining only `model` here (as an earlier cut did) falsely certified a
+    review pinned via CAMUS_CODEX_ARGS/CAMUS_CODEX_LIGHT_MODEL as vendor_managed/builtin1."""
+    env = os.environ if env is None else env
+    model_pinned = (
+        bool(model)
+        or bool((env.get("CAMUS_CODEX_MODEL") or "").strip())
+        or _args_has_model_flag(env.get("CAMUS_CODEX_ARGS") or "")
+        or (effort == "medium" and bool((env.get("CAMUS_CODEX_LIGHT_MODEL") or "").strip()))
+    )
+    nonvendor_conn = _args_selects_nonvendor_connection(env.get("CAMUS_CODEX_ARGS") or "")
+    if system_config_present is None:
+        system_config_present = _managed_or_system_config_present(env)
+    connection = "vendor_managed" if (
+        not model_pinned and not nonvendor_conn and not system_config_present and backend == "codex"
+    ) else "configured"
+    qualification = "builtin1" if (backend == "codex" and connection == "vendor_managed") else "qual1"
+    return {
+        "contract": REVIEW_CONTRACT,
+        "scope": DIRECT_REVIEW_SCOPE,
+        "qualification": qualification,
+        "origin": DIRECT_REVIEW_ORIGIN,
+        "operator": DIRECT_REVIEW_OPERATOR,
+        "transport": DIRECT_REVIEW_TRANSPORT,
+        "connection": connection,
+    }
 DIRECT_OUTPUT_BUDGET_STOP = "direct_output_budget"
 DIRECT_OUTPUT_RESERVE_STOP = "direct_output_reserve"
 DIRECT_OUTPUT_STOP_KINDS = (DIRECT_OUTPUT_BUDGET_STOP, DIRECT_OUTPUT_RESERVE_STOP)
@@ -762,7 +881,8 @@ def _validated_task_checkout(repo, node, result, final_commit=None):
 
 
 def _validate_review_receipt(run, node, worktree, round_no, backend, model, effort,
-                             expected_blocking=None, explicit=None, allow_legacy=False):
+                             expected_blocking=None, explicit=None, allow_legacy=False,
+                             expected_contract=None):
     if isinstance(round_no, bool) or not isinstance(round_no, int) or round_no < 1:
         raise Refusal("reviewer round is invalid")
     default = os.path.join(
@@ -786,6 +906,19 @@ def _validate_review_receipt(run, node, worktree, round_no, backend, model, effo
     for key, value in expected.items():
         if binding.get(key) != value:
             raise Refusal("review receipt %s does not match the workflow result" % key)
+    # rc1 carried fields (REVIEW-CONTRACT.md): when the caller supplies expectations (the
+    # native direct path always does), the emitted binding must carry EACH field and it must
+    # match by exact equality — a missing or drifted contract/scope/qualification/provenance
+    # field is refused, never silently accepted. This is the direct path's analogue of asGate.
+    if expected_contract:
+        for key, value in expected_contract.items():
+            if value is None:
+                continue
+            actual = binding.get(key)
+            if not actual:
+                raise Refusal("review receipt recorded no %s, so the rc1 contract field cannot be confirmed" % key)
+            if actual != value:
+                raise Refusal("review receipt %s %r does not match the requested %r" % (key, actual, value))
     receipt_worktree = review.get("worktree_canonical") or review.get("worktree")
     if not isinstance(receipt_worktree, str) or os.path.realpath(receipt_worktree) != os.path.realpath(worktree):
         raise Refusal("review receipt worktree does not match the task worktree")
@@ -832,6 +965,15 @@ def _validate_review_receipt(run, node, worktree, round_no, backend, model, effo
         "model": binding.get("reviewer_model"),
         "effort": binding.get("effort_actual"),
         "round": binding.get("round_actual"),
+        # rc1 carried provenance, taken from the ACCEPTED binding (terminal provenance is
+        # derived only from a binding this validator accepted, never from an infra failure).
+        "contract": binding.get("contract"),
+        "scope": binding.get("scope"),
+        "qualification": binding.get("qualification"),
+        "origin": binding.get("origin"),
+        "operator": binding.get("operator"),
+        "transport": binding.get("transport"),
+        "connection": binding.get("connection"),
         "parsed": parsed,
         "normalized": normalized_review,
     }
@@ -849,10 +991,28 @@ def _review_receipt_evidence(run, node, workflow, explicit=None):
         ))
     ):
         raise Refusal("workflow result has no concrete recorded reviewer identity")
+    # REVIEW-CONTRACT (rc1): the workflow result carries the terminal provenance it derived from an
+    # asGate-ACCEPTED binding (reviewContract/reviewScope/reviewerQualification/origin/operator/
+    # transport/connection). Cross-check EACH against the durable receipt binding, exactly as the
+    # native direct path does with expected_contract — so a receipt whose contract/scope/
+    # qualification/provenance drifted from the workflow result is refused, never adopted, and
+    # terminal state is never derived from a binding that was not checked against the rc1 fields.
+    expected_contract = {
+        "contract": result.get("reviewContract"),
+        "scope": result.get("reviewScope"),
+        "qualification": result.get("reviewerQualification"),
+        "origin": result.get("reviewOrigin"),
+        "operator": result.get("reviewOperator"),
+        "transport": result.get("reviewTransport"),
+        "connection": result.get("reviewConnection"),
+    }
+    if not all(isinstance(v, str) and v for v in expected_contract.values()):
+        raise Refusal("workflow result is missing rc1 contract provenance from the accepted review binding")
     return _validate_review_receipt(
         run, node, result.get("worktree"), round_no,
         result.get("reviewerBackend"), result.get("reviewerModel"), result.get("reviewerEffort"),
         expected_blocking=result.get("findings"), explicit=explicit, allow_legacy=True,
+        expected_contract=expected_contract,
     )
 
 
@@ -1497,20 +1657,37 @@ def _run_direct_review(run, repo, node, worktree, backend, model, effort, round_
     scripts = os.path.dirname(os.path.abspath(__file__))
     nonce = "%s:%s" % (_kernel(run["state"])["traceId"], node["taskId"].rsplit("-", 1)[-1])
     env = os.environ.copy()
+    # subprocess requires string env/argv values. More importantly, an unpinned seat must
+    # actively clear an ambient model before we derive the expected connection/qualification;
+    # the contract has to describe the finalized child environment, not its parent snapshot.
+    reviewer_model = model or ""
     env.update({
         "CAMUS_REVIEW_DIR": os.path.join(run["base"], "reviews"),
         "CAMUS_REPO_ROOT": repo,
         "CAMUS_REVIEWER": backend,
         "CAMUS_REVIEW_BACKEND": backend,
-        "CAMUS_CODEX_MODEL": model,
+        "CAMUS_CODEX_MODEL": reviewer_model,
         "CAMUS_GATE_NONCE": nonce,
         "CAMUS_REVIEW_ROUND": str(round_no),
         "CAMUS_REVIEW_EFFORT": effort,
     })
+    # rc1 carried fields: sealed into the REQUEST, cross-checked by codex_review.sh, and
+    # re-verified against the emitted binding in _validate_review_receipt below. Derived from
+    # the FINAL env inherited by the review child and effort the executor will actually run.
+    contract = _direct_review_contract(backend, reviewer_model, env=env, effort=effort)
+    env.update({
+        "CAMUS_REVIEW_SCOPE": contract["scope"],
+        "CAMUS_REVIEW_ORIGIN": contract["origin"],
+        "CAMUS_REVIEW_OPERATOR": contract["operator"],
+    })
     request = _json_command([
         sys.executable, os.path.join(scripts, "review_request.py"), "write",
         "--worktree", worktree, "--round", str(round_no), "--effort", effort,
-        "--nonce", nonce, "--model", model, "--backend", backend,
+        "--nonce", nonce, "--model", reviewer_model, "--backend", backend,
+        "--contract", contract["contract"], "--scope", contract["scope"],
+        "--qualification", contract["qualification"], "--origin", contract["origin"],
+        "--operator", contract["operator"], "--transport", contract["transport"],
+        "--connection", contract["connection"],
     ], repo, env=env, label="direct review request")
     if request.get("ok") is not True:
         raise Refusal("direct review request refused: %s" % request.get("error"))
@@ -1609,6 +1786,7 @@ def review_task(feat_id, task_id, repo=None, base=None, now=None):
         review = _validate_review_receipt(
             run, node, worktree, round_no, backend, model, effort,
             expected_blocking=verdict.get("blocking"), allow_legacy=False,
+            expected_contract=_direct_review_contract(backend, model, effort=effort),
         )
         if verdict.get("clean") is not review["normalized"].get("clean"):
             raise Refusal("reviewer stdout disagrees with its durable receipt")
@@ -1628,6 +1806,15 @@ def review_task(feat_id, task_id, repo=None, base=None, now=None):
             "model": review["model"],
             "effort": review["effort"],
             "round": review["round"],
+            # rc1 carried provenance from the accepted binding — the terminal record of
+            # the scope/qualification/connection the review actually ran under.
+            "contract": review["contract"],
+            "scope": review["scope"],
+            "qualification": review["qualification"],
+            "origin": review["origin"],
+            "operator": review["operator"],
+            "transport": review["transport"],
+            "connection": review["connection"],
             "reviewedAt": now,
         }
         node["reviewerBackend"] = review["backend"]
@@ -1681,6 +1868,8 @@ def seal_task(feat_id, task_id, fixed_unreviewed=False, repo=None, verify_timeou
             direct.get("model"), direct.get("effort"),
             expected_blocking=direct.get("blocking"), explicit=direct.get("receiptPath"),
             allow_legacy=False,
+            expected_contract=_direct_review_contract(
+                direct.get("backend"), direct.get("model"), effort=direct.get("effort")),
         )
         if review["sha256"] != direct.get("receiptSha256"):
             raise Refusal("direct review receipt changed after the review boundary")
@@ -1903,6 +2092,17 @@ def accept_task(feat_id, task_id, result_file, final_commit=None, review_receipt
         node["reviewerModel"] = review["model"]
         node["reviewerEffort"] = review["effort"]
         node["reviewerRound"] = review["round"]
+        # rc1 carried provenance from the ACCEPTED, contract-checked binding — the terminal record
+        # of the scope/qualification/connection the adopted review actually ran under. Persisted
+        # alongside the reviewer identity (mirrors the direct path's directReview block) so the
+        # workflow-adoption path is not the one place these fields are silently dropped.
+        node["reviewContract"] = review["contract"]
+        node["reviewScope"] = review["scope"]
+        node["reviewerQualification"] = review["qualification"]
+        node["reviewOrigin"] = review["origin"]
+        node["reviewOperator"] = review["operator"]
+        node["reviewTransport"] = review["transport"]
+        node["reviewConnection"] = review["connection"]
         findings = result.get("findings") if isinstance(result.get("findings"), list) else []
         if findings:
             node["findingsDeferred"] = len(findings)

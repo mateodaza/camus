@@ -31,6 +31,11 @@ WT="$ROOT/camus-wt-task"
 echo "new content" > "$WT/tracked.txt"
 echo "brand new module" > "$WT/newfile.ts"
 echo "junk" > "$WT/ignoredfile.txt"
+# A repository-local Codex layer may pin a different reviewer. The executor must suppress it
+# mechanically; the fake codex below deliberately only records the boundary argv.
+mkdir -p "$WT/.codex"
+printf 'model = "repo-pinned-model"\nmodel_provider = "repo-pinned-provider"\n' > "$WT/.codex/config.toml"
+PROJECT_TRUST_OVERRIDE="projects.\"$(cd "$WT" && pwd -P)\".trust_level=\"untrusted\""
 
 # fake codex: records the diff AS THE REVIEWER WOULD SEE IT (cwd = worktree), argv, stdin size.
 # WATCHDOG CONTRACT (2026-06-11): real codex now runs detached with --json, so the verdict
@@ -45,6 +50,7 @@ cat > "$ROOT/bin/codex" <<EOF
 # closed on: exit=nonzero, or a done run that writes NO -o verdict (adapter → ran:false).
 if [ "\$1" = "exec" ] && [ "\$2" = "resume" ]; then
   printf '%s\n' "\$@" > "$SPY/args_resume"
+  printf '%s' "\${OPENAI_BASE_URL-unset}" > "$SPY/openai_base_url_resume"
   printf '%s\n' "\$3" > "$SPY/resume_id"
   printf '{"type":"thread.started","thread_id":"%s"}\n' "\$3"
   case "\${SPY_RESUME_FAIL:-}" in
@@ -58,6 +64,7 @@ if [ "\$1" = "exec" ] && [ "\$2" = "resume" ]; then
   exit 0
 fi
 printf '%s\n' "\$@" > "$SPY/args"
+printf '%s' "\${OPENAI_BASE_URL-unset}" > "$SPY/openai_base_url"
 git diff --name-only > "$SPY/seen_diff" 2>/dev/null
 wc -c < /dev/stdin | tr -d ' ' > "$SPY/stdin_bytes"
 out=""; prev=""
@@ -78,6 +85,13 @@ PY
 
 export PATH="$ROOT/bin:$PATH"
 export CAMUS_REVIEW_DIR="$ROOT/reviews"
+# CLEAN, UNPINNED BASELINE. Several checks below (and the builtin1/vendor_managed baseline in
+# particular) assert the tier the built-in codex backend earns with NO pinned model of any kind.
+# A real Camus verification env already exports CAMUS_CODEX_MODEL (and may fold a model/backend/
+# connection into CAMUS_CODEX_ARGS or an alternate CAMUS_REVIEW_BACKEND), which codex_review.sh
+# CORRECTLY derives as qual1/configured — so the inherited pins must be unset here, not assumed
+# absent. The cases that WANT a pin export their own var and unset it afterward.
+unset CAMUS_CODEX_MODEL CAMUS_CODEX_ARGS CAMUS_CODEX_LIGHT_MODEL CAMUS_CODEX_TIER CAMUS_CODEX_DISABLE_MCP CAMUS_REVIEW_BACKEND CAMUS_CODEX_MANAGED_CONFIG_EVIDENCE
 
 out="$(run_review)" || { echo "FAIL review script errored/hung"; exit 1; }
 
@@ -95,6 +109,10 @@ check "schema flag passed" \
   "yes" "$(grep -qx -- '--output-schema' "$SPY/args" && echo yes || echo no)"
 check "defaults to MEDIUM reasoning when no effort arg + no CAMUS_CODEX_ARGS" \
   "yes" "$(grep -qx 'model_reasoning_effort=medium' "$SPY/args" && echo yes || echo no)"
+check "every fresh review mechanically ignores ambient user config" \
+  "yes" "$(grep -qx -- '--ignore-user-config' "$SPY/args" && echo yes || echo no)"
+check "every fresh review mechanically suppresses repository-local Codex config" \
+  "yes" "$(grep -Fqx -- "$PROJECT_TRUST_OVERRIDE" "$SPY/args" && echo yes || echo no)"
 check "audit file written for the round" \
   "yes" "$([ -f "$ROOT/reviews/camus-wt-task-r1.json" ] && echo yes || echo no)"
 
@@ -132,10 +150,107 @@ export CAMUS_CODEX_LIGHT_MODEL=fake-mini
 run_review >/dev/null || { echo "FAIL light-model review errored/hung"; exit 1; }
 check "light model used at default (medium) effort" \
   "yes" "$(grep -qx 'fake-mini' "$SPY/args" && echo yes || echo no)"
+# QUALIFICATION TRUTH (finding: a lever-pinned model must NOT be certified builtin1). The
+# light model pins a real model with no CAMUS_CODEX_MODEL — the binding must read qual1 /
+# configured, derived from the ACTUAL args, not the falsely-builtin1 vendor_managed tier.
+check "light-model pin downgrades qualification to qual1 (not builtin1)" \
+  "qual1" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binding",{}).get("qualification"))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
+check "light-model pin marks the connection configured (not vendor_managed)" \
+  "configured" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binding",{}).get("connection"))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
 run_review_effort "xhigh" >/dev/null || { echo "FAIL light-model xhigh review errored/hung"; exit 1; }
 check "light model NOT used on escalated rounds (xhigh)" \
   "no" "$(grep -qx 'fake-mini' "$SPY/args" && echo yes || echo no)"
 unset CAMUS_CODEX_LIGHT_MODEL
+
+# The same qualification truth for a -m folded into CAMUS_CODEX_ARGS (no CAMUS_CODEX_MODEL):
+# codex runs a pinned model, so the tier is qual1/configured, never the built-in gate.
+export CAMUS_CODEX_ARGS="-c model_reasoning_effort=medium -m fake-ambient"
+run_review >/dev/null || { echo "FAIL ambient -m review errored/hung"; exit 1; }
+check "ambient -m in CAMUS_CODEX_ARGS reaches codex" \
+  "yes" "$(grep -qx 'fake-ambient' "$SPY/args" && echo yes || echo no)"
+check "ambient -m downgrades qualification to qual1 (not builtin1)" \
+  "qual1" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binding",{}).get("qualification"))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
+check "ambient -m marks the connection configured (not vendor_managed)" \
+  "configured" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binding",{}).get("connection"))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
+unset CAMUS_CODEX_ARGS
+# The same qualification truth for a model pinned via codex's GENERIC config override
+# (`-c model=<v>`) rather than -m — the detector must catch the lone `model=` token too, or a
+# `CAMUS_CODEX_ARGS='-c model="o3"'` pin is falsely certified as the built-in gate.
+export CAMUS_CODEX_ARGS='-c model="o3"'
+run_review >/dev/null || { echo "FAIL -c model= review errored/hung"; exit 1; }
+check "-c model= config override downgrades qualification to qual1 (not builtin1)" \
+  "qual1" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binding",{}).get("qualification"))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
+check "-c model= config override marks the connection configured (not vendor_managed)" \
+  "configured" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binding",{}).get("connection"))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
+unset CAMUS_CODEX_ARGS
+# Ambient config and base-URL redirects are excluded from the hardened builtin1 process while
+# CODEX_HOME remains available for authentication. Prove both controls at the child boundary.
+AMBIENT_CODEX_HOME="$ROOT/ambient-codex"; mkdir -p "$AMBIENT_CODEX_HOME"
+printf 'model_provider = "ollama"\nopenai_base_url = "http://127.0.0.1:11434/v1"\n' > "$AMBIENT_CODEX_HOME/config.toml"
+export CODEX_HOME="$AMBIENT_CODEX_HOME"
+export OPENAI_BASE_URL='http://127.0.0.1:11434/v1'
+run_review >/dev/null || { echo "FAIL isolated ambient-config review errored/hung"; exit 1; }
+check "ambient provider config is excluded by --ignore-user-config" \
+  "yes" "$(grep -qx -- '--ignore-user-config' "$SPY/args" && echo yes || echo no)"
+check "OPENAI_BASE_URL is stripped from the reviewer child" \
+  "unset" "$(cat "$SPY/openai_base_url")"
+check "isolated unpinned built-in remains builtin1" \
+  "builtin1" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binding",{}).get("qualification"))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
+unset OPENAI_BASE_URL CODEX_HOME
+# Managed/admin configuration outranks ordinary CLI/user layers, so any evidence of that layer
+# conservatively downgrades an otherwise unpinned built-in review. The evidence path is additive:
+# it cannot hide the real fixed-path/MDM checks and exists so this boundary stays hermetic.
+MANAGED_EVIDENCE="$ROOT/managed_config.toml"
+printf 'model = "admin-pinned-model"\n' > "$MANAGED_EVIDENCE"
+export CAMUS_CODEX_MANAGED_CONFIG_EVIDENCE="$MANAGED_EVIDENCE"
+run_review >/dev/null || { echo "FAIL managed-config review errored/hung"; exit 1; }
+check "managed configuration evidence downgrades qualification to qual1" \
+  "qual1" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binding",{}).get("qualification"))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
+check "managed configuration evidence marks the connection configured" \
+  "configured" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binding",{}).get("connection"))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
+unset CAMUS_CODEX_MANAGED_CONFIG_EVIDENCE
+# Compact/attached spellings are semantically identical and must not bypass the tier detector.
+for compact_pin in '-mo3' '--config=model="o3"' '-c model_catalog_json="/tmp/camus-models.json"' '--config=model_catalog_json="/tmp/camus-models.json"'; do
+  export CAMUS_CODEX_ARGS="$compact_pin"
+  run_review >/dev/null || { echo "FAIL compact model override review errored/hung: $compact_pin"; exit 1; }
+  check "compact model override ($compact_pin) downgrades qualification" \
+    "qual1" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binding",{}).get("qualification"))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
+  check "compact model override ($compact_pin) marks connection configured" \
+    "configured" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binding",{}).get("connection"))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
+done
+unset CAMUS_CODEX_ARGS
+# And for a NON-VENDOR connection selector (--oss/--local-provider) — not a model pin, but it
+# takes the reviewer off the built-in vendor backend, so it is configured/qual1, never builtin1.
+export CAMUS_CODEX_ARGS='--oss --local-provider ollama'
+run_review >/dev/null || { echo "FAIL --oss review errored/hung"; exit 1; }
+check "non-vendor connection (--oss) downgrades qualification to qual1 (not builtin1)" \
+  "qual1" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binding",{}).get("qualification"))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
+check "non-vendor connection (--oss) marks the connection configured (not vendor_managed)" \
+  "configured" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binding",{}).get("connection"))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
+unset CAMUS_CODEX_ARGS
+# Generic config can redirect through provider selection, provider definitions, or a base URL.
+# Every spelling is configurable/qual1 even when no explicit model flag appears.
+for route_override in \
+  '--config=model_provider=ollama' \
+  '--profile local-review' \
+  '-plocal-review' \
+  '-c model_providers.camus_local.base_url="http://127.0.0.1:11434/v1"' \
+  '-copenai_base_url="http://127.0.0.1:11434/v1"'
+do
+  export CAMUS_CODEX_ARGS="$route_override"
+  run_review >/dev/null || { echo "FAIL route override review errored/hung: $route_override"; exit 1; }
+  check "route override ($route_override) downgrades qualification" \
+    "qual1" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binding",{}).get("qualification"))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
+  check "route override ($route_override) marks connection configured" \
+    "configured" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binding",{}).get("connection"))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
+done
+unset CAMUS_CODEX_ARGS
+# Baseline: the built-in codex backend with NO pinned model of any kind IS builtin1/vendor_managed.
+run_review >/dev/null || { echo "FAIL builtin baseline review errored/hung"; exit 1; }
+check "unpinned built-in codex backend certifies builtin1" \
+  "builtin1" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binding",{}).get("qualification"))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
+check "unpinned built-in codex backend certifies vendor_managed" \
+  "vendor_managed" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binding",{}).get("connection"))' "$ROOT/reviews/camus-wt-task-r1.json" 2>/dev/null)"
 
 # service-tier pin: additive -c flag, present only while CAMUS_CODEX_TIER is set
 export CAMUS_CODEX_TIER=standard
@@ -230,7 +345,9 @@ stage_aborted_round() { # $1 = round, $2 = thread_id
   local d="$ROOT/reviews/camus-wt-task-r$1.watch"
   mkdir -p "$d"
   python3 -c 'import json,sys; json.dump({"target_dir": sys.argv[2], "round": sys.argv[3],
-    "effort": "medium", "scope": "full", "thread_id": sys.argv[4]}, open(sys.argv[1],"w"))' \
+    "effort": "medium", "scope": "full", "thread_id": sys.argv[4],
+    "contract": "rc1", "qualification": "builtin1", "origin": "cli", "operator": "cli",
+    "transport": "cli-detached", "connection": "vendor_managed"}, open(sys.argv[1],"w"))' \
     "$d/meta.json" "$WT" "$1" "$2"
   printf '{"type":"thread.started","thread_id":"%s"}\n' "$2" > "$d/events.jsonl"
 }
@@ -239,13 +356,21 @@ stage_aborted_round() { # $1 = round, $2 = thread_id
 # and the verdict normalizes ran:true (the resumed thread finished the review).
 rm -f "$SPY/args_resume" "$SPY/resume_id"
 stage_aborted_round 7 "sess-resume-ok"
+export OPENAI_BASE_URL='http://127.0.0.1:11434/v1'
 out="$(run_review_round 7)" || { echo "FAIL resume review errored/hung"; exit 1; }
+unset OPENAI_BASE_URL
 check "resume chosen: argv shows 'exec resume <thread_id>'" \
   "yes" "$([ -f "$SPY/args_resume" ] && grep -qx 'resume' "$SPY/args_resume" && grep -qx 'sess-resume-ok' "$SPY/args_resume" && echo yes || echo no)"
 check "resume verdict normalizes ran:true (clean)" \
   "yes" "$(printf '%s' "$out" | python3 -c 'import json,sys; g=json.load(sys.stdin); print("yes" if g["ran"] and g["clean"] else "no")')"
 check "resume rides the SAME schema/-o plumbing (--output-schema present)" \
   "yes" "$(grep -qx -- '--output-schema' "$SPY/args_resume" && echo yes || echo no)"
+check "resume mechanically ignores ambient user config" \
+  "yes" "$(grep -qx -- '--ignore-user-config' "$SPY/args_resume" && echo yes || echo no)"
+check "resume mechanically suppresses repository-local Codex config" \
+  "yes" "$(grep -Fqx -- "$PROJECT_TRUST_OVERRIDE" "$SPY/args_resume" && echo yes || echo no)"
+check "resume strips OPENAI_BASE_URL from the reviewer child" \
+  "unset" "$(cat "$SPY/openai_base_url_resume")"
 check "resume preserves the aborted attempt's events under a1/ (audit not clobbered)" \
   "yes" "$([ -f "$ROOT/reviews/camus-wt-task-r7.watch/a1/events.jsonl" ] && echo yes || echo no)"
 
@@ -508,7 +633,9 @@ stage_resume_with_model() { # $1 = round, $2 = thread_id, $3 = reviewer_model
   local d="$ROOT/reviews/camus-wt-task-r$1.watch"
   rm -rf "$d" "$ROOT/reviews/camus-wt-task-r$1.json"; mkdir -p "$d"
   python3 -c 'import json,sys; json.dump({"target_dir": sys.argv[2], "round": sys.argv[3],
-    "effort": "medium", "scope": "full", "thread_id": sys.argv[4], "reviewer_model": sys.argv[5]},
+    "effort": "medium", "scope": "full", "thread_id": sys.argv[4], "reviewer_model": sys.argv[5],
+    "contract": "rc1", "qualification": "qual1", "origin": "cli", "operator": "cli",
+    "transport": "cli-detached", "connection": "configured"},
     open(sys.argv[1],"w"))' "$d/meta.json" "$WT" "$1" "$2" "$3"
   printf '{"type":"thread.started","thread_id":"%s"}\n' "$2" > "$d/events.jsonl"
 }
@@ -520,6 +647,43 @@ r = subprocess.run(["bash", sys.argv[2], sys.argv[3], "the task", sys.argv[4]],
 print(r.returncode)
 PY
 }
+# Every field belongs to the original thread. A resume may not overwrite any one of them with the
+# current request and thereby relabel old work. Missing legacy fields fail closed too.
+resume_drift_round=40
+for resume_field in contract scope qualification origin operator transport connection; do
+  rm -f "$SPY/args_resume"
+  stage_aborted_round "$resume_drift_round" "sess-drift-$resume_field"
+  python3 -c 'import json,sys
+p, field = sys.argv[1:3]
+d = json.load(open(p))
+d[field] = {"contract":"rc0", "scope":"light", "qualification":"qual1",
+  "origin":"other-loop", "operator":"other-operator", "transport":"http",
+  "connection":"configured"}[field]
+json.dump(d, open(p,"w"))' \
+    "$ROOT/reviews/camus-wt-task-r$resume_drift_round.watch/meta.json" "$resume_field"
+  check "resume refuses prior $resume_field drift" "2" "$(resume_exit "$resume_drift_round")"
+  check "resume $resume_field drift is refused before codex spawn" \
+    "no" "$([ -f "$SPY/args_resume" ] && echo yes || echo no)"
+  resume_drift_round=$((resume_drift_round + 1))
+done
+rm -f "$SPY/args_resume"
+stage_aborted_round "$resume_drift_round" "sess-drift-missing"
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d.pop("contract",None); json.dump(d,open(p,"w"))' \
+  "$ROOT/reviews/camus-wt-task-r$resume_drift_round.watch/meta.json"
+check "resume refuses a legacy watch missing a carried field" "2" "$(resume_exit "$resume_drift_round")"
+check "missing resume field is refused before codex spawn" \
+  "no" "$([ -f "$SPY/args_resume" ] && echo yes || echo no)"
+# Reverse qualification direction: the prior pinned thread is truly qual1; claiming builtin1 must
+# be refused just as builtin1→qual1 is above.
+resume_drift_round=$((resume_drift_round + 1))
+rm -f "$SPY/args_resume"
+stage_resume_with_model "$resume_drift_round" "sess-drift-qual-reverse" "pinned-reviewer"
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["qualification"]="builtin1"; json.dump(d,open(p,"w"))' \
+  "$ROOT/reviews/camus-wt-task-r$resume_drift_round.watch/meta.json"
+check "resume refuses qualification drift in the qual1→builtin1 direction" \
+  "2" "$(resume_exit "$resume_drift_round")"
+check "reverse qualification drift is refused before codex spawn" \
+  "no" "$([ -f "$SPY/args_resume" ] && echo yes || echo no)"
 # resume WITHOUT the env: codex runs with the RECORDED model (argv), and the audit
 # seals that SAME model — the two can no longer disagree (the P1 this closes: the
 # authoritative reviewer is now resolved BEFORE the args, so it reaches the command).
@@ -656,6 +820,51 @@ print("|".join(str(x) for x in [
   b.get("round_requested"), b.get("round_actual"), b.get("effort_requested"), b.get("effort_actual"),
   b.get("gate_nonce"), b.get("reviewer_backend"), b.get("bound"),
   os.path.realpath(sys.argv[2]) == r.get("worktree_canonical")]))' "$BOUND_RECEIPT" "$WT")"
+
+# ── REPLAY preserves sealed rc1 fields only after proving the stored contract matches this
+# executor. An older/missing contract is an infra refusal and must never be relabelled. ───────────
+rm -f "$REQ"   # no stale request file may bind this round (it would refuse the argv round below)
+REPLAY_NONCE="replay-nonce-1"
+run_review_r() { # $1 round — runs with the replay gate nonce injected into the review's env
+  python3 - "$R" "$here/codex_review.sh" "$WT" "$1" "$REPLAY_NONCE" <<'PY'
+import os, subprocess, sys
+env = dict(os.environ, CAMUS_GATE_NONCE=sys.argv[5])
+r = subprocess.run(["bash", sys.argv[2], sys.argv[3], "the task", sys.argv[4], "medium"],
+                   cwd=sys.argv[1], capture_output=True, text=True, timeout=30, env=env)
+sys.stdout.write(r.stdout)
+PY
+}
+run_review_r 7 >/dev/null 2>&1 || { echo "FAIL replay-fixture review errored/hung"; exit 1; }
+REPLAY_AUDIT="$CAMUS_REVIEW_DIR/$(basename "$WT")-r7.json"
+check "fresh run seals rc1 fields in the round audit" \
+  "rc1|builtin1|vendor_managed" \
+  "$(python3 -c 'import json,sys; b=json.load(open(sys.argv[1]))["binding"]; print("|".join(str(b.get(k)) for k in ("contract","qualification","connection")))' "$REPLAY_AUDIT" 2>/dev/null)"
+# Corrupt the audit's rc1 fields to null, then replay a SAME-contract finished round: the audit must
+# be rewritten WITH the sealed fields, never left null as the pre-fix ordering did.
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["binding"].update({"contract":None,"qualification":None,"connection":None}); json.dump(d,open(p,"w"))' "$REPLAY_AUDIT"
+REPLAY_META="$CAMUS_REVIEW_DIR/$(basename "$WT")-r7.watch/meta.json"
+replay_out="$(run_review_r 7)" || { echo "FAIL replay review errored/hung"; exit 1; }
+check "same-contract replay emits the sealed rc1 contract" \
+  "rc1" \
+  "$(printf '%s' "$replay_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["binding"]["contract"])')"
+check "same-contract replay RESTORES the rc1 audit fields from meta.json (not null)" \
+  "rc1|builtin1|vendor_managed" \
+  "$(python3 -c 'import json,sys; b=json.load(open(sys.argv[1]))["binding"]; print("|".join(str(b.get(k)) for k in ("contract","qualification","connection")))' "$REPLAY_AUDIT" 2>/dev/null)"
+
+# Simulate a completed watch written by an older executor. Replay must refuse before adapter
+# emission or audit rewrite; otherwise it launders rc0 into a current-looking rc1 receipt.
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["contract"]="rc0"; json.dump(d,open(p,"w"))' "$REPLAY_META"
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["binding"]["contract"]="audit-sentinel"; json.dump(d,open(p,"w"))' "$REPLAY_AUDIT"
+skew_out="$(run_review_r 7)" || { echo "FAIL skewed replay errored/hung"; exit 1; }
+check "cross-contract replay is an infrastructure refusal" \
+  "False|review-contract-drift|True" \
+  "$(printf '%s' "$skew_out" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("|".join(map(str,[d.get("ran"),d.get("infra_error"),"contract drift" in d.get("error","")])))')"
+check "cross-contract replay emits no accepted binding" \
+  "yes" \
+  "$(printf '%s' "$skew_out" | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin).get("binding") is None else "no")')"
+check "cross-contract replay does not rewrite the prior audit" \
+  "audit-sentinel" \
+  "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["binding"]["contract"])' "$REPLAY_AUDIT" 2>/dev/null)"
 
 echo
 echo "$pass passed, $fail failed"
