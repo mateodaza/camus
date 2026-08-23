@@ -2973,6 +2973,8 @@ and 6.
 ---
 
 *End of RFC (v6.1). Architecture rounds remain closed. Implementation ledger as of
-2026-08-21: A complete; B migration core complete; C complete; D–I not begun. Slice C has a
+2026-08-23: A complete; B migration core complete; C complete; D–I not begun. Slice C has a
 hermetic end-to-end loopback acceptance test, while live provider-backed validation remains
-explicitly open under §19.7.*
+explicitly open under §19.7. The separately approved post-RFC execution plan adds a
+[responsible control-plane feat](RESPONSIBLE-CONTROL-PLANE.md) after D and F; it consumes their
+structured control evidence without rewriting this frozen contract.*
