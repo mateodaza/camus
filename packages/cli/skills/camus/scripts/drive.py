@@ -408,10 +408,13 @@ def _record_background_usage(base, repo, feat_id, task_id, role, attempt, receip
     )
 
 
-def _post_agent_budget_stop(feat_id, base):
+def _post_agent_budget_stop(feat_id, base, include_retries=True):
     """Re-read kernel-owned usage immediately after a maker receipt, before any next model gate."""
     run = kernel._validated_run(feat_id, base)
-    stop = kernel._budget_stop(kernel._budgets(run), kernel._usage(run["state"]))
+    budgets = kernel._budgets(run)
+    if not include_retries:
+        budgets = {**budgets, "retries": None}
+    stop = kernel._budget_stop(budgets, kernel._usage(run["state"]))
     return stop
 
 
@@ -858,6 +861,11 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
             kernel.resume_budget_stop(feat_id, options.token_budget, base=base)
             run = kernel._validated_run(feat_id, base)
             current = kernel._kernel(run["state"])
+        if current.get("phase") == "stopped" and options.retry_budget is not None \
+                and str(current.get("stopReason") or "").startswith("retry budget exhausted ("):
+            kernel.resume_retry_budget_stop(feat_id, options.retry_budget, base=base)
+            run = kernel._validated_run(feat_id, base)
+            current = kernel._kernel(run["state"])
         if run["state"].get("stage") == "native_controller":
             active = current.get("activeTaskId")
             node = next((item for item in run["nodes"] if item.get("taskId") == active), None)
@@ -1095,7 +1103,7 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
         elif phase == "task_reviewed":
             review = _review_from_node(node)
         elif phase == "task_reviewing":
-            budget_stop = _post_agent_budget_stop(feat_id, base)
+            budget_stop = _post_agent_budget_stop(feat_id, base, include_retries=False)
             if budget_stop:
                 return incomplete({
                     "action": "stop", "reason": budget_stop,
@@ -1142,7 +1150,7 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                     "featId": feat_id, "taskId": task_id,
                 })
             _record_background_usage(base, repo, feat_id, task_id, "maker", 1, receipt)
-            budget_stop = _post_agent_budget_stop(feat_id, base)
+            budget_stop = _post_agent_budget_stop(feat_id, base, include_retries=False)
             if budget_stop:
                 return incomplete({
                     "action": "stop", "reason": budget_stop,
@@ -1154,9 +1162,6 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
         # A failed verifier is a semantic fork: the controller chooses a bounded retry or a fresh
         # fix + independent re-review. It is never an unconditional systematic rerun.
         if seal is None and phase == "task_verify_failed" and review is not None:
-            round_no += 1
-            usage = kernel._usage(kernel._validated_run(feat_id, base)["state"])
-            kernel.record_usage(feat_id, retries=usage["retries"] + 1, base=base)
             budget_stop = _pre_agent_budget_stop(
                 feat_id, base, reserve_tokens=getattr(options, "direct_output_reserve", None),
             )
@@ -1165,6 +1170,7 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                     "action": "stop", "reason": budget_stop,
                     "featId": feat_id, "taskId": task_id,
                 }, review_evidence=review, terminal=True)
+            round_no += 1
             receipt = run_agent(
                 client, log, trace_id=trace_id, feat_id=feat_id, task_id=task_id,
                 role="fix", attempt=round_no, cwd=payload["worktree"],
@@ -1182,7 +1188,9 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                     "featId": feat_id, "taskId": task_id,
                 }, review_evidence=review)
             _record_background_usage(base, repo, feat_id, task_id, "fix", round_no, receipt)
-            budget_stop = _post_agent_budget_stop(feat_id, base)
+            usage = kernel._usage(kernel._validated_run(feat_id, base)["state"])
+            kernel.record_usage(feat_id, retries=usage["retries"] + 1, base=base)
+            budget_stop = _post_agent_budget_stop(feat_id, base, include_retries=False)
             if budget_stop:
                 return incomplete({
                     "action": "stop", "reason": budget_stop,
@@ -1235,9 +1243,6 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                     verify_failure=False,
                 )
                 return value
-            round_no += 1
-            usage = kernel._usage(kernel._validated_run(feat_id, base)["state"])
-            kernel.record_usage(feat_id, retries=usage["retries"] + 1, base=base)
             budget_stop = _pre_agent_budget_stop(
                 feat_id, base, reserve_tokens=getattr(options, "direct_output_reserve", None),
             )
@@ -1246,6 +1251,7 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                     "action": "stop", "reason": budget_stop,
                     "featId": feat_id, "taskId": task_id,
                 }, review_evidence=review, terminal=True)
+            round_no += 1
             receipt = run_agent(
                 client, log, trace_id=trace_id, feat_id=feat_id, task_id=task_id,
                 role="fix", attempt=round_no, cwd=payload["worktree"],
@@ -1261,7 +1267,9 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                     "featId": feat_id, "taskId": task_id,
                 }, review_evidence=review)
             _record_background_usage(base, repo, feat_id, task_id, "fix", round_no, receipt)
-            budget_stop = _post_agent_budget_stop(feat_id, base)
+            usage = kernel._usage(kernel._validated_run(feat_id, base)["state"])
+            kernel.record_usage(feat_id, retries=usage["retries"] + 1, base=base)
+            budget_stop = _post_agent_budget_stop(feat_id, base, include_retries=False)
             if budget_stop:
                 return incomplete({
                     "action": "stop", "reason": budget_stop,

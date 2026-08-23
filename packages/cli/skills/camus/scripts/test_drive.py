@@ -323,18 +323,27 @@ def test_crash_replay_consumes_the_exact_authorized_round_cap():
             }
             return review4
 
+        order = []
+        def run_fix(*_args, **_kwargs):
+            order.append("maker")
+            return {"state": "done"}
+
         with mock.patch.object(D.kernel, "_validated_run", return_value=run), \
                 mock.patch.object(D.kernel, "_resolve_repo", return_value=root), \
                 mock.patch.object(D.kernel, "_selected_index", return_value=(0, None)), \
                 mock.patch.object(D.kernel, "task_payload", return_value={
                     "loopArgs": {"task": "bounded task"}, "repo": root,
                 }), \
-                mock.patch.object(D, "_pre_agent_budget_stop", return_value=None), \
-                mock.patch.object(D, "_post_agent_budget_stop", return_value=None), \
+                mock.patch.object(D, "_pre_agent_budget_stop",
+                                  side_effect=lambda *_a, **_k: order.append("pre") or None), \
+                mock.patch.object(D, "_post_agent_budget_stop",
+                                  side_effect=lambda *_a, **_k: order.append("post") or None), \
                 mock.patch.object(D, "_direct_output_budget_evidence", return_value={}), \
-                mock.patch.object(D.kernel, "record_usage"), \
-                mock.patch.object(D, "run_agent", return_value={"state": "done"}) as maker, \
-                mock.patch.object(D, "_record_background_usage"), \
+                mock.patch.object(D.kernel, "record_usage",
+                                  side_effect=lambda *_a, **_k: order.append("retry")), \
+                mock.patch.object(D, "run_agent", side_effect=run_fix) as maker, \
+                mock.patch.object(D, "_record_background_usage",
+                                  side_effect=lambda *_a, **_k: order.append("receipt")), \
                 mock.patch.object(D.kernel, "review_task", side_effect=adopt_round4), \
                 mock.patch.object(D, "controller_decision", return_value={
                     "action": "stop", "reason": "fourth round still has findings",
@@ -347,6 +356,8 @@ def test_crash_replay_consumes_the_exact_authorized_round_cap():
         assert controller.call_args.kwargs["attempt"] == 4
         assert controller.call_args.kwargs["max_rounds"] == 4
         assert run["state"]["kernel"]["phase"] == "stopped"
+        assert order[:4] == ["pre", "maker", "receipt", "retry"]
+        assert "post" in order
 
 
 def test_crash_replay_refuses_a_conflicting_explicit_round_cap():
@@ -421,6 +432,58 @@ def test_042_reserve_stop_reopens_from_the_exact_published_reason():
             result = D._drive_feature("feat-a", options, client=object())
         assert result["action"] == "feature_complete"
         resume.assert_called_once_with("feat-a", 1250000, base=root)
+
+
+def test_retry_stop_reopens_before_normal_driver_dispatch():
+    with tempfile.TemporaryDirectory() as root:
+        stopped = {
+            "state": {
+                "featId": "feat-a", "status": "needs_human", "stage": "kernel_stop",
+                "kernel": {
+                    "phase": "stopped", "activeTaskId": "task-a",
+                    "stopReason": "retry budget exhausted (2/2)",
+                },
+                "tasks": [{"taskId": "task-a", "status": "needs_human"}],
+            },
+            "args": {"tasks": ["bounded task"], "targetPath": root},
+            "nodes": [{"taskId": "task-a", "status": "needs_human"}],
+        }
+        resumed = {
+            "state": {
+                "featId": "feat-a", "status": "running", "stage": "kernel_ready",
+                "kernel": {"phase": "ready", "activeTaskId": None}, "tasks": [],
+            },
+            "args": stopped["args"], "nodes": [], "specs": [],
+        }
+        options = SimpleNamespace(
+            base=root, repo=None, experiment=None, ledger=os.path.join(root, "episodes.jsonl"),
+            token_budget=None, retry_budget=3, human_action=None, verify_timeout=10,
+        )
+        with mock.patch.object(D.kernel, "_validated_run", side_effect=[stopped, resumed]), \
+                mock.patch.object(D.kernel, "_resolve_repo", return_value=root), \
+                mock.patch.object(D.kernel, "resume_retry_budget_stop") as resume, \
+                mock.patch.object(D.kernel, "_selected_index", return_value=(None, None)), \
+                mock.patch.object(D.kernel, "integrate_feature", return_value={
+                    "action": "feature_complete", "status": "done",
+                }):
+            result = D._drive_feature("feat-a", options, client=object())
+        assert result["action"] == "feature_complete"
+        resume.assert_called_once_with("feat-a", 3, base=root)
+
+
+def test_post_agent_budget_check_can_finish_the_review_at_the_retry_ceiling():
+    run = {
+        "state": {"kernel": {"usage": {"startedAt": 100, "tokens": 0, "retries": 2}}},
+        "args": {},
+    }
+    with mock.patch.object(D.kernel, "_validated_run", return_value=run), \
+            mock.patch.object(D.kernel, "_budgets", return_value={
+                "wallSeconds": None, "tokens": None, "retries": 2,
+            }):
+        assert D._post_agent_budget_stop("feat-a", "/tmp") == "retry budget exhausted (2/2)"
+        assert D._post_agent_budget_stop(
+            "feat-a", "/tmp", include_retries=False,
+        ) is None
 
 
 def test_direct_output_budget_stop_is_recorded_once_before_review_or_next_model():
