@@ -406,6 +406,28 @@ def test_prepare_is_idempotent_and_writes_one_trace_attempt():
     assert loop_args["reviewerEffort"] == "high"
 
 
+def test_native_verify_does_not_leak_the_driver_repo_anchor():
+    base = tempfile.mkdtemp(prefix="camus_kernel_")
+    repo = _repo()
+    feat_id, _args, _state = _fixture(
+        base, tasks=["run me"], statuses=["pending"],
+        extra_args={"targetPath": repo, "verifyCmd": "npm test"},
+    )
+    run = K._validated_run(feat_id, base)
+    completed = subprocess.CompletedProcess(
+        args=[], returncode=0,
+        stdout=json.dumps({"pass": True, "failures": [], "checks": []}),
+        stderr="",
+    )
+    with mock.patch.dict(os.environ, {"CAMUS_REPO_ROOT": repo}, clear=False), \
+         mock.patch.object(K.subprocess, "run", return_value=completed) as invoked:
+        result = K._run_verify(run, repo, timeout=30)
+    assert result["pass"] is True
+    child_env = invoked.call_args.kwargs["env"]
+    assert "CAMUS_REPO_ROOT" not in child_env
+    assert child_env["CAMUS_VERIFY_CMD"] == "npm test"
+
+
 def test_ready_boundary_reconfigures_seats_without_rerunning_baseline():
     base = tempfile.mkdtemp(prefix="camus_kernel_")
     repo = _repo()

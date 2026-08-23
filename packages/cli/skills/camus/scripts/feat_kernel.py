@@ -598,6 +598,11 @@ def _run_verify(run, repo, timeout):
     if verify_cmd and (not isinstance(verify_cmd, str) or any(ch in verify_cmd for ch in VERIFY_UNSAFE)):
         raise Refusal("canonical verifyCmd contains shell-unsafe characters")
     env = os.environ.copy()
+    # CAMUS_REPO_ROOT belongs to the driver's custody boundary, not to the
+    # project being verified.  Letting it leak into the project's test process
+    # can make nested-repository tests bind themselves to Camus's outer repo and
+    # fail even though the same verifier is green when run directly.
+    env.pop("CAMUS_REPO_ROOT", None)
     if verify_cmd:
         env["CAMUS_VERIFY_CMD"] = verify_cmd
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "verify.py")
