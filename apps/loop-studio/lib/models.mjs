@@ -18,6 +18,7 @@ import { homedir } from 'node:os';
 import { isIP } from 'node:net';
 import { deriveLineageSource, executorOrgFamily, originConfidence } from './identity.mjs';
 import { initGrandfather, consult, consultClaudeRoute } from './grandfather.mjs';
+import { validateSshTunnelConfig } from './ssh-tunnel.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // The tracked file is a PUBLIC FALLBACK, not mutable operator state. Settings
@@ -156,15 +157,13 @@ function connectionBaseUrl(name, entry) {
     return cleanUrl(parseHttpUrl(entry.baseUrl, `${label}.baseUrl`));
   }
   if (entry?.kind === 'ssh_tunnel') {
-    if (!isLoopbackHost(entry.remoteAddress)) {
-      throw new Error(`${label}.remoteAddress must be remote loopback (localhost, 127.0.0.1, or ::1); forwarding to a third host is a pivot`);
-    }
-    throw new Error(`${label}.kind ssh_tunnel is not yet supported; see ADR for the managed tunnel slice`);
+    const validated = validateSshTunnelConfig({ ...entry, name });
+    return null; // runtime-only URL; the tunnel manager owns the ephemeral port
   }
   if (entry?.kind === 'remote_executor') {
     throw new Error(`${label}.kind remote_executor is not yet supported; see ADR for remote execution`);
   }
-  throw new Error(`${label}.kind must be loopback, direct_https, or legacy_http`);
+  throw new Error(`${label}.kind must be loopback, direct_https, legacy_http, or ssh_tunnel`);
 }
 
 function parseConnection(name, entry, { anonymous = false } = {}) {
@@ -172,6 +171,17 @@ function parseConnection(name, entry, { anonymous = false } = {}) {
     throw new Error(`connections.${name}: names are lowercase alphanumeric/dash/underscore, max 32 chars`);
   }
   const baseUrl = connectionBaseUrl(name, entry);
+  if (entry.kind === 'ssh_tunnel') {
+    const validated = validateSshTunnelConfig({ ...entry, name });
+    return {
+      name, kind: entry.kind, baseUrl: null, anonymous,
+      sshHostAlias: validated.sshHostAlias,
+      remoteAddress: validated.remoteAddress,
+      remotePort: validated.remotePort,
+      basePath: validated.basePath,
+      why: typeof entry.why === 'string' ? entry.why : null,
+    };
+  }
   return { name, kind: entry.kind, baseUrl, anonymous };
 }
 
@@ -283,7 +293,7 @@ function validateConnectionBackend(name, entry, connection) {
   const configuredLineage = entry.lineage && typeof entry.lineage === 'object' ? entry.lineage : null;
   const declared = { org: trainingOrg, family: modelFamily, derivedFrom: entry.derivedFrom ?? null };
   if (configuredLineage && Object.hasOwn(configuredLineage, 'source')) declared.source = configuredLineage.source;
-  const endpointHost = normalizedHost(new URL(connection.baseUrl).hostname);
+  const endpointHost = connection.baseUrl ? normalizedHost(new URL(connection.baseUrl).hostname) : null;
   const lineageSources = Object.fromEntries(entry.models.map((modelId) => [
     modelId,
     deriveLineageSource({
@@ -392,6 +402,13 @@ function validateCompatEntry(name, entry, connections) {
 
 function connectionForWrite(name, entry) {
   const normalized = parseConnection(name, entry);
+  if (entry.kind === 'ssh_tunnel') {
+    return {
+      kind: 'ssh_tunnel', sshHostAlias: normalized.sshHostAlias,
+      remoteAddress: normalized.remoteAddress, remotePort: normalized.remotePort,
+      basePath: normalized.basePath, ...(typeof entry.why === 'string' && entry.why ? { why: entry.why } : {}),
+    };
+  }
   let out;
   if (entry.kind === 'loopback' && entry.baseUrl === undefined) {
     out = { kind: 'loopback', port: entry.port };
@@ -417,8 +434,7 @@ function connectionBackendForWrite(name, entry, connections) {
     seats: normalized.seats,
     // Complete legacy surface: this is deliberately redundant so rolling back
     // the reader cannot make one new entry take every backend down.
-    baseUrl: normalized.baseUrl,
-    apiKeyEnv: normalized.apiKeyEnv,
+    ...(normalized.baseUrl ? { baseUrl: normalized.baseUrl, apiKeyEnv: normalized.apiKeyEnv } : {}),
   };
   if (entry.derivedFrom !== undefined) out.derivedFrom = entry.derivedFrom;
   if (entry.inferenceOperator !== undefined) out.inferenceOperator = entry.inferenceOperator;
@@ -434,7 +450,7 @@ function connectionBackendForWrite(name, entry, connections) {
     out.expectedReported = entry.expectedReported;
   }
   if (typeof entry.why === 'string' && entry.why) out.why = entry.why;
-  validateLegacyCompatEntry(name, out);
+  if (normalized.baseUrl) validateLegacyCompatEntry(name, out);
   return out;
 }
 

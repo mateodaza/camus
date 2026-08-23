@@ -27,6 +27,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { streamChatCompletion } from './adapters/openai-compat.mjs';
+import { getSharedTunnelManager } from './ssh-tunnel.mjs';
 import { normalizeReview } from './adapters/codex.mjs';
 import {
   writeReceipt,
@@ -42,11 +43,11 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Slice C scope (§9.2): only loopback and direct_https openai-compatible
-// transports are probed and admitted. SSH tunnels and plaintext legacy_http are
-// explicitly EXCLUDED — an unsupported transport must never receive a durable
-// qual1 receipt from this runner, nor be admitted to launch on one.
-export const SUPPORTED_TRANSPORTS = Object.freeze(['loopback', 'direct_https']);
+// Slice D extends the Slice C runner to the managed ssh_tunnel transport. The
+// tunnel manager supplies a runtime URL while the qualification key remains the
+// stable alias/remote-port connection identity. Plaintext legacy_http remains
+// excluded and never receives a durable qual1 receipt.
+export const SUPPORTED_TRANSPORTS = Object.freeze(['loopback', 'direct_https', 'ssh_tunnel']);
 
 function transportOf(entry) {
   return entry.transport || entry.connectionDetails?.kind || 'loopback';
@@ -420,6 +421,10 @@ function connectionLabel(entry) {
     return `loopback ${host}:${port}`;
   }
   if (kind === 'direct_https') return `direct_https ${entry.baseUrl}`;
+  if (kind === 'ssh_tunnel') {
+    const c = entry.connectionDetails || entry;
+    return `ssh_tunnel ${c.sshHostAlias}:${c.remoteAddress}:${c.remotePort}${c.basePath || '/v1'}`;
+  }
   return `${kind} ${entry.baseUrl}`;
 }
 
@@ -516,7 +521,7 @@ function measuredPromptTokens(usage) {
  * Returns:
  *   { qualified, seatType, model, identity, capabilities, receipt?, reason, error? }
  */
-export async function deepQualifyModel({
+async function deepQualifyModelInternal({
   entry,
   model,
   seatType,
@@ -529,9 +534,6 @@ export async function deepQualifyModel({
 } = {}) {
   if (!WORDS_SEATS.includes(seatType)) {
     throw new Error(`deepQualifyModel exercises only words seats (${WORDS_SEATS.join(', ')}); "${seatType}" is out of Slice C scope`);
-  }
-  if (!isSupportedTransport(entry)) {
-    throw new Error(`deepQualifyModel probes only ${SUPPORTED_TRANSPORTS.join('/')} transports; "${transportOf(entry)}" is out of Slice C scope and is never given a qual1 receipt`);
   }
   const req = SEAT_REQUIREMENTS[seatType];
   const envelope = PROMPT_ENVELOPES[seatType];
@@ -791,6 +793,25 @@ export async function deepQualifyModel({
   };
 }
 
+// The one qualification entry point for every transport. SSH gets a runtime
+// URL only inside this wrapper; qual1's connection component remains the stable
+// alias/remote-port identity assembled by connectionLabel above.
+export async function deepQualifyModel({ tunnelManager, ...options } = {}) {
+  const entry = options.entry;
+  if (!isSupportedTransport(entry)) {
+    throw new Error(`deepQualifyModel probes only ${SUPPORTED_TRANSPORTS.join('/')} transports; "${transportOf(entry)}" is unsupported and is never given a qual1 receipt`);
+  }
+  if (transportOf(entry) !== 'ssh_tunnel') return deepQualifyModelInternal(options);
+  const manager = tunnelManager || getSharedTunnelManager();
+  const lease = await manager.acquire(entry.connectionDetails || entry);
+  const runtimeEntry = { ...entry, baseUrl: lease.url, tunnelLease: lease };
+  try {
+    return await deepQualifyModelInternal({ ...options, entry: runtimeEntry });
+  } finally {
+    await lease.release();
+  }
+}
+
 // The words seat type each declared backend seat key maps to.
 const WORDS_SEAT_OF = Object.freeze({ maker: 'words_maker', reviewer: 'words_reviewer' });
 
@@ -895,7 +916,7 @@ export async function qualifyUsedSeats({ backends, seatDecisions, deep, streamIm
  *
  * Returns { qualified, fingerprint?, seatType, reason, component?, missing? }.
  */
-export async function seatQualification({ entry, model, seatType, fetchImpl = fetch, now = Date.now() } = {}) {
+export async function seatQualification({ entry, model, seatType, fetchImpl = fetch, now = Date.now(), tunnelManager } = {}) {
   if (!WORDS_SEATS.includes(seatType)) {
     return { qualified: false, seatType, reason: 'out_of_scope_seat' };
   }
@@ -904,6 +925,15 @@ export async function seatQualification({ entry, model, seatType, fetchImpl = fe
   }
   if (!isSupportedTransport(entry)) {
     return { qualified: false, seatType, reason: 'unsupported_transport' };
+  }
+  if (transportOf(entry) === 'ssh_tunnel' && !entry.tunnelLease) {
+    const manager = tunnelManager || getSharedTunnelManager();
+    let lease;
+    try { lease = await manager.acquire(entry.connectionDetails || entry); }
+    catch (error) { return { qualified: false, seatType, reason: 'tunnel', detail: error.message }; }
+    try {
+      return await seatQualification({ entry: { ...entry, baseUrl: lease.url, tunnelLease: lease }, model, seatType, fetchImpl, now, tunnelManager: manager });
+    } finally { await lease.release(); }
   }
   const keyless = entry.auth?.kind === 'none';
   const secretValue = keyless ? undefined : process.env[entry.apiKeyEnv];

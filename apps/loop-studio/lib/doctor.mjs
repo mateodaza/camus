@@ -12,6 +12,7 @@ import { getModels, modelsSummary, seatCatalog, listBackends, listConnections } 
 import { CLAUDE_HIVEMIND_DISPLAY, hivemindStatus } from './adapters/hivemind.mjs';
 import { gateInstalled } from './code-lane.mjs';
 import { qualifyUsedSeats } from './capability-probes.mjs';
+import { getSharedTunnelManager } from './ssh-tunnel.mjs';
 
 // A skill is a directory holding SKILL.md, whose YAML frontmatter names it.
 // Only `name` is required; a directory without readable frontmatter still
@@ -229,9 +230,30 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   let connections = {};
   try { connections = listConnections(); } catch { /* malformed file: the models/catalog checks report it */ }
   for (const [name, conn] of Object.entries(connections)) {
-    const url = new URL(conn.baseUrl);
     const label = `Connection "${name}"${conn.anonymous ? ' (migrated)' : ''}`;
-    if (conn.kind === 'loopback') {
+    if (conn.kind === 'ssh_tunnel') {
+      let tunnelState = null;
+      if (deep) {
+        try {
+          const manager = getSharedTunnelManager({ onEvidence: (fact) => { tunnelState = fact; } });
+          await manager.sweepOrphans();
+          const lease = await manager.acquire(conn);
+          tunnelState = { ok: true, lease };
+          await lease.release();
+        } catch (error) {
+          tunnelState = { ok: false, error };
+        }
+      }
+      const ok = tunnelState ? tunnelState.ok : true;
+      add(`connection-${name}`, `${label} (ssh_tunnel)`, ok,
+        !deep ? `ssh ${conn.sshHostAlias} · declared (run --doctor --deep for the twelve-step preflight)`
+          : ok ? `OpenSSH preflight, forward, and ${conn.basePath}/models reachable`
+            : `SSH tunnel preflight failed: ${tunnelState.error?.message || 'unknown failure'}`,
+        ok ? null : `run ssh ${conn.sshHostAlias} interactively to establish host trust/auth, then fix connections.${name}`,
+        { optional: true, connection: name, transport: 'ssh_tunnel', controlEvidence: tunnelState?.controlEvidence ?? null },
+      );
+    } else if (conn.kind === 'loopback') {
+      const url = new URL(conn.baseUrl);
       // URL.hostname retains brackets for IPv6 literals in Node. net.connect
       // needs the bare address, and a missing explicit port follows the URL
       // protocol rather than assuming HTTP for an accepted HTTPS declaration.
@@ -260,6 +282,7 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
         { optional: true, connection: name },
       );
     } else if (conn.kind === 'direct_https') {
+      const url = new URL(conn.baseUrl);
       let reach = null;
       if (deep) reach = await endpointAnswers(conn.baseUrl);
       add(
@@ -271,6 +294,7 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
         { optional: true, connection: name },
       );
     } else if (conn.kind === 'legacy_http') {
+      const url = new URL(conn.baseUrl);
       // Plaintext or non-public HTTP. Grandfathered entries still run; a new one
       // is refused. Surface the exact three upgrade paths (the grandfather refusal
       // wording) so the fix is copyable.
@@ -334,7 +358,16 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
       const keyPresent = keyless || !!process.env[backend.apiKeyEnv];
       let reach = null; // null = not probed (deep only), true/false = probed
       if (deep && keyPresent) {
-        reach = await fetch(`${backend.baseUrl}/models`, {
+        if (backend.transport === 'ssh_tunnel') {
+          try {
+            const lease = await getSharedTunnelManager().acquire(backend.connectionDetails);
+            reach = await fetch(`${lease.url}/models`, {
+              headers: keyless ? {} : { authorization: `Bearer ${process.env[backend.apiKeyEnv]}` },
+              signal: AbortSignal.timeout(5000),
+            }).then((r) => r.ok, () => false);
+            await lease.release();
+          } catch { reach = false; }
+        } else reach = await fetch(`${backend.baseUrl}/models`, {
           headers: keyless ? {} : { authorization: `Bearer ${process.env[backend.apiKeyEnv]}` },
           signal: AbortSignal.timeout(5000),
         }).then((r) => r.ok, () => false);
@@ -351,7 +384,7 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
       add(
         `backend-${backend.name}`, `Backend "${backend.name}" (${backend.provider})`,
         keyPresent,
-        `${backend.baseUrl} · ${backend.models.length} declared model${backend.models.length === 1 ? '' : 's'} · ${credNote}${reachNote}${used ? '' : ' · not used by the current seat decisions'}`,
+        `${backend.baseUrl || `ssh://${backend.connection}`} · ${backend.models.length} declared model${backend.models.length === 1 ? '' : 's'} · ${credNote}${reachNote}${used ? '' : ' · not used by the current seat decisions'}`,
         keyPresent ? null : `export ${backend.apiKeyEnv}=…   # the key never enters config or receipts`,
         used ? {} : { optional: true },
       );

@@ -22,6 +22,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { normalizeReview } from './codex.mjs';
+import { getSharedTunnelManager } from '../ssh-tunnel.mjs';
 
 const MAKER_TIMEOUTS = { plan: 120_000, ground: 300_000, make: 540_000, fix: 420_000 };
 const REVIEW_TIMEOUT_MS = 600_000;
@@ -49,6 +50,11 @@ function redactSecret(message, secretValue) {
 // One SSE stream in, { text, usage, responseModel } out — or a thrown Error
 // whose .code says which kill path fired (abort | idle | timeout | http).
 export async function streamChatCompletion({ entry, model, prompt, signal, timeoutMs, onDelta }) {
+  let tunnelLease = entry.tunnelLease || null;
+  if (!tunnelLease && (entry.transport === 'ssh_tunnel' || entry.connectionDetails?.kind === 'ssh_tunnel')) {
+    tunnelLease = await getSharedTunnelManager().acquire(entry.connectionDetails || entry, { signal });
+  }
+  const requestEntry = tunnelLease ? { ...entry, baseUrl: tunnelLease.url } : entry;
   // auth.kind:none (keyless loopback, e.g. a bare Ollama) neither requires nor
   // emits a bearer credential — no env var is read and no Authorization header
   // is sent. Every other backend reads its key ONLY from the environment.
@@ -63,6 +69,7 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
   const controller = new AbortController();
   let killedBy = null;
   const kill = (code) => { if (!killedBy) { killedBy = code; controller.abort(); } };
+  if (tunnelLease) tunnelLease.death.then(() => kill('tunnel'), () => kill('tunnel'));
   const onAbort = () => kill('abort');
   signal?.addEventListener('abort', onAbort, { once: true });
   if (signal?.aborted) kill('abort');
@@ -71,7 +78,7 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
   const poke = () => { clearTimeout(idleT); idleT = setTimeout(() => kill('idle'), IDLE_MS()); };
 
   try {
-    const res = await fetch(`${entry.baseUrl}/chat/completions`, {
+    const request = fetch(`${requestEntry.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         ...(keyless ? {} : { authorization: `Bearer ${apiKey}` }),
@@ -86,11 +93,14 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
       }),
       signal: controller.signal,
     });
+    const res = tunnelLease
+      ? await Promise.race([request, tunnelLease.death.then((error) => Promise.reject(error))])
+      : await request;
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       // Redact any echoed credential from the endpoint's error body before it is
       // sealed into the Error the engine retries on and writes to session output.
-      const err = new Error(`${entry.baseUrl} answered ${res.status}: ${redactSecret(body, apiKey).slice(0, 200)}`);
+      const err = new Error(`${requestEntry.baseUrl} answered ${res.status}: ${redactSecret(body, apiKey).slice(0, 200)}`);
       err.code = 'http';
       throw err;
     }
@@ -149,6 +159,7 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
     return { text: redactSecret(text, apiKey), usage, responseModel, reportedModels, deltaCount };
   } catch (err) {
     if (killedBy === 'abort') { const e = new Error('aborted by user'); e.code = 'abort'; throw e; }
+    if (killedBy === 'tunnel') { const e = new Error('managed SSH inference tunnel died; direct-network fallback is disabled'); e.code = 'tunnel'; throw e; }
     if (killedBy === 'idle') { const e = new Error(`${entry.name} went silent for ${Math.round(IDLE_MS() / 60000)} min — killed (idle watchdog)`); e.code = 'idle'; throw e; }
     if (killedBy === 'timeout') { const e = new Error(`${entry.name} hit the hard timeout`); e.code = 'timeout'; throw e; }
     throw err;
@@ -156,6 +167,7 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
     clearTimeout(hardT);
     clearTimeout(idleT);
     signal?.removeEventListener('abort', onAbort);
+    if (tunnelLease && tunnelLease !== entry.tunnelLease) await tunnelLease.release();
   }
 }
 
@@ -252,7 +264,7 @@ function assertReportedIdentity(entry, model, reportedModels, aliases) {
 
 export function openAiCompatMaker(entry) {
   return async function compatMaker({ prompt, stage = 'make', model, signal, onTick, onSession, toolPolicy = 'research', expectedReported }) {
-    const fail = (error) => ({ ok: false, error, text: null, costUsd: 0 });
+    const fail = (error, errorCode = null) => ({ ok: false, error, ...(errorCode ? { errorCode } : {}), text: null, costUsd: 0 });
     if (toolPolicy === 'hivemind_only') {
       return fail(`backend "${entry.name}" has no tools, so it cannot run Hivemind retrieval — grounded managed-connector runs need the claude backend in the maker seat`);
     }
@@ -300,7 +312,7 @@ export function openAiCompatMaker(entry) {
         hivemindResults: [],
       };
     } catch (err) {
-      return fail(err.message);
+      return fail(err.message, err.code || null);
     } finally {
       clearInterval(tick);
     }
@@ -311,10 +323,10 @@ export function openAiCompatMaker(entry) {
 
 export function openAiCompatReviewer(entry) {
   return async function compatReviewer({ prompt, model, signal, onTick, onSession, receiptDir, claims = [], criteria = [], thresholds = [], expectedReported }) {
-    const infra = (error) => ({
+    const infra = (error, errorCode = null) => ({
       ran: false, error, verdict: 'ERROR', findings: [], questions: [],
       claimAssessments: [], coverageAssessments: [], thresholdAssessments: [],
-      usage: null, durationMs: Date.now() - startedAt,
+      usage: null, durationMs: Date.now() - startedAt, ...(errorCode ? { errorCode } : {}),
     });
     const tick = setInterval(() => onTick?.('reviewer reading and drafting findings…'), 8000);
     const startedAt = Date.now();
@@ -360,7 +372,7 @@ export function openAiCompatReviewer(entry) {
       }
       return norm;
     } catch (err) {
-      return infra(err.message);
+      return infra(err.message, err.code || null);
     } finally {
       clearInterval(tick);
     }

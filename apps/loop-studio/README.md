@@ -70,7 +70,7 @@ No backend exists until someone writes one down; the key lives only in the named
 
 Model discovery is advisory: `listed`, `unlisted`, and `discovery_unavailable` are shown, but a valid qualification is what gates admission. A same-vendor pairing is allowed and recorded honestly: the review seals as **advisory** and the standing reads **same-vendor reviewed**, never independent. A cross-organization pairing backed only by operator declarations seals as **declared**, never as registry-verified. The server supplies the badges and warning copy; the browser does not derive a trust tier.
 
-Boundaries of this release: only `chat_completions` over `loopback` and `direct_https` is selectable. OpenAI Responses is visibly planned, not selectable. Managed SSH, its connection editor, and CLI/gate custom-reviewer dispatch remain later slices. Build keeps the gate's own pairing, Compare & Learn and audit replay keep their frozen claude/codex catalogs, grounded managed-connector runs need a claude-backend maker, and `openai_compat` backends have no tools (no web, no MCP) — a contract demanding live-loaded sources will honestly fail review under such a maker. The hermetic fixture proves the complete local adapter path; real xAI/Moonshot/DashScope credentials and real Ollama/vLLM/LM Studio hardware remain an explicit provider-backed validation gap.
+Boundaries of this release: `chat_completions` over `loopback`, `direct_https`, and the managed `ssh_tunnel` transport is selectable. OpenAI Responses is visibly planned, not selectable. The SSH path is transport-only: it uses a validated OpenSSH alias, a remote loopback port, and a temporary local forward; it never runs remote commands, copies files, or accepts a browser-supplied argv. `camus-loop-studio --doctor --deep` performs the same preflight, host-trust advisory, hardened spawn, and `/models` liveness checks used by qualification and runtime. OpenSSH tunnel diagnostics are bounded and redacted by default (`STUDIO_TUNNEL_DEBUG=1` is an explicit raw-diagnostics opt-in). The connection editor and CLI/gate custom-reviewer dispatch remain later slices. Build keeps the gate's own pairing, Compare & Learn and audit replay keep their frozen claude/codex catalogs, grounded managed-connector runs need a claude-backend maker, and `openai_compat` backends have no tools (no web, no MCP) — a contract demanding live-loaded sources will honestly fail review under such a maker. The hermetic fixture proves the complete local adapter path; real xAI/Moonshot/DashScope credentials and real Ollama/vLLM/LM Studio hardware remain an explicit provider-backed validation gap.
 
 Both **codex** seats run a hardened subprocess: shell/exec, web search (which defaults to *on*), browser, apps, and plugins disabled by flag; no user config, rules, or MCP; ephemeral session; a scrubbed environment; and a fail-closed watch that refuses the call if any unexpected tool event appears. See [docs/MULTI-MODEL-SEATS.md](../../docs/MULTI-MODEL-SEATS.md#the-hardened-codex-profile-both-seats) for the flag table and the live controls behind each claim.
 
@@ -80,9 +80,10 @@ Since the open-model-seats work ([docs/OPEN-MODEL-SEATS-RFC.md](../../docs/OPEN-
 
 ```jsonc
 {
-  "connections": {
+"connections": {
     "local_ollama": { "kind": "loopback", "port": 11434, "basePath": "/v1" },
     "xai": { "kind": "direct_https", "baseUrl": "https://api.x.ai/v1" },
+    "gpu_lab": { "kind": "ssh_tunnel", "sshHostAlias": "camus-gpu", "remoteAddress": "127.0.0.1", "remotePort": 11434, "basePath": "/v1" },
     "old_gpu": { "kind": "legacy_http", "baseUrl": "http://192.168.1.40:11434/v1" }
   },
   "backends": {

@@ -104,12 +104,16 @@ try {
     );
   });
 
-  check('unsupported SSH and remote-executor kinds refuse distinctly', () => {
+  check('managed SSH validates its alias/loopback target and remote execution remains refused', () => {
     const base = validXai();
     assert.doesNotThrow(() => listBackends(decision(base)), 'supported control loads');
+    assert.deepEqual(
+      parseConnections({ connections: { gpu: { kind: 'ssh_tunnel', sshHostAlias: 'camus-gpu', remoteAddress: '127.0.0.1', remotePort: 11434, basePath: '/v1' } } }).gpu,
+      { name: 'gpu', kind: 'ssh_tunnel', baseUrl: null, anonymous: false, sshHostAlias: 'camus-gpu', remoteAddress: '127.0.0.1', remotePort: 11434, basePath: '/v1', why: null },
+    );
     assert.throws(
-      () => parseConnections({ connections: { gpu: { kind: 'ssh_tunnel', remoteAddress: '127.0.0.1' } } }),
-      (error) => /ssh_tunnel is not yet supported/.test(error.message) && /see ADR/.test(error.message),
+      () => parseConnections({ connections: { gpu: { kind: 'ssh_tunnel', sshHostAlias: '-bad', remoteAddress: '127.0.0.1', remotePort: 11434 } } }),
+      /sshHostAlias/,
     );
     assert.throws(
       () => parseConnections({ connections: { remote: { kind: 'remote_executor' } } }),
@@ -119,13 +123,13 @@ try {
 
   check('SSH remoteAddress refuses a pivot before the unsupported-kind refusal', () => {
     assert.throws(
-      () => parseConnections({ connections: { gpu: { kind: 'ssh_tunnel', remoteAddress: '10.0.0.8' } } }),
+      () => parseConnections({ connections: { gpu: { kind: 'ssh_tunnel', sshHostAlias: 'gpu', remoteAddress: '10.0.0.8', remotePort: 11434 } } }),
       (error) => /remoteAddress/.test(error.message) && /remote loopback/.test(error.message) && /pivot/.test(error.message),
     );
     assert.throws(
-      () => parseConnections({ connections: { gpu: { kind: 'ssh_tunnel', remoteAddress: 'localhost' } } }),
-      /not yet supported/,
-      'break-on-purpose control reaches the later unsupported-kind guard',
+      () => parseConnections({ connections: { gpu: { kind: 'ssh_tunnel', sshHostAlias: 'gpu', remoteAddress: 'localhost', remotePort: 0 } } }),
+      /remotePort/,
+      'invalid remote port refuses',
     );
   });
 

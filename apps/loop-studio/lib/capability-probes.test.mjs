@@ -509,24 +509,26 @@ await test('seatQualification voids the receipt when live server anchors drift',
 await test('seatQualification refuses a seat with no receipt (a seat may not launch unqualified)', async () => {
   freshEnv();
   process.env.CAP_TEST_KEY = SECRET;
-  const { baseUrl } = await startServer(() => ({ body: 'ok', model: 'served-alias' }));
+  const { baseUrl } = await startServer((kind) => ({ body: kind === 'structured' ? REVIEW_JSON : 'ok', model: 'served-alias' }));
   const admit = await seatQualification({ entry: envEntry(baseUrl), model: 'never-probed', seatType: 'words_reviewer' });
   assert.equal(admit.qualified, false);
   assert.equal(admit.reason, 'missing');
   assert.equal(admit.fingerprint, undefined);
 });
 
-await test('unsupported transports (ssh_tunnel / legacy_http) are out of scope', async () => {
+await test('managed ssh_tunnel is supported while legacy_http remains refused', async () => {
   freshEnv();
   process.env.CAP_TEST_KEY = SECRET;
-  const { baseUrl } = await startServer(() => ({ body: 'ok', model: 'served-alias' }));
-  const ssh = { ...envEntry(baseUrl), transport: 'ssh_tunnel' };
-  assert.equal(isSupportedTransport(ssh), false);
+  const { baseUrl } = await startServer((kind) => ({ body: kind === 'structured' ? REVIEW_JSON : 'ok', model: 'served-alias' }));
+  const ssh = { ...envEntry(baseUrl), transport: 'ssh_tunnel', connectionDetails: { kind: 'ssh_tunnel', name: 'gpu', sshHostAlias: 'gpu', remoteAddress: '127.0.0.1', remotePort: 11434, basePath: '/v1' } };
+  assert.equal(isSupportedTransport(ssh), true);
   assert.equal(isSupportedTransport({ ...envEntry(baseUrl), transport: 'legacy_http' }), false);
   assert.equal(isSupportedTransport(envEntry(baseUrl)), true);
-  // The runner refuses to probe or admit an out-of-scope transport.
-  await assert.rejects(() => deepQualifyModel({ entry: ssh, model: 'served-alias', seatType: 'words_reviewer', contextProbeTokens: 64 }), /out of Slice C scope/);
-  assert.equal((await seatQualification({ entry: ssh, model: 'served-alias', seatType: 'words_reviewer' })).reason, 'unsupported_transport');
+  const fakeManager = { acquire: async () => ({ url: baseUrl, death: new Promise(() => {}), release: async () => {} }) };
+  const qualified = await deepQualifyModel({ entry: ssh, model: 'served-alias', seatType: 'words_reviewer', contextProbeTokens: 64, tunnelManager: fakeManager });
+  assert.equal(qualified.qualified, true, qualified.reason);
+  const legacy = { ...envEntry(baseUrl), transport: 'legacy_http' };
+  assert.equal((await seatQualification({ entry: legacy, model: 'served-alias', seatType: 'words_reviewer' })).reason, 'unsupported_transport');
 });
 
 await test('expectedReportedFor forwards a declared alias mapping from entry or seat', () => {
