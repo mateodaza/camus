@@ -2,12 +2,12 @@
 
 **Status:** v6.1 — **approved architecture contract** after five audit rounds plus two
 folded-in P2 clarifications (every finding mapped in the change logs at the end).
-**Implementation status (2026-08-23):** slice A, the B migration core, and slice C are
-implemented. Slice D security-core implementation is in progress pending its admission and
-lifecycle acceptance matrix; slices E–I remain unimplemented. The frozen design below remains the contract;
+**Implementation status (2026-08-23):** slice A, the B migration core, slice C, and slice D are
+implemented. Slice D's managed-SSH security, lifecycle, admission, privacy, and qualification
+matrix is accepted; slices E–I remain unimplemented. The frozen design below remains the contract;
 implementation claims are recorded in this status line and the closing ledger, not silently
 rewritten into the original proposal text.
-**Date:** 2026-08-18 (v2 through v6.1 same day); implementation status updated 2026-08-21.
+**Date:** 2026-08-18 (v2 through v6.1 same day); implementation status updated 2026-08-23.
 **Builds on:** `docs/MULTI-MODEL-SEATS.md` (adopted 2026-08-04) — the seat/backend contract this
 RFC extends. Nothing in that document is weakened here; every requirement below is additive or a
 tightening.
@@ -2974,8 +2974,9 @@ and 6.
 ---
 
 *End of RFC (v6.1). Architecture rounds remain closed. Implementation ledger as of
-2026-08-23: A complete; B migration core complete; C complete; D security core implementation pending acceptance; E–I not begun. Slice C has a
-hermetic end-to-end loopback acceptance test, while live provider-backed validation remains
+2026-08-23: A complete; B migration core complete; C complete; D complete; E–I not begun. Slice C has a
+hermetic end-to-end loopback acceptance test and D has a hermetic managed-SSH security/lifecycle
+matrix, while live provider-backed validation remains
 explicitly open under §19.7. The separately approved post-RFC execution plan adds a
 [responsible control-plane feat](RESPONSIBLE-CONTROL-PLANE.md) after D and F; it consumes their
 structured control evidence without rewriting this frozen contract.*

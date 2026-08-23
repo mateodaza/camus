@@ -3768,7 +3768,8 @@ exit 0
       // A group whose leader is gone but whose children remain is ALIVE.
       assert.equal(processGroupAlive(4242, { ps: () => ' 4243\n 4244\n' }), true, 'surviving group members keep the group alive even when the leader is gone');
       assert.equal(processGroupAlive(4242, { ps: () => '' }), false, 'an empty group listing means the group is really gone');
-      assert.equal(processGroupAlive(4242, { ps: () => null }), false, 'when ps is unusable it falls back to the leader pid, never to an optimistic "gone"');
+      assert.equal(processGroupAlive(2_147_483_600, { ps: () => null }), false, 'when ps is unusable, a known-absent leader remains gone');
+      assert.equal(processGroupAlive(process.pid, { ps: () => null }), true, 'when ps is unusable, a live leader remains conservatively alive');
       assert.equal(processGroupAlive(process.pid, { ps: () => ` ${process.pid}\n` }), true, 'a live group is reported alive');
       assert.equal(processGroupAlive(0), false, 'a nonsense pgid is not a live group');
     }
