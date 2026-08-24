@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# CAMUS_CONTROL: cli.review.watchdog_custody
 """Detached runner + event-idle watchdog for the Codex review (watchdog reviewer, 2026-06-11).
 
 Why: `codex exec` has NO deadline flag, and a single Bash tool call caps out at ~10 minutes —

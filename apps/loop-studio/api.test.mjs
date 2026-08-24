@@ -149,6 +149,66 @@ try {
     assert.equal(c.maker.provider, 'anthropic', 'and its provider');
   });
 
+  await check('connection POST validates and saves one declaration without granting trust', async () => {
+    const post = (body) => fetch(`${base}/api/connections`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify(body),
+    });
+    const declaration = {
+      connections: {
+        slice_e_local: { kind: 'loopback', port: 11434, basePath: '/v1', why: 'operator runs a local model server' },
+      },
+      backends: {
+        slice_e_qwen: {
+          kind: 'openai_compat', provider: 'self_hosted', protocol: 'chat_completions',
+          trainingOrg: 'alibaba', modelFamily: 'qwen', derivedFrom: null,
+          inferenceOperator: 'self_hosted', auth: { kind: 'none' }, models: ['qwen3-coder'],
+          seats: ['maker', 'reviewer'], why: 'evaluate local Qwen before admission',
+        },
+      },
+    };
+    const saved = await post(declaration);
+    assert.equal(saved.status, 200);
+    const body = await saved.json();
+    assert.match(body.note, /declared locally but not trusted yet/);
+    assert.equal(body.saved.backend.connection, 'slice_e_local', 'the server binds the backend to the saved connection');
+    assert.equal(body.saved.backend.transport, 'loopback', 'transport is derived server-side');
+
+    const config = await (await fetch(`${base}/api/config`, { headers: { origin: base } })).json();
+    assert.equal(config.connections.slice_e_local.kind, 'loopback');
+    const seat = config.seats.reviewer.find((entry) => entry.backend === 'slice_e_qwen' && entry.model === 'qwen3-coder');
+    assert.ok(seat, 'the declared tuple is visible');
+    assert.equal(seat.admission.qualified, false, 'saving never grants qualification');
+    assert.equal(seat.admission.qualifiable, true);
+
+    assert.equal((await post(declaration)).status, 409, 'replacement requires a separate explicit choice');
+    assert.equal((await post({ ...declaration, replace: true })).status, 200, 'the explicit replacement choice is honored');
+  });
+
+  await check('connection POST refuses placeholders and credential values without reflecting them', async () => {
+    const planted = 'sk-planted-secret-value';
+    const response = await fetch(`${base}/api/connections`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify({
+        connections: { unsafe: { kind: 'direct_https', baseUrl: 'https://api.example.com/v1', why: '<replace:why>' } },
+        backends: {
+          unsafe: {
+            kind: 'openai_compat', provider: 'example', protocol: 'chat_completions',
+            trainingOrg: 'example', modelFamily: 'example', derivedFrom: null,
+            inferenceOperator: 'example', auth: { kind: 'env', envVar: 'EXAMPLE_API_KEY', value: planted },
+            models: ['example-model'], why: 'test rejection',
+          },
+        },
+      }),
+    });
+    assert.equal(response.status, 400);
+    const text = await response.text();
+    assert.ok(!text.includes(planted), 'the error response never reflects a credential-shaped value');
+    assert.ok(!Object.hasOwn((await (await fetch(`${base}/api/config`, { headers: { origin: base } })).json()).connections, 'unsafe'));
+  });
+
   await check('config POST accepts { backend, model } seats and refuses undeclared ones', async () => {
     const post = (body) => fetch(`${base}/api/config`, {
       method: 'POST',
@@ -1279,6 +1339,17 @@ try {
     const optedMeta = JSON.parse(readFileSync(join(tmp, optedId, 'run.json'), 'utf8'));
     assert.equal(optedMeta.publishRequested, true, 'run.json records the consent before any model work');
     await fetch(`${base}/api/runs/${optedId}/stop`, { method: 'POST', headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN } });
+    let optedReport = null;
+    for (let i = 0; i < 20 && !optedReport; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const path = join(tmp, optedId, 'report.json');
+      if (existsSync(path)) optedReport = JSON.parse(readFileSync(path, 'utf8'));
+    }
+    assert.ok(optedReport?.controlPlane, 'the opt-in seals its separate control-plane receipt');
+    assert.equal(optedReport.controlPlane.actions.some((action) => action.action_class === 'studio.publish.artifact'), true, 'publication is represented as its own governed action');
+    const consentEvent = optedReport.controlPlane.events.find((event) => event.control_id === 'studio.publish.explicit_consent' && event.outcome === 'passed');
+    assert.ok(consentEvent, 'the explicit consent control is evidenced');
+    assert.equal(optedReport.controlPlane.human_decisions.some((decision) => decision.action_fingerprint === consentEvent.action_fingerprint && decision.decision === 'approve'), true, 'publication consent is bound to the exact action fingerprint');
   });
 
   await check('goal over the size cap is refused (400)', async () => {
@@ -1370,6 +1441,11 @@ try {
     assert.ok(!('headline' in report), 'the headline is derived at render — never sealed into the evidence');
     assert.ok(report.models && report.models.maker, 'the receipt carries the run-start model snapshot, like run.json');
     assert.equal(report.acceptanceContract, ACCEPTANCE, 'the explicit trust contract survives into the report');
+    assert.equal(report.controlPlane?.control_plane_version, 'control-plane.v1', 'the mutable control receipt is versioned separately');
+    assert.equal(report.controlPlane?.register_version, 'control-register.v1', 'the receipt names the register it was evaluated against');
+    assert.deepEqual(report.controlPlane?.actions.map((action) => action.action_class), ['studio.run.launch'], 'local-only runs create no latent publication action');
+    assert.equal(report.controlPlane?.events.some((event) => event.control_id === 'studio.run.output_standing'), true, 'the terminal output screen is evidenced');
+    assert.equal(report.controlRoute?.decision, 'auto', 'all three launch checkpoints route automatically when evidence passes');
     assert.ok(report.evidencePack, `the evidence pack seals (${report.evidencePackError || 'no error'})`);
     assert.equal(report.evidencePack.schemaVersion, 3, 'new Studio receipts use evidence-pack v3');
     assert.equal(report.evidencePack.pairing.schemaVersion, 2, 'envelope v3 carries pairing v2');

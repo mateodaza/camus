@@ -12,6 +12,7 @@ import { getModels, modelsSummary, seatCatalog, listBackends, listConnections } 
 import { CLAUDE_HIVEMIND_DISPLAY, hivemindStatus } from './adapters/hivemind.mjs';
 import { gateInstalled } from './code-lane.mjs';
 import { qualifyUsedSeats } from './capability-probes.mjs';
+import { createQualificationControl } from './control-plane.mjs';
 import { getSharedTunnelManager } from './ssh-tunnel.mjs';
 
 // A skill is a directory holding SKILL.md, whose YAML frontmatter names it.
@@ -422,8 +423,8 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   }
 
   // Deep §9.2 capability qualification: the SAME operation the server exposes,
-  // run only under --deep for the openai_compat backends the current seat
-  // decisions actually use. Advisory — a probe failure is reported, never a
+  // run only under an explicit --deep/browser deep action for every declared
+  // openai_compat tuple. Advisory — a probe failure is reported, never a
   // thrown doctor, and it does not flip the overall preflight verdict.
   // The §9.2 qualification fires REAL, spending streaming model probes and writes
   // durable receipts. Under the mock engine — whose contract is "rehearsal, no
@@ -431,7 +432,19 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
   // deep connection/backend reachability probes above still run.
   if (deep && engine !== 'mock') {
     try {
-      const qualRows = await qualifyUsedSeats({ backends: Object.values(listBackends()), seatDecisions, deep: true });
+      const qualRows = await qualifyUsedSeats({
+        backends: Object.values(listBackends()), seatDecisions, deep: true,
+        // `--doctor --deep` and the plainly labelled browser action authorize
+        // the declared tuple set. Still bind one human decision + receipt per
+        // exact tuple so a later config edit cannot inherit that authority.
+        onTupleStart: ({ entry, model, seatKey }) => createQualificationControl({
+          seat: seatKey, backend: entry.name, model,
+          connection: entry.connection || entry.connectionDetails?.name || null,
+          transport: entry.transport,
+          consentReason: 'Operator explicitly requested deep checks for the declared tuple set; this decision is bound to this exact tuple.',
+        }),
+        onTupleFinish: (control, outcome) => control.finish(outcome),
+      });
       // A qualification failure for a seat the current decision actually SELECTS
       // is not advisory: the launch gate will categorically reject that run, so
       // --doctor must fail rather than exit green. The row id qualifyUsedSeats

@@ -93,6 +93,10 @@ usage: npx camus-cli <command>
                        --config <json> supplies a generation's qualityFloor/minimumTrials so a
                        leader may be named (repeatable); --experiment <id> filters to one experiment;
                        --task-class <name> filters observed rows AND config context to one scenario
+  benchmark [...]    Slice G append-only reviewer campaign evidence (no provider calls by itself):
+                       append --campaign <json> --ledger <jsonl> --receipt <json>
+                       summarize --campaign <json> --ledger <jsonl> [--out <json>] [--json]
+                       a passing row is evidence for human admission; it never enables a backend
   resume       list interrupted feat runs (canonical resumeArgs, JSON)
   retro        read-only run-history analytics over ~/.camus/reports: per-feat lines,
                  aggregates (status/posture mix, rounds, token p50/p90), evidence-gated
@@ -160,6 +164,9 @@ switch (cmd) {
   case 'eval':
   case 'evals':
     py('evals.py', rest);
+    break;
+  case 'benchmark':
+    py('benchmark_reviewers.py', rest);
     break;
   case 'retro':
     py('retro.py', rest);

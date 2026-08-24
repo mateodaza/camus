@@ -25,6 +25,11 @@ try:
 except Exception:  # pragma: no cover - sibling always present in a real gate
     _adapter = None
 
+try:
+    import control_plane as _control_plane
+except Exception:  # pragma: no cover - a partial/legacy install stays best-effort
+    _control_plane = None
+
 
 def _int(x):
     try:
@@ -117,6 +122,7 @@ def build_record(wt, rnd, status, raw, reviewer_model=None, reviewer_effort=None
         except Exception:
             ran = False
     binding = binding_from_env(env)
+    meta = _meta_contract(meta_contract)
     actual_round = _int(rnd)
     record = {
         "ran_at": int(time.time()),
@@ -137,13 +143,15 @@ def build_record(wt, rnd, status, raw, reviewer_model=None, reviewer_effort=None
         "codex_raw": raw,
         "codex_parsed": parsed,
     }
+    input_fingerprint = meta.get("input_fingerprint")
+    if isinstance(input_fingerprint, str) and input_fingerprint:
+        record["input_fingerprint"] = input_fingerprint
     if binding is not None:
         # rc1 fields from the sealed meta.json WIN over the env-derived binding: on a replay or a
         # live-review adoption the env (CAMUS_REVIEW_BINDING) is not yet enriched with them, but
         # meta.json always carries them — so the per-round audit stays complete across every
         # boundary instead of being overwritten with nulls. A missing/blank meta field falls back
         # to whatever the env binding already had (never downgrades a present value to null).
-        meta = _meta_contract(meta_contract)
         for key in RC1_FIELDS:
             value = meta.get(key)
             if isinstance(value, str) and value:
@@ -177,6 +185,33 @@ def main(argv=None):
     raw = sys.stdin.read()
     rec = build_record(wt, rnd, status, raw, reviewer_model, reviewer_effort,
                        meta_contract=meta_contract)
+    if _control_plane is not None:
+        try:
+            control = _control_plane.finalize_review_receipt(
+                wt, _int(rnd), os.environ.get("CAMUS_REVIEW_BACKEND") or "codex",
+                rec.get("ran") is True,
+                bool(rec.get("ran") is True and _adapter.normalize_codex(raw, _int(status)).get("clean") is True),
+                rec.get("binding"),
+                input_fingerprint=rec.get("input_fingerprint"),
+            )
+            if control is not None:
+                rec["control_plane"] = {
+                    "schema_version": 1,
+                    "action_fingerprint": control["action_fingerprint"],
+                    "decision": control["decision"],
+                    "cause": control["cause"],
+                    "rule_ids": control["rule_ids"],
+                }
+        except Exception:
+            # The forensic audit remains writable, but it says plainly that its
+            # control receipt could not be completed.  Never copy exception text:
+            # paths or provider-shaped values do not belong in this summary.
+            rec["control_plane"] = {
+                "schema_version": 1,
+                "decision": "inconclusive",
+                "cause": "control_inconclusive",
+                "error_code": "control_receipt_invalid",
+            }
     # Atomic publish: write a same-directory temp file, fsync, then os.replace()
     # onto the final path — a reader (e.g. the Studio watcher) ever sees the OLD
     # complete file or the NEW complete file, never a truncated mid-write JSON.

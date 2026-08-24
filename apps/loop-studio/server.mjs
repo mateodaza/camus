@@ -3,6 +3,13 @@
 // the UI, runs the loop, streams events over SSE, and writes receipts under
 // runs/<id>/ (events.jsonl + every revision + report.json) so each run leaves
 // a paper trail a skeptic can replay.
+// CAMUS_CONTROL: studio.run.acceptance_contract
+// CAMUS_CONTROL: studio.run.seat_admission
+// CAMUS_CONTROL: studio.run.dispatch_authorization
+// CAMUS_CONTROL: studio.run.output_standing
+// CAMUS_CONTROL: studio.publish.lane_eligibility
+// CAMUS_CONTROL: studio.publish.explicit_consent
+// CAMUS_CONTROL: studio.qualification.exact_tuple
 
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
@@ -27,13 +34,15 @@ import { buildAuditReplayPack, createAuditReplayExperiment, finalizeAuditReplayE
 import { createParallelExperiment, finalizeParallelExperiment, knowledgeSnapshotMatches, markParallelArmRunning, outcomeFromArmReport, sealKnowledgeSnapshot } from './lib/comparison.mjs';
 import { validateExperimentRecord } from '../../packages/trust/lib/validate.mjs';
 import { deriveStatusDimensions, deriveHeadline } from './lib/status-dims.mjs';
-import { getModels, updateModels, modelsSummary, modelCatalog, seatCatalog, seatOffered, groundingNeedsClaudeMaker, gateModels, listConnections, listBackends, EFFORTS } from './lib/models.mjs';
-import { deepQualifyModel, expectedReportedFor, seatQualification, storedSeatQualification } from './lib/capability-probes.mjs';
+import { getModels, updateModels, saveConnectionBackend, modelsSummary, modelCatalog, seatCatalog, seatOffered, groundingNeedsClaudeMaker, gateModels, listConnections, listBackends, EFFORTS } from './lib/models.mjs';
+import { deepQualifyModel, expectedReportedFor, redactProviderError, seatQualification, storedSeatQualification } from './lib/capability-probes.mjs';
+import { capabilityDiagnosticsDir } from './lib/capabilities.mjs';
 import { admissionCatalog, admittedSeat, pairingPresentation, isQualifiableTransport } from './lib/admission.mjs';
 import { confirmClaudeRoute } from './lib/grandfather.mjs';
 import { reviewPrompt } from './lib/prompts.mjs';
-import { getSharedTunnelManager } from './lib/ssh-tunnel.mjs';
+import { connectionFingerprint, getSharedTunnelManager } from './lib/ssh-tunnel.mjs';
 import { installTunnelLifecycle } from './lib/tunnel-lifecycle.mjs';
+import { createQualificationControl, createStudioControlPlane } from './lib/control-plane.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dirname, 'public');
@@ -69,8 +78,10 @@ if (confirmClaudeRouteIndex !== -1) {
 
 if (process.argv.includes('--doctor')) {
   const { runDoctor } = await import('./lib/doctor.mjs');
-  const report = await runDoctor({ deep: true, engine: ENGINE });
+  const deep = process.argv.includes('--deep');
+  const report = await runDoctor({ deep, engine: ENGINE });
   console.log('camus-loop-studio doctor');
+  console.log(`  mode   ${deep ? 'deep (provider-backed checks may spend tokens)' : 'shallow (network-free; pass --deep explicitly for provider-backed checks)'}`);
   for (const c of report.checks) {
     console.log(`  ${c.ok ? 'ok  ' : 'MISS'}  ${c.label.padEnd(28)} ${c.detail}`);
     if (!c.ok && c.fix) console.log(`        fix: ${c.fix}`);
@@ -260,7 +271,11 @@ async function startRun({
     ? { maker: null, reviewer: null, loop: { roundCap: 0 }, recovery: true }
     : modelsSnapshot ? JSON.parse(JSON.stringify(modelsSnapshot)) : getModels();
   const publishRequested = publish === true;
-  const run = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, pairingView, frozenKnowledge, toolPolicy, publish: publishRequested, experimentContext };
+  const controlPlane = createStudioControlPlane({
+    id, goal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd,
+    models, recovery, publishRequested,
+  });
+  const run = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, pairingView, frozenKnowledge, toolPolicy, publish: publishRequested, experimentContext, controlPlane };
   // The run exists on disk from second zero — a crash must not orphan it.
   const runMetadata = () => ({ id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: run.idSalt, engine: ENGINE, models, pairingView, publishRequested, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, experimentContext, startedAt: run.startedAt });
   await writeFile(join(dir, 'run.json'), JSON.stringify(runMetadata(), null, 2))
@@ -332,6 +347,7 @@ async function startRun({
     if (type === 'question_answered' && run.status === 'needs_human') run.status = 'running';
   };
   state.emit = emit;
+  controlPlane.attach(emit);
 
   const waitForAnswer = (question) => {
     const qid = `q-${state.events.filter((e) => e.type === 'question').length + 1}`;
@@ -360,6 +376,23 @@ async function startRun({
     : ENGINE === 'mock' ? (() => { const m = createMockAdapters(); return { maker: m.maker, reviewer: m.reviewer }; })()
       : resolveSeatAdapters(models, frozenBackends);
 
+  // Managed-SSH facts are already emitted by the transport. Bind both the name
+  // and immutable destination fingerprint from the exact backend objects frozen
+  // at admission. A same-named connection edited during another run therefore
+  // cannot bleed its facts into this receipt.
+  const runSshConnections = new Set(
+    [frozenBackends?.maker, frozenBackends?.reviewer]
+      .map((backend) => backend?.connectionDetails)
+      .filter((connection) => connection?.kind === 'ssh_tunnel')
+      .map((connection) => JSON.stringify([connection.name, connectionFingerprint(connection)])),
+  );
+  const removeTunnelSubscription = runSshConnections.size
+    ? getSharedTunnelManager().subscribe((fact) => {
+      const factKey = JSON.stringify([fact?.connection, fact?.connectionFingerprint]);
+      if (runSshConnections.has(factKey)) controlPlane.recordSshFact(fact);
+    })
+    : null;
+
   emit('run', { run: { id, goal: displayGoal ?? goal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, pairingView, recoveryOf: recovery?.sourceRunId ?? null, recovery: recovery ? { sourceRunId: recovery.sourceRunId ?? null, sourceReceiptId: recovery.sourceReceiptId ?? null, parkedSha: recovery.parkedSha ?? null, shaProvenance: recovery.shaProvenance ?? null } : null, engine: ENGINE, roundCap: models.loop.roundCap, experimentContext } });
   if (!gitOk) emit('log', { line: '⚠ git unavailable; codex reviews will run outside a git repo (different conditions than camus)' });
 
@@ -387,6 +420,7 @@ async function startRun({
       }
     },
   }).then(async (result) => {
+    removeTunnelSubscription?.();
     if (targetToplevel) activeBuilds.delete(targetToplevel);
     await state.writeChain; // receipt stream flushed before the report seals the run
     // The receipt CARRIES the challenge trail, not just the final deliverable,
@@ -402,6 +436,12 @@ async function startRun({
       published: !!(result?.artifactPublished || result?.artifactUrl),
       simulated: ENGINE === 'mock',
     });
+    const terminalControlRoute = controlPlane.finishRun({ statuses, status: run.status });
+    if (terminalControlRoute.decision !== 'auto') {
+      receiptsDegraded = true;
+      receiptsNote = [receiptsNote, `the control plane ended ${terminalControlRoute.decision}: ${terminalControlRoute.rule_ids.join(', ')}`].filter(Boolean).join('; ');
+    }
+    await state.writeChain;
     const endedAt = Date.now();
     let evidencePack = null;
     let evidencePackError = null;
@@ -432,7 +472,7 @@ async function startRun({
     // so a future result field named `models` can never overwrite the sealed pairing
     // (the same reason draft/deliverable are pinned after the spread). simulated is
     // pinned there too: a rehearsal receipt must SAY it is one, permanently.
-    const reportObject = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', experimentContext, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, draft: undefined, deliverable: run.lastMarkdown, evidence, evidencePack, evidencePackError, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt };
+    const reportObject = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', experimentContext, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, draft: undefined, deliverable: run.lastMarkdown, evidence, evidencePack, evidencePackError, controlPlane: controlPlane.receipt(), controlRoute: terminalControlRoute, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt };
     const report = JSON.stringify(reportObject, null, 2);
     try {
       await writeFile(join(dir, 'report.json'), report);
@@ -1233,8 +1273,11 @@ const server = http.createServer(async (req, res) => {
       const seatKey = body?.seat;
       const backendName = typeof body?.backend === 'string' ? body.backend.trim() : '';
       const model = typeof body?.model === 'string' ? body.model.trim() : '';
-      if (!['maker', 'reviewer'].includes(seatKey) || !backendName || !model) {
-        return json(res, 400, { error: 'qualification requires { seat: maker|reviewer, backend, model }' });
+      const stream = body?.stream === true;
+      const unknown = Object.keys(body ?? {}).filter((key) => !['seat', 'backend', 'model', 'stream'].includes(key));
+      if (unknown.length || ![undefined, true, false].includes(body?.stream)
+        || !['maker', 'reviewer'].includes(seatKey) || !backendName || !model) {
+        return json(res, 400, { error: 'qualification requires exactly { seat: maker|reviewer, backend, model, stream?: boolean }' });
       }
       const declared = seatCatalog();
       const catalogEntry = (declared[seatKey] ?? []).find((entry) => entry.backend === backendName && entry.model === model);
@@ -1247,18 +1290,108 @@ const server = http.createServer(async (req, res) => {
       }
       const seatType = seatKey === 'maker' ? 'words_maker' : 'words_reviewer';
       const expectedReported = expectedReportedFor(backend, catalogEntry, model);
-      const result = await deepQualifyModel({ entry: backend, model, seatType, expectedReported });
-      const refreshed = admissionCatalog();
-      const status = (refreshed[seatKey] ?? []).find((entry) => entry.backend === backendName && entry.model === model) ?? null;
-      return json(res, 200, {
-        qualified: result.qualified,
-        reason: result.reason,
-        missing: result.missing ?? [],
-        discoveryStatus: result.discoveryStatus ?? 'discovery_unavailable',
-        identity: result.identity ?? null,
-        capabilities: result.capabilities ?? null,
-        admission: status?.admission ?? null,
+      const qualificationControl = createQualificationControl({
+        seat: seatKey, backend: backendName, model,
+        connection: backend.connection || backend.connectionDetails?.name || null,
+        transport: backend.transport,
       });
+      let finishAttempted = false;
+      const finishControl = (input) => {
+        finishAttempted = true;
+        return qualificationControl.finish(input);
+      };
+      const shapeResult = (result, governed) => {
+        const refreshed = admissionCatalog();
+        const status = (refreshed[seatKey] ?? []).find((entry) => entry.backend === backendName && entry.model === model) ?? null;
+        return {
+          qualified: result.qualified,
+          reason: result.reason,
+          missing: result.missing ?? [],
+          discoveryStatus: result.discoveryStatus ?? 'discovery_unavailable',
+          identity: result.identity ?? null,
+          capabilities: result.capabilities ?? null,
+          admission: status?.admission ?? null,
+          // Path only. Raw provider diagnostics remain a bounded, redacted local
+          // file the operator chooses to open; they are never streamed to the page.
+          diagnosticsPath: capabilityDiagnosticsDir(),
+          controlRoute: governed.route,
+        };
+      };
+      if (!stream) {
+        try {
+          const result = await deepQualifyModel({ entry: backend, model, seatType, expectedReported });
+          const governed = finishControl({ result });
+          return json(res, 200, shapeResult(result, governed));
+        } catch (error) {
+          let governed = null;
+          if (!finishAttempted) {
+            try { governed = finishControl({ error }); } catch {}
+          }
+          return json(res, 502, {
+            error: redactProviderError(error?.message || 'qualification failed'),
+            controlRoute: governed?.route ?? null,
+          });
+        }
+      }
+
+      // A fetch-streamed SSE response preserves POST authorization and the exact
+      // tuple body while showing progress from the real probe operation. No raw
+      // provider output or stderr crosses this boundary.
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache, no-transform',
+        connection: 'keep-alive',
+      });
+      const send = (event, payload) => {
+        if (!res.destroyed) res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+      };
+      try {
+        const result = await deepQualifyModel({
+          entry: backend, model, seatType, expectedReported,
+          onProgress: (progress) => send('progress', progress),
+        });
+        const governed = finishControl({ result });
+        send('result', shapeResult(result, governed));
+      } catch (error) {
+        let governed = null;
+        if (!finishAttempted) {
+          try { governed = finishControl({ error }); } catch {}
+        }
+        send('error', {
+          error: redactProviderError(error?.message || 'qualification failed'),
+          controlRoute: governed?.route ?? null,
+        });
+      }
+      return res.end();
+    }
+
+    if (path === '/api/connections' && req.method === 'POST') {
+      const body = await readBody(req);
+      const allowed = new Set(['connections', 'backends', 'replace']);
+      const unknown = Object.keys(body ?? {}).filter((key) => !allowed.has(key));
+      if (unknown.length) return json(res, 400, { error: `connection declaration has unknown fields: ${unknown.join(', ')}` });
+      const connectionRows = body?.connections && typeof body.connections === 'object' && !Array.isArray(body.connections)
+        ? Object.entries(body.connections) : [];
+      const backendRows = body?.backends && typeof body.backends === 'object' && !Array.isArray(body.backends)
+        ? Object.entries(body.backends) : [];
+      if (connectionRows.length !== 1 || backendRows.length !== 1 || ![undefined, true, false].includes(body.replace)) {
+        return json(res, 400, { error: 'save exactly one { connections: {name: declaration}, backends: {name: declaration} }; replace must be boolean' });
+      }
+      const [[connectionName, connection]] = connectionRows;
+      const [[backendName, backend]] = backendRows;
+      try {
+        const saved = saveConnectionBackend({
+          connectionName, connection, backendName, backend, replace: body.replace === true,
+        });
+        return json(res, 200, {
+          saved,
+          note: `${backendName} is declared locally but not trusted yet. Qualify each exact maker/reviewer tuple before selection.`,
+        });
+      } catch (error) {
+        return json(res, /already exists/.test(String(error?.message)) ? 409 : 400, {
+          error: String(error?.message || 'connection declaration was refused').slice(0, 500),
+        });
+      }
     }
 
     if (path === '/api/pairing-presentation' && req.method === 'GET') {

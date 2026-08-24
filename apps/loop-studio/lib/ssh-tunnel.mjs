@@ -4,6 +4,13 @@
 // exposes a short-lived local URL; it never accepts a command, copies files,
 // or hands an SSH argv through from a caller. The manager is process-local and
 // reference counted so doctor, qualification, and runtime all share one owner.
+// CAMUS_CONTROL: slice-d.config_validate
+// CAMUS_CONTROL: slice-d.host_key_advisory
+// CAMUS_CONTROL: slice-d.directive_screen
+// CAMUS_CONTROL: slice-d.forward_only_argv
+// CAMUS_CONTROL: slice-d.ownership
+// CAMUS_CONTROL: slice-d.application_liveness
+// CAMUS_CONTROL: slice-d.output_integrity
 
 import { execFile as nodeExecFile, spawn as nodeSpawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -12,6 +19,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createServer, connect as netConnect } from 'node:net';
 import { homedir, networkInterfaces } from 'node:os';
 import { join } from 'node:path';
+import { controlEvent, evaluateAction, humanDecision } from '../../../packages/cli/skills/camus/control-plane.mjs';
 
 const ALIAS_RE = /^[A-Za-z0-9._-]+$/;
 const CONTROL_NO = new Set(['no', 'false', 'off', 'none']);
@@ -31,6 +39,28 @@ const HARDENING = Object.freeze([
   '-o', 'ServerAliveCountMax=3',
   '-o', 'ConnectTimeout=10',
 ]);
+
+function tunnelControlAction(connection, identity) {
+  return {
+    schema_version: 1,
+    action_class: 'studio.ssh.forward',
+    target: { class: 'ssh_connection', id: `${connection.name}:${identity}` },
+    impact: 'high',
+    reversibility: 'bounded_rollback',
+    external_side_effect: 'remote_access',
+    data_sensitivity: 'internal',
+    destination_trust: 'known',
+    operator_policy: 'ask',
+  };
+}
+
+function requireControlRoute(action, evidence, authorization, checkpoints) {
+  const route = evaluateAction({ action, evidence, authorization, checkpoints });
+  if (route.decision !== 'auto') {
+    throw new TunnelError(`managed SSH control plane ${route.decision}: ${route.rule_ids.join(', ')}`, 'control_plane');
+  }
+  return route;
+}
 
 export const TUNNEL_CONTRACT_VERSION = 'ssh-tunnel-1';
 
@@ -336,6 +366,14 @@ export function createTunnelManager({
     emit(onEvidence, fact);
     for (const subscriber of evidenceSubscribers) emit(subscriber, fact);
   };
+  // A connection name is presentation, not identity. Every operation-scoped
+  // fact carries the immutable destination fingerprint so a concurrent run
+  // cannot accept evidence from a same-named connection that points elsewhere.
+  const emitConnectionEvidence = (connection, fact) => emitEvidence({
+    ...fact,
+    connection: connection.name,
+    connectionFingerprint: connectionFingerprint(connection),
+  });
   if (process.env.STUDIO_TUNNEL_DEBUG === '1') {
     console.warn(`Camus: raw SSH diagnostics are enabled; debug files may contain hostnames and usernames under ${tunnelDir}.`);
   }
@@ -416,13 +454,13 @@ export function createTunnelManager({
   async function preflight(connection, { localPort, signal } = {}) {
     const c = validateSshTunnelConfig(connection);
     const port = localPort ?? await allocatePortImpl();
-    emitEvidence({ control: 'config_validate', checkpoint: 'input_screen', outcome: 'passed', connection: c.name });
+    emitConnectionEvidence(c, { control: 'config_validate', checkpoint: 'input_screen', outcome: 'passed' });
     let version;
     try {
       const v = await execFilePromise(execFileImpl, 'ssh', ['-V'], { timeout: 3000, signal });
       version = (v.stderr || v.stdout).trim().split('\n')[0] || null;
     } catch (error) {
-      emitEvidence({ control: 'ssh_version', checkpoint: 'input_screen', outcome: 'refused', connection: c.name, reason: 'ssh_unavailable' });
+      emitConnectionEvidence(c, { control: 'ssh_version', checkpoint: 'input_screen', outcome: 'refused', reason: 'ssh_unavailable' });
       throw new TunnelError('OpenSSH ssh(1) is not available; install a system OpenSSH client', 'preflight');
     }
     const configArgs = buildSshArgv(c, port, { config: true });
@@ -430,19 +468,19 @@ export function createTunnelManager({
     try { configOutput = await execFilePromise(execFileImpl, 'ssh', configArgs, { timeout: 10_000, maxBuffer: 128 * 1024, signal }); }
     catch (error) {
       await diagnostics(c.name, error.stderr, { at: now(), event: 'ssh-g-failed' });
-      emitEvidence({ control: 'directive_screen', checkpoint: 'action_authorization', outcome: 'refused', connection: c.name, reason: 'ssh_g_failed' });
+      emitConnectionEvidence(c, { control: 'directive_screen', checkpoint: 'action_authorization', outcome: 'refused', reason: 'ssh_g_failed' });
       throw new TunnelError('OpenSSH configuration evaluation failed; check the Camus SSH alias and its config', 'preflight');
     }
     let effective;
     try { effective = screenSshConfig(configOutput.stdout, { localPort: port, connection: c }); }
     catch (error) {
       await diagnostics(c.name, configOutput.stderr, { at: now(), event: 'directive-refused' });
-      emitEvidence({ control: 'directive_screen', checkpoint: 'action_authorization', outcome: 'refused', connection: c.name, reason: 'configuration directive refused' });
+      emitConnectionEvidence(c, { control: 'directive_screen', checkpoint: 'action_authorization', outcome: 'refused', reason: 'configuration directive refused' });
       throw error;
     }
-    emitEvidence({ control: 'directive_screen', checkpoint: 'action_authorization', outcome: 'passed', connection: c.name, trustedProxy: Boolean(effective.proxyCommand || effective.proxyJump) });
+    emitConnectionEvidence(c, { control: 'directive_screen', checkpoint: 'action_authorization', outcome: 'passed', trustedProxy: Boolean(effective.proxyCommand || effective.proxyJump) });
     const hostKeys = await advisoryHostKeyLookup({ execFileImpl, effective, port: effective.port });
-    emitEvidence({ control: 'host_key_advisory', checkpoint: 'input_screen', outcome: hostKeys.found ? 'hit' : 'miss', connection: c.name });
+    emitConnectionEvidence(c, { control: 'host_key_advisory', checkpoint: 'input_screen', outcome: hostKeys.found ? 'hit' : 'miss' });
     return { connection: c, localPort: port, version, effective, hostKeys, argv: buildSshArgv(c, port),
       steps: [
         { number: 1, id: 'ssh_version', outcome: 'passed', detail: 'OpenSSH available' },
@@ -472,7 +510,7 @@ export function createTunnelManager({
         else record.child.once('exit', finish);
       });
       try { await rm(join(ensureDir(record.connection.name), 'lease.json'), { force: true }); } catch {}
-      emitEvidence({ control: 'teardown', checkpoint: 'action_authorization', outcome: 'released', connection: record.connection.name, reason });
+      emitConnectionEvidence(record.connection, { control: 'teardown', checkpoint: 'action_authorization', outcome: 'released', reason });
       try { await lifecycleEvent(record.connection.name, { event: 'teardown', reason }); } catch { /* evidence is best effort */ }
       if (active.get(record.key) === record) active.delete(record.key);
     })();
@@ -483,20 +521,151 @@ export function createTunnelManager({
     await stop(record, 'acquire_failed');
   }
 
+  async function proveApplicationLiveness(record, connection, { signal, discoveryPath } = {}) {
+    if (signal?.aborted) throw new TunnelError('managed SSH tunnel acquisition was aborted', 'aborted');
+    if (await nonLoopbackProbe(record.localPort)) {
+      throw new TunnelError('managed SSH forward is reachable on a non-loopback local address; refusing the tunnel', 'preflight');
+    }
+    const controller = new AbortController();
+    let timedOut = false;
+    let callerAborted = false;
+    let timeoutId;
+    const onCallerAbort = () => {
+      callerAborted = true;
+      controller.abort();
+    };
+    signal?.addEventListener('abort', onCallerAbort, { once: true });
+    try {
+      if (signal?.aborted) onCallerAbort();
+      const timeout = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+          reject(new TunnelError('forwarded /models request timed out', 'liveness_timeout'));
+        }, livenessTimeoutMs);
+      });
+      const path = discoveryPath || joinRuntimePath(connection.basePath, 'models');
+      const body = await Promise.race([(async () => {
+        let response;
+        try {
+          response = await fetchImpl(`http://127.0.0.1:${record.localPort}${path}`, { signal: controller.signal });
+        } catch (error) {
+          if (callerAborted) throw new TunnelError('managed SSH tunnel acquisition was aborted', 'aborted');
+          if (timedOut) throw new TunnelError('forwarded /models request timed out', 'liveness_timeout');
+          throw error;
+        }
+        if (!response || !response.ok || typeof response.json !== 'function') {
+          throw new TunnelError('forwarded /models response was not a successful JSON response', 'liveness');
+        }
+        return response.json();
+      })(), timeout]);
+      if (!body || !Array.isArray(body.data)) {
+        throw new TunnelError('forwarded /models response was not a parseable model list', 'liveness');
+      }
+      if (callerAborted) throw new TunnelError('managed SSH tunnel acquisition was aborted', 'aborted');
+      const currentStartIdentity = await processStartIdentity(execFileImpl, record.child.pid);
+      if (record.exited || record.unusable || !(await processAlive(record.child.pid))
+        || !currentStartIdentity || currentStartIdentity !== record.startIdentity) {
+        throw new TunnelError('managed SSH tunnel exited or changed identity during application liveness; no direct fallback is permitted', 'tunnel');
+      }
+      return { path };
+    } catch (error) {
+      if (callerAborted || signal?.aborted) {
+        throw new TunnelError('managed SSH tunnel acquisition was aborted', 'aborted');
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+      signal?.removeEventListener('abort', onCallerAbort);
+    }
+  }
+
+  function emitCompleteLeaseEvidence(connection, { ownership, refs }) {
+    emitConnectionEvidence(connection, { control: 'config_validate', checkpoint: 'input_screen', outcome: 'passed', reason: 'connection_schema_validated' });
+    emitConnectionEvidence(connection, { control: 'host_key_advisory', checkpoint: 'input_screen', outcome: 'passed', reason: 'strict_handshake_succeeded' });
+    emitConnectionEvidence(connection, { control: 'directive_screen', checkpoint: 'action_authorization', outcome: 'passed', reason: 'effective_ssh_configuration_screened' });
+    emitConnectionEvidence(connection, { control: 'forward_only_argv', checkpoint: 'action_authorization', outcome: 'passed', reason: 'hardened_local_forward_argv', argvShape: 'hardened-local-forward' });
+    emitConnectionEvidence(connection, { control: 'ownership', checkpoint: 'action_authorization', outcome: ownership, reason: 'manager_owns_spawn_and_teardown_contract', refs });
+    emitConnectionEvidence(connection, { control: 'application_liveness', checkpoint: 'input_screen', outcome: 'passed', reason: 'forwarded_models_endpoint_answered' });
+    emitConnectionEvidence(connection, { control: 'output_integrity', checkpoint: 'output_screen', outcome: 'passed', reason: 'live_forward_no_fallback' });
+  }
+
   async function startAcquire(connection, { signal, discoveryPath, localPort } = {}) {
     const c = validateSshTunnelConfig(connection);
-    const key = `${c.name || ''}:${connectionFingerprint(c)}`;
+    const identity = connectionFingerprint(c);
+    const key = `${c.name || ''}:${identity}`;
     const existing = active.get(key);
     if (existing && !existing.stopping) {
-      if (existing.timer) { clearTimeout(existing.timer); existing.timer = null; }
-      existing.refs += 1;
-      emitEvidence({ control: 'ownership', checkpoint: 'action_authorization', outcome: 'shared', connection: c.name, refs: existing.refs });
-      return leaseFor(existing);
+      const currentStartIdentity = existing.child?.pid
+        ? await processStartIdentity(execFileImpl, existing.child.pid) : null;
+      const reusable = existing.control && !existing.exited && !existing.unusable
+        && await processAlive(existing.child?.pid)
+        && currentStartIdentity === existing.startIdentity;
+      if (!reusable) {
+        existing.unusable = true;
+        await stop(existing, 'stale_before_share');
+      } else {
+        // Reserve one reference while the fresh borrower proves the shared
+        // process. This prevents a zero-ref linger timer from tearing it down
+        // mid-probe, but the reservation is rolled back on every failure.
+        if (existing.timer) { clearTimeout(existing.timer); existing.timer = null; }
+        existing.refs += 1;
+        try {
+          await proveApplicationLiveness(existing, c, { signal, discoveryPath });
+          requireControlRoute(
+            existing.control.action,
+            existing.control.evidence,
+            existing.control.authorization,
+            ['input_screen', 'action_authorization', 'output_screen'],
+          );
+          emitCompleteLeaseEvidence(c, { ownership: 'shared', refs: existing.refs });
+          try { await lifecycleEvent(c.name, { event: 'application_liveness', outcome: 'passed', shared: true }); } catch { /* evidence is best effort */ }
+          return leaseFor(existing);
+        } catch (error) {
+          existing.refs = Math.max(0, existing.refs - 1);
+          if (error?.code === 'aborted') {
+            if (existing.refs === 0 && !existing.stopping) {
+              existing.timer = setTimeout(() => { stop(existing).catch(() => {}); }, lingerMs);
+            }
+            throw error;
+          }
+          existing.unusable = true;
+          emitConnectionEvidence(c, { control: 'application_liveness', checkpoint: 'input_screen', outcome: 'inconclusive', reason: 'shared_lease_revalidation_failed' });
+          emitConnectionEvidence(c, { control: 'output_integrity', checkpoint: 'output_screen', outcome: 'infrastructure_failed', reason: 'shared_lease_revalidation_failed' });
+          try { await diagnostics(c.name, existing.stderr, { at: now(), event: 'shared-application-liveness-failed' }); } catch { /* best effort */ }
+          await stop(existing, 'shared_revalidation_failed');
+          if (error instanceof TunnelError && error.code === 'preflight') throw error;
+          throw new TunnelError(`forwarded inference service did not answer ${joinRuntimePath(c.basePath, 'models')}`, 'tunnel');
+        }
+      }
     }
     const info = await preflight(c, { signal, localPort });
+    const controlAction = tunnelControlAction(c, identity);
+    const controlAuthorization = humanDecision(controlAction, {
+      decision: 'approve',
+      reason: 'Operator configured this exact named SSH connection for managed forwarding.',
+    });
+    const controlEvidence = [
+      controlEvent({
+        controlId: 'slice-d.directive_screen', action: controlAction, outcome: 'passed',
+        reasonCode: 'effective_ssh_configuration_screened', details: { connection: c.name },
+      }),
+      controlEvent({
+        controlId: 'slice-d.forward_only_argv', action: controlAction, outcome: 'passed',
+        reasonCode: 'hardened_local_forward_argv', details: { connection: c.name, argvShape: 'hardened-local-forward' },
+      }),
+      controlEvent({
+        controlId: 'slice-d.ownership', action: controlAction, outcome: 'passed',
+        reasonCode: 'manager_owns_spawn_and_teardown_contract', details: { connection: c.name },
+      }),
+    ];
+    // Authorization is checked before OpenSSH is spawned. The later full check
+    // includes application liveness and output integrity before a lease is
+    // returned to any model adapter.
+    requireControlRoute(controlAction, controlEvidence, controlAuthorization, ['action_authorization']);
     const child = spawnImpl('ssh', info.argv, { shell: false, stdio: ['ignore', 'ignore', 'pipe'] });
     if (!child || typeof child.once !== 'function') throw new TunnelError('OpenSSH did not produce an observable child process', 'tunnel');
-    emitEvidence({ control: 'forward_only_argv', checkpoint: 'action_authorization', outcome: 'passed', connection: c.name, argvShape: 'hardened-local-forward' });
+    emitConnectionEvidence(c, { control: 'forward_only_argv', checkpoint: 'action_authorization', outcome: 'passed', argvShape: 'hardened-local-forward' });
     const record = {
       key, connection: c, localPort: info.localPort, child, refs: 1, stderr: '', exited: false, stopping: false,
       death: null, timer: null, startIdentity: null,
@@ -519,7 +688,8 @@ export function createTunnelManager({
       record.resolveDeath(death);
       if (!record.stopping) {
         try { await diagnostics(c.name, record.stderr, { at: now(), event: 'unexpected-exit', code, signal: signalName }); } catch { /* bounded diagnostics are best effort */ }
-        emitEvidence({ control: 'tunnel_death', checkpoint: 'output_screen', outcome: 'infrastructure_failed', connection: c.name, reason: 'tunnel_death' });
+        emitConnectionEvidence(c, { control: 'tunnel_death', checkpoint: 'output_screen', outcome: 'infrastructure_failed', reason: 'tunnel_death' });
+        emitConnectionEvidence(c, { control: 'output_integrity', checkpoint: 'output_screen', outcome: 'infrastructure_failed', reason: 'tunnel_death_no_fallback' });
       }
     });
     const startIdentity = await processStartIdentity(execFileImpl, child.pid);
@@ -540,7 +710,7 @@ export function createTunnelManager({
       await cleanupFailedRecord(record);
       throw error;
     }
-    emitEvidence({ control: 'authoritative_spawn', checkpoint: 'action_authorization', outcome: 'spawned', connection: c.name });
+    emitConnectionEvidence(c, { control: 'authoritative_spawn', checkpoint: 'action_authorization', outcome: 'spawned' });
     active.set(key, record);
     try { await lifecycleEvent(c.name, { event: 'lease_open' }); } catch { /* evidence is best effort */ }
     try {
@@ -555,47 +725,16 @@ export function createTunnelManager({
       if (occupied) throw classifiedTunnelError(c.name, record.stderr, 'bind_collision', { failureClass: 'forward_bind_failed', fix: 'retry with a fresh local port; keep the SSH alias dedicated to Camus' });
       throw classifiedTunnelError(c.name, record.stderr, 'tunnel');
     }
-    emitEvidence({ control: 'ownership', checkpoint: 'action_authorization', outcome: 'leased', connection: c.name, refs: 1 });
-    let livenessTimeoutId;
-    let livenessController;
-    let onCallerAbort;
+    emitConnectionEvidence(c, { control: 'ownership', checkpoint: 'action_authorization', outcome: 'leased', refs: 1 });
     try {
-      const path = discoveryPath || joinRuntimePath(c.basePath, 'models');
-      if (await nonLoopbackProbe(record.localPort)) {
-        throw new TunnelError('managed SSH forward is reachable on a non-loopback local address; refusing the tunnel', 'preflight');
-      }
-      livenessController = new AbortController();
-      let timedOut = false;
-      onCallerAbort = () => livenessController.abort();
-      signal?.addEventListener('abort', onCallerAbort, { once: true });
-      if (signal?.aborted) livenessController.abort();
-      const timeout = new Promise((_, reject) => {
-        livenessTimeoutId = setTimeout(() => {
-          timedOut = true;
-          livenessController.abort();
-          reject(new TunnelError('forwarded /models request timed out', 'liveness_timeout'));
-        }, livenessTimeoutMs);
-      });
-      let response;
-      const body = await Promise.race([ (async () => {
-        try {
-          response = await fetchImpl(`http://127.0.0.1:${record.localPort}${path}`, { signal: livenessController.signal });
-        } catch (fetchError) {
-          if (timedOut) throw new TunnelError('forwarded /models request timed out', 'liveness_timeout');
-          throw fetchError;
-        }
-        if (!response || !response.ok || typeof response.json !== 'function') throw new TunnelError('forwarded /models response was not a successful JSON response', 'liveness');
-        return response.json();
-      })(), timeout ]);
-      if (!body || !Array.isArray(body.data)) throw new TunnelError('forwarded /models response was not a parseable model list', 'liveness');
-      clearTimeout(livenessTimeoutId);
-      signal?.removeEventListener('abort', onCallerAbort);
-      if (record.exited || !(await processAlive(record.child.pid))) throw new TunnelError('managed SSH tunnel exited during application liveness; no direct fallback is permitted', 'tunnel');
-      emitEvidence({ control: 'application_liveness', checkpoint: 'input_screen', outcome: 'passed', connection: c.name });
+      await proveApplicationLiveness(record, c, { signal, discoveryPath });
+      emitConnectionEvidence(c, { control: 'application_liveness', checkpoint: 'input_screen', outcome: 'passed' });
+      // ssh was launched with StrictHostKeyChecking=yes. A successful
+      // authoritative handshake is stronger than the earlier advisory lookup,
+      // which may miss a configured alternate known-hosts file.
+      emitConnectionEvidence(c, { control: 'host_key_advisory', checkpoint: 'input_screen', outcome: 'passed', reason: 'strict_handshake_succeeded' });
       try { await lifecycleEvent(c.name, { event: 'application_liveness', outcome: 'passed' }); } catch { /* evidence is best effort */ }
     } catch (error) {
-      clearTimeout(livenessTimeoutId);
-      signal?.removeEventListener('abort', onCallerAbort);
       if (record.exited) {
         const occupied = await portOccupancyProbe(record.localPort);
         await cleanupFailedRecord(record);
@@ -604,10 +743,41 @@ export function createTunnelManager({
       }
       try { await diagnostics(c.name, record.stderr, { at: now(), event: 'application-liveness-failed' }); } catch { /* best effort */ }
       await cleanupFailedRecord(record);
-      emitEvidence({ control: 'application_liveness', checkpoint: 'input_screen', outcome: 'inconclusive', connection: c.name });
+      emitConnectionEvidence(c, { control: 'application_liveness', checkpoint: 'input_screen', outcome: 'inconclusive' });
+      if (error instanceof TunnelError && error.code === 'aborted') throw error;
       if (error instanceof TunnelError && error.code === 'preflight') throw error;
       throw new TunnelError(`forwarded inference service did not answer ${joinRuntimePath(c.basePath, 'models')}`, 'tunnel');
     }
+    controlEvidence.push(
+      controlEvent({
+        controlId: 'slice-d.config_validate', action: controlAction, outcome: 'passed',
+        reasonCode: 'connection_schema_validated', details: { connection: c.name },
+      }),
+      controlEvent({
+        controlId: 'slice-d.host_key_advisory', action: controlAction, outcome: 'passed',
+        reasonCode: 'strict_handshake_succeeded', details: { connection: c.name },
+      }),
+      controlEvent({
+        controlId: 'slice-d.application_liveness', action: controlAction, outcome: 'passed',
+        reasonCode: 'forwarded_models_endpoint_answered', details: { connection: c.name },
+      }),
+      controlEvent({
+        controlId: 'slice-d.output_integrity', action: controlAction, outcome: 'passed',
+        reasonCode: 'live_forward_no_fallback', details: { connection: c.name },
+      }),
+    );
+    try {
+      requireControlRoute(controlAction, controlEvidence, controlAuthorization, ['input_screen', 'action_authorization', 'output_screen']);
+    } catch (error) {
+      await cleanupFailedRecord(record);
+      throw error;
+    }
+    record.control = Object.freeze({
+      action: controlAction,
+      authorization: controlAuthorization,
+      evidence: Object.freeze([...controlEvidence]),
+    });
+    emitConnectionEvidence(c, { control: 'output_integrity', checkpoint: 'output_screen', outcome: 'passed', reason: 'live_forward_no_fallback' });
     const steps = [...info.steps, { number: 5, id: 'authoritative_spawn', outcome: 'passed', detail: 'hardened foreground child' }, { number: 6, id: 'loopback_liveness', outcome: 'passed', detail: 'loopback-only listener and application response' }];
     return leaseFor(record, steps);
   }

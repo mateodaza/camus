@@ -82,11 +82,25 @@
         <div id="qualification-list" class="qualification-list"></div>
       </div>
       <details class="settings-subsection template-gallery">
-        <summary>Provider templates — declarations only</summary>
-        <div class="hint">Copy a starter into local operator state, replace every placeholder, then qualify it. Templates never include credentials, receipts, or a lineage tier.</div>
+        <summary>Connect a model server — declarations only</summary>
+        <div class="hint">Choose a starter, inspect the exact JSON, replace every placeholder, and save it to local operator state. Saving makes a tuple visible, not trusted; qualification is a separate explicit provider call.</div>
         <div id="provider-templates" class="provider-templates"></div>
         <div id="planned-protocols" class="hint"></div>
       </details>
+      <section id="connection-editor" class="settings-subsection connection-editor hidden" aria-label="Connection declaration editor">
+        <div class="panel-head">
+          <span class="trust-title" id="connection-editor-title">CONNECTION DECLARATION</span>
+          <button id="close-connection-editor" class="ghost" type="button">close</button>
+        </div>
+        <div class="hint">This is the exact declaration written locally. It may contain an environment-variable name, never a credential value. Transport and lineage standing are derived server-side.</div>
+        <textarea id="connection-json" rows="18" spellcheck="false" aria-label="Connection and backend declaration JSON"></textarea>
+        <div id="connection-preview" class="connection-preview hint"></div>
+        <label class="replace-declaration"><input id="replace-connection" type="checkbox" /> Replace an existing connection/backend with the same name</label>
+        <div class="panel-actions">
+          <button id="save-connection" class="primary" type="button">Save declaration</button>
+          <span id="connection-note" class="hint"></span>
+        </div>
+      </section>
     </section>
 
     <section class="card form">

@@ -1,6 +1,6 @@
 {
   "name": "camus-cli",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "A coding loop that proves every change \u2014 and knows when to stop. Claude writes it, Codex (a competitor) reviews it, your own tests decide; a stalled review becomes a decision on your desk, not churn. No agent grades its own work.",
   "bin": {
     "camus": "bin/camus.js"
@@ -14,6 +14,7 @@
     "README.md"
   ],
   "scripts": {
+    "pretest": "python3 skills/camus/scripts/test_control_plane.py && python3 skills/camus/scripts/test_benchmark_reviewers.py",
     "test": "bash -c 'cd skills/camus/scripts && for t in test_adapter.py test_verify.py test_env_check.py test_prep.py test_resume_scan.py test_resume_args.py test_feat_kernel.py test_review_audit.py test_reviewer_backends.py test_status.py test_status_record.py test_steer.py test_watch.py test_transcripts.py test_reconcile.py test_land.py test_retro.py test_review_watch.py test_canary.py test_feat_scan.py test_steer_read.py test_background_agent.py test_evals.py test_drive.py; do python3 $t || exit 1; done && bash test_guard.sh && bash test_gitops.sh && bash test_review_inputs.sh && bash test_review_binding_live.sh && bash test_review_adopt.sh && bash test_prep_verify_cwd.sh && bash test_review_reattach.sh && cd ../../.. && python3 test_merge_settings.py && bash test_install_check.sh && node test_hitl_workflows.js && node test_plan_workflow.js'"
   },
   "engines": {

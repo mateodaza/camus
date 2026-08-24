@@ -82,12 +82,29 @@ function fakeHarness({ onSpawn, psOutput = '' } = {}) {
 
 await test('preflight and lifecycle share one child, refcount release tears down, and lease excludes port fingerprint', async () => {
   const h = fakeHarness();
-  const manager = createTunnelManager({ ...h, processOps: { alive: () => true }, allocatePortImpl: async () => 40123, fetchImpl: async () => ({ ok: true, json: async () => ({ data: [] }) }), tunnelDir: temp, lingerMs: 1 });
+  const evidence = [];
+  let livenessProbes = 0;
+  const manager = createTunnelManager({
+    ...h,
+    processOps: { alive: () => true },
+    allocatePortImpl: async () => 40123,
+    fetchImpl: async () => { livenessProbes += 1; return { ok: true, json: async () => ({ data: [] }) }; },
+    onEvidence: (fact) => evidence.push(fact),
+    tunnelDir: temp,
+    lingerMs: 1,
+  });
   const a = await manager.acquire(connection);
   const b = await manager.acquire(connection);
   assert.equal(h.starts, 1);
+  assert.equal(livenessProbes, 2, 'every borrower freshly proves application liveness even when the child is shared');
   assert.equal(a.url, b.url);
   assert.equal(connectionFingerprint(connection), connectionFingerprint({ ...connection, localPort: 9999 }));
+  const completeControls = ['config_validate', 'host_key_advisory', 'directive_screen', 'forward_only_argv', 'ownership', 'application_liveness', 'output_integrity'];
+  const sharedAt = evidence.findIndex((fact) => fact.control === 'ownership' && fact.outcome === 'shared');
+  assert.notEqual(sharedAt, -1);
+  const sharedEvidence = evidence.slice(sharedAt - 4, sharedAt + 3);
+  assert.deepEqual(new Set(sharedEvidence.map((fact) => fact.control)), new Set(completeControls), 'a shared lease emits a complete route for the new borrower');
+  assert.equal(sharedEvidence.every((fact) => fact.connectionFingerprint === connectionFingerprint(connection)), true, 'all borrower evidence is bound to the exact SSH destination');
   const lease = JSON.parse(readFileSync(join(temp, 'gpu_lab', 'lease.json'), 'utf8'));
   assert.equal(lease.localPort, 40123);
   await a.release();
@@ -375,6 +392,37 @@ await test('an aborted coalesced waiter rejects without cancelling the shared bo
   const lease = await first;
   assert.equal(h.starts, 1);
   await lease.release();
+});
+
+await test('an aborted shared-lease revalidation preserves the existing borrower and reference count', async () => {
+  const h = fakeHarness();
+  let calls = 0;
+  const manager = createTunnelManager({
+    ...h,
+    processOps: { alive: () => true },
+    allocatePortImpl: async () => 40238,
+    fetchImpl: async (_url, { signal }) => {
+      calls += 1;
+      if (calls !== 2) return { ok: true, json: async () => ({ data: [] }) };
+      return new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('aborted fixture')), { once: true });
+      });
+    },
+    tunnelDir: join(temp, 'shared-abort'),
+    lingerMs: 1,
+  });
+  const first = await manager.acquire({ ...connection, name: 'shared-abort' });
+  const controller = new AbortController();
+  const second = manager.acquire({ ...connection, name: 'shared-abort' }, { signal: controller.signal });
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+  await assert.rejects(second, (error) => error.code === 'aborted');
+  assert.equal(h.starts, 1);
+  assert.equal([...manager.active.values()][0].refs, 1, 'the failed borrower reservation is rolled back');
+  const third = await manager.acquire({ ...connection, name: 'shared-abort' });
+  assert.equal(h.starts, 1, 'the surviving owned child remains reusable');
+  await third.release();
+  await first.release();
 });
 
 await test('runtime root base path joins model URL without a double slash', async () => {

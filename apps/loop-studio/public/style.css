@@ -107,6 +107,17 @@ a { color: inherit; }
 .qualification-row button { margin-top: 7px; }
 .template-gallery summary { cursor: pointer; font-family: var(--mono); font-size: 11.5px; letter-spacing: .04em; }
 .template-row pre { max-height: 180px; overflow: auto; margin: 8px 0 0; padding: 8px; background: var(--code); font-size: 10.5px; }
+.connection-editor textarea { margin-top: 10px; min-height: 250px; font: 11.5px/1.55 var(--mono); }
+.connection-preview { margin-top: 8px; padding: 8px 10px; border-left: 2px solid var(--rule); white-space: pre-wrap; }
+.connection-preview.failed { color: var(--red); border-left-color: var(--red); }
+.replace-declaration { display: flex; align-items: center; gap: 7px; margin-top: 9px; color: var(--muted); font-size: 12px; }
+.replace-declaration input { width: auto; }
+.capability-checklist { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.capability-chip { border: 1px solid var(--rule); border-radius: 99px; padding: 2px 7px; font: 10px/1.4 var(--mono); color: var(--muted); }
+.capability-chip.running { color: var(--accent); border-color: var(--accent); }
+.capability-chip.demonstrated { color: var(--ink); border-color: var(--ink); }
+.capability-chip.failed { color: var(--red); border-color: var(--red); }
+.diagnostics-path { margin-top: 6px; font: 10.5px/1.45 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
 .run-pairing-view { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 7px 16px; border-bottom: 1px solid var(--rule); background: var(--paper); font-size: 11.5px; color: var(--muted); }
 .run-pairing-view .pairing-view-seat { display: inline-flex; gap: 5px; align-items: center; }
 .run-pairing-view .pairing-view-note { flex: 1 1 280px; }

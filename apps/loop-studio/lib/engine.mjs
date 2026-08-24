@@ -3,6 +3,7 @@
 // done | needs_human. Stop rules are camus's: bounded rounds, repeat findings
 // halt instead of re-litigating, oscillating findings halt, infra failures are
 // never a pass, and every pause routes a plain-English question to the human.
+// CAMUS_CONTROL: studio.publish.output_eligibility
 
 import { planPrompt, groundingPrompt, groundingRetryPrompt, makePrompt, reviewPrompt, fixPrompt } from './prompts.mjs';
 import { runVerify, extractThresholdLines, bindThresholdAssessments } from './verify.mjs';
@@ -670,6 +671,17 @@ export async function runLoop(run, ctx) {
     // ---- Publish -----------------------------------------------------------
     // Stop pressed during verify must never end in an external side effect.
     if (signal.aborted) throw new Error('aborted');
+    if (run.publish === true) {
+      // The engine reached this point only after the deterministic verification
+      // and review floor. The control plane binds that fact to the exact
+      // destination/run approval before the external call is even constructed.
+      run.controlPlane?.authorizePublicationOutput({
+        eligible: true,
+        reasonCode: doneWithFindings
+          ? 'verified_output_with_recorded_nonblocking_findings'
+          : 'review_clean_and_verified_output',
+      });
+    }
     const artifact = run.publish !== true
       ? (log('Publication was not explicitly enabled. The deliverable stayed local.'), null)
       : await hivemind.publishArtifact(

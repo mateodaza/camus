@@ -240,6 +240,7 @@ def call_http(wt, repo, env, rnd, scope="light"):
 
 
 def test_dispatch():
+    assert reviewer_dispatch._infra("review_control_inconclusive", "fixture")["cause"] == "control_inconclusive"
     decision, missing = reviewer_dispatch.decide("codex", {})
     assert decision is None and missing["error_code"] == "maker_origin_invalid"
     decision, error = reviewer_dispatch.decide("codex", {"CAMUS_MAKER_TRAINING_ORG": "anthropic"})

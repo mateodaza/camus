@@ -20,6 +20,7 @@
 // emits a bearer credential; auth.kind:env reads the key only from the
 // environment. Provider error text is redacted of credential-shaped tokens
 // before it ever lands in a result, a session line, or a log.
+// CAMUS_CONTROL: studio.qualification.receipt_integrity
 
 import { readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -531,7 +532,12 @@ async function deepQualifyModelInternal({
   contextProbeTokens,
   probedAt,
   now = Date.now(),
+  onProgress,
 } = {}) {
+  const progress = (phase, status, detail = null) => {
+    if (typeof onProgress !== 'function') return;
+    try { onProgress({ phase, status, ...(detail ? { detail: String(detail).slice(0, 300) } : {}) }); } catch {}
+  };
   if (!WORDS_SEATS.includes(seatType)) {
     throw new Error(`deepQualifyModel exercises only words seats (${WORDS_SEATS.join(', ')}); "${seatType}" is out of Slice C scope`);
   }
@@ -547,13 +553,18 @@ async function deepQualifyModelInternal({
   // reading identical to a `listed` model. It is threaded through every return
   // path, including fail-closed ones.
   let discoveryStatus = 'discovery_unavailable';
-  const fail = (reason, extra = {}) => ({ qualified: false, seatType, model, reason, receipt: null, discoveryStatus, ...extra });
+  const fail = (reason, extra = {}) => {
+    progress('qualification', 'failed', reason);
+    return { qualified: false, seatType, model, reason, receipt: null, discoveryStatus, ...extra };
+  };
 
   // Anchors are gathered first and are purely informational; a failure here
   // never blocks qualification, it only leaves the anchors `absent`.
+  progress('discovery', 'running', 'checking the declared model and server identity anchors');
   const collected = await collectServerAnchors({ entry, fetchImpl, model });
   const { serialized: serverAnchors, anchors } = collected;
   discoveryStatus = collected.discoveryStatus;
+  progress('discovery', 'demonstrated', discoveryStatus);
   // Salt/credential-free tuple descriptor used only to locate and revoke a
   // stale receipt when a probe cannot honestly write a replacement result.
   const tuple = {
@@ -571,17 +582,25 @@ async function deepQualifyModelInternal({
 
   // ---- streaming/liveness + (reviewer) structured-output probe -------------
   const isReviewer = seatType === 'words_reviewer';
+  progress('streaming', 'running', 'testing one bounded streaming response');
   const live = await runStream({
     entry, model, streamImpl, secretValue,
     prompt: isReviewer ? STRUCTURED_PROBE_PROMPT : LIVENESS_PROBE_PROMPT,
     timeoutMs: 120_000,
   });
-  if (!live.ok) return failAndInvalidate('probe_unreachable', { error: live.error, identity: null });
+  if (!live.ok) {
+    progress('streaming', 'failed', live.error?.code || 'probe unreachable');
+    return failAndInvalidate('probe_unreachable', { error: live.error, identity: null });
+  }
 
   // Identity is reconciled BEFORE the draft/verdict is consumed. An unexpected
   // substitution kills the call as an infra refusal and writes no receipt.
   const identity = reconcileAllReported({ requested: model, reportedModels: live.reportedModels, primary: live.reported, expectedReported });
-  if (!identity.ok) return failAndInvalidate('model_substituted', { identity, error: { code: 'model_identity', message: identity.detail } });
+  if (!identity.ok) {
+    progress('modelIdentity', 'failed', 'reported identity did not match the declared mapping');
+    return failAndInvalidate('model_substituted', { identity, error: { code: 'model_identity', message: identity.detail } });
+  }
+  progress('modelIdentity', 'demonstrated', identity.mode);
 
   const capabilities = {};
   const probeResults = {};
@@ -602,6 +621,7 @@ async function deepQualifyModelInternal({
   // is not demonstrated they are skipped and their rows fail closed.
   const streamingLive = live.deltaCount > 0;
   capabilities.streaming = streamingLive ? CAP_STATES.DEMONSTRATED : CAP_STATES.FAILED;
+  progress('streaming', streamingLive ? 'demonstrated' : 'failed', streamingLive ? `${live.deltaCount} content delta(s)` : 'no content delta observed');
 
   // structured-output: only the reviewer seat exercises it, through the REAL
   // normalizeReview. Pass → demonstrated + the verdict recorded; malformed →
@@ -613,14 +633,20 @@ async function deepQualifyModelInternal({
     if (norm.ran) {
       capabilities.structuredOutput = CAP_STATES.DEMONSTRATED;
       probeResults.normalizerVerdict = norm.verdict;
+      progress('structuredOutput', 'demonstrated', 'review output matched the gate schema');
     } else {
       capabilities.structuredOutput = CAP_STATES.FAILED;
+      progress('structuredOutput', 'failed', 'review output did not match the gate schema');
       // §9.2 requires the raw malformed structured-output sample be kept locally
       // so operators can see WHY qualification failed. Persist it best-effort to
       // the diagnostics sink; it never enters the receipt/fingerprint and its
       // absence never blocks qualification.
       await persistMalformedSample({ entry, model, seatType, text: live.text, secretValue });
     }
+  } else if (isReviewer) {
+    progress('structuredOutput', 'failed', 'skipped because streaming was not demonstrated');
+  } else {
+    progress('structuredOutput', 'not_applicable', 'maker seats do not emit reviewer verdicts');
   }
 
   // ---- context-envelope probe (measured, §9.4) -----------------------------
@@ -681,6 +707,7 @@ async function deepQualifyModelInternal({
   // with no live stream the loop cannot pass, so the window fails closed below
   // without spending on probes that cannot succeed.
   for (let attempt = 0; streamingLive && attempt < CONTEXT_MAX_ATTEMPTS; attempt++) {
+    progress('contextWindow', 'running', `bounded envelope attempt ${attempt + 1} of ${CONTEXT_MAX_ATTEMPTS}`);
     const fillerChars = Math.max(0, Math.round(targetTokens * charsPerToken));
     ctx = await runStream({ entry, model, streamImpl, secretValue, prompt: buildContextPrompt(fillerChars), timeoutMs: 120_000 });
     // Fail-closed identity is enforced on EVERY actual probe call, BEFORE the
@@ -755,12 +782,14 @@ async function deepQualifyModelInternal({
     };
     probeResults.contextDemonstratedAt = demonstratedAt;
     probeResults.contextMeasurementSource = measured.source;
+    progress('contextWindow', 'demonstrated', `${measured.tokens} provider-reported prompt tokens`);
   } else {
     // A window below the lane envelope (truncation at either end, an http
     // context-length error, an empty round-trip, or usage short of / absent for
     // the target) fails the probe — recorded, not fatal.
     capabilities.contextWindow = { status: CAP_STATES.FAILED, configured: null, source: null, demonstratedAt: null };
     probeResults.contextMeasurementSource = measured.source;
+    progress('contextWindow', 'failed', measured.tokens == null ? 'provider usage was absent' : `${measured.tokens} provider-reported prompt tokens`);
   }
 
   // ---- durable receipt from the ACTUAL results -----------------------------
@@ -772,12 +801,16 @@ async function deepQualifyModelInternal({
 
   let receipt;
   try {
+    progress('receipt', 'running', 'writing the bounded local qualification receipt');
     receipt = writeReceipt(input, { capabilities, probeResults, probedAt });
   } catch (err) {
+    progress('receipt', 'failed', 'the local qualification receipt could not be written');
     return fail('receipt_unwritable', { identity, error: { code: 'receipt', message: redactProviderError(err.message, { secretValue }) } });
   }
+  progress('receipt', 'demonstrated', 'local receipt written');
 
   const outcome = qualifySeat(input, { now });
+  progress('qualification', outcome.qualified ? 'demonstrated' : 'failed', outcome.reason);
   return {
     qualified: outcome.qualified,
     seatType,
@@ -803,7 +836,15 @@ export async function deepQualifyModel({ tunnelManager, ...options } = {}) {
   }
   if (transportOf(entry) !== 'ssh_tunnel') return deepQualifyModelInternal(options);
   const manager = tunnelManager || getSharedTunnelManager();
-  const lease = await manager.acquire(entry.connectionDetails || entry);
+  try { options.onProgress?.({ phase: 'transport', status: 'running', detail: 'opening the declared managed SSH tunnel' }); } catch {}
+  let lease;
+  try {
+    lease = await manager.acquire(entry.connectionDetails || entry);
+  } catch (error) {
+    try { options.onProgress?.({ phase: 'transport', status: 'failed', detail: String(error?.code || 'tunnel_unavailable').slice(0, 120) }); } catch {}
+    throw error;
+  }
+  try { options.onProgress?.({ phase: 'transport', status: 'demonstrated', detail: 'managed SSH tunnel is live' }); } catch {}
   const runtimeEntry = { ...entry, baseUrl: lease.url, tunnelLease: lease };
   try {
     return await deepQualifyModelInternal({ ...options, entry: runtimeEntry });
@@ -849,7 +890,9 @@ export function expectedReportedFor(entry, seat, model) {
  * mapping when a decision names this exact backend+model. Advisory: a probe
  * failure is reported per row, never thrown.
  */
-export async function qualifyUsedSeats({ backends, seatDecisions, deep, streamImpl, fetchImpl } = {}) {
+export async function qualifyUsedSeats({
+  backends, seatDecisions, deep, streamImpl, fetchImpl, onTupleStart, onTupleFinish,
+} = {}) {
   const rows = [];
   if (!deep) return rows;
   for (const entry of backends ?? []) {
@@ -873,8 +916,13 @@ export async function qualifyUsedSeats({ backends, seatDecisions, deep, streamIm
         const expectedReported = expectedReportedFor(entry, seatForAlias, model);
         const id = `qual-${entry.name}-${model}-${seatType}`;
         const label = `Qualification "${entry.name}" · ${model} · ${seatType}`;
+        let tupleControl = null;
+        let finishAttempted = false;
         try {
+          tupleControl = await onTupleStart?.({ entry, model, seatKey, seatType });
           const res = await deepQualifyModel({ entry, model, seatType, expectedReported, streamImpl, fetchImpl });
+          finishAttempted = true;
+          await onTupleFinish?.(tupleControl, { result: res, entry, model, seatKey, seatType });
           rows.push({
             id,
             label,
@@ -894,6 +942,12 @@ export async function qualifyUsedSeats({ backends, seatDecisions, deep, streamIm
             advisory: true,
           });
         } catch (err) {
+          if (tupleControl && !finishAttempted) {
+            try {
+              finishAttempted = true;
+              await onTupleFinish?.(tupleControl, { error: err, entry, model, seatKey, seatType });
+            } catch {}
+          }
           rows.push({ id, label, ok: false, detail: redactProviderError(err.message), fix: null, advisory: true });
         }
       }

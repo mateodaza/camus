@@ -7,7 +7,7 @@ without you watching: Claude writes the code, Codex (a competing model) reviews
 every change, and your repo's own type-check and tests have the final word. Nothing in
 the loop, Claude included, can approve itself. The pairing is the point.
 
-The preferred 0.4.4 path is a native host driver: `camus start` creates a feature from
+The preferred 0.4.5 path is a native host driver: `camus start` creates a feature from
 JSON without a model turn, and `camus run` gives one kernel-owned worktree to a durable
 Claude Code background session, invokes the independent reviewer directly, and lets code
 perform every mechanical transition. The three Claude Code workflows remain available for
@@ -16,22 +16,32 @@ compatibility: `/camus-plan` turns a raw request into a quality-gated task list,
 v2; v1 remains archived at [mateodaza/nightcrawler](https://github.com/mateodaza/nightcrawler).
 Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMUS-SPEC.md).
 
-> **0.4.4 is released.** The Hybrid Kernel has an actual host driver. Claude background
+> **0.4.5 is released.** The Hybrid Kernel has an actual host driver. Claude background
 > sessions persist independently of the launching terminal and use Claude subscription quota;
 > the driver adopts them after interruption. An append-only local eval ledger supports sequential
 > A/B assignment of model pairings. Arms must clear deterministic verification plus independent
 > clean review before latency or token pressure can influence routing. This release adds the
 > versioned reviewer contract and exact-match dispatcher needed to evaluate more reviewer types.
-> The legacy workflows remain available for compatibility.
-> [Read the release evidence.](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.4.md)
+> This release adds the controlled Studio connection workflow and provider-free benchmark gate;
+> the legacy workflows remain available for compatibility.
+> [Read the release evidence.](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.5.md)
 
-> **Reviewer boundary in 0.4.4:** production routing remains exactly Claude → Codex.
+> **Reviewer boundary in 0.4.5:** production routing remains exactly Claude → Codex.
 > `qwen_code`, `grok_cli`, and `http_openai_compat` are recognized candidates but fail closed as
 > `reviewer_benchmark_disabled` until Slice G evidence earns admission. The HTTP candidate is
 > available to the benchmark harness with schema-constrained streaming, bounded custody,
 > qualification/lineage binding, credential-rotation detection, and typed tunnel failure. An
 > implemented candidate is not a supported reviewer yet.
 > See [`docs/SLICE-F-STATUS.md`](https://github.com/mateodaza/camus/blob/main/docs/SLICE-F-STATUS.md).
+
+> **Responsible control plane in 0.4.5:** every governed review now records separate input,
+> action-authorization, and output-screen evidence against a checked-in versioned register.
+> Missing or version-skewed evidence fails closed; provider refusal, Camus policy refusal,
+> reviewer rejection, infrastructure failure, and human escalation stay distinct. Control
+> receipts are mutable completion records beside the immutable evidence pack and reject
+> credential-shaped diagnostics. The Slice G offline harness can append content-addressed
+> attempts and derive conservative admission statistics, but it cannot call providers or enable
+> a backend. See `skills/camus/BENCHMARK.md`.
 
 ```
 plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep → verify
@@ -325,6 +335,9 @@ the run remains trustworthy.
   resolutions instead of sending it through an unbounded loop.
 - After the run, use `camus retro` to collect recurring friction. Recommendations remain
   read-only; the next real feature—not an invented benchmark feature—proves the improvement.
+- Use `camus benchmark append|summarize` only for a predeclared Slice G campaign. All attempts,
+  including disclosed reruns and invalid provider output, remain in the denominator; a passing
+  report says only `eligible_for_human_admission` and never edits production routing.
 
 ## Environment levers
 
@@ -365,7 +378,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.4.4
+npm i -g camus-cli@0.4.5
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)

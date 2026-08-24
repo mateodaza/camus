@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Camus v2-lite gate adapter.
 
+CAMUS_CONTROL: cli.review.verdict_normalization
+
 Normalizes Codex `--output-schema` review output into the gate contract the loop
 consumes, with a HARD infra-vs-findings guard, plus v1 back-compat mapping.
 

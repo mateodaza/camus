@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Write the per-round REVIEW REQUEST that codex_review.sh cross-checks against.
 
+CAMUS_CONTROL: cli.review.binding
+
     review_request.py write --worktree W --round R [--effort E] [--nonce N]
                             [--model M] [--backend B]
 

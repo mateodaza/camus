@@ -11,13 +11,13 @@
 // `backends` in the file. A seat without a backend field means the legacy
 // pairing, so pre-seats files keep working unchanged.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { isIP } from 'node:net';
 import { deriveLineageSource, executorOrgFamily, originConfidence } from './identity.mjs';
-import { initGrandfather, consult, consultClaudeRoute } from './grandfather.mjs';
+import { initGrandfather, consult, consultClaudeRoute, studioAtomicWrite, STUDIO_FILE_MODE } from './grandfather.mjs';
 import { validateSshTunnelConfig } from './ssh-tunnel.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -792,9 +792,61 @@ export function updateModels({ maker, reviewer, effort, roundCap, connections: c
   if (roundCap && roundCap !== file.loop?.roundCap) {
     file.loop = { roundCap, why: stamp };
   }
-  mkdirSync(dirname(filePath()), { recursive: true });
-  writeFileSync(filePath(), JSON.stringify(file, null, 2) + '\n');
+  studioAtomicWrite(filePath(), JSON.stringify(file, null, 2) + '\n', STUDIO_FILE_MODE);
   return getModels();
+}
+
+function hasTemplatePlaceholder(value) {
+  if (typeof value === 'string') return value.includes('<replace:');
+  if (Array.isArray(value)) return value.some(hasTemplatePlaceholder);
+  return value && typeof value === 'object'
+    ? Object.values(value).some(hasTemplatePlaceholder)
+    : false;
+}
+
+// Slice E's browser flow writes exactly one connection + backend declaration
+// through the same production validators as a hand-edited models.json. It
+// merges against the RAW local file so legacy entry values are preserved;
+// normalized anonymous connections are never accidentally persisted.
+export function saveConnectionBackend({ connectionName, connection, backendName, backend, replace = false }) {
+  if (!CONFIG_NAME.test(connectionName || '') || !CONFIG_NAME.test(backendName || '')) {
+    throw new Error('connection and backend names must be lowercase alphanumeric/dash/underscore, max 32 chars');
+  }
+  if (!connection || typeof connection !== 'object' || Array.isArray(connection)
+    || !backend || typeof backend !== 'object' || Array.isArray(backend)) {
+    throw new Error('connection and backend declarations must be objects');
+  }
+  if (hasTemplatePlaceholder(connection) || hasTemplatePlaceholder(backend)) {
+    throw new Error('replace every <replace:…> placeholder before saving');
+  }
+  if (typeof connection.why !== 'string' || !connection.why.trim()
+    || typeof backend.why !== 'string' || !backend.why.trim()) {
+    throw new Error('connection.why and backend.why are required operator decisions');
+  }
+  const file = readFile();
+  const connectionExists = Object.hasOwn(file.connections ?? {}, connectionName);
+  const backendExists = Object.hasOwn(file.backends ?? {}, backendName);
+  if (!replace && (connectionExists || backendExists)) {
+    const collisions = [connectionExists ? `connection "${connectionName}"` : null,
+      backendExists ? `backend "${backendName}"` : null].filter(Boolean);
+    throw new Error(`${collisions.join(' and ')} already exists; explicitly authorize replacement to edit it`);
+  }
+  const connections = { ...(file.connections ?? {}), [connectionName]: connection };
+  const candidate = { ...backend, connection: connectionName };
+  updateModels({ connections, backends: { [backendName]: candidate } });
+  const normalized = listBackends()[backendName];
+  return {
+    connection: listConnections()[connectionName],
+    backend: {
+      name: normalized.name, kind: normalized.kind, provider: normalized.provider,
+      connection: normalized.connection, protocol: normalized.protocol,
+      trainingOrg: normalized.trainingOrg, modelFamily: normalized.modelFamily,
+      derivedFrom: normalized.derivedFrom, inferenceOperator: normalized.inferenceOperator,
+      auth: normalized.auth, models: [...normalized.models], seats: [...normalized.seats],
+      transport: normalized.transport,
+    },
+    replaced: connectionExists || backendExists,
+  };
 }
 
 export function modelsSummary() {

@@ -78,7 +78,7 @@ try:
 except Exception:
     m = {}
 print(json.dumps({k: m.get(k) for k in
-    ("contract","scope","qualification","origin","operator","transport","connection")}))' \
+    ("contract","scope","qualification","origin","operator","transport","connection","input_fingerprint")}))' \
     "$watch_dir/meta.json" 2>/dev/null || echo '{}')"
   case "$state" in
     done)

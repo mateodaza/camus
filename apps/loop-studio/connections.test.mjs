@@ -9,6 +9,7 @@ import {
   getModels,
   listBackends,
   parseConnections,
+  saveConnectionBackend,
   updateModels,
   validateLegacyCompatEntry,
 } from './lib/models.mjs';
@@ -279,6 +280,50 @@ try {
     assert.ok(!serialized.includes(runtimeUrl), 'resolved tunnel URL is not persisted');
     assert.ok(!serialized.includes('49177'), 'ephemeral tunnel port is not persisted');
     assert.ok(!serialized.includes('resolvedBaseUrl') && !serialized.includes('resolvedPort') && !serialized.includes('localPort'));
+  });
+
+  check('the Slice E connect flow saves one validated declaration without granting admission', () => {
+    write(decision());
+    const connection = { kind: 'loopback', port: 11434, basePath: '/v1', why: 'operator runs Ollama locally' };
+    const backend = {
+      kind: 'openai_compat', provider: 'self_hosted', connection: 'ignored_by_server',
+      protocol: 'chat_completions', trainingOrg: 'alibaba', modelFamily: 'qwen',
+      derivedFrom: null, inferenceOperator: 'self_hosted', auth: { kind: 'none' },
+      models: ['qwen3-coder'], seats: ['maker', 'reviewer'], why: 'evaluate local Qwen',
+    };
+    const saved = saveConnectionBackend({
+      connectionName: 'ollama', connection, backendName: 'qwen_local', backend,
+    });
+    assert.equal(saved.connection.kind, 'loopback');
+    assert.equal(saved.backend.connection, 'ollama', 'the server binds the backend to the exact saved connection');
+    const admission = admissionCatalog().maker.find((entry) => entry.backend === 'qwen_local');
+    assert.equal(admission.admission.qualified, false, 'a declaration never grants qualification');
+    assert.equal(admission.admission.qualifiable, true);
+  });
+
+  check('the connect flow requires reasons, replaced placeholders, and explicit collision authority', () => {
+    write(decision());
+    const connection = { kind: 'loopback', port: 11434, basePath: '/v1', why: 'local lab' };
+    const backend = {
+      kind: 'openai_compat', provider: 'self_hosted', connection: 'local', protocol: 'chat_completions',
+      trainingOrg: 'alibaba', modelFamily: 'qwen', derivedFrom: null,
+      inferenceOperator: 'self_hosted', auth: { kind: 'none' }, models: ['qwen'],
+      seats: ['reviewer'], why: 'evaluate qwen',
+    };
+    assert.throws(
+      () => saveConnectionBackend({ connectionName: 'local', connection: { ...connection, why: '<replace:why>' }, backendName: 'qwen', backend }),
+      /replace every/,
+    );
+    assert.throws(
+      () => saveConnectionBackend({ connectionName: 'local', connection, backendName: 'qwen', backend: { ...backend, why: '' } }),
+      /why.*required/,
+    );
+    saveConnectionBackend({ connectionName: 'local', connection, backendName: 'qwen', backend });
+    assert.throws(
+      () => saveConnectionBackend({ connectionName: 'local', connection, backendName: 'qwen', backend }),
+      /explicitly authorize replacement/,
+    );
+    assert.equal(saveConnectionBackend({ connectionName: 'local', connection, backendName: 'qwen', backend, replace: true }).replaced, true);
   });
 
   check('dual-write conflicts name both values instead of silently choosing one', () => {

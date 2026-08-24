@@ -22,7 +22,7 @@ standing.
 Requirements: Node 18+, Claude Code signed in, Codex CLI signed in, Python 3, and Git.
 
 ```bash
-npm install -g camus-cli@0.4.4
+npm install -g camus-cli@0.4.5
 codex login
 camus install
 camus check

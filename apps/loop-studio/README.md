@@ -17,6 +17,13 @@ The studio is the loop's visual front door. What it does today:
 
 The trust-protocol integration now ships in Studio: every new run starts with an explicit acceptance contract; seals raw execution × verification × audit × publication dimensions; records requested/resolved/actual executor and auditor identities plus actual reviewer effort; and mints separate artifact and receipt hashes in a downloadable evidence pack. Research packs include two structured ledgers. Citation markers become claim candidates labeled `supported`, `unsupported`, or `unchecked`; a live URL alone never becomes support. The acceptance contract is deterministically split into stable criteria labeled `met`, `unmet`, or `unclear`, so comparison arms are judged against identical requirements. If deterministic repair changes the final revision, Studio runs a fresh closure audit before that revision can inherit standing. Evidence-pack v2 preserves the identity split: criteria and claim meaning bind the artifact, while their auditor decisions bind the receipt. The one-word standing remains derived presentation and never enters the permanent pack.
 
+The 0.4.5 release adds a separate responsible-control receipt for launch, publication, managed
+SSH, and paid seat qualification. Each action is screened at input, exact authorization, and output; high-stakes approval is
+bound to the action fingerprint and cannot authorize a changed target. Publication is still an
+explicit opt-in and is checked again immediately before the external call. These completion
+records sit beside the immutable evidence pack, so control evidence can accumulate without
+silently changing a published receipt schema.
+
 **Compare & Learn now has two evidence-preserving modes.** **Re-audit** freezes a new auditor configuration over an unchanged artifact: no maker, no retrieval, the same `artifact_id`, and a new `receipt_id`. **Compare executors** freezes one goal, acceptance contract, task/depth controls, round cap, current model catalog, shared reviewer, and content-addressed knowledge snapshot before starting two or three concurrent arms. Every arm reads the same local snapshot, cannot retrieve live knowledge or publish, and keeps its own evidence pack. The parent `experiment.v2` receipt retains every success, quality-floor failure, infrastructure failure, and human stop; it records actual identities and available usage without treating requested effort as proven. Fallback is `none`. Recovery reconstructs sealed children and marks interrupted arms failed instead of silently rerunning them. Rehearsal exercises the full UX but cannot clear the independent quality floor. This execution slice deliberately names no winner; blinded cross-arm judgment is next. Direction: [docs/COMPARE-AND-LEARN-DIRECTION.md](../../docs/COMPARE-AND-LEARN-DIRECTION.md).
 
 ## Quickstart
@@ -26,7 +33,8 @@ Requirements: Node ≥ 18.17. Built-in seats use the authenticated `claude`
 credential declared in local operator state.
 
 ```bash
-node server.mjs --doctor   # check wiring; deep-probes declared custom seats and may spend provider tokens
+node server.mjs --doctor          # network-free wiring check
+node server.mjs --doctor --deep   # explicit provider-backed checks; may spend tokens
 node server.mjs            # live engine → http://localhost:1913
 npm run rehearse           # mock engine: full scripted loop, no model calls, ~2 min
 npm test                   # deterministic-verifier self-test
@@ -36,7 +44,7 @@ npm test                   # deterministic-verifier self-test
 
 The setup is guided from inside the page. One command starts the studio (`node server.mjs`, or `npx camus-loop-studio` once published) — that first command is still a terminal step until a packaged launcher ships; everything after it happens in the browser:
 
-- The **setup** panel runs the same checks as `--doctor`, row by row, and every missing piece comes with the exact command to paste — install Claude Code, install Codex, sign in once each. "Check again" re-verifies without restarting anything.
+- The **setup** panel runs the same network-free checks as `--doctor`, row by row, and every missing piece comes with the exact command to paste — install Claude Code, install Codex, sign in once each. "Check again" stays spend-free; provider-backed checks require the separate **Run deep checks (may spend tokens)** action.
 - The **settings** panel edits the run decisions (maker model, reviewer model, effort, review rounds) and writes local operator state to `~/.camus/studio/models.json` with a stamped why. The tracked [checks/models.json](checks/models.json) remains a cheap public fallback, so dogfood choices do not dirty the repo or become somebody else's default. Configurable models stay disabled until the operator explicitly qualifies that exact maker or reviewer tuple; the action warns that it can spend provider tokens.
 - **Show the session** (in a running view) opens the raw feed underneath the loop: the maker's live searches, the reviewer's reasoning, token counts — the "what is it actually doing right now" view.
 - **Publish the completed artifact to Hivemind** is an explicit words-lane opt-in on the launch form. It is off by default; accepting review findings never implies permission to publish.
@@ -70,7 +78,7 @@ No backend exists until someone writes one down; the key lives only in the named
 
 Model discovery is advisory: `listed`, `unlisted`, and `discovery_unavailable` are shown, but a valid qualification is what gates admission. A same-vendor pairing is allowed and recorded honestly: the review seals as **advisory** and the standing reads **same-vendor reviewed**, never independent. A cross-organization pairing backed only by operator declarations seals as **declared**, never as registry-verified. The server supplies the badges and warning copy; the browser does not derive a trust tier.
 
-Boundaries of this release: `chat_completions` over `loopback`, `direct_https`, and a managed `ssh_tunnel` is selectable after exact qualification. OpenAI Responses is visibly planned, not selectable. The SSH path is transport-only: it uses a validated OpenSSH alias, a remote loopback port, and a temporary local forward; it never runs remote commands, copies files, or accepts a browser-supplied argv. Camus owns the lease, liveness checks, and teardown, and tunnel death never falls back to a direct route. The browser connection editor remains a later slice. The CLI now contains an exact custom-reviewer dispatcher, but every non-Codex reviewer remains benchmark-disabled. Build keeps the admitted gate pairing, Compare & Learn and audit replay keep their frozen claude/codex catalogs, grounded managed-connector runs need a claude-backend maker, and `openai_compat` backends have no tools (no web, no MCP) — a contract demanding live-loaded sources will honestly fail review under such a maker. The hermetic fixture proves the complete local adapter path; real xAI/Moonshot/DashScope credentials and real Ollama/vLLM/LM Studio hardware remain an explicit provider-backed validation gap.
+Boundaries of this release: `chat_completions` over `loopback`, `direct_https`, and a managed `ssh_tunnel` is selectable after exact qualification. OpenAI Responses is visibly planned, not selectable. The SSH path is transport-only: it uses a validated OpenSSH alias, a remote loopback port, and a temporary local forward; it never runs remote commands, copies files, or accepts a browser-supplied argv. Camus owns the lease, liveness checks, and teardown, and tunnel death never falls back to a direct route. The browser connection editor saves one validated connection/backend declaration at a time, requires explicit replacement authority, and grants no qualification or lineage by declaration. The CLI now contains an exact custom-reviewer dispatcher, but every non-Codex reviewer remains benchmark-disabled. Build keeps the admitted gate pairing, Compare & Learn and audit replay keep their frozen claude/codex catalogs, grounded managed-connector runs need a claude-backend maker, and `openai_compat` backends have no tools (no web, no MCP) — a contract demanding live-loaded sources will honestly fail review under such a maker. The hermetic fixture proves the complete local adapter path; real xAI/Moonshot/DashScope credentials and real Ollama/vLLM/LM Studio hardware remain an explicit provider-backed validation gap.
 
 Both **codex** seats run a hardened subprocess: shell/exec, web search (which defaults to *on*), browser, apps, and plugins disabled by flag; no user config, rules, or MCP; ephemeral session; a scrubbed environment; and a fail-closed watch that refuses the call if any unexpected tool event appears. See [docs/MULTI-MODEL-SEATS.md](../../docs/MULTI-MODEL-SEATS.md#the-hardened-codex-profile-both-seats) for the flag table and the live controls behind each claim.
 
@@ -177,7 +185,7 @@ The hosted web app never receives your credentials — it is glass. The local se
 
 ## Demo-day runbook
 
-1. `HIVEMIND_VIA_CLAUDE=1 node server.mjs --doctor` on the venue wifi.
+1. `HIVEMIND_VIA_CLAUDE=1 node server.mjs --doctor --deep` on the venue wifi.
 2. Start the **live** run on stage at minute zero (quick depth), talk over it.
 3. Keep a `npm run rehearse` (`MOCK_SPEED=2`) window ready as the fallback — same UI, scripted beats: 3 findings → fix → a question for the room → fix → clean review → dead-link red gate → fix → green.
 4. Fill both the goal and **“What must be true for you to trust the result?”**; narrate the latter as the contract the second model judges.

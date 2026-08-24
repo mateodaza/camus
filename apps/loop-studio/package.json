@@ -8,11 +8,12 @@
     "node": ">=18.17"
   },
   "scripts": {
+    "pretest": "node --require ./test-env.cjs control-plane.test.mjs",
     "start": "node server.mjs",
     "rehearse": "ENGINE=mock node server.mjs",
     "doctor": "node server.mjs --doctor",
     "confirm:claude-route": "node server.mjs --confirm-claude-route",
-    "test": "node --require ./test-env.cjs verify.test.mjs && node --require ./test-env.cjs api.test.mjs && node --require ./test-env.cjs halt.test.mjs && node --require ./test-env.cjs anchor.test.mjs && node --require ./test-env.cjs igniter-guard.test.mjs && node --require ./test-env.cjs resume.test.mjs && node --require ./test-env.cjs custody.test.mjs && node --require ./test-env.cjs lib/identity.test.mjs && node --require ./test-env.cjs lib/adapters/claude.test.mjs && node --require ./test-env.cjs lib/adapters/openai-compat.test.mjs && node --require ./test-env.cjs lib/grandfather.test.mjs && node --require ./test-env.cjs connections.test.mjs && node --require ./test-env.cjs catalog-grandfather.test.mjs && node --require ./test-env.cjs config-privacy.test.mjs && node --require ./test-env.cjs lib/capabilities.test.mjs && node --require ./test-env.cjs lib/capability-probes.test.mjs && node --require ./test-env.cjs lib/ssh-tunnel.test.mjs && node --require ./test-env.cjs lib/admission.test.mjs && node --require ./test-env.cjs slice-c.e2e.test.mjs",
+    "test": "node --require ./test-env.cjs verify.test.mjs && node --require ./test-env.cjs api.test.mjs && node --require ./test-env.cjs halt.test.mjs && node --require ./test-env.cjs anchor.test.mjs && node --require ./test-env.cjs igniter-guard.test.mjs && node --require ./test-env.cjs resume.test.mjs && node --require ./test-env.cjs custody.test.mjs && node --require ./test-env.cjs lib/identity.test.mjs && node --require ./test-env.cjs lib/adapters/claude.test.mjs && node --require ./test-env.cjs lib/adapters/openai-compat.test.mjs && node --require ./test-env.cjs lib/grandfather.test.mjs && node --require ./test-env.cjs connections.test.mjs && node --require ./test-env.cjs catalog-grandfather.test.mjs && node --require ./test-env.cjs config-privacy.test.mjs && node --require ./test-env.cjs lib/capabilities.test.mjs && node --require ./test-env.cjs lib/capability-probes.test.mjs && node --require ./test-env.cjs qualification-api.test.mjs && node --require ./test-env.cjs lib/ssh-tunnel.test.mjs && node --require ./test-env.cjs lib/admission.test.mjs && node --require ./test-env.cjs slice-c.e2e.test.mjs",
     "test:verify": "node --require ./test-env.cjs verify.test.mjs"
   },
   "bin": {

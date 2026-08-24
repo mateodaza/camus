@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://camus.sh/schemas/benchmark-campaign.v1.schema.json",
+  "title": "Camus reviewer benchmark campaign v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "campaignId", "corpusVersion", "promptEnvelopeVersion", "baseline", "candidates", "cases", "transportPairs", "thresholds"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "campaignId": { "type": "string", "minLength": 1 },
+    "corpusVersion": { "type": "string", "minLength": 1 },
+    "promptEnvelopeVersion": { "type": "string", "minLength": 1 },
+    "baseline": { "$ref": "#/$defs/arm" },
+    "candidates": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/arm" } },
+    "cases": { "type": "array", "minItems": 1, "maxItems": 1000, "items": { "$ref": "#/$defs/case" } },
+    "transportPairs": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["leftArmId", "rightArmId"],
+        "properties": {
+          "leftArmId": { "type": "string", "minLength": 1 },
+          "rightArmId": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["validityLower", "recallDelta", "fprEpsilon", "transportDelta", "qualityRepetitions", "killRepetitions", "containmentMinimum", "containmentConclusive"],
+      "properties": {
+        "validityLower": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "recallDelta": { "type": "number", "minimum": 0, "maximum": 1 },
+        "fprEpsilon": { "type": "number", "minimum": 0, "maximum": 1 },
+        "transportDelta": { "type": "number", "minimum": 0, "maximum": 1 },
+        "qualityRepetitions": { "type": "integer", "minimum": 10, "maximum": 10000 },
+        "killRepetitions": { "type": "integer", "minimum": 3, "maximum": 10000 },
+        "containmentMinimum": { "type": "integer", "minimum": 150, "maximum": 10000 },
+        "containmentConclusive": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    }
+  },
+  "$defs": {
+    "arm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["armId", "backend", "model", "effort", "transport", "role"],
+      "properties": {
+        "armId": { "type": "string", "minLength": 1 },
+        "backend": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "effort": { "type": "string", "minLength": 1 },
+        "transport": { "type": "string", "minLength": 1 },
+        "role": { "enum": ["reviewer", "maker"] }
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["caseId", "kind", "expectedDefects"],
+      "properties": {
+        "caseId": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["defect", "clean", "kill_path"] },
+        "expectedDefects": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 500 } }
+      }
+    }
+  }
+}

@@ -160,8 +160,10 @@ await test('happy path: reviewer qualifies through the real adapter + normalizeR
   const { baseUrl, seenAuth } = await startServer((kind) =>
     kind === 'structured' ? { body: REVIEW_JSON, model: 'served-alias' }
       : { body: 'CAMUS-CTX-OK echoed', model: 'served-alias' });
+  const progress = [];
   const res = await deepQualifyModel({
     entry: envEntry(baseUrl), model: 'served-alias', seatType: 'words_reviewer', contextProbeTokens: 64,
+    onProgress: (event) => progress.push(event),
   });
   assert.equal(res.qualified, true, res.reason);
   assert.equal(res.capabilities.structuredOutput, 'demonstrated');
@@ -170,6 +172,12 @@ await test('happy path: reviewer qualifies through the real adapter + normalizeR
   assert.equal(res.capabilities.toolCalling, 'not_applicable'); // words seat: never probed
   assert.equal(res.identity.mode, 'confirmed');
   assert.ok(seenAuth.every((a) => a === `Bearer ${SECRET}`), 'env auth sends the bearer from the environment');
+  assert.equal(progress[0].phase, 'discovery');
+  assert.ok(progress.some((event) => event.phase === 'streaming' && event.status === 'demonstrated'));
+  assert.ok(progress.some((event) => event.phase === 'structuredOutput' && event.status === 'demonstrated'));
+  assert.ok(progress.some((event) => event.phase === 'contextWindow' && event.status === 'demonstrated'));
+  assert.equal(progress.at(-1).phase, 'qualification');
+  assert.equal(progress.at(-1).status, 'demonstrated');
 });
 
 await test('happy path: words_maker qualifies with structuredOutput not_applicable', async () => {

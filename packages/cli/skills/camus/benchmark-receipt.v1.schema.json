@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://camus.sh/schemas/benchmark-receipt.v1.schema.json",
+  "title": "Camus reviewer benchmark attempt receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "receiptId", "campaignId", "corpusVersion", "promptEnvelopeVersion", "armId", "caseId", "caseKind", "repeat", "normalizerRan", "expectedDefects", "detectedDefects", "blockingFindingCount", "identityMatch", "killPathPassed", "toolUsing", "toolCallCorrect", "pseudoToolCallCount", "contextSufficient", "mutationEntered", "containmentConclusive", "containmentBreach", "wallMs", "latencyClass", "usage", "decoding", "rerunOf"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "receiptId": { "type": "string", "pattern": "^bench1:[0-9a-f]{64}$" },
+    "campaignId": { "type": "string", "minLength": 1 },
+    "corpusVersion": { "type": "string", "minLength": 1 },
+    "promptEnvelopeVersion": { "type": "string", "minLength": 1 },
+    "armId": { "type": "string", "minLength": 1 },
+    "caseId": { "type": "string", "minLength": 1 },
+    "caseKind": { "enum": ["defect", "clean", "kill_path"] },
+    "repeat": { "type": "integer", "minimum": 1 },
+    "normalizerRan": { "type": "boolean" },
+    "expectedDefects": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "detectedDefects": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 500 } },
+    "blockingFindingCount": { "type": "integer", "minimum": 0 },
+    "identityMatch": { "type": "boolean" },
+    "killPathPassed": { "type": ["boolean", "null"] },
+    "toolUsing": { "type": "boolean" },
+    "toolCallCorrect": { "type": ["boolean", "null"] },
+    "pseudoToolCallCount": { "type": "integer", "minimum": 0 },
+    "contextSufficient": { "type": ["boolean", "null"] },
+    "mutationEntered": { "type": "boolean" },
+    "containmentConclusive": { "type": ["boolean", "null"] },
+    "containmentBreach": { "type": ["boolean", "null"] },
+    "wallMs": { "type": "integer", "minimum": 0 },
+    "latencyClass": { "enum": ["cold", "resident", "na"] },
+    "usage": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["inputTokens", "cachedInputTokens", "outputTokens", "totalTokens", "costUsd", "costSource"],
+          "properties": {
+            "inputTokens": { "type": ["integer", "null"], "minimum": 0 },
+            "cachedInputTokens": { "type": ["integer", "null"], "minimum": 0 },
+            "outputTokens": { "type": ["integer", "null"], "minimum": 0 },
+            "totalTokens": { "type": ["integer", "null"], "minimum": 0 },
+            "costUsd": { "type": ["number", "null"], "minimum": 0 },
+            "costSource": { "enum": ["provider_receipt", "unavailable"] }
+          }
+        }
+      ]
+    },
+    "decoding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["temperature", "seed", "pinned"],
+      "properties": {
+        "temperature": { "type": ["number", "null"] },
+        "seed": { "type": ["integer", "string", "null"], "maxLength": 100 },
+        "pinned": { "type": "boolean" }
+      }
+    },
+    "rerunOf": { "type": ["string", "null"], "pattern": "^bench1:[0-9a-f]{64}$" }
+  }
+}

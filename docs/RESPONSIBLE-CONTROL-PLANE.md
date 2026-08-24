@@ -1,13 +1,13 @@
 # Camus Responsible Control Plane
 
-**Status:** Approved next feature; implementation not begun
+**Status:** Implemented and deterministically verified for 0.4.5; live model campaign follows
 
-**Version:** 1.0
+**Version:** 1.2
 
-**Decision date:** 2026-08-23
+**Decision date:** 2026-08-23 · implementation evidence: 2026-08-24
 
-**Sequence:** D/F foundation release 0.4.4 → this feat → integrated dogfood/evals →
-admission release
+**Sequence:** D/F foundation release 0.4.4 → deterministic control/UX/offline gate 0.4.5 →
+provider-backed eval campaign → explicit human admission
 
 ## Why this feat exists
 
@@ -193,15 +193,47 @@ met. The control plane records that disabled state; it does not grade the backen
 
 ## 7. Release gate and execution order
 
-1. Implement and audit Slice D against RFC §8, while emitting the hooks in §5.
-2. Implement and audit Slice F against RFC §12, while emitting the hooks in §5.
-3. Implement this control-plane feat as one bounded cross-cutting slice.
-4. Run integrated dogfood plus the routing/eval campaign. Measure quality, wall time, model time,
-   orchestration overhead, human-route rate, false-auto cases, and inconclusive rate.
-5. Admit additional automatic routing only when the three slices are compatible, their evidence
-   is reconstructable, and no high-stakes path can silently bypass a required control. The 0.4.4
-   foundation release may ship disabled candidates; it grants them no trusted standing.
+1. Implement and audit Slice D against RFC §8, while emitting the hooks in §5. (Shipped in 0.4.4.)
+2. Implement and audit Slice F against RFC §12, while emitting the hooks in §5. (Shipped disabled
+   in 0.4.4.)
+3. Implement the responsible control plane, Slice E connection UX, and Slice G's provider-free
+   evidence gate; release those deterministic surfaces as 0.4.5 without admitting a new model.
+4. Run the provider-backed routing/eval campaign after release. Measure quality, wall time, model
+   time, orchestration overhead, human-route rate, false-auto cases, and inconclusive rate.
+5. Admit additional automatic routing only when the measured slices are compatible, their
+   evidence is reconstructable, and no high-stakes path can silently bypass a required control.
+   Shipping a disabled candidate or an offline gate grants it no trusted standing.
 
 Slices E and G remain separate product work: E provides the full connection UX; G provides the
 benchmark campaign that can enable additional automatic reviewer routing. This feat consumes
 their evidence when present but does not absorb their scope.
+
+## 8. Implemented outcome
+
+The implementation is one packaged contract shared by Studio and the CLI:
+
+- `packages/cli/skills/camus/control-register.v1.json` is the versioned register. Its drift
+  test resolves every enforcement point and evidence-test path, and every governed action
+  class must cover all three checkpoints.
+- `control-plane.mjs` and `scripts/control_plane.py` implement the same action fingerprint,
+  evidence event, exact human-decision binding, deterministic routing, fail-closed version
+  checks, and constrained cause vocabulary. A cross-language golden pins their canonical form.
+- Studio records launch, publication, managed-SSH, and paid exact-tuple qualification actions in a
+  mutable control receipt. Launch fingerprints bind the complete frozen dispatch decision,
+  including the selected models, efforts, round cap, qualification, lane, target, and verification
+  inputs. Managed-SSH evidence binds the exact immutable connection fingerprint, and every shared
+  borrower must freshly prove process and application liveness before reuse.
+  The receipt sits beside (never inside) the immutable evidence pack. Publication remains off by
+  default, and its human decision is bound to the exact destination action before the provider call.
+  Qualification is also bound to one exact seat/backend/model/connection fingerprint and leaves
+  a 0600 standalone receipt; opening Setup and ordinary `--doctor` are network-free by default.
+- CLI review dispatch writes input/action evidence before execution. The forensic audit adds
+  output normalization and exact round/candidate binding afterward. A valid rejection remains
+  `review_rejected`; malformed output is infrastructure; missing binding refuses.
+- The shared evidence validator rejects secret-shaped keys/values and broad prompt, token,
+  credential, or environment payloads.
+
+The complete Studio and CLI suites pass with these controls enabled. No provider-backed run was
+performed by this feature, no additional reviewer was admitted, and no published evidence-pack
+schema was mutated. Slice G's offline append-only ledger and conservative statistical gate now
+exist separately; the paid/provider-backed campaign remains the next evidence step.

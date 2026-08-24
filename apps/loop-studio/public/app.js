@@ -9,6 +9,8 @@ import { gatePhaseStrip, gateRoundFact } from './gate-phase-policy.mjs';
 import { verifySummary } from './run-ui-policy.mjs';
 import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateReportJson, lineageTrust, offersBuildRecovery, recoveryAction, replayRecoveryKind, terminalBannerClass, terminalFailureBanner } from './run-ui-policy.mjs';
 
+// CAMUS_CONTROL: studio.qualification.explicit_consent
+
 // Hosted-UI mode: when this page is served from a public origin, ?api=
 // points it at the local studio server (persisted after the first visit).
 // Same-origin (the normal local case) leaves API empty.
@@ -477,8 +479,11 @@ function renderSetup(report) {
   const head = el('div', 'panel-head');
   head.appendChild(el('span', 'lbl', report.ok ? 'Setup: this machine is ready. Brief a goal below.' : 'Setup: a few pieces are missing'));
   const again = el('button', 'ghost', 'Check again');
-  again.onclick = () => openSetup(true);
+  again.onclick = () => openSetup(false);
   head.appendChild(again);
+  const deep = el('button', 'ghost', 'Run deep checks (may spend tokens)');
+  deep.onclick = () => openSetup(true);
+  head.appendChild(deep);
   box.appendChild(head);
   for (const c of report.checks) {
     // A red ✕ means "this blocks you". Advisory rows (reported, not usable) and
@@ -535,8 +540,8 @@ $('open-setup').addEventListener('click', () => {
   if (!$('setup-panel').classList.contains('hidden')) { requestPanel(null); setPanel(null); return; }
   requestPanel('setup');
   setPanel('setup');
-  // Instant feedback, then the real report: the deep pass probes the Hivemind
-  // connector round-trip and can take a while.
+  // Instant feedback, then the network-free report. Provider-backed checks are
+  // a separate, plainly labelled click because they can spend tokens.
   const box = $('setup-panel');
   box.innerHTML = '';
   const head = el('div', 'panel-head');
@@ -544,9 +549,9 @@ $('open-setup').addEventListener('click', () => {
   box.appendChild(head);
   const wait = el('div', 'install-wait');
   wait.appendChild(el('span', 'dot'));
-  wait.appendChild(el('span', null, 'checking this machine: CLI versions, sign-in, the gate, and the Hivemind connector…'));
+  wait.appendChild(el('span', null, 'checking this machine: CLI versions, sign-in, and local configuration…'));
   box.appendChild(wait);
-  openSetup(true);
+  openSetup(false);
 });
 
 // ---------------------------------------------------------------------------
@@ -624,6 +629,47 @@ function appendSeatBadges(parent, badges = []) {
   parent.appendChild(wrap);
 }
 
+async function qualificationStream(response, onProgress) {
+  if (!response.ok) {
+    const failure = await response.json().catch(() => ({}));
+    throw new Error(failure.error || response.statusText);
+  }
+  if (!String(response.headers.get('content-type') || '').includes('text/event-stream')) {
+    return response.json();
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let result = null;
+  const consume = (block) => {
+    let event = 'message';
+    const data = [];
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith('event:')) event = line.slice(6).trim();
+      if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
+    }
+    if (!data.length) return;
+    const payload = JSON.parse(data.join('\n'));
+    if (event === 'progress') onProgress(payload);
+    else if (event === 'result') result = payload;
+    else if (event === 'error') throw new Error(payload.error || 'qualification failed');
+  };
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    let boundary;
+    while ((boundary = buffer.search(/\r?\n\r?\n/)) !== -1) {
+      const match = buffer.match(/\r?\n\r?\n/);
+      consume(buffer.slice(0, boundary));
+      buffer = buffer.slice(boundary + match[0].length);
+    }
+    if (done) break;
+  }
+  if (buffer.trim()) consume(buffer);
+  if (!result) throw new Error('qualification stream ended without a terminal result');
+  return result;
+}
+
 function renderQualificationCatalog(config) {
   const box = $('qualification-list');
   box.innerHTML = '';
@@ -643,22 +689,50 @@ function renderQualificationCatalog(config) {
     appendSeatBadges(head, entry.presentation?.badges ?? []);
     row.appendChild(head);
     row.appendChild(el('div', 'qualification-reason', entry.admission?.warning ?? 'No qualification record.'));
+    const capabilities = entry.admission?.capabilities;
+    if (capabilities && typeof capabilities === 'object') {
+      const checklist = el('div', 'capability-checklist');
+      for (const [name, result] of Object.entries(capabilities)) {
+        const status = result?.status ?? result?.state ?? 'unprobed';
+        checklist.appendChild(el('span', `capability-chip ${status}`, `${name}: ${status}`));
+      }
+      row.appendChild(checklist);
+    }
+    if (entry.admission?.expiresAt) {
+      row.appendChild(el('div', 'diagnostics-path', `qualification expires ${entry.admission.expiresAt}`));
+    }
     if (entry.admission?.qualifiable) {
       const button = el('button', 'ghost', entry.admission.qualified ? 'Re-qualify' : 'Qualify');
       button.onclick = async () => {
         button.disabled = true;
         button.textContent = 'Probing this tuple…';
         $('settings-note').textContent = 'Qualification can spend provider tokens. Running only the selected tuple.';
+        let liveChecklist = row.querySelector('.capability-checklist');
+        if (!liveChecklist) {
+          liveChecklist = el('div', 'capability-checklist');
+          row.insertBefore(liveChecklist, button);
+        }
+        const liveChips = new Map();
+        const showProgress = ({ phase, status, detail }) => {
+          let chip = liveChips.get(phase);
+          if (!chip) {
+            chip = el('span', 'capability-chip unprobed', phase);
+            liveChips.set(phase, chip);
+            liveChecklist.appendChild(chip);
+          }
+          chip.className = `capability-chip ${status}`;
+          chip.textContent = `${phase}: ${status}`;
+          chip.title = detail || '';
+        };
         try {
           const response = await fetch(`${API}/api/qualifications`, {
             method: 'POST', headers: postHeaders(),
-            body: JSON.stringify({ seat: entry.seatKey, backend: entry.backend, model: entry.model }),
+            body: JSON.stringify({ seat: entry.seatKey, backend: entry.backend, model: entry.model, stream: true }),
           });
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || response.statusText);
+          const result = await qualificationStream(response, showProgress);
           $('settings-note').textContent = result.qualified
             ? `${entry.backend}:${entry.model} qualified for ${entry.seatKey}.`
-            : `${entry.backend}:${entry.model} did not qualify: ${result.reason}${result.missing?.length ? ` (${result.missing.join(', ')})` : ''}.`;
+            : `${entry.backend}:${entry.model} did not qualify: ${result.reason}${result.missing?.length ? ` (${result.missing.join(', ')})` : ''}. Redacted local diagnostics: ${result.diagnosticsPath ?? 'not recorded'}.`;
           await loadSettingsConfig();
           await refreshPairing();
         } catch (error) {
@@ -673,6 +747,48 @@ function renderQualificationCatalog(config) {
   }
 }
 
+function declarationPayload(template) {
+  return {
+    connections: { [template.connection.name]: structuredClone(template.connection.value) },
+    backends: { [template.backend.name]: structuredClone(template.backend.value) },
+  };
+}
+
+function renderConnectionPreview() {
+  const preview = $('connection-preview');
+  try {
+    const payload = JSON.parse($('connection-json').value);
+    const connectionRows = Object.entries(payload?.connections ?? {});
+    const backendRows = Object.entries(payload?.backends ?? {});
+    if (connectionRows.length !== 1 || backendRows.length !== 1) throw new Error('declare exactly one connection and one backend');
+    const [[connectionName, connection]] = connectionRows;
+    const [[backendName, backend]] = backendRows;
+    const auth = backend?.auth?.kind === 'env'
+      ? `credential env name: ${backend.auth.envVar || 'missing'}`
+      : backend?.auth?.kind === 'none' ? 'credential: none' : 'credential mode: missing';
+    preview.textContent = [
+      `connection ${connectionName} · requested transport ${connection?.kind ?? 'missing'}`,
+      `backend ${backendName} · protocol ${backend?.protocol ?? 'missing'} · models ${(backend?.models ?? []).join(', ') || 'missing'}`,
+      `${auth} · origin declaration ${backend?.trainingOrg ?? 'missing'}/${backend?.modelFamily ?? 'missing'}`,
+      'lineage tier: derived by the server after validation; never granted by this JSON',
+    ].join('\n');
+    preview.classList.remove('failed');
+  } catch (error) {
+    preview.textContent = `not ready: ${error.message}`;
+    preview.classList.add('failed');
+  }
+}
+
+function openConnectionEditor(template) {
+  $('connection-editor-title').textContent = `CONNECT · ${template.label.toUpperCase()}`;
+  $('connection-json').value = JSON.stringify(declarationPayload(template), null, 2);
+  $('replace-connection').checked = false;
+  $('connection-note').textContent = 'Saving is local and spend-free. Qualification is the later provider call.';
+  $('connection-editor').classList.remove('hidden');
+  renderConnectionPreview();
+  $('connection-json').focus();
+}
+
 function renderProviderTemplates(config) {
   const box = $('provider-templates');
   box.innerHTML = '';
@@ -683,10 +799,7 @@ function renderProviderTemplates(config) {
     head.appendChild(el('span', 'qualification-status', `${template.transport} · ${template.protocol}`));
     row.appendChild(head);
     if (template.note) row.appendChild(el('div', 'template-note', template.note));
-    const payload = {
-      connections: { [template.connection.name]: template.connection.value },
-      backends: { [template.backend.name]: template.backend.value },
-    };
+    const payload = declarationPayload(template);
     const pre = el('pre', null, JSON.stringify(payload, null, 2));
     row.appendChild(pre);
     const copy = el('button', 'ghost', 'Copy declaration JSON');
@@ -696,6 +809,9 @@ function renderProviderTemplates(config) {
       setTimeout(() => { copy.textContent = 'Copy declaration JSON'; }, 1500);
     };
     row.appendChild(copy);
+    const configure = el('button', 'ghost', 'Configure & save');
+    configure.onclick = () => openConnectionEditor(template);
+    row.appendChild(configure);
     if (template.docsUrl) {
       const docs = document.createElement('a');
       docs.href = template.docsUrl;
@@ -711,6 +827,30 @@ function renderProviderTemplates(config) {
     .map((protocol) => `${protocol.label}: planned, not selectable`)
     .join(' · ');
 }
+
+$('connection-json').addEventListener('input', renderConnectionPreview);
+$('close-connection-editor').addEventListener('click', () => $('connection-editor').classList.add('hidden'));
+$('save-connection').addEventListener('click', async () => {
+  const button = $('save-connection');
+  button.disabled = true;
+  $('connection-note').textContent = 'validating and saving locally…';
+  try {
+    const payload = JSON.parse($('connection-json').value);
+    const response = await fetch(`${API}/api/connections`, {
+      method: 'POST', headers: postHeaders(),
+      body: JSON.stringify({ ...payload, replace: $('replace-connection').checked }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || response.statusText);
+    $('connection-note').textContent = result.note;
+    await loadSettingsConfig();
+    await refreshPairing();
+  } catch (error) {
+    $('connection-note').textContent = `not saved: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+});
 
 function renderSettingsConfig(c) {
   state.seats = c.seats ?? { maker: [], reviewer: [] };

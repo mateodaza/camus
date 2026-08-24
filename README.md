@@ -34,7 +34,7 @@ You need [Claude Code](https://code.claude.com) and the [Codex CLI](https://gith
 (`codex login`) — the cross-vendor pairing is the product, so both halves are required.
 
 ```bash
-npm i -g camus-cli@0.4.4
+npm i -g camus-cli@0.4.5
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 ```
@@ -58,9 +58,9 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.4.4
+### Public alpha: 0.4.5
 
-Camus 0.4.4 ships the first open-model foundations without grading a new reviewer into service.
+Camus 0.4.5 ships the open-model operating surface without grading a new reviewer into service.
 Loop Studio can qualify declared Grok, Kimi, Qwen, local, or other OpenAI-compatible seats over
 loopback, direct HTTPS, or a Camus-owned SSH forward. The accepted capability receipt, observed
 identity, transport, connection, and lineage stay bound through the run and sealed evidence pack;
@@ -71,8 +71,19 @@ The CLI now has a versioned reviewer contract and an exact-match dispatcher. It 
 Qwen Code, Grok CLI, and a hermetic OpenAI-compatible HTTP candidate, but **Codex remains the only
 reviewer admitted for production routing**. Every additional backend returns
 `reviewer_benchmark_disabled` until Slice G's provider-backed evals meet the declared quality and
-transport thresholds. Responses transport and Studio's connection editor remain later work. See
-the [0.4.4 release notes](docs/RELEASE-0.4.4.md).
+transport thresholds. Responses transport remains later work. See
+the [0.4.5 release notes](docs/RELEASE-0.4.5.md).
+
+Studio now includes a local connection editor, a shared responsible control plane, and the offline
+half of the Slice G admission harness. Connection templates cover xAI,
+Kimi, DashScope, Ollama, LM Studio, llama.cpp, vLLM, generic HTTPS, and private servers over SSH;
+saving a declaration is spend-free and grants no trust. Exact qualification is a separate,
+human-authorized provider action with live redacted progress. Input screening, exact action
+authorization, and output screening leave versioned receipts without changing the immutable
+evidence-pack schemas. Benchmark attempts are append-only and compared with conservative
+intervals; even a statistically passing candidate still requires human admission. Provider-backed
+campaigns and additional reviewer routing remain off until model testing begins. See the
+[Slice E status](docs/SLICE-E-STATUS.md) and [Slice G status](docs/SLICE-G-STATUS.md).
 
 ## Makes it work
 
@@ -156,7 +167,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.4.4
+npm i -g camus-cli@0.4.5
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```
