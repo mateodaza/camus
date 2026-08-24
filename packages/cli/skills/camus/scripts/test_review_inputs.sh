@@ -7,6 +7,7 @@
 # tier, review scope; 2026-06-12: MCP pruning) and the review.sh backend dispatcher (verbatim
 # pass-through for codex, fail-closed gate JSON for unknown backends).
 set -uo pipefail
+export CAMUS_MAKER_TRAINING_ORG=anthropic
 here="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(mktemp -d)"
 trap 'rm -rf "$ROOT"' EXIT
@@ -532,8 +533,15 @@ check "unknown backend fails closed (ran:false, names it, empty findings)" \
   "yes" "$(printf '%s' "$out" | python3 -c 'import json,sys
 g = json.load(sys.stdin)
 ok = (g["ran"] is False and g["clean"] is False and g["blocking"] == [] and g["nonblocking"] == []
-      and "gemini" in g["error"] and "codex" in g["error"])
+      and "gemini" in g["error"] and g.get("error_code") == "reviewer_backend_unknown")
 print("yes" if ok else "no")')"
+out="$(CAMUS_REVIEWER=qwen_code bash "$here/review.sh" "$WT" "the task" "1")"; rc=$?
+check "known candidate backend exits 0 with gate JSON" "0" "$rc"
+check "known candidate stays benchmark-disabled (never a silent fallback)" \
+  "yes" "$(printf '%s' "$out" | python3 -c 'import json,sys
+g = json.load(sys.stdin)
+print("yes" if g.get("ran") is False and g.get("backend") == "qwen_code" and
+      g.get("error_code") == "reviewer_benchmark_disabled" else "no")')"
 
 # commit.sh interplay: intent-to-add must not break staging or empty-detection
 out="$(bash "$here/commit.sh" "$WT" "camus: test")"

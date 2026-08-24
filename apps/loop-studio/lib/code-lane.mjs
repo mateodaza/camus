@@ -754,7 +754,15 @@ export function processGroupAlive(pgid, { ps = null } = {}) {
 // Studio sealed a clean `stopped` (field report 2026-08-04). Abort each owned
 // watch through the gate's own abort form, then PROVE the pid is gone. What
 // cannot be proven is reported as an orphan, never as a clean stop.
-export async function abortOwnedReviewers(prefix, { timeoutMs = 20_000, scriptPath = null, matchPid = pidMatchesHandle, matchGroup = groupMatchesHandle, groupAlive = processGroupAlive } = {}) {
+export async function abortOwnedReviewers(prefix, {
+  timeoutMs = 20_000,
+  scriptPath = null,
+  matchPid = pidMatchesHandle,
+  matchGroup = groupMatchesHandle,
+  groupAlive = processGroupAlive,
+  reviewerBackend = 'codex',
+  makerTrainingOrg = 'anthropic',
+} = {}) {
   const all = await ownedReviewWatches(prefix);
   const watches = [];
   for (const w of all) {
@@ -788,7 +796,15 @@ export async function abortOwnedReviewers(prefix, { timeoutMs = 20_000, scriptPa
     }
     if (existsSync(script)) {
       aborted = await new Promise((resolve) => {
-        execFile('bash', [script, 'abort', watch.dir], { timeout: timeoutMs }, (err) => resolve(!err));
+        // The dispatcher refuses to invent cross-vendor origin. Studio is the trusted caller
+        // that owns the run-start seat snapshot, so carry that evidence on cleanup too; abort
+        // must not silently stop at the dispatcher while the reviewer survives underneath it.
+        const env = {
+          ...process.env,
+          CAMUS_REVIEWER: reviewerBackend,
+          CAMUS_MAKER_TRAINING_ORG: makerTrainingOrg,
+        };
+        execFile('bash', [script, 'abort', watch.dir], { timeout: timeoutMs, env }, (err) => resolve(!err));
       });
       if (!aborted) note = 'the gate abort form failed or timed out';
     } else {
@@ -1708,6 +1724,10 @@ export async function runCodeLoop(run, ctx) {
   const idSalt = run.idSalt || `studio-${run.id.replace(/[^a-zA-Z0-9-]/g, '')}`;
   const hbPath = join(homedir(), '.camus', 'feats', `${idSalt}.hb`);
   const roundCap = run.models?.loop?.roundCap ?? getModels().loop.roundCap;
+  const reviewAbortOptions = {
+    reviewerBackend: run.models?.reviewer?.backend ?? 'codex',
+    makerTrainingOrg: run.models?.maker?.trainingOrg ?? 'anthropic',
+  };
 
   // One outer gate process per Studio attempt. A later human/resume attempt reuses the same
   // standalone custody identity; camus-loop's `ensure` lane returns its exact worktree.
@@ -2130,7 +2150,7 @@ export async function runCodeLoop(run, ctx) {
         if (late?.prefix) ownedPrefix = late.prefix;
       }
       const sweepOnce = () => (ownedPrefix
-        ? abortOwnedReviewers(ownedPrefix).catch((e) => ({ attempted: [], orphans: [{ note: String(e.message || e), pid: null }], clean: false }))
+        ? abortOwnedReviewers(ownedPrefix, reviewAbortOptions).catch((e) => ({ attempted: [], orphans: [{ note: String(e.message || e), pid: null }], clean: false }))
         : Promise.resolve({ attempted: [], orphans: [], clean: true, note: 'no owned reviewer prefix was ever adopted' }));
       const sweepA = await sweepOnce();
       const sweepB = await sweepOnce();
@@ -2231,7 +2251,7 @@ export async function runCodeLoop(run, ctx) {
       // dying, so after the first pass we sweep AGAIN and merge anything new.
       // Without this, Stop reported a clean kill over a live codex group
       // (20260805-072933-jezu).
-      const sweep = () => abortOwnedReviewers(ownedPrefix).catch((cleanupErr) => ({
+      const sweep = () => abortOwnedReviewers(ownedPrefix, reviewAbortOptions).catch((cleanupErr) => ({
         attempted: [], orphans: [{ note: String(cleanupErr.message || cleanupErr), pid: null }], clean: false,
       }));
       const first = await sweep();

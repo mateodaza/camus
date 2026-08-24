@@ -76,9 +76,11 @@ keeps stale repo-level telemetry from contradicting fresh feature state. See the
 The current development tree also completes Studio's first user-visible open-model slice:
 declared Grok/Kimi/Qwen or local OpenAI-compatible models stay disabled until their exact maker
 or reviewer tuple passes live capability probes, then carry the accepted receipt unchanged into
-the run and sealed evidence pack. This does not change the released 0.4.3 CLI. Generic CLI/gate
-backends, Responses transport, and managed SSH remain explicit later slices rather than being
-advertised early.
+the run and sealed evidence pack. Its managed-SSH security core is implemented and accepted.
+Slice F now adds an exact CLI reviewer dispatcher plus a hermetic direct-HTTP candidate, but every
+new reviewer name remains production-disabled until the Slice G benchmark earns admission. None of
+this changes the released 0.4.3 CLI; Responses transport and Studio's connection editor remain
+later work rather than being advertised early.
 
 ## Makes it work
 

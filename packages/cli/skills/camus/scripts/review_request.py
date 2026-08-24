@@ -37,6 +37,7 @@ Contract:
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -44,9 +45,27 @@ import time
 VALID_EFFORT = ("low", "medium", "high", "xhigh")
 VALID_SCOPE = ("full", "light")
 VALID_QUALIFICATION = ("builtin1", "qual1")
+QUALIFICATION_RE = re.compile(r"^(?:builtin1|qual1)(?::[0-9a-f]{64})?$")
 # The REVIEW-CONTRACT.md version this writer speaks. Recorded so a request that
 # outlives a contract bump is a visible mismatch downstream, never a silent one.
 REVIEW_CONTRACT = "rc1"
+
+
+def consistent_value(values, label):
+    """Shared exact-match binding check for request/env/argv/executor channels."""
+    missing = [name for name, value in values.items() if value in (None, "")]
+    if missing:
+        raise ValueError("%s missing from %s" % (label, ", ".join(sorted(missing))))
+    normalized = {str(value).strip() for value in values.values()}
+    if len(normalized) != 1:
+        raise ValueError("%s disagrees across channels (%s)" % (
+            label, "; ".join("%s=%r" % (key, values[key]) for key in sorted(values)),
+        ))
+    return normalized.pop()
+
+
+def valid_qualification(value):
+    return isinstance(value, str) and QUALIFICATION_RE.fullmatch(value) is not None
 
 
 def review_dir():
@@ -73,8 +92,11 @@ def build_request(worktree, round_value, effort=None, nonce=None, model=None, ba
         return None, "review effort %r is not one of %s" % (effort, "|".join(VALID_EFFORT))
     if scope is not None and scope not in VALID_SCOPE:
         return None, "review scope %r is not one of %s" % (scope, "|".join(VALID_SCOPE))
-    if qualification is not None and qualification not in VALID_QUALIFICATION:
-        return None, "review qualification %r is not one of %s" % (qualification, "|".join(VALID_QUALIFICATION))
+    if qualification is not None and not valid_qualification(qualification):
+        return None, (
+            "review qualification %r is not a tier label or versioned builtin1:/qual1: fingerprint"
+            % qualification
+        )
     return {
         "schema_version": 1,
         # The REVIEW-CONTRACT.md version these fields belong to (carried so a later

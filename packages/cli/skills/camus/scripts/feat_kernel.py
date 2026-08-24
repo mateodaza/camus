@@ -1806,6 +1806,10 @@ def _run_direct_review(run, repo, node, worktree, backend, model, effort, round_
         "CAMUS_REPO_ROOT": repo,
         "CAMUS_REVIEWER": backend,
         "CAMUS_REVIEW_BACKEND": backend,
+        # The native Build maker is Claude today. The dispatcher compares the reviewer's
+        # registry-backed training organization against this explicit fact before it can exec;
+        # an ambient shell value must not redefine who authored the candidate.
+        "CAMUS_MAKER_TRAINING_ORG": "anthropic",
         "CAMUS_CODEX_MODEL": reviewer_model,
         "CAMUS_GATE_NONCE": nonce,
         "CAMUS_REVIEW_ROUND": str(round_no),

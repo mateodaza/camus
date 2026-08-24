@@ -12,6 +12,7 @@
 #   3. an invocation that cannot prove the watch is its own REFUSES — it neither consumes
 #      the verdict nor overwrites the finished round
 set -uo pipefail
+export CAMUS_MAKER_TRAINING_ORG=anthropic
 here="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(mktemp -d)"
 trap 'rm -rf "$ROOT"' EXIT

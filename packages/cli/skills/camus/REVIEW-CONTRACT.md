@@ -3,7 +3,10 @@
 **Contract version: `rc1`**
 
 This is the versioned agreement between the review REQUESTER (the `camus-loop` /
-`camus-feat` workflows) and the review EXECUTOR (`review.sh` → `codex_review.sh`).
+`camus-feat` workflows) and the review EXECUTOR (`review.sh` → an admitted backend).
+`codex_review.sh` remains the only production-admitted executor. The
+`http_openai_compat` implementation is a benchmark candidate and cannot be selected through
+the dispatcher until Slice G admission changes its checked-in gate.
 It names the fields that must travel, unchanged, through every artifact a review
 produces — so a receipt can be checked against the request that asked for it, not
 merely trusted because it parsed.
@@ -38,10 +41,10 @@ relabel the sealed values.
 |---|---|---|
 | `contract` | executor constant (`rc1`) | the contract version |
 | `scope` | normalized argv (executor) | `full` \| `light` |
-| `qualification` | derived by executor | `builtin1` \| `qual1` |
+| `qualification` | derived/bound by executor | transitional admitted lane: `builtin1` \| `qual1`; configurable candidates: exact `qual1:<sha256>` |
 | `origin` | requester, echoed | e.g. `camus-loop` |
 | `operator` | requester, echoed | e.g. `claude-code` |
-| `transport` | executor constant | e.g. `cli-detached` |
+| `transport` | executor constant | e.g. `cli-detached`, `loopback`, `direct_https`, `ssh_tunnel` |
 | `connection` | derived by executor | `vendor_managed` \| `configured` |
 
 `origin` and `operator` describe the CALLER and cannot be known independently by the
@@ -86,6 +89,16 @@ be identical.
   only tier that qualifies as the hardened built-in gate.
 - **`qual1`** — anything configurable: an alternate backend, a pinned reviewer model,
   or any non-`vendor_managed` connection. A capable review, but not the built-in one.
+
+The admitted Codex lane retains the rc1 tier labels above until its receipt migration lands.
+A configurable backend candidate must already bind the exact accepted qualification receipt
+fingerprint (`qual1:<64 lowercase hex>`); a bare `qual1` request is insufficient and refuses.
+For the generic HTTP candidate, that fingerprint also locates an expiring local authority record
+whose HMAC covers the reviewer backend, model, training organization, transport, and connection.
+The reviewer organization comes from that record—not from the request or process environment—so
+caller text cannot forge a cross-vendor pairing.
+Admission cannot be flipped merely by changing the dispatcher registry: the workflow must first
+carry that exact accepted fingerprint as its independently expected qualification.
 
 `asGate` compares qualification by EXACT equality and refuses drift in BOTH
 directions: a request expecting `builtin1` is not satisfied by a `qual1` review (the
