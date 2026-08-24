@@ -29,7 +29,7 @@ export default function Home() {
               <a className="cta-ghost" href="#proof">See a real catch ↓</a>
             </div>
             <div className="hero-proof" aria-label="What Camus gives you">
-              <b>public alpha 0.4.1</b>
+              <b>public alpha 0.4.4</b>
               <b>deterministic local control</b>
               <b>an independent second opinion</b>
               <b>tests and sources attached</b>
@@ -229,7 +229,7 @@ receipt        0b8960d2e40d`}
                 <p className="direction-tag">Available now</p>
                 <h3>Hybrid control, independent trust</h3>
                 <p>
-                  Models plan, make, and review. The 0.4.1 driver keeps dispatch, budgets,
+                  Models plan, make, and review. The 0.4.4 driver keeps dispatch, budgets,
                   Git, verification, recovery, and sealed evidence out of model context.
                 </p>
               </Reveal>
@@ -324,7 +324,7 @@ receipt        0b8960d2e40d`}
             <Reveal>
               <div className="term">
                 <pre>
-{`$ npm i -g camus-cli@0.4.1
+{`$ npm i -g camus-cli@0.4.4
 $ camus install
 $ camus check
 

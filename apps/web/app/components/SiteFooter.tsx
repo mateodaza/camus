@@ -27,7 +27,7 @@ export function SiteFooter() {
             {'  ·  '}
             <a href="https://www.npmjs.com/package/camus-cli">npm</a>
             {'  ·  '}
-            <a href="https://github.com/mateodaza/camus/releases/tag/v0.4.1">v0.4.1</a>
+            <a href="https://github.com/mateodaza/camus/releases/tag/v0.4.4">v0.4.4</a>
             {'  ·  '}
             <a href="/studio/">loop studio</a>
           </span>

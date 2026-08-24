@@ -34,7 +34,7 @@ You need [Claude Code](https://code.claude.com) and the [Codex CLI](https://gith
 (`codex login`) — the cross-vendor pairing is the product, so both halves are required.
 
 ```bash
-npm i -g camus-cli@0.4.3
+npm i -g camus-cli@0.4.4
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 ```
@@ -58,29 +58,21 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.4.3
+### Public alpha: 0.4.4
 
-Camus 0.4.1 made that deterministic kernel the executable default. Durable Claude Code sessions
-survive the launching terminal, restarts adopt rather than duplicate them, and a model controller
-appears only for real semantic closure choices. A local append-only eval ledger can compare complete
-maker/reviewer pairings by exact experiment generation and task class, but names no routing winner
-until every configured arm clears its declared quality floor. The release dogfood completed two
-review-clean, HEAD-bound tasks in 9m13s—an 87% reduction in comparable end-to-end trace time versus
-the previous model-orchestrated run. Camus 0.4.2 is a bounded recovery hotfix: it safely adopts a
-maker that committed despite its contract, gives high-effort review watchdogs enough host time, and
-counts one recovered background turn only once. Camus 0.4.3 makes native budget stops typed and
-resumable, lets the low-cost controller decide before reserving another expensive maker turn, and
-keeps stale repo-level telemetry from contradicting fresh feature state. See the
-[0.4.3 release notes](docs/RELEASE-0.4.3.md).
+Camus 0.4.4 ships the first open-model foundations without grading a new reviewer into service.
+Loop Studio can qualify declared Grok, Kimi, Qwen, local, or other OpenAI-compatible seats over
+loopback, direct HTTPS, or a Camus-owned SSH forward. The accepted capability receipt, observed
+identity, transport, connection, and lineage stay bound through the run and sealed evidence pack;
+missing, stale, substituted, or tampered evidence fails closed. Managed SSH is forward-only, owns
+its lease and teardown, redacts diagnostics, and never falls back to a direct connection.
 
-The current development tree also completes Studio's first user-visible open-model slice:
-declared Grok/Kimi/Qwen or local OpenAI-compatible models stay disabled until their exact maker
-or reviewer tuple passes live capability probes, then carry the accepted receipt unchanged into
-the run and sealed evidence pack. Its managed-SSH security core is implemented and accepted.
-Slice F now adds an exact CLI reviewer dispatcher plus a hermetic direct-HTTP candidate, but every
-new reviewer name remains production-disabled until the Slice G benchmark earns admission. None of
-this changes the released 0.4.3 CLI; Responses transport and Studio's connection editor remain
-later work rather than being advertised early.
+The CLI now has a versioned reviewer contract and an exact-match dispatcher. It recognizes Codex,
+Qwen Code, Grok CLI, and a hermetic OpenAI-compatible HTTP candidate, but **Codex remains the only
+reviewer admitted for production routing**. Every additional backend returns
+`reviewer_benchmark_disabled` until Slice G's provider-backed evals meet the declared quality and
+transport thresholds. Responses transport and Studio's connection editor remain later work. See
+the [0.4.4 release notes](docs/RELEASE-0.4.4.md).
 
 ## Makes it work
 
@@ -164,7 +156,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.4.3
+npm i -g camus-cli@0.4.4
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```

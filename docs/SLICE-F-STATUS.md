@@ -1,9 +1,8 @@
 # Open Model Seats — Slice F status
 
-**Status:** implementation candidate; production disabled; feature acceptance and Slice G
-benchmark admission pending
+**Status:** feature accepted for 0.4.4; production disabled; Slice G benchmark admission pending
 
-**Date:** 2026-08-23
+**Date:** 2026-08-24
 
 Slice F adds the machinery needed to evaluate additional CLI reviewer backends without quietly
 turning them on. It does not add a supported reviewer to Camus today. The production gate remains
@@ -58,8 +57,8 @@ The existing Codex review suite remains the regression oracle for the admitted p
 - No provider-backed HTTP campaign has measured catch rate, false-positive rate, schema-valid
   rate, latency, containment conclusiveness, or transport equivalence.
 - No backend besides Codex is admitted for automatic routing.
-- No release claim should call these candidates supported until feature acceptance is complete
-  and Slice G's statistical admission criteria pass.
+- No release claim should call these candidates supported until Slice G's statistical admission
+  criteria pass.
 
-The next state change is evidence-driven: finish Slice F feature acceptance, then run Slice G. A
+Slice F feature acceptance is complete. The next state change is evidence-driven: run Slice G. A
 green mechanical test suite alone cannot flip a backend's checked-in admission decision.

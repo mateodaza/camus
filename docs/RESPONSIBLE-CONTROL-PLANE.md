@@ -1,12 +1,13 @@
 # Camus Responsible Control Plane
 
-**Status:** Approved product direction; implementation not begun
+**Status:** Approved next feature; implementation not begun
 
 **Version:** 1.0
 
 **Decision date:** 2026-08-23
 
-**Sequence:** Slice D → Slice F → this feat → integrated dogfood/evals → release
+**Sequence:** D/F foundation release 0.4.4 → this feat → integrated dogfood/evals →
+admission release
 
 ## Why this feat exists
 
@@ -197,8 +198,9 @@ met. The control plane records that disabled state; it does not grade the backen
 3. Implement this control-plane feat as one bounded cross-cutting slice.
 4. Run integrated dogfood plus the routing/eval campaign. Measure quality, wall time, model time,
    orchestration overhead, human-route rate, false-auto cases, and inconclusive rate.
-5. Release only when the three slices are compatible, their evidence is reconstructable, and no
-   high-stakes path can silently bypass a required control.
+5. Admit additional automatic routing only when the three slices are compatible, their evidence
+   is reconstructable, and no high-stakes path can silently bypass a required control. The 0.4.4
+   foundation release may ship disabled candidates; it grants them no trusted standing.
 
 Slices E and G remain separate product work: E provides the full connection UX; G provides the
 benchmark campaign that can enable additional automatic reviewer routing. This feat consumes
