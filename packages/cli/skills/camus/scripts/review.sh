@@ -21,38 +21,10 @@
 #   review.sh <worktree> [task-context] [round] [effort] [scope]
 #   review.sh await <watch_dir>
 #   review.sh abort <watch_dir>
-# Config: `reviewer: codex` is the default; CAMUS_REVIEWER env overrides (exact match — `codex`,
-#         lowercase); a per-run arg arrives later with classifier routing (VELOCITY §2).
+# Config: `reviewer: codex` is the default; CAMUS_REVIEWER env overrides. Selection, benchmark
+# admission, and the cross-vendor training-origin check live in reviewer_dispatch.py so shell
+# globbing, prefixes, casing, or environment text can never widen the accepted set.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-backend="${CAMUS_REVIEWER:-codex}"
-
-case "$backend" in
-  codex)
-    # exec, not a subshell: the backend IS the review process — same stdout, same exit, same
-    # signal behavior the orchestrator already relies on. Zero behavior change vs calling
-    # codex_review.sh directly, which is what makes this a pure refactor.
-    exec bash "$here/codex_review.sh" "$@"
-    ;;
-  *)
-    # Fail closed: an unknown backend is an INFRA outcome (ran:false), never a verdict and never
-    # a fallback. Exit 0 so the caller parses gate JSON instead of seeing a crash — the same
-    # discipline as every other infra failure in this gate (adapter.py: branch on ran==false,
-    # retry/escalate, never feed it to the fix loop as a rejection).
-    python3 - "$backend" <<'PY'
-import json, sys
-print(json.dumps({
-    "ran": False,
-    "error": ("unknown reviewer backend '%s' — only 'codex' is built in "
-              "(cross-vendor invariant: the reviewer must not share the implementer's "
-              "vendor; new backends join only after the benchmark gate, "
-              "VELOCITY-DIRECTION §2)" % sys.argv[1]),
-    "clean": False,
-    "blocking": [],
-    "nonblocking": [],
-}))
-PY
-    exit 0
-    ;;
-esac
+exec python3 "$here/reviewer_dispatch.py" "$@"

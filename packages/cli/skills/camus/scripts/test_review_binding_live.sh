@@ -8,6 +8,7 @@
 # A case passes only when the whole chain refuses — the same chain that let a
 # requested r2/high become an accepted r0/medium receipt.
 set -uo pipefail
+export CAMUS_MAKER_TRAINING_ORG=anthropic
 here="$(cd "$(dirname "$0")" && pwd)"
 WORKFLOW="$here/../../../workflows/camus-loop.workflow.js"
 ROOT="$(mktemp -d)"

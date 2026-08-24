@@ -28,6 +28,13 @@ Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMU
 > of expensive-turn reserve gates, and removes misleading stale status rows.
 > [Read the release evidence.](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.3.md)
 
+> **Development status after 0.4.3:** Slice F now has a generic-reviewer implementation
+> candidate, including a direct OpenAI-compatible HTTP reviewer for benchmark use. Production
+> routing remains exactly Claude → Codex: `qwen_code`, `grok_cli`, and
+> `http_openai_compat` are recognized but fail closed as `reviewer_benchmark_disabled` until
+> Slice G evidence earns admission. An implemented candidate is not a supported reviewer yet.
+> See [`docs/SLICE-F-STATUS.md`](https://github.com/mateodaza/camus/blob/main/docs/SLICE-F-STATUS.md).
+
 ```
 plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep → verify
        full posture: loops while P0/P1/P2 findings remain, round cap 3

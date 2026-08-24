@@ -3847,13 +3847,17 @@ exit 0
     verifiedVictim.unref();
     const vAbortLog = join(verifiedDir, 'abort-invoked.log');
     const vAbortScript = join(verifiedDir, 'review.sh');
-    writeFileSync(vAbortScript, `#!/bin/sh\necho "$@" >> ${JSON.stringify(vAbortLog)}\nexit 0\n`);
+    writeFileSync(vAbortScript, `#!/bin/sh\nprintf '%s|%s|%s\\n' "$CAMUS_REVIEWER" "$CAMUS_MAKER_TRAINING_ORG" "$*" >> ${JSON.stringify(vAbortLog)}\nexit 0\n`);
     execFileSync('chmod', ['+x', vAbortScript]);
     try {
       writeFileSync(join(verifiedDir, 'handle.json'), JSON.stringify({ pid: verifiedVictim.pid, started_at: Math.floor(Date.now() / 1000), cmd: ['codex'], cwd: verifiedDir }));
-      const cleaned = await abortOwnedReviewers(prefix, { scriptPath: vAbortScript });
+      const cleaned = await abortOwnedReviewers(prefix, {
+        scriptPath: vAbortScript,
+        reviewerBackend: 'codex',
+        makerTrainingOrg: 'anthropic',
+      });
       assert.equal(existsSync(vAbortLog), true, 'a VERIFIED reviewer DOES invoke the abort form (so the negative control above is meaningful)');
-      assert.match(readFileSync(vAbortLog, 'utf8'), /abort/, 'and it is called with the abort verb');
+      assert.match(readFileSync(vAbortLog, 'utf8'), /^codex\|anthropic\|abort /, 'the abort form receives the run snapshot\'s backend and maker-origin evidence');
       assert.equal(cleaned.clean, true, 'and the verified reviewer is proven gone');
       assert.equal(pidAlive(verifiedVictim.pid), false);
     } finally {

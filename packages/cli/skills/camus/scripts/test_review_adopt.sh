@@ -13,6 +13,7 @@
 # GROWING event stream (never truncated), no duplicate spend, and the eventual
 # verdict consumed exactly once.
 set -uo pipefail
+export CAMUS_MAKER_TRAINING_ORG=anthropic
 here="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(mktemp -d)"
 # The fixtures below live in their OWN process groups (setsid), so `pkill -g 0`

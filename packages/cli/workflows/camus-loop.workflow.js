@@ -1113,7 +1113,7 @@ function reviewerPrompt(attempt) {
 the worktree and return its stdout. Do NOT interpret, summarize, re-judge, or reformat.
 
 ${backoff}Run EXACTLY this one command (the worktree path is the argument — do NOT cd, do NOT add anything else):
-  ${HB_TOUCH}${statusPhase('Review', `--round ${round} --effort ${currentEffort} --model ${JSON.stringify(REVIEWER_MODEL)} --backend ${JSON.stringify(REVIEWER_BACKEND)} --worktree ${JSON.stringify(WT)}`)}${REQUEST_SCRIPT} write --worktree ${JSON.stringify(WT)} --round ${round} --effort ${currentEffort} --nonce ${JSON.stringify(GATE_NONCE)} --model ${JSON.stringify(REVIEWER_MODEL)} --backend ${JSON.stringify(REVIEWER_BACKEND)} --contract ${REVIEW_CONTRACT} --scope ${REVIEW_SCOPE} --qualification ${reviewQualification} --origin ${REVIEW_ORIGIN} --operator ${REVIEW_OPERATOR} --transport ${REVIEW_TRANSPORT} --connection ${reviewConnection} >/dev/null && CAMUS_CODEX_ARGS=${shq(REVIEWER_CODEX_ARGS)} CAMUS_CODEX_LIGHT_MODEL=${shq(REVIEWER_LIGHT_MODEL)} CAMUS_CODEX_MODEL=${JSON.stringify(REVIEWER_MODEL)} CAMUS_GATE_NONCE=${JSON.stringify(GATE_NONCE)} CAMUS_REVIEW_ROUND=${round} CAMUS_REVIEW_EFFORT=${currentEffort} CAMUS_REVIEW_SCOPE=${REVIEW_SCOPE} CAMUS_REVIEW_ORIGIN=${REVIEW_ORIGIN} CAMUS_REVIEW_OPERATOR=${REVIEW_OPERATOR} ${REVIEW_CMD} ${JSON.stringify(WT)} ${shq(REVIEW_TASK_CTX)} ${round} ${currentEffort} ${REVIEW_SCOPE}
+  ${HB_TOUCH}${statusPhase('Review', `--round ${round} --effort ${currentEffort} --model ${JSON.stringify(REVIEWER_MODEL)} --backend ${JSON.stringify(REVIEWER_BACKEND)} --worktree ${JSON.stringify(WT)}`)}${REQUEST_SCRIPT} write --worktree ${JSON.stringify(WT)} --round ${round} --effort ${currentEffort} --nonce ${JSON.stringify(GATE_NONCE)} --model ${JSON.stringify(REVIEWER_MODEL)} --backend ${JSON.stringify(REVIEWER_BACKEND)} --contract ${REVIEW_CONTRACT} --scope ${REVIEW_SCOPE} --qualification ${reviewQualification} --origin ${REVIEW_ORIGIN} --operator ${REVIEW_OPERATOR} --transport ${REVIEW_TRANSPORT} --connection ${reviewConnection} >/dev/null && CAMUS_REVIEWER=${JSON.stringify(REVIEWER_BACKEND)} CAMUS_MAKER_TRAINING_ORG=anthropic CAMUS_CODEX_ARGS=${shq(REVIEWER_CODEX_ARGS)} CAMUS_CODEX_LIGHT_MODEL=${shq(REVIEWER_LIGHT_MODEL)} CAMUS_CODEX_MODEL=${JSON.stringify(REVIEWER_MODEL)} CAMUS_GATE_NONCE=${JSON.stringify(GATE_NONCE)} CAMUS_REVIEW_ROUND=${round} CAMUS_REVIEW_EFFORT=${currentEffort} CAMUS_REVIEW_SCOPE=${REVIEW_SCOPE} CAMUS_REVIEW_ORIGIN=${REVIEW_ORIGIN} CAMUS_REVIEW_OPERATOR=${REVIEW_OPERATOR} ${REVIEW_CMD} ${JSON.stringify(WT)} ${shq(REVIEW_TASK_CTX)} ${round} ${currentEffort} ${REVIEW_SCOPE}
 
 The round and effort appear THREE times in that command on purpose: in a request file, in
 environment variables, and as arguments. The reviewer refuses if they disagree, so retyping,
@@ -1160,7 +1160,7 @@ function awaitPrompt(handle, round, currentEffort) {
 job is to re-attach and return the script's stdout. Do NOT interpret, summarize, or reformat.
 
 Run EXACTLY this one command:
-  ${HB_TOUCH}CAMUS_GATE_NONCE=${JSON.stringify(GATE_NONCE)} CAMUS_REVIEW_ROUND=${round} CAMUS_REVIEW_EFFORT=${currentEffort} ${REVIEW_CMD} await ${JSON.stringify(handle)}
+  ${HB_TOUCH}CAMUS_REVIEWER=${JSON.stringify(REVIEWER_BACKEND)} CAMUS_MAKER_TRAINING_ORG=anthropic CAMUS_GATE_NONCE=${JSON.stringify(GATE_NONCE)} CAMUS_REVIEW_ROUND=${round} CAMUS_REVIEW_EFFORT=${currentEffort} ${REVIEW_CMD} await ${JSON.stringify(handle)}
 
 Set the Bash tool's timeout PARAMETER to 600000 for this call. Do NOT wrap the command in
 \`timeout\`/\`gtimeout\`.
@@ -1176,7 +1176,7 @@ fences, no commentary. It is already JSON.`
 function abortPrompt(handle) {
   return `THIN runner. Run EXACTLY this one command and output its stdout VERBATIM (it is JSON);
 no fences, no commentary:
-  ${HB_TOUCH}${REVIEW_CMD} abort ${JSON.stringify(handle)}`
+  ${HB_TOUCH}CAMUS_REVIEWER=${JSON.stringify(REVIEWER_BACKEND)} CAMUS_MAKER_TRAINING_ORG=anthropic ${REVIEW_CMD} abort ${JSON.stringify(handle)}`
 }
 // Honest codex-side spend, when the watchdog captured turn.completed usage. Log-only.
 const usageSuffix = (g) => (g && g.usage && typeof g.usage === 'object')
