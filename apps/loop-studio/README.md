@@ -66,6 +66,7 @@ Run one arm at a time against an already-running live Studio:
 ```bash
 npm run eval:model -- --list
 npm run eval:model -- --calibration
+npm run eval:model -- --summary --profile simple
 npm run eval:model -- --profile simple --case simple-incident-handoff --candidate gpt-luna
 npm run eval:model -- --profile simple --case simple-migration-runbook --candidate qwen-27b --json
 ```
@@ -89,6 +90,11 @@ declared by the file. Qwen trials are explicitly exploratory while the configure
 endpoint has operator-declared lineage, so they cannot silently clear the independent promotion
 floor. At least five trials per complete pairing across distinct cases are required before Camus
 may present a task-class recommendation, and even then the user decides.
+
+`--summary` reads local sealed reports without launching a model. It includes only the active
+campaign hash, groups results within one judge screen, shows case coverage and quality-first
+economics, and reports why a group is still exploratory. It never selects a winner or changes a
+default; stale generations and rehearsal receipts are ignored rather than pooled.
 
 ### Any model in either seat
 

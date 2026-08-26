@@ -54,6 +54,85 @@ import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateRep
   assert.throws(() => validateModelEvalCampaign(repeatedPrompt), /at least 3 representative cases/, 'a tier cannot call repeated copies of one prompt a representative suite');
 }
 
+// Evaluation summaries are read-only evidence views. They accept only the
+// active generation and exact judge screen, and quality remains a hard gate
+// before calibration, latency, or token economics can affect standing.
+{
+  const { loadModelEvalCampaign, modelEvalCampaignHash } = await import('./lib/model-eval-campaign.mjs');
+  const { summarizeEvaluationReports } = await import('./lib/model-eval-summary.mjs');
+  const campaign = loadModelEvalCampaign();
+  const configHash = modelEvalCampaignHash(campaign);
+  const simple = campaign.profiles.find((profile) => profile.id === 'simple');
+  const luna = campaign.candidates.find((candidate) => candidate.id === 'gpt-luna');
+  const opusScreen = campaign.independence.judgeScreens.find((screen) => screen.id === 'opus-screen');
+  const reportFor = ({ id, candidate = luna, screen = opusScreen, caseId, answers = [], green = true, ...overrides }) => ({
+    id,
+    simulated: false,
+    evaluationCampaignId: campaign.id,
+    evaluationConfigHash: configHash,
+    evaluationProfile: simple.id,
+    evaluationCaseId: caseId,
+    models: {
+      maker: { backend: candidate.backend, model: candidate.model },
+      reviewer: { ...screen.reviewer },
+    },
+    status: 'done',
+    statuses: { audit: 'independent_clean' },
+    startedAt: 100,
+    endedAt: 1100,
+    answers,
+    makerUsage: [{ usage: { input_tokens: 10, output_tokens: 2 } }],
+    makerActualModels: [`${candidate.provider}:${candidate.model}`],
+    evidencePack: { green },
+    evidence: {
+      verify: [{ source: 'evaluation_case_precheck', pass: true }],
+      rounds: [{ reviewerIdentity: 'anthropic:claude-opus-4-8', findings: [], usage: { input_tokens: 20, output_tokens: 3 } }],
+    },
+    ...overrides,
+  });
+  const cleanReports = simple.cases.map((evaluationCase, index) => reportFor({
+    id: `clean-${index + 1}`,
+    caseId: evaluationCase.id,
+    startedAt: index * 1000,
+    endedAt: index * 1000 + (index + 1) * 100,
+  }));
+  const calibrationSummary = {
+    judges: campaign.calibration.judges.map((judge) => ({ id: judge.id, standing: 'uncalibrated' })),
+    crossScreenRanking: 'refused_uncalibrated',
+  };
+  const clean = summarizeEvaluationReports(campaign, configHash, cleanReports, calibrationSummary, {
+    qualityFloor: (pack) => pack?.green === true,
+  });
+  assert.equal(clean.groups.length, 1);
+  assert.equal(clean.groups[0].trials, 3);
+  assert.deepEqual(clean.groups[0].distinctCases, simple.cases.map((evaluationCase) => evaluationCase.id).sort());
+  assert.equal(clean.groups[0].qualityFloorPasses, 3);
+  assert.equal(clean.groups[0].medianWallDurationMs, 200);
+  assert.equal(clean.groups[0].recommendationStanding, 'uncalibrated_judge', 'a complete clean screen cannot outrun judge calibration');
+
+  const withHumanAnswer = summarizeEvaluationReports(campaign, configHash, [
+    ...cleanReports,
+    reportFor({ id: 'human-assisted', caseId: simple.cases[0].id, answers: [{ kind: 'decision', answer: 'accept' }] }),
+  ], calibrationSummary, { qualityFloor: (pack) => pack?.green === true });
+  assert.equal(withHumanAnswer.groups[0].trialsWithHumanIntervention, 1);
+  assert.equal(withHumanAnswer.groups[0].recommendationStanding, 'quality_floor_not_met', 'human-assisted trials cannot clear the automated quality floor');
+
+  const wrongEffort = reportFor({
+    id: 'wrong-screen-effort',
+    caseId: simple.cases[0].id,
+    models: {
+      maker: { backend: luna.backend, model: luna.model },
+      reviewer: { backend: 'codex', model: 'gpt-5.6-sol', effort: 'low' },
+    },
+  });
+  const stale = reportFor({ id: 'stale', caseId: simple.cases[0].id, evaluationConfigHash: `sha256:${'0'.repeat(64)}` });
+  const ignored = summarizeEvaluationReports(campaign, configHash, [...cleanReports, wrongEffort, stale, { ...cleanReports[0], id: 'rehearsal', simulated: true }], calibrationSummary, {
+    qualityFloor: (pack) => pack?.green === true,
+  });
+  assert.equal(ignored.groups[0].trials, 3, 'stale, simulated, and mismatched-screen reports are never pooled');
+  assert.equal(ignored.ignoredReports, 3);
+}
+
 // Campaign graders are intentionally small and declarative. They catch exact
 // shape failures before a model judge is purchased but make no semantic claim.
 {

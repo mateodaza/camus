@@ -8,9 +8,13 @@
 import { findEvaluationCase, loadModelEvalCampaign, modelEvalCampaignHash } from './lib/model-eval-campaign.mjs';
 import { qualityFloorPassed } from './lib/comparison.mjs';
 import { loadJudgeCalibration } from './lib/judge-calibration.mjs';
+import { loadEvaluationReports, summarizeEvaluationReports } from './lib/model-eval-summary.mjs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const campaign = loadModelEvalCampaign();
 const campaignHash = modelEvalCampaignHash(campaign);
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function die(message) {
   console.error(`model-eval: ${message}`);
@@ -18,14 +22,15 @@ function die(message) {
 }
 
 function parseArgs(argv) {
-  const out = { base: 'http://127.0.0.1:1913', list: false, calibration: false, json: false, help: false };
+  const out = { base: 'http://127.0.0.1:1913', runs: join(__dirname, 'runs'), list: false, calibration: false, summary: false, json: false, help: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--list') out.list = true;
     else if (arg === '--calibration') out.calibration = true;
+    else if (arg === '--summary') out.summary = true;
     else if (arg === '--json') out.json = true;
     else if (arg === '--help' || arg === '-h') out.help = true;
-    else if (['--profile', '--case', '--candidate', '--base'].includes(arg)) {
+    else if (['--profile', '--case', '--candidate', '--base', '--runs'].includes(arg)) {
       const value = argv[index + 1];
       if (!value || value.startsWith('--')) die(`${arg} requires a value`);
       out[arg.slice(2)] = value;
@@ -70,7 +75,8 @@ function summarize(report, { candidate, profile, evaluationCase, screen }) {
     : null;
   const latestReview = rounds.at(-1) ?? null;
   const deterministicPrecheck = report.evidence?.verify?.find((item) => item.source === 'evaluation_case_precheck')?.pass ?? null;
-  const floorPassed = deterministicPrecheck === true && qualityFloorPassed(report.evidencePack);
+  const humanInterventions = Array.isArray(report.answers) ? report.answers.length : 0;
+  const floorPassed = deterministicPrecheck === true && humanInterventions === 0 && qualityFloorPassed(report.evidencePack);
   const qualityVerdict = !floorPassed
     ? 'fail'
     : report.evidencePack?.statuses?.verification === 'passed_with_caveats' || report.status === 'done_with_findings'
@@ -101,6 +107,7 @@ function summarize(report, { candidate, profile, evaluationCase, screen }) {
       audit: report.statuses?.audit ?? null,
       reviewVerdict: latestReview?.verdict ?? null,
       deterministicPrecheck,
+      humanInterventions,
       findingCount: latestReview?.findings?.length ?? null,
       coverageMet: latestReview?.coverageAssessments?.filter((item) => item.decision === 'met').length ?? null,
       coverageTotal: latestReview?.coverageAssessments?.length ?? null,
@@ -131,7 +138,36 @@ if (args.help) {
   console.log('Usage: node model-eval.mjs --profile <tier> --case <case-id> --candidate <id> [--base http://127.0.0.1:1913] [--json]');
   console.log('       node model-eval.mjs --list [--json]');
   console.log('       node model-eval.mjs --calibration [--json]');
+  console.log('       node model-eval.mjs --summary [--profile simple|balanced|difficult] [--runs ./runs] [--json]');
   console.log('One invocation buys one bounded maker/case/judge arm. Failed deterministic case checks stop before model review.');
+  process.exit(0);
+}
+if (args.summary) {
+  if (args.profile && !campaign.profiles.some((profile) => profile.id === args.profile)) {
+    die(`choose --profile ${campaign.profiles.map((profile) => profile.id).join('|')}`);
+  }
+  const { reports, unreadableReports } = loadEvaluationReports(args.runs);
+  const { summary: calibrationSummary } = loadJudgeCalibration(campaign);
+  const summary = summarizeEvaluationReports(campaign, campaignHash, reports, calibrationSummary, { profile: args.profile ?? null });
+  summary.unreadableReports = unreadableReports;
+  if (args.json) console.log(JSON.stringify(summary, null, 2));
+  else {
+    console.log(`Campaign ${summary.campaignId} · ${summary.campaignStanding} · cross-screen ${summary.crossScreenRanking}`);
+    console.table(summary.groups.map((group) => ({
+      profile: group.profile,
+      candidate: group.candidate,
+      screen: group.screen,
+      cases: `${group.distinctCases.length}/${group.requiredDistinctCases}`,
+      floor: `${group.qualityFloorPasses}/${group.trials}`,
+      precheck_red: group.deterministicPrecheckFailures,
+      median_wall_ms: group.medianWallDurationMs,
+      maker_in: group.medianMakerInputTokens,
+      standing: group.recommendationStanding,
+    })));
+    if (summary.ignoredReports || summary.unreadableReports) {
+      console.log(`Ignored ${summary.ignoredReports} stale/simulated/unbound report(s); ${summary.unreadableReports} unreadable report(s).`);
+    }
+  }
   process.exit(0);
 }
 if (args.calibration) {
