@@ -103,6 +103,18 @@ try {
     assert.ok(c.catalog.reviewer.includes(c.reviewer.model), 'the current reviewer decision is selectable');
     assert.ok(!c.catalog.reviewer.includes('codex-auto-review'), 'a hidden internal reviewer model is never offered');
     assert.ok(['codex_cache', 'fallback'].includes(c.catalog.reviewerSource), 'the catalog names whether the list is CLI-verified');
+    assert.deepEqual(c.evaluationCampaign.profiles.map((profile) => profile.id).sort(), ['balanced', 'difficult', 'simple'], 'config exposes the registered routing tiers');
+  });
+
+  await check('the model campaign is local public configuration with bounded Luna coverage', async () => {
+    const response = await fetch(`${base}/api/evaluation-campaign`, { headers: { origin: base } });
+    assert.equal(response.status, 200);
+    const campaign = await response.json();
+    assert.equal(campaign.controls.iterationPolicy, 'single_pass');
+    assert.equal(campaign.controls.publish, false);
+    assert.equal(campaign.controls.toolPolicy, 'none');
+    assert.ok(campaign.candidates.some((candidate) => candidate.id === 'gpt-luna' && candidate.model === 'gpt-5.6-luna'));
+    assert.equal(JSON.stringify(campaign).includes('API_KEY'), false, 'the campaign contains no credential name or value');
   });
 
   await check('config POST validates model choices server-side (400 on an unoffered reviewer)', async () => {
@@ -298,6 +310,76 @@ try {
       }),
     });
     assert.equal(buildPairing.status, 400, 'a pairing on the Build lane is refused loudly, never silently ignored');
+  });
+
+  await check('single-pass evaluation is explicit, local-only, and seals its profile', async () => {
+    const campaign = await (await fetch(`${base}/api/evaluation-campaign`, { headers: { origin: base } })).json();
+    const profile = campaign.profiles.find((entry) => entry.id === 'simple');
+    const bound = {
+      goal: profile.goal,
+      acceptanceContract: profile.acceptanceContract,
+      lane: 'freeform',
+      depth: profile.depth,
+      ground: campaign.controls.ground,
+      evaluationProfile: profile.id,
+      evaluationCampaignId: campaign.id,
+      evaluationConfigHash: campaign.configHash,
+    };
+    const invalid = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify({ goal: 'invalid evaluation profile must refuse before spend', acceptanceContract: ACCEPTANCE, lane: 'freeform', evaluationProfile: 'mega' }),
+    });
+    assert.equal(invalid.status, 400);
+
+    const publish = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify({ ...bound, publish: true }),
+    });
+    assert.equal(publish.status, 400, 'evaluation cannot opt into an external side effect');
+
+    const drifted = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify({ ...bound, goal: `${bound.goal} changed`, publish: false }),
+    });
+    assert.equal(drifted.status, 400, 'a campaign id cannot be attached to a changed treatment');
+
+    const start = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify({
+        ...bound,
+        iterationPolicy: 'single_pass',
+        publish: false,
+      }),
+    });
+    assert.equal(start.status, 201);
+    const { id } = await start.json();
+    const runMeta = JSON.parse(readFileSync(join(tmp, id, 'run.json'), 'utf8'));
+    assert.equal(runMeta.iterationPolicy, 'single_pass');
+    assert.equal(runMeta.evaluationProfile, 'simple');
+    assert.equal(runMeta.evaluationCampaignId, campaign.id);
+    assert.equal(runMeta.evaluationConfigHash, campaign.configHash);
+    assert.equal(runMeta.publishRequested, false);
+    let report = null;
+    for (let i = 0; i < 120 && !report; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const response = await fetch(`${base}/api/runs/${id}/report`, { headers: { origin: base } });
+      if (response.ok) report = await response.json();
+    }
+    assert.ok(report, 'single-pass run seals without a human answer');
+    assert.equal(report.iterationPolicy, 'single_pass');
+    assert.equal(report.evaluationProfile, 'simple');
+    assert.equal(report.evaluationCampaignId, campaign.id);
+    assert.equal(report.evaluationConfigHash, campaign.configHash);
+    assert.equal(report.publishRequested, false);
+    assert.equal(report.evidence.rounds.length, 1, 'exactly one review is retained');
+    assert.equal(report.makerUsage.some((row) => String(row.stage).includes('fix')), false, 'no repair stage is purchased');
+    const events = readFileSync(join(tmp, id, 'events.jsonl'), 'utf8');
+    assert.match(events, /"roundCap":1/, 'the live run fact says one round even when standing settings say three');
+    assert.doesNotMatch(events, /"type":"answer"/, 'evaluation changes no frozen input through a human answer');
   });
 
   await check('grounded managed-connector runs refuse a non-claude maker before any spend', async () => {
@@ -1184,6 +1266,7 @@ try {
     assert.equal(report.experiment.schemaVersion, 2);
     assert.equal(report.experiment.mode, 'parallel_execution');
     assert.equal(report.experiment.manifest.fallback_policy, 'none');
+    assert.equal(report.experiment.manifest.round_cap, 1, 'comparison experiments bind every arm to one maker draft and one review');
     assert.equal(report.experiment.outcome.arms.length, 2, 'both arms remain in the terminal experiment');
     assert.equal(
       report.experiment.outcome.arms.every((arm) => arm.status === 'quality_floor_failed'),
@@ -1201,11 +1284,13 @@ try {
     assert.equal(snapshots.every((child) => child.models.reviewer.backend === 'codex' && child.models.reviewer.executor === 'codex_cli'), true, 'comparison children keep the exact auditor backend and executor');
     assert.equal(snapshots.every((child) => child.models.reviewer.trainingOrg === 'openai' && child.models.reviewer.modelFamily === 'gpt'), true, 'comparison children keep auditor training identity');
     assert.equal(snapshots.every((child) => child.models.reviewer.transport === 'vendor_managed' && child.models.reviewer.lineage?.source === 'registry'), true, 'comparison children keep auditor transport and lineage');
+    assert.equal(snapshots.every((child) => child.iterationPolicy === 'single_pass' && child.models.loop.roundCap === 1), true, 'comparison children cannot repair or re-review');
+    assert.equal(snapshots.every((child) => Array.isArray(child.makerUsage) && !child.makerUsage.some((row) => String(row.stage).includes('fix'))), true, 'comparison receipts contain no hidden maker repair usage');
     assert.equal(snapshots.every((child) => child.evidence?.grounding?.frozen === true), true, 'arms record frozen retrieval instead of live querying');
     assert.equal(snapshots.every((child) => child.evidencePack.session_log.includes(`frozen knowledge snapshot: ${report.experiment.knowledge.snapshot_id}`)), true, 'each arm receipt custody-binds the snapshot');
     assert.ok(existsSync(join(tmp, comparisonId, 'knowledge.json')), 'private snapshot contents stay in the local parent receipt directory');
     const parentEvents = readFileSync(join(tmp, comparisonId, 'events.jsonl'), 'utf8');
-    assert.match(parentEvents, /"type":"answer"/, 'the parent replay preserves the human checkpoint answer, not only the question');
+    assert.doesNotMatch(parentEvents, /"type":"answer"/, 'single-pass comparisons never accept a content answer that could vary one arm');
 
     // Simulate a server crash after arm 1 sealed but before arm 2 produced a
     // report. Recovery must preserve the manifest/snapshot identity, reuse the

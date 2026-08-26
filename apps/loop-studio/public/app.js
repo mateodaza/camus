@@ -1071,7 +1071,7 @@ $('open-compare').addEventListener('click', async () => {
     $('compare-note').textContent = config.catalog.reviewerSource === 'fallback'
       ? 'The reviewer catalog is a conservative fallback because Codex has no readable cache.'
       : 'The catalog is read from this machine and freezes when you start.';
-    $('start-compare').textContent = state.serverEngine === 'mock' ? 'Rehearse the comparison' : 'Approve the spend and run both';
+    $('start-compare').textContent = state.serverEngine === 'mock' ? 'Rehearse the comparison' : 'Approve two single-pass arms';
   } catch (err) {
     $('compare-note').textContent = String(err.message || err);
     $('start-compare').disabled = true;
@@ -1132,7 +1132,7 @@ $('start-compare').addEventListener('click', async () => {
     $('compare-note').textContent = 'Choose two distinct executor models.';
     return;
   }
-  if (state.serverEngine !== 'mock' && !confirm('Run two complete executor/auditor arms? This can spend roughly twice a standard run. Knowledge and model decisions will freeze now.')) return;
+  if (state.serverEngine !== 'mock' && !confirm('Run two single-pass executor/auditor arms? Each gets one draft and one review, with no repair. Knowledge and model decisions will freeze now.')) return;
   $('start-compare').disabled = true;
   $('compare-note').textContent = 'freezing the manifest…';
   try {

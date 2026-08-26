@@ -288,6 +288,7 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
     usage: observed.usage,
     durationMs: Date.now() - startedAt,
     modelActual: observed.modelActual,
+    modelActualEvidence: observed.modelActualEvidence,
     // This proves the maker actually invoked the configured connector. It does
     // not claim that every returned chunk was relevant or correct; the [Hn]
     // citation gate remains responsible for that evidence-level judgement.
@@ -397,6 +398,7 @@ export async function runClaudeReview({ prompt, model, cwd, signal, onTick, onSe
     norm.reviewerModel = model;
     norm.reviewerEffort = null; // claude exposes no reasoning-effort request — never a fabricated tier
     norm.reviewerIdentity = observed.modelActual ?? `anthropic:${model}`;
+    norm.reviewerActualEvidence = observed.modelActualEvidence;
   }
   return norm;
 }
@@ -420,6 +422,7 @@ export function usageFromClaudeResult(data, requestedModel = null) {
     return values.length ? values.reduce((total, value) => total + value, 0) : null;
   };
   const models = [...new Set(rows.map((row) => row.model).filter((value) => typeof value === 'string' && value))];
+  const observedModel = models.length > 0 || Boolean(typeof data?.model === 'string' && data.model);
   const actualModel = models.length === 1
     ? models[0]
     : models.length > 1
@@ -432,5 +435,6 @@ export function usageFromClaudeResult(data, requestedModel = null) {
       output_tokens: sum('output_tokens', 'outputTokens'),
     },
     modelActual: actualModel ? `anthropic:${actualModel}` : null,
+    modelActualEvidence: observedModel ? 'observed_cli_event' : 'asserted_pin',
   };
 }

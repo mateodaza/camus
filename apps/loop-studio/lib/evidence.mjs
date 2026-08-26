@@ -36,6 +36,11 @@ export function deriveEvidence(events) {
     reviewerActualEvidence: r.reviewerActualEvidence ?? null,
     reviewerReportedModel: r.reviewerReportedModel ?? null,
     independence: r.independence ?? null,
+    // Evaluation needs the whole pair's observed economics. Keeping reviewer
+    // usage only in events made a sealed report systematically undercount the
+    // slower/costlier half of a pairing.
+    usage: r.usage ?? null,
+    duration_ms: Number.isInteger(r.duration_ms) ? r.duration_ms : null,
     // §10.8.1 qualification + review-scope channels. The scope the round ran at
     // arrives through the binding channel INDEPENDENTLY of the qualification the
     // seat ran under; both are absent on pre-seats receipts.

@@ -46,7 +46,13 @@ export async function runLoop(run, ctx) {
   // cannot make the actual maker/reviewer/effort/roundCap disagree with the
   // sealed receipt. model/effort are passed explicitly into each adapter below.
   const snapshot = run.models ?? getModels();
-  const ROUND_CAP = snapshot.loop.roundCap;
+  // Evaluation arms measure the first artifact and first independent review.
+  // They never repair, re-review, or ask a content question: doing so would
+  // let one arm purchase more attempts than another and make the comparison a
+  // measurement of loop length rather than model quality. Infrastructure
+  // failures still fail closed through withRetries.
+  const singlePass = run.iterationPolicy === 'single_pass';
+  const ROUND_CAP = singlePass ? 1 : snapshot.loop.roundCap;
   // Acceptance coverage must be comparable across rounds and future arms.
   // Extract once from the immutable run-start contract; the auditor judges
   // these criteria but never gets to rewrite their boundaries.
@@ -466,14 +472,27 @@ export async function runLoop(run, ctx) {
       for (const f of lastReview.findings) emit('finding', { round, ...f });
       stage('review', 'done', { round, verdict: lastReview.verdict });
 
-      // Reviewer routed a decision to the human: pause before touching the draft.
-      for (const q of lastReview.questions) {
-        await ask({ kind: 'decision', text: q });
+      // Reviewer content questions are useful outcome evidence in an
+      // evaluation, but answering them would make the arm's frozen input differ
+      // from its peers. Ordinary loops still pause and thread the answer.
+      if (singlePass && lastReview.questions.length) {
+        doneWithFindings = true;
+        log(`Single-pass evaluation retained ${lastReview.questions.length} reviewer question(s) without changing the frozen input.`);
+      } else {
+        for (const q of lastReview.questions) {
+          await ask({ kind: 'decision', text: q });
+        }
       }
 
       if (lastReview.verdict === 'APPROVED') {
         log(`Review round ${round}: clean.`);
         if (lastReview.nonblocking?.length) doneWithFindings = true;
+        break;
+      }
+
+      if (singlePass) {
+        doneWithFindings = true;
+        log(`Single-pass evaluation retained ${lastReview.blocking.length} blocking finding(s); no maker repair was purchased.`);
         break;
       }
 
@@ -658,6 +677,11 @@ export async function runLoop(run, ctx) {
 
       const failures = result.checks.filter((c) => c.status === 'fail');
       log(`Verify failed: ${failures.map((f) => f.label).join('; ')}`);
+      if (singlePass) {
+        log('The single-pass artifact failed deterministic verification; recording verify_failed without a repair or human override.');
+        emit('status', { status: 'verify_failed', rev, costUsd });
+        return { status: 'verify_failed', draft, rev, costUsd, answers, makerUsage, makerActualModels, makerActualEvidence, makerReportedModel };
+      }
       // "Accept result with findings" is a stopping decision, not permission
       // for Camus to silently buy another maker call. Still run the cheapest
       // deterministic checks so their evidence survives; if red, terminate

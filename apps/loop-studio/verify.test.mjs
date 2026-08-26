@@ -32,6 +32,20 @@ import assert from 'node:assert/strict';
 import { runVerify, findUnsourcedStats, findComplianceHits, extractUrls, extractThresholdLines } from './lib/verify.mjs';
 import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateReportJson, replayRecoveryKind, terminalFailureBanner } from './public/run-ui-policy.mjs';
 
+// The internal routing campaign is executable configuration, not an informal
+// checklist. Its validator pins the cost/safety controls and refuses a smoke
+// arm assigned to a reviewer screen from the maker's own provider.
+{
+  const { loadModelEvalCampaign, validateModelEvalCampaign } = await import('./lib/model-eval-campaign.mjs');
+  const campaign = loadModelEvalCampaign();
+  assert.equal(campaign.controls.iterationPolicy, 'single_pass');
+  assert.equal(campaign.controls.optimizationOrder[0], 'quality_floor_pass_rate');
+  assert.ok(campaign.candidates.some((candidate) => candidate.id === 'gpt-luna' && candidate.model === 'gpt-5.6-luna'), 'Luna is an explicit simple/balanced candidate');
+  const invalid = structuredClone(campaign);
+  invalid.initialSmokeOrder[0].screen = 'sol-screen';
+  assert.throws(() => validateModelEvalCampaign(invalid), /non-independent screen/, 'an OpenAI maker cannot be screened by Sol');
+}
+
 // Workspace launch actions are user-facing controls too: the declared port
 // must be the port the command actually binds, or the action opens the wrong
 // server while claiming success on another endpoint.
@@ -701,7 +715,9 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   assert.deepEqual(usageFromClaudeResult({ modelUsage: { 'claude-sonnet-4-6': { inputTokens: 120, cacheReadInputTokens: 40, outputTokens: 30 } } }, 'sonnet'), {
     usage: { input_tokens: 120, cached_input_tokens: 40, output_tokens: 30 },
     modelActual: 'anthropic:claude-sonnet-4-6',
+    modelActualEvidence: 'observed_cli_event',
   }, 'Claude result usage and actual model identity survive without inferring effort');
+  assert.equal(usageFromClaudeResult({}, 'sonnet').modelActualEvidence, 'asserted_pin', 'a requested-model fallback is labeled as a pin, not an observed CLI identity');
   assert.equal(usageFromClaudeResult({ usage: { input_tokens: 999, output_tokens: 999 }, modelUsage: { 'claude-sonnet-4-6': { inputTokens: 120, outputTokens: 30 } } }, 'sonnet').usage.input_tokens, 120, 'aggregate and per-model usage are not double-counted');
 
   const marker = await searchKnowledge('anything', 4, () => {});
@@ -961,7 +977,7 @@ Members value practical progress over content volume [H1].
   const CLEAN_DRAFT = 'Notes.\n\nCommunity first, paid second.\n';
   const BAD_DRAFT = 'Notes.\n\nRetention rose 61% across cohorts.\n'; // uncited stat → deterministic fail
 
-  function harness({ claudeQueue, codexQueue, answerQueue, abortOnAsk = false, publish }) {
+  function harness({ claudeQueue, codexQueue, answerQueue, abortOnAsk = false, publish, iterationPolicy = 'iterative', evaluationProfile = null }) {
     const events = [];
     const prompts = { claude: [], codex: [] };
     const published = [];
@@ -1009,13 +1025,49 @@ Members value practical progress over content volume [H1].
       scratchDir: '.',
       receiptsDir: 'runs/_engine-test',
     };
-    const run = { id: 'engine-test', goal: 'test goal', lane: 'freeform', depth: 'quick', ground: false };
+    const run = { id: 'engine-test', goal: 'test goal', lane: 'freeform', depth: 'quick', ground: false, iterationPolicy, evaluationProfile };
     if (publish !== undefined) run.publish = publish;
     return { run: () => runLoop(run, ctx), events, prompts, published, review, abort };
   }
 
   const f = (severity, title) => ({ severity, title, detail: 'd', suggestion: 's' });
   const review = harness({ claudeQueue: [], codexQueue: [], answerQueue: [] }).review;
+
+  // Evaluation measures the frozen first pass. A revise verdict is retained,
+  // then deterministic verification runs on the untouched artifact: no repair,
+  // content answer, or extra review may make one arm more expensive than a peer.
+  {
+    const h = harness({
+      claudeQueue: ['- plan', CLEAN_DRAFT],
+      codexQueue: [review('REVISE', [f('high', 'First-pass gap')], ['Clarify the audience?'])],
+      answerQueue: [],
+      iterationPolicy: 'single_pass',
+      evaluationProfile: 'balanced',
+    });
+    const result = await h.run();
+    assert.equal(result.status, 'done_with_findings', 'a verified first pass retains the independent findings');
+    assert.equal(h.prompts.claude.length, 2, 'single-pass evaluation buys plan + make only');
+    assert.equal(h.prompts.codex.length, 1, 'single-pass evaluation buys one review only');
+    assert.equal(h.events.some((event) => event.type === '_asked'), false, 'reviewer content questions remain evidence, not changed input');
+  }
+
+  // Even a clean reviewer cannot trigger a deterministic repair in evaluation
+  // mode: a red first artifact is an observed failure, not an invitation to
+  // mutate the treatment after measurement.
+  {
+    const h = harness({
+      claudeQueue: ['- plan', BAD_DRAFT],
+      codexQueue: [review('APPROVED')],
+      answerQueue: [],
+      iterationPolicy: 'single_pass',
+      evaluationProfile: 'simple',
+    });
+    const result = await h.run();
+    assert.equal(result.status, 'verify_failed', 'deterministic red is terminal first-pass evidence');
+    assert.equal(h.prompts.claude.length, 2, 'no verify-fix call is purchased');
+    assert.equal(h.prompts.codex.length, 1, 'no closure review is purchased');
+    assert.equal(h.events.some((event) => event.type === '_asked'), false, 'evaluation failure needs no human override');
+  }
 
   // A deterministic provider refusal must not silently purchase an identical
   // second call. The operator can explicitly override, but stopping costs only
@@ -1086,6 +1138,10 @@ Members value practical progress over content volume [H1].
     const observedReviewEvent = h6.events.find((e) => e.type === 'review');
     assert.deepEqual(observedReviewEvent.usage, observedApproval.usage, 'review usage survives into the sealed event');
     assert.equal(observedReviewEvent.duration_ms, 4321, 'review wall-clock survives into the sealed event');
+    const { deriveEvidence: deriveObservedEvidence } = await import('./lib/evidence.mjs');
+    const observedRound = deriveObservedEvidence(h6.events).rounds[0];
+    assert.deepEqual(observedRound.usage, observedApproval.usage, 'review usage survives event-to-report derivation');
+    assert.equal(observedRound.duration_ms, 4321, 'review wall-clock survives event-to-report derivation');
 
     // C2: stuck (same title twice) → accept → done_with_findings
     const h7 = harness({
@@ -2886,6 +2942,7 @@ Myosin Learns is a live session. A person decides when the evidence is enough.
     writeModels({ maker: { backend: 'claude', model: 'claude-opus-4-8' }, reviewer: { backend: 'codex', model: 'gpt-5.4', effort: 'low' }, loop: { roundCap: 3 } });
     const pinnedSeats = seatCatalog();
     assert.ok(seatOffered(pinnedSeats.maker, 'claude', 'claude-opus-4-8'), 'the exact pinned Claude maker remains explicitly selectable');
+    assert.ok(seatOffered(pinnedSeats.reviewer, 'claude', 'claude-opus-4-8'), 'the same exact built-in Claude decision is selectable in the reverse seat');
     assert.ok(seatOffered(pinnedSeats.maker, 'claude', 'opus'), 'stable Claude aliases remain selectable beside the exact pin');
     assert.ok(!seatOffered(pinnedSeats.maker, 'claude', 'claude-unconfigured-exact'), 'no unrelated exact Claude id is invented');
 

@@ -43,6 +43,7 @@ import { reviewPrompt } from './lib/prompts.mjs';
 import { connectionFingerprint, getSharedTunnelManager } from './lib/ssh-tunnel.mjs';
 import { installTunnelLifecycle } from './lib/tunnel-lifecycle.mjs';
 import { createQualificationControl, createStudioControlPlane } from './lib/control-plane.mjs';
+import { loadModelEvalCampaign, modelEvalCampaignHash } from './lib/model-eval-campaign.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dirname, 'public');
@@ -51,6 +52,8 @@ const PUBLIC = join(__dirname, 'public');
 const RUNS_DIR = process.env.STUDIO_RUNS_DIR || join(__dirname, 'runs');
 const PORT = Number(process.env.PORT || 1913); // Camus, b. 1913
 const ENGINE = process.env.ENGINE === 'mock' ? 'mock' : 'live';
+const MODEL_EVAL_CAMPAIGN = loadModelEvalCampaign();
+const MODEL_EVAL_CAMPAIGN_HASH = modelEvalCampaignHash(MODEL_EVAL_CAMPAIGN);
 
 const runs = new Map(); // id -> { run, events, subscribers, answer, abort }
 
@@ -243,6 +246,10 @@ async function startRun({
   frozenKnowledge = null,
   toolPolicy = null,
   publish = false,
+  iterationPolicy = 'iterative',
+  evaluationProfile = null,
+  evaluationCampaignId = null,
+  evaluationConfigHash = null,
   displayGoal = null,
   experimentContext = null,
   questionBroker = null,
@@ -270,14 +277,16 @@ async function startRun({
   const models = recovery
     ? { maker: null, reviewer: null, loop: { roundCap: 0 }, recovery: true }
     : modelsSnapshot ? JSON.parse(JSON.stringify(modelsSnapshot)) : getModels();
+  if (!['iterative', 'single_pass'].includes(iterationPolicy)) throw new Error('iterationPolicy must be iterative or single_pass');
+  if (iterationPolicy === 'single_pass' && publish === true) throw new Error('single-pass evaluation cannot publish');
   const publishRequested = publish === true;
   const controlPlane = createStudioControlPlane({
     id, goal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd,
     models, recovery, publishRequested,
   });
-  const run = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, pairingView, frozenKnowledge, toolPolicy, publish: publishRequested, experimentContext, controlPlane };
+  const run = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, pairingView, frozenKnowledge, toolPolicy, publish: publishRequested, iterationPolicy, evaluationProfile, evaluationCampaignId, evaluationConfigHash, experimentContext, controlPlane };
   // The run exists on disk from second zero — a crash must not orphan it.
-  const runMetadata = () => ({ id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: run.idSalt, engine: ENGINE, models, pairingView, publishRequested, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, experimentContext, startedAt: run.startedAt });
+  const runMetadata = () => ({ id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: run.idSalt, engine: ENGINE, models, pairingView, publishRequested, iterationPolicy, evaluationProfile, evaluationCampaignId, evaluationConfigHash, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, experimentContext, startedAt: run.startedAt });
   await writeFile(join(dir, 'run.json'), JSON.stringify(runMetadata(), null, 2))
     .catch((err) => console.error(`[receipts] failed to write run.json for ${id}: ${err.message}`));
   const state = { run, events: [], subscribers: new Set(), answer: null, abort: new AbortController(), writeChain: Promise.resolve() };
@@ -393,7 +402,7 @@ async function startRun({
     })
     : null;
 
-  emit('run', { run: { id, goal: displayGoal ?? goal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, pairingView, recoveryOf: recovery?.sourceRunId ?? null, recovery: recovery ? { sourceRunId: recovery.sourceRunId ?? null, sourceReceiptId: recovery.sourceReceiptId ?? null, parkedSha: recovery.parkedSha ?? null, shaProvenance: recovery.shaProvenance ?? null } : null, engine: ENGINE, roundCap: models.loop.roundCap, experimentContext } });
+  emit('run', { run: { id, goal: displayGoal ?? goal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, pairingView, recoveryOf: recovery?.sourceRunId ?? null, recovery: recovery ? { sourceRunId: recovery.sourceRunId ?? null, sourceReceiptId: recovery.sourceReceiptId ?? null, parkedSha: recovery.parkedSha ?? null, shaProvenance: recovery.shaProvenance ?? null } : null, engine: ENGINE, roundCap: iterationPolicy === 'single_pass' ? 1 : models.loop.roundCap, iterationPolicy, evaluationProfile, evaluationCampaignId, evaluationConfigHash, experimentContext } });
   if (!gitOk) emit('log', { line: '⚠ git unavailable; codex reviews will run outside a git repo (different conditions than camus)' });
 
   // A recovery runs the host verifier and NOTHING else — including under the mock
@@ -472,7 +481,7 @@ async function startRun({
     // so a future result field named `models` can never overwrite the sealed pairing
     // (the same reason draft/deliverable are pinned after the spread). simulated is
     // pinned there too: a rehearsal receipt must SAY it is one, permanently.
-    const reportObject = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', experimentContext, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, draft: undefined, deliverable: run.lastMarkdown, evidence, evidencePack, evidencePackError, controlPlane: controlPlane.receipt(), controlRoute: terminalControlRoute, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt };
+    const reportObject = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, iterationPolicy, evaluationProfile, evaluationCampaignId, evaluationConfigHash, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', experimentContext, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, draft: undefined, deliverable: run.lastMarkdown, evidence, evidencePack, evidencePackError, controlPlane: controlPlane.receipt(), controlRoute: terminalControlRoute, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt };
     const report = JSON.stringify(reportObject, null, 2);
     try {
       await writeFile(join(dir, 'report.json'), report);
@@ -807,14 +816,21 @@ async function captureComparisonKnowledge({ goal, ground, retrieverModel, scratc
   });
 }
 
-async function startParallelComparison({ goal, acceptanceContract, lane, depth, ground, makerModels, reviewerModel, reviewerEffort, catalog, resumeExperiment = null, resumeSnapshot = null }) {
+async function startParallelComparison({ goal, acceptanceContract, lane, depth, ground, makerModels, reviewerModel, reviewerEffort, catalog, evaluationProfile = null, evaluationCampaignId = null, evaluationConfigHash = null, resumeExperiment = null, resumeSnapshot = null }) {
   const id = newId();
   const dir = join(RUNS_DIR, id);
   const scratchDir = join(dir, 'scratch');
   await mkdir(scratchDir, { recursive: true });
   const startedAt = Date.now();
   const modelsAtStart = getModels();
-  if (resumeExperiment) modelsAtStart.loop = { ...modelsAtStart.loop, roundCap: resumeExperiment.manifest.round_cap, source: 'resumed experiment manifest' };
+  const comparisonIterationPolicy = resumeExperiment?.manifest.round_cap === 1 ? 'single_pass'
+    : resumeExperiment ? 'iterative'
+      : 'single_pass';
+  modelsAtStart.loop = {
+    ...modelsAtStart.loop,
+    roundCap: resumeExperiment?.manifest.round_cap ?? 1,
+    source: resumeExperiment ? 'resumed experiment manifest' : 'single-pass comparison policy',
+  };
   const run = {
     id,
     goal,
@@ -824,6 +840,10 @@ async function startParallelComparison({ goal, acceptanceContract, lane, depth, 
     sourceLane: lane,
     depth,
     ground,
+    iterationPolicy: comparisonIterationPolicy,
+    evaluationProfile,
+    evaluationCampaignId,
+    evaluationConfigHash,
     status: 'running',
     startedAt,
     models: modelsAtStart,
@@ -858,6 +878,10 @@ async function startParallelComparison({ goal, acceptanceContract, lane, depth, 
     sourceLane: lane,
     depth,
     ground,
+    iterationPolicy: comparisonIterationPolicy,
+    evaluationProfile,
+    evaluationCampaignId,
+    evaluationConfigHash,
     engine: ENGINE,
     makerModels,
     reviewerModel,
@@ -896,7 +920,7 @@ async function startParallelComparison({ goal, acceptanceContract, lane, depth, 
     pumpQuestions();
   });
 
-  emit('run', { run: { id, goal: run.displayGoal, acceptanceContract, lane: 'comparison', sourceLane: lane, depth, ground, engine: ENGINE, arms: makerModels } });
+  emit('run', { run: { id, goal: run.displayGoal, acceptanceContract, lane: 'comparison', sourceLane: lane, depth, ground, engine: ENGINE, arms: makerModels, roundCap: modelsAtStart.loop.roundCap, iterationPolicy: comparisonIterationPolicy, evaluationProfile, evaluationCampaignId, evaluationConfigHash } });
   emit('stage', { name: 'ground', status: 'active', scope: 'comparison' });
 
   void (async () => {
@@ -923,7 +947,7 @@ async function startParallelComparison({ goal, acceptanceContract, lane, depth, 
           signal: state.abort.signal,
           emit,
         });
-        experiment = createParallelExperiment({ goal, acceptanceContract, lane, depth, roundCap: modelsAtStart.loop.roundCap, snapshot, makerModels, reviewerModel, reviewerEffort, catalog, createdAt: startedAt });
+        experiment = createParallelExperiment({ goal, acceptanceContract, lane, depth, roundCap: 1, snapshot, makerModels, reviewerModel, reviewerEffort, catalog, createdAt: startedAt });
       }
       await writeFile(join(dir, 'knowledge.json'), JSON.stringify(snapshot, null, 2));
       emit('knowledge_snapshot', { snapshotId: snapshot.snapshot_id, mode: snapshot.mode, itemCount: snapshot.items.length, privacy: snapshot.items.length ? 'internal' : 'none' });
@@ -992,6 +1016,10 @@ async function startParallelComparison({ goal, acceptanceContract, lane, depth, 
             frozenKnowledge: snapshot,
             toolPolicy: 'none',
             publish: false,
+            iterationPolicy: 'single_pass',
+            evaluationProfile,
+            evaluationCampaignId,
+            evaluationConfigHash,
             displayGoal: `${arm.arm_id} · ${maker}: ${goal}`,
             experimentContext: { experimentId: experiment.experiment_id, parentRunId: id, armId: arm.arm_id, knowledgeSnapshotId: snapshot.snapshot_id },
             questionBroker,
@@ -1038,7 +1066,7 @@ async function startParallelComparison({ goal, acceptanceContract, lane, depth, 
         snapshot = sealKnowledgeSnapshot({ query: goal, mode, items: [], retriever });
         await writeFile(join(dir, 'knowledge.json'), JSON.stringify(snapshot, null, 2)).catch((writeErr) => persistFail('knowledge.json', writeErr));
       }
-      experiment ??= createParallelExperiment({ goal, acceptanceContract, lane, depth, roundCap: modelsAtStart.loop.roundCap, snapshot, makerModels, reviewerModel, reviewerEffort, catalog, createdAt: startedAt });
+      experiment ??= createParallelExperiment({ goal, acceptanceContract, lane, depth, roundCap: 1, snapshot, makerModels, reviewerModel, reviewerEffort, catalog, createdAt: startedAt });
       const failed = experiment.manifest.arms.map((arm) => ({
         arm_id: arm.arm_id, run_id: null, status: state.abort.signal.aborted ? 'stopped' : 'infra_failed', artifact_id: null, receipt_id: null,
         executor_actual: null, auditor_actual: null, quality_floor: 'unknown',
@@ -1063,6 +1091,10 @@ async function startParallelComparison({ goal, acceptanceContract, lane, depth, 
       sourceLane: lane,
       depth,
       ground,
+      iterationPolicy: comparisonIterationPolicy,
+      evaluationProfile,
+      evaluationCampaignId,
+      evaluationConfigHash,
       engine: ENGINE,
       simulated: ENGINE === 'mock',
       status,
@@ -1130,6 +1162,25 @@ const BIND = process.env.STUDIO_BIND || '127.0.0.1';
 const SESSION_TOKEN = randomBytes(16).toString('hex');
 const MAX_ACTIVE_RUNS = Number(process.env.STUDIO_MAX_ACTIVE || 3);
 const MAX_GOAL_CHARS = 2000;
+const EVALUATION_PROFILES = new Set(MODEL_EVAL_CAMPAIGN.profiles.map((profile) => profile.id));
+function evaluationBinding(body, evaluationProfile, { goal, acceptanceContract, lane, depth, ground }) {
+  const suppliedId = body.evaluationCampaignId == null ? null : String(body.evaluationCampaignId).trim();
+  const suppliedHash = body.evaluationConfigHash == null ? null : String(body.evaluationConfigHash).trim();
+  if (!evaluationProfile) {
+    return suppliedId === null && suppliedHash === null
+      ? { ok: true, id: null, hash: null }
+      : { ok: false, error: 'evaluation campaign identity requires an evaluationProfile' };
+  }
+  if (suppliedId !== MODEL_EVAL_CAMPAIGN.id || suppliedHash !== MODEL_EVAL_CAMPAIGN_HASH) {
+    return { ok: false, error: 'the evaluation campaign id or config hash is stale; reload the tracked campaign before spending' };
+  }
+  const profile = MODEL_EVAL_CAMPAIGN.profiles.find((entry) => entry.id === evaluationProfile);
+  if (!profile || goal !== profile.goal || acceptanceContract !== profile.acceptanceContract
+      || lane !== 'freeform' || depth !== profile.depth || ground !== MODEL_EVAL_CAMPAIGN.controls.ground) {
+    return { ok: false, error: 'the evaluation goal, contract, lane, depth, or grounding differs from the registered profile' };
+  }
+  return { ok: true, id: suppliedId, hash: suppliedHash };
+}
 // The acceptance contract is deliberately NOT length-capped. A 2,000-char
 // rejection forced operators to compress or weaken the very thing the auditor is
 // held to (field report 2026-08-04, a real game task whose contract was longer
@@ -1403,6 +1454,12 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, pairingPresentation({ maker, reviewer }));
     }
 
+    if (path === '/api/evaluation-campaign' && req.method === 'GET') {
+      // Public local configuration only: no credentials, qualification
+      // receipts, operator choices, or run artifacts enter this document.
+      return json(res, 200, { ...MODEL_EVAL_CAMPAIGN, configHash: MODEL_EVAL_CAMPAIGN_HASH });
+    }
+
     if (path === '/api/config' && req.method === 'GET') {
       const m = getModels();
       const seats = admissionCatalog();
@@ -1421,6 +1478,12 @@ const server = http.createServer(async (req, res) => {
         seats,
         templates: seats.templates,
         plannedProtocols: seats.plannedProtocols,
+        evaluationCampaign: {
+          id: MODEL_EVAL_CAMPAIGN.id,
+          configHash: MODEL_EVAL_CAMPAIGN_HASH,
+          standing: MODEL_EVAL_CAMPAIGN.standing,
+          profiles: MODEL_EVAL_CAMPAIGN.profiles.map(({ id, depth, wallBudgetMinutes, description }) => ({ id, depth, wallBudgetMinutes, description })),
+        },
         pairingPresentation: pairingPresentation({ maker: currentMaker, reviewer: currentReviewer }),
         connections: listConnections(),
         envOverrides: ['CLAUDE_MODEL', 'CODEX_MODEL', 'CODEX_EFFORT', 'ROUND_CAP'].filter((k) => process.env[k] !== undefined),
@@ -1495,6 +1558,14 @@ const server = http.createServer(async (req, res) => {
       if (acceptanceContract.length < 12) return json(res, 400, { error: 'Say what must be true for you to trust the result. This contract is shared by every arm.' });
       const lane = LANES[body.lane] ? body.lane : 'freeform';
       if (lane === 'build') return json(res, 400, { error: 'parallel execution currently supports research lanes, not repository mutation' });
+      const evaluationProfile = body.evaluationProfile == null ? null : String(body.evaluationProfile).trim();
+      if (evaluationProfile !== null && !EVALUATION_PROFILES.has(evaluationProfile)) {
+        return json(res, 400, { error: 'evaluationProfile must be simple, balanced, or difficult' });
+      }
+      const depth = body.depth === 'standard' ? 'standard' : 'quick';
+      const ground = body.ground === true;
+      const evaluation = evaluationBinding(body, evaluationProfile, { goal, acceptanceContract, lane, depth, ground });
+      if (!evaluation.ok) return json(res, 400, { error: evaluation.error });
       const catalog = modelCatalog();
       const makerModels = Array.isArray(body.makerModels) ? body.makerModels.map((model) => String(model).trim()).filter(Boolean) : [];
       if (makerModels.length < 2 || makerModels.length > 3 || new Set(makerModels).size !== makerModels.length) return json(res, 400, { error: 'choose two or three distinct executor models' });
@@ -1512,12 +1583,15 @@ const server = http.createServer(async (req, res) => {
           goal,
           acceptanceContract,
           lane,
-          depth: body.depth === 'standard' ? 'standard' : 'quick',
-          ground: body.ground === true,
+          depth,
+          ground,
           makerModels,
           reviewerModel,
           reviewerEffort,
           catalog,
+          evaluationProfile,
+          evaluationCampaignId: evaluation.id,
+          evaluationConfigHash: evaluation.hash,
         });
         return json(res, 201, comparison);
       } catch (err) {
@@ -1538,6 +1612,29 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: 'publish must be true or false; external publication is never inferred' });
       }
       const lane = body.lane === 'build' ? 'build' : LANES[body.lane] ? body.lane : 'freeform';
+      const evaluationProfile = body.evaluationProfile == null ? null : String(body.evaluationProfile).trim();
+      if (evaluationProfile !== null && !EVALUATION_PROFILES.has(evaluationProfile)) {
+        return json(res, 400, { error: 'evaluationProfile must be simple, balanced, or difficult' });
+      }
+      const depth = body.depth === 'standard' ? 'standard' : 'quick';
+      const ground = body.ground === true;
+      const evaluation = evaluationBinding(body, evaluationProfile, { goal, acceptanceContract, lane, depth, ground });
+      if (!evaluation.ok) return json(res, 400, { error: evaluation.error });
+      const iterationPolicy = body.iterationPolicy == null
+        ? (evaluationProfile ? 'single_pass' : 'iterative')
+        : String(body.iterationPolicy).trim();
+      if (!['iterative', 'single_pass'].includes(iterationPolicy)) {
+        return json(res, 400, { error: 'iterationPolicy must be iterative or single_pass' });
+      }
+      if (evaluationProfile && iterationPolicy !== 'single_pass') {
+        return json(res, 400, { error: 'an evaluationProfile requires iterationPolicy single_pass' });
+      }
+      if (iterationPolicy === 'single_pass' && body.publish === true) {
+        return json(res, 400, { error: 'single-pass evaluation never publishes; run an ordinary loop for publication' });
+      }
+      if (lane === 'build' && iterationPolicy === 'single_pass') {
+        return json(res, 400, { error: 'single-pass evaluation currently measures words lanes; Build uses the CLI eval ledger over real tasks' });
+      }
       if (lane === 'build' && body.publish === true) {
         return json(res, 400, { error: 'Build produces a local branch; Hivemind artifact publication applies only to words lanes' });
       }
@@ -1717,7 +1814,19 @@ const server = http.createServer(async (req, res) => {
       if (!admission.ok) return json(res, 429, { error: `${admission.used} runs are already active or starting — the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}.` });
       try {
         if (targetToplevel) activeBuilds.add(targetToplevel);
-        const id = await startRun({ goal, acceptanceContract, lane, depth: body.depth === 'standard' ? 'standard' : 'quick', ground: !!body.ground, targetPath, targetToplevel, modelsSnapshot, frozenBackends, pairingView, verifyCmd, publish: body.publish === true });
+        const id = await startRun({
+          goal, acceptanceContract, lane,
+          depth,
+          ground, targetPath, targetToplevel, modelsSnapshot, frozenBackends, pairingView, verifyCmd,
+          publish: body.publish === true,
+          iterationPolicy,
+          evaluationProfile,
+          evaluationCampaignId: evaluation.id,
+          evaluationConfigHash: evaluation.hash,
+          // Fair evaluation arms receive no live tools. The frozen brief is the
+          // complete input for every maker, including built-in Claude.
+          toolPolicy: iterationPolicy === 'single_pass' ? 'none' : null,
+        });
         return json(res, 201, { id });
       } catch (err) {
         if (targetToplevel) activeBuilds.delete(targetToplevel);

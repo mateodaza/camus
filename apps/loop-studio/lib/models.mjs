@@ -944,6 +944,14 @@ export function seatCatalog() {
   // them from the live backend.) So fold the standing seat mapping onto the one
   // catalog entry that matches the seat's exact backend+model.
   const seatDecisionFor = (seatName) => (seatName === 'maker' ? file.maker : file.reviewer);
+  // Claude exposes no model catalog. An exact id deliberately pinned in either
+  // standing seat is nevertheless an operator-owned declaration for the same
+  // built-in backend, which supports both seats. Offer that finite union in
+  // both directions so an explicit reversed pairing (for example Luna maker →
+  // pinned Opus reviewer) is not refused while still inventing no model ids.
+  const pinnedClaudeModels = [file.maker, file.reviewer]
+    .filter((seat) => seat?.backend === 'claude' && typeof seat.model === 'string' && seat.model)
+    .map((seat) => seat.model);
   const entriesFor = (seatName) => {
     const seatDecision = seatDecisionFor(seatName);
     const seatBackendName = seatDecision?.backend || (seatName === 'maker' ? 'claude' : 'codex');
@@ -951,16 +959,9 @@ export function seatCatalog() {
     for (const backend of Object.values(backends)) {
       if (!backend.seats.includes(seatName)) continue;
       // Claude exposes stable aliases but no machine-readable model catalog.
-      // A pinned standing decision is nevertheless an operator-owned exact
-      // model choice and must remain selectable for an explicit one-run pairing.
-      // Without this union the settings panel can show claude-opus-4-8 as the
-      // current seat while POST /api/runs refuses that exact same seat as
-      // "not offered". Keep aliases for convenient future choices and add only
-      // the standing exact id; never invent other Claude ids.
-      const claudeModels = backend.name === seatBackendName
-        && typeof seatDecision?.model === 'string' && seatDecision.model
-        ? [...new Set([...makerAliases, seatDecision.model])]
-        : makerAliases;
+      // Keep aliases for convenient future choices and add only exact ids from
+      // recorded Claude decisions; never infer unrelated releases.
+      const claudeModels = [...new Set([...makerAliases, ...pinnedClaudeModels])];
       const models = backend.name === 'claude' ? claudeModels
         : backend.name === 'codex' ? codex.models
           : backend.models;

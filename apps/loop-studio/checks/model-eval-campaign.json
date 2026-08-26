@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 1,
+  "id": "studio-routing-tiers-2026-08-26-v3",
+  "standing": "exploratory_only",
+  "purpose": "Measure candidate model pairings for Camus simple, balanced, and difficult words tasks. This is internal routing evidence; it never removes explicit user model choice or silently changes public defaults.",
+  "controls": {
+    "iterationPolicy": "single_pass",
+    "toolPolicy": "none",
+    "publish": false,
+    "ground": false,
+    "minimumExplorationTrialsPerArm": 3,
+    "minimumRoutingTrialsPerArm": 5,
+    "optimizationOrder": [
+      "quality_floor_pass_rate",
+      "median_duration_ms",
+      "median_total_tokens"
+    ],
+    "qualityFloorAudit": "independent_clean",
+    "qualityFloor": [
+      "deterministic verification passes",
+      "the independent review is clean: no findings, every contract criterion met, and every claim supported or not applicable",
+      "no human content answer or override was used"
+    ],
+    "promotionRule": "No automatic routing or default change. After at least five trials per complete pairing and a passing quality floor, Camus may present a task-class recommendation with its evidence and let the user choose."
+  },
+  "independence": {
+    "sameVendorReview": "advisory_only",
+    "rankingScope": "Rank within one judge screen only. Do not combine screens or claim a global winner until both judges are calibrated on the same human-labeled artifact set.",
+    "judgeScreens": [
+      {
+        "id": "sol-screen",
+        "reviewer": {
+          "backend": "codex",
+          "model": "gpt-5.6-sol",
+          "effort": "high"
+        },
+        "eligibleMakerProviders": [
+          "anthropic",
+          "xai",
+          "alibaba"
+        ]
+      },
+      {
+        "id": "opus-screen",
+        "reviewer": {
+          "backend": "claude",
+          "model": "claude-opus-4-8"
+        },
+        "eligibleMakerProviders": [
+          "openai"
+        ]
+      }
+    ]
+  },
+  "candidates": [
+    {
+      "id": "opus-4-8",
+      "provider": "anthropic",
+      "backend": "claude",
+      "model": "claude-opus-4-8",
+      "priority": [
+        "balanced",
+        "difficult"
+      ]
+    },
+    {
+      "id": "gpt-luna",
+      "provider": "openai",
+      "backend": "codex",
+      "model": "gpt-5.6-luna",
+      "priority": [
+        "simple",
+        "balanced"
+      ]
+    },
+    {
+      "id": "gpt-sol",
+      "provider": "openai",
+      "backend": "codex",
+      "model": "gpt-5.6-sol",
+      "priority": [
+        "difficult"
+      ]
+    },
+    {
+      "id": "grok-4-6",
+      "provider": "xai",
+      "backend": "xai",
+      "model": "grok-4.6",
+      "priority": [
+        "simple",
+        "balanced",
+        "difficult"
+      ]
+    },
+    {
+      "id": "qwen-a95b",
+      "provider": "alibaba",
+      "backend": "dashscope_qwen",
+      "model": "qwen3.8-2.4t-a95b",
+      "priority": [
+        "balanced",
+        "difficult"
+      ]
+    },
+    {
+      "id": "qwen-27b",
+      "provider": "alibaba",
+      "backend": "dashscope_qwen",
+      "model": "qwen3.8-27b",
+      "priority": [
+        "simple"
+      ]
+    }
+  ],
+  "profiles": [
+    {
+      "id": "simple",
+      "depth": "quick",
+      "wallBudgetMinutes": 8,
+      "description": "Short, fully specified transformation with exact structure and no external knowledge.",
+      "goal": "Using only the supplied specification, write a concise go/no-go release checklist for a browser publication setting. Behavior: the setting defaults off; the control is visible before submission; the value is stored locally; network publication occurs only when the setting is enabled. Required owner mapping: Release owns default-off and publication gating; Product owns visible opt-in; Engineering owns local persistence. Required evidence contexts, in the same order: a fresh untouched browser profile; the pre-submission screen; the saved setting after a page reload; a network trace with the setting first off and then on. Return one title, exactly four checklist rows, and a final GO/NO-GO rule. Do not invent product behavior.",
+      "acceptanceContract": "The output has one title and exactly four checklist rows. Every row explicitly names Owner, Evidence, and Pass condition. It uses the supplied owner mapping and evidence context for each corresponding behavior. Each pass condition states the observable required outcome instead of merely repeating the row label or evidence cell. The rows separately test default-off behavior, visible opt-in before submission, local persistence, and publication only when enabled. The output ends with an explicit GO/NO-GO rule. It contains no URLs, external claims, or product behavior beyond the supplied specification."
+    },
+    {
+      "id": "balanced",
+      "depth": "quick",
+      "wallBudgetMinutes": 15,
+      "description": "Product and architecture judgment with several constraints, but no novel research or repository mutation.",
+      "goal": "Design a concise model-selection policy for an agent product that supports explicit user choice while learning which complete maker/reviewer pairings work best for simple, balanced, and difficult tasks. Quality and velocity have equal product importance, but quality is a hard floor. The policy must use bounded A/B exploration, independent review, deterministic checks where possible, and transparent evidence. Do not recommend automatic routing yet.",
+      "acceptanceContract": "The policy defines simple, balanced, and difficult task classes. It treats deterministic verification and independent review as a quality floor before comparing latency or tokens. It specifies a bounded exploration minimum and retains failed trials. It explains how same-vendor review is treated. It preserves explicit user choice and prohibits silent default changes or automatic routing at this stage. It names the evidence shown with any recommendation and distinguishes local task-class evidence from a universal model claim."
+    },
+    {
+      "id": "difficult",
+      "depth": "standard",
+      "wallBudgetMinutes": 30,
+      "description": "Multi-agent control-plane architecture under safety, recovery, privacy, cost, and evidence constraints.",
+      "goal": "Write an architecture decision record for a multi-provider agent orchestrator whose goal is high quality at materially lower wall time. Subagents may fail, disagree, exhaust a budget, or return malformed results; the orchestrator may restart; model providers have different identity and tool capabilities; and internal orchestration data must not leak into the target project. The design must include risk-based human checkpoints, end-to-end traceability, calibrated evaluation, and resumable state. Choose the smallest useful agent topology.",
+      "acceptanceContract": "The ADR contains Context, Decision, Failure recovery, Safety and privacy controls, Evaluation, Human checkpoints, Observability, Cost controls, and Rejected alternatives. It distinguishes deterministic orchestration from semantic model decisions. It defines idempotent subagent units, result validation, explicit conflict handling, and checkpointed orchestrator state. It places input screening, output screening, and tool authorization at distinct boundaries with named fail directions. It prevents Camus-internal prompts, traces, credentials, and receipts from entering the target project. It propagates one trace identifier without storing secrets. It uses code-based grading before calibrated independent LLM judging and human review. It routes human review by stakes and reversibility rather than volume. It includes bounded budgets and a measurable stop rule."
+    }
+  ],
+  "initialSmokeOrder": [
+    {
+      "profile": "simple",
+      "screen": "opus-screen",
+      "maker": "gpt-luna"
+    },
+    {
+      "profile": "simple",
+      "screen": "sol-screen",
+      "maker": "qwen-27b"
+    },
+    {
+      "profile": "simple",
+      "screen": "sol-screen",
+      "maker": "grok-4-6"
+    },
+    {
+      "profile": "simple",
+      "screen": "sol-screen",
+      "maker": "opus-4-8"
+    }
+  ]
+}

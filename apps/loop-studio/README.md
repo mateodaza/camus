@@ -24,7 +24,7 @@ explicit opt-in and is checked again immediately before the external call. These
 records sit beside the immutable evidence pack, so control evidence can accumulate without
 silently changing a published receipt schema.
 
-**Compare & Learn now has two evidence-preserving modes.** **Re-audit** freezes a new auditor configuration over an unchanged artifact: no maker, no retrieval, the same `artifact_id`, and a new `receipt_id`. **Compare executors** freezes one goal, acceptance contract, task/depth controls, round cap, current model catalog, shared reviewer, and content-addressed knowledge snapshot before starting two or three concurrent arms. Every arm reads the same local snapshot, cannot retrieve live knowledge or publish, and keeps its own evidence pack. The parent `experiment.v2` receipt retains every success, quality-floor failure, infrastructure failure, and human stop; it records actual identities and available usage without treating requested effort as proven. Fallback is `none`. Recovery reconstructs sealed children and marks interrupted arms failed instead of silently rerunning them. Rehearsal exercises the full UX but cannot clear the independent quality floor. This execution slice deliberately names no winner; blinded cross-arm judgment is next. Direction: [docs/COMPARE-AND-LEARN-DIRECTION.md](../../docs/COMPARE-AND-LEARN-DIRECTION.md).
+**Compare & Learn now has two evidence-preserving modes.** **Re-audit** freezes a new auditor configuration over an unchanged artifact: no maker, no retrieval, the same `artifact_id`, and a new `receipt_id`. **Compare executors** freezes one goal, acceptance contract, task/depth controls, current model catalog, shared reviewer, and content-addressed knowledge snapshot before starting two or three concurrent arms. Each arm buys exactly one draft and one review: no tools, repair, re-review, content answer, or publication can give one arm extra attempts. Every arm keeps its own evidence pack. The parent `experiment.v2` receipt retains every success, quality-floor failure, infrastructure failure, and human stop; it records actual identities and available usage without treating requested effort as proven. Fallback is `none`. Recovery reconstructs sealed children and marks interrupted arms failed instead of silently rerunning them. Rehearsal exercises the full UX but cannot clear the independent quality floor. Direction: [docs/COMPARE-AND-LEARN-DIRECTION.md](../../docs/COMPARE-AND-LEARN-DIRECTION.md).
 
 ## Quickstart
 
@@ -52,6 +52,31 @@ The setup is guided from inside the page. One command starts the studio (`node s
 ## Models are decisions
 
 Every model is named explicitly on every call (`claude --model`, `codex -m`, or the configured endpoint) — **account and CLI defaults are never reachable.** [checks/models.json](checks/models.json) supplies tracked public defaults; `~/.camus/studio/models.json` is the mutable standing decision record once Settings has saved a choice. Per-run launch choices and environment overrides remain more explicit and win; `--doctor` and the UI status pill always show what's pinned.
+
+### Internal routing evaluations
+
+The tracked [model-eval campaign](checks/model-eval-campaign.json) measures complete pairings on
+simple, balanced, and difficult words tasks without changing what users may choose. An evaluation
+arm is always `single_pass`, ungrounded, tool-free, local-only, and publication-off. Quality is the
+first gate; only pairings whose deterministic verification and independent clean review pass may
+be compared on wall time and observed tokens.
+
+Run one arm at a time against an already-running live Studio:
+
+```bash
+npm run eval:model -- --list
+npm run eval:model -- --profile simple --candidate gpt-luna
+npm run eval:model -- --profile simple --candidate qwen-27b --json
+```
+
+One command starts exactly one arm and stops it at the profile's registered wall budget. Provider
+credentials remain in the Studio process; the evaluator reads none. The first campaign includes
+Opus 4.8, GPT-5.6 Luna, GPT-5.6 Sol, Grok 4.6, Qwen A95B, and Qwen 27B. Luna and Sol are reviewed
+under the Opus screen; Anthropic, xAI, and Alibaba makers share the Sol screen. Results are ranked
+only within one screen until both judges are calibrated on the same human-labeled artifacts, so a
+reviewer's preference cannot become a fake global model winner. At least five trials per complete
+pairing are required before Camus may present a task-class routing recommendation, and even then
+the user decides.
 
 ### Any model in either seat
 
