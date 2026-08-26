@@ -93,7 +93,8 @@ may present a task-class recommendation, and even then the user decides.
 
 `--summary` reads local sealed reports without launching a model. It includes only the active
 campaign hash, groups results within one judge screen, shows case coverage and quality-first
-economics, and reports why a group is still exploratory. It never selects a winner or changes a
+economics, distinguishes strict clean-floor passes from approved artifacts with caveats and
+material findings, and reports why a group is still exploratory. It never selects a winner or changes a
 default; stale generations and rehearsal receipts are ignored rather than pooled.
 
 ### Any model in either seat

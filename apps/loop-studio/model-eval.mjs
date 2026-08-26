@@ -159,9 +159,13 @@ if (args.summary) {
       screen: group.screen,
       cases: `${group.distinctCases.length}/${group.requiredDistinctCases}`,
       floor: `${group.qualityFloorPasses}/${group.trials}`,
+      approved: `${group.approvedTrials}/${group.reviewedTrials}`,
+      material_red: group.materialFindingTrials,
       precheck_red: group.deterministicPrecheckFailures,
       median_wall_ms: group.medianWallDurationMs,
-      maker_in: group.medianMakerInputTokens,
+      maker_ms: group.medianMakerDurationMs,
+      judge_ms: group.medianReviewerDurationMs,
+      total_io: group.medianTotalObservedTokens,
       standing: group.recommendationStanding,
     })));
     if (summary.ignoredReports || summary.unreadableReports) {

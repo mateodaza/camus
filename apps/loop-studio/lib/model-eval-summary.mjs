@@ -18,6 +18,16 @@ function usage(rows, key) {
   return values.length ? values.reduce((total, value) => total + value, 0) : null;
 }
 
+function duration(rows) {
+  const values = (rows ?? []).map((row) => row?.duration_ms).filter((value) => Number.isInteger(value) && value >= 0);
+  return values.length ? values.reduce((total, value) => total + value, 0) : null;
+}
+
+function sumKnown(values) {
+  const observed = values.filter((value) => Number.isInteger(value) && value >= 0);
+  return observed.length ? observed.reduce((total, value) => total + value, 0) : null;
+}
+
 function requestedSeat(report, role) {
   const seat = report?.models?.[role];
   return seat?.backend && seat?.model ? `${seat.backend}:${seat.model}` : null;
@@ -66,6 +76,12 @@ export function summarizeEvaluationReports(campaign, configHash, reports, calibr
     const floorPass = precheck === true && humanInterventions === 0 && qualityFloor(report.evidencePack);
     const makerRows = report.makerUsage ?? [];
     const reviewRows = report.evidence?.rounds ?? [];
+    const latestReview = reviewRows.at(-1) ?? null;
+    const findings = latestReview?.findings ?? [];
+    const makerInputTokens = usage(makerRows, 'input_tokens');
+    const makerOutputTokens = usage(makerRows, 'output_tokens');
+    const reviewerInputTokens = usage(reviewRows, 'input_tokens');
+    const reviewerOutputTokens = usage(reviewRows, 'output_tokens');
     groups.get(key).rows.push({
       runId: report.id,
       caseId: caseDef.id,
@@ -73,13 +89,18 @@ export function summarizeEvaluationReports(campaign, configHash, reports, calibr
       precheck,
       floorPass,
       audit: report.statuses?.audit ?? null,
-      findingCount: reviewRows.at(-1)?.findings?.length ?? null,
+      reviewVerdict: latestReview?.verdict ?? null,
+      findingCount: latestReview ? findings.length : null,
+      materialFindingCount: findings.filter((finding) => ['medium', 'high'].includes(finding.severity)).length,
       humanInterventions,
       wallDurationMs: Number.isFinite(report.endedAt) && Number.isFinite(report.startedAt) ? report.endedAt - report.startedAt : null,
-      makerInputTokens: usage(makerRows, 'input_tokens'),
-      makerOutputTokens: usage(makerRows, 'output_tokens'),
-      reviewerInputTokens: usage(reviewRows, 'input_tokens'),
-      reviewerOutputTokens: usage(reviewRows, 'output_tokens'),
+      makerDurationMs: duration(makerRows),
+      reviewerDurationMs: duration(reviewRows),
+      makerInputTokens,
+      makerOutputTokens,
+      reviewerInputTokens,
+      reviewerOutputTokens,
+      totalObservedTokens: sumKnown([makerInputTokens, makerOutputTokens, reviewerInputTokens, reviewerOutputTokens]),
       makerActuals: actualIdentities(report, 'maker'),
       reviewerActuals: actualIdentities(report, 'reviewer'),
     });
@@ -115,12 +136,18 @@ export function summarizeEvaluationReports(campaign, configHash, reports, calibr
       deterministicPrecheckFailures: rows.filter((row) => row.precheck === false).length,
       trialsWithHumanIntervention: rows.filter((row) => row.humanInterventions > 0).length,
       reviewedTrials: rows.filter((row) => row.findingCount !== null).length,
+      approvedTrials: rows.filter((row) => row.reviewVerdict === 'APPROVED').length,
+      approvedWithLowOnlyTrials: rows.filter((row) => row.reviewVerdict === 'APPROVED' && row.materialFindingCount === 0).length,
+      materialFindingTrials: rows.filter((row) => row.materialFindingCount > 0).length,
       trialsWithFindings: rows.filter((row) => (row.findingCount ?? 0) > 0).length,
       medianWallDurationMs: median(rows.map((row) => row.wallDurationMs)),
+      medianMakerDurationMs: median(rows.map((row) => row.makerDurationMs)),
+      medianReviewerDurationMs: median(rows.map((row) => row.reviewerDurationMs)),
       medianMakerInputTokens: median(rows.map((row) => row.makerInputTokens)),
       medianMakerOutputTokens: median(rows.map((row) => row.makerOutputTokens)),
       medianReviewerInputTokens: median(rows.map((row) => row.reviewerInputTokens)),
       medianReviewerOutputTokens: median(rows.map((row) => row.reviewerOutputTokens)),
+      medianTotalObservedTokens: median(rows.map((row) => row.totalObservedTokens)),
       makerActuals: [...new Set(rows.flatMap((row) => row.makerActuals))].sort(),
       reviewerActuals: [...new Set(rows.flatMap((row) => row.reviewerActuals))].sort(),
       runs: rows,

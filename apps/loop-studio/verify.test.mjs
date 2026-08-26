@@ -87,7 +87,7 @@ import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateRep
     evidencePack: { green },
     evidence: {
       verify: [{ source: 'evaluation_case_precheck', pass: true }],
-      rounds: [{ reviewerIdentity: 'anthropic:claude-opus-4-8', findings: [], usage: { input_tokens: 20, output_tokens: 3 } }],
+      rounds: [{ verdict: 'APPROVED', reviewerIdentity: 'anthropic:claude-opus-4-8', findings: [], usage: { input_tokens: 20, output_tokens: 3 }, duration_ms: 40 }],
     },
     ...overrides,
   });
@@ -108,7 +108,12 @@ import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateRep
   assert.equal(clean.groups[0].trials, 3);
   assert.deepEqual(clean.groups[0].distinctCases, simple.cases.map((evaluationCase) => evaluationCase.id).sort());
   assert.equal(clean.groups[0].qualityFloorPasses, 3);
+  assert.equal(clean.groups[0].approvedTrials, 3);
+  assert.equal(clean.groups[0].materialFindingTrials, 0);
   assert.equal(clean.groups[0].medianWallDurationMs, 200);
+  assert.equal(clean.groups[0].medianMakerDurationMs, null);
+  assert.equal(clean.groups[0].medianReviewerDurationMs, 40);
+  assert.equal(clean.groups[0].medianTotalObservedTokens, 35);
   assert.equal(clean.groups[0].recommendationStanding, 'uncalibrated_judge', 'a complete clean screen cannot outrun judge calibration');
 
   const withHumanAnswer = summarizeEvaluationReports(campaign, configHash, [
