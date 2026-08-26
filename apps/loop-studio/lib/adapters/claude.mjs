@@ -87,11 +87,14 @@ export function claudeFailureDiagnostic({ stderr = '', stdout = '', resultEvent 
 // known-safe names closes them all by construction, so we never inspect or log
 // any value.
 //
-//   - ANTHROPIC_API_KEY is direct API-key auth; CLAUDE_CODE_OAUTH_TOKEN and its
-//     refresh/scopes companions are the documented automation credentials
-//     (https://code.claude.com/docs/en/env-vars). These are the seat's OWN auth
-//     and the ONLY credentials forwarded — never ANTHROPIC_AUTH_TOKEN, which
-//     points at a gateway/proxy.
+//   - ANTHROPIC_API_KEY is direct pay-per-use API auth and is deliberately NOT
+//     forwarded. The built-in Claude backend is `vendor_managed`: it should use
+//     the operator's Claude Code login (macOS Keychain through HOME), not let an
+//     unrelated shell key silently override Max/subscription billing.
+//     CLAUDE_CODE_OAUTH_TOKEN and its refresh/scopes companions are the
+//     documented subscription automation credentials and remain the only auth
+//     variables forwarded — never ANTHROPIC_AUTH_TOKEN, which points at a
+//     gateway/proxy.
 //   - CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST is deliberately NOT forwarded or
 //     injected. Current Claude Code treats it as provider-hosted mode and stops
 //     consulting the macOS Keychain, so a valid claude.ai Max login becomes
@@ -101,7 +104,6 @@ export function claudeFailureDiagnostic({ stderr = '', stdout = '', resultEvent 
 //     It is always overwritten to the literal "1", never inherited.
 const CLAUDE_ENV_PASS_SET = [
   'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'LANG', 'LC_ALL', 'LC_CTYPE',
-  'ANTHROPIC_API_KEY',
   'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_REFRESH_TOKEN', 'CLAUDE_CODE_OAUTH_SCOPES',
 ];
 export function claudeDirectEnv(parentEnv = process.env) {

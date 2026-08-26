@@ -31,20 +31,21 @@ import { getSharedTunnelManager } from '../ssh-tunnel.mjs';
 // 1,200–1,800-word deliverable. These are output ceilings, not targets.
 const MAKER_BUDGETS = {
   quick: {
-    plan: { timeoutMs: 90_000, maxTokens: 1_024 },
-    ground: { timeoutMs: 180_000, maxTokens: 1_536 },
-    make: { timeoutMs: 240_000, maxTokens: 4_096 },
-    fix: { timeoutMs: 240_000, maxTokens: 4_096 },
+    plan: { timeoutMs: 90_000, maxTokens: 1_024, thinkingTokens: 256 },
+    ground: { timeoutMs: 180_000, maxTokens: 1_536, thinkingTokens: 384 },
+    make: { timeoutMs: 240_000, maxTokens: 4_096, thinkingTokens: 1_024 },
+    fix: { timeoutMs: 240_000, maxTokens: 4_096, thinkingTokens: 1_024 },
   },
   standard: {
-    plan: { timeoutMs: 120_000, maxTokens: 1_536 },
-    ground: { timeoutMs: 300_000, maxTokens: 2_048 },
-    make: { timeoutMs: 420_000, maxTokens: 6_144 },
-    fix: { timeoutMs: 420_000, maxTokens: 6_144 },
+    plan: { timeoutMs: 120_000, maxTokens: 1_536, thinkingTokens: 384 },
+    ground: { timeoutMs: 300_000, maxTokens: 2_048, thinkingTokens: 512 },
+    make: { timeoutMs: 420_000, maxTokens: 6_144, thinkingTokens: 1_536 },
+    fix: { timeoutMs: 420_000, maxTokens: 6_144, thinkingTokens: 1_536 },
   },
 };
 const REVIEW_TIMEOUT_MS = 360_000;
 const REVIEW_MAX_TOKENS = 6_144;
+const REVIEW_THINKING_TOKENS = 1_536;
 const IDLE_MS = () => Number(process.env.OPENAI_COMPAT_IDLE_MS || 120_000);
 
 export function makerRequestBudget(stage = 'make', depth = 'quick') {
@@ -73,7 +74,7 @@ function redactSecret(message, secretValue) {
 
 // One SSE stream in, { text, usage, responseModel } out — or a thrown Error
 // whose .code says which kill path fired (abort | idle | timeout | http).
-export async function streamChatCompletion({ entry, model, prompt, signal, timeoutMs, maxTokens = null, onDelta }) {
+export async function streamChatCompletion({ entry, model, prompt, signal, timeoutMs, maxTokens = null, thinkingTokens = null, onDelta }) {
   // auth.kind:none (keyless loopback, e.g. a bare Ollama) neither requires nor
   // emits a bearer credential — no env var is read and no Authorization header
   // is sent. Every other backend reads its key ONLY from the environment.
@@ -127,6 +128,16 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
             ? { max_completion_tokens: maxTokens }
             : { max_tokens: maxTokens }
           : {}),
+        // Current Qwen 3 hybrid models enable reasoning by default. A total
+        // completion cap alone can therefore be consumed entirely by hidden
+        // reasoning, yielding HTTP 200 plus no answer. Keep reasoning for
+        // quality, but bound it to one quarter of the stage budget so a useful
+        // answer still has room. Do not send provider-specific fields to older
+        // Qwen generations or other OpenAI-compatible targets.
+        ...(entry.provider === 'dashscope' && /^qwen3(?:[.\-_]|$)/i.test(model)
+          && Number.isInteger(thinkingTokens) && thinkingTokens > 0
+          ? { enable_thinking: true, thinking_budget: thinkingTokens }
+          : {}),
       }),
       signal: controller.signal,
     });
@@ -147,6 +158,7 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
     let text = '';
     let usage = null;
     let responseModel = null;
+    let finishReason = null;
     // The number of NON-EMPTY content deltas actually observed on the wire. This
     // is the only honest evidence that SSE deltas arrived and fed the idle
     // watchdog — an empty body or a [DONE]-only response returns cleanly yet
@@ -175,6 +187,8 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
         if (!seenModels.has(ev.model)) { seenModels.add(ev.model); reportedModels.push(ev.model); }
       }
       if (ev.usage && typeof ev.usage === 'object') usage = ev.usage;
+      const reportedFinish = ev.choices?.[0]?.finish_reason;
+      if (typeof reportedFinish === 'string' && reportedFinish) finishReason = reportedFinish;
       const delta = ev.choices?.[0]?.delta?.content;
       if (typeof delta === 'string' && delta) {
         text += delta;
@@ -195,7 +209,7 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
     // only after the complete stream is assembled so a credential split across
     // SSE deltas is still removed, and do it before any consumer can normalize,
     // log, or persist the text.
-    return { text: redactSecret(text, apiKey), usage, responseModel, reportedModels, deltaCount };
+    return { text: redactSecret(text, apiKey), usage, responseModel, reportedModels, deltaCount, finishReason };
   } catch (err) {
     if (killedBy === 'abort') { const e = new Error('aborted by user'); e.code = 'abort'; throw e; }
     if (killedBy === 'tunnel') { const e = new Error('managed SSH inference tunnel died; direct-network fallback is disabled'); e.code = 'tunnel'; throw e; }
@@ -303,7 +317,10 @@ function assertReportedIdentity(entry, model, reportedModels, aliases) {
 
 export function openAiCompatMaker(entry) {
   return async function compatMaker({ prompt, stage = 'make', depth = 'quick', model, signal, onTick, onSession, toolPolicy = 'research', expectedReported }) {
-    const fail = (error, errorCode = null) => ({ ok: false, error, ...(errorCode ? { errorCode } : {}), text: null, costUsd: 0 });
+    const fail = (error, errorCode = null, retryable = null) => ({
+      ok: false, error, ...(errorCode ? { errorCode } : {}),
+      ...(typeof retryable === 'boolean' ? { retryable } : {}), text: null, costUsd: 0,
+    });
     if (toolPolicy === 'hivemind_only') {
       return fail(`backend "${entry.name}" has no tools, so it cannot run Hivemind retrieval — grounded managed-connector runs need the claude backend in the maker seat`);
     }
@@ -313,13 +330,14 @@ export function openAiCompatMaker(entry) {
     let lastReported = 0;
     try {
       const budget = makerRequestBudget(stage, depth);
-      const { text, usage, responseModel, reportedModels } = await streamChatCompletion({
+      const { text, usage, responseModel, reportedModels, finishReason } = await streamChatCompletion({
         entry,
         model,
         prompt,
         signal,
         timeoutMs: budget.timeoutMs,
         maxTokens: budget.maxTokens,
+        thinkingTokens: budget.thinkingTokens,
         onDelta: (chars) => {
           if (chars - lastReported >= 2000) { lastReported = chars; onSession?.(`streaming: ${chars} chars received`); }
         },
@@ -333,7 +351,13 @@ export function openAiCompatMaker(entry) {
       assertReportedIdentity(entry, model, reportedModels ?? responseModel, aliases);
       const evidence = reportedEvidenceClass(model, responseModel, aliases);
       const trimmed = String(text ?? '').trim();
-      if (!trimmed) return fail(`${entry.name} returned an empty result`);
+      if (!trimmed) {
+        const exhausted = finishReason === 'length'
+          || (Number.isInteger(usage?.completion_tokens) && usage.completion_tokens >= budget.maxTokens);
+        return exhausted
+          ? fail(`${entry.name} exhausted its completion limit before returning visible output`, 'completion_limit', false)
+          : fail(`${entry.name} returned an empty result`, 'empty_result');
+      }
       return {
         ok: true,
         error: null,
@@ -353,7 +377,8 @@ export function openAiCompatMaker(entry) {
         hivemindResults: [],
       };
     } catch (err) {
-      return fail(err.message, err.code || null);
+      const retryable = ['missing_key', 'model_identity', 'abort'].includes(err.code) ? false : null;
+      return fail(err.message, err.code || null, retryable);
     } finally {
       clearInterval(tick);
     }
@@ -364,23 +389,25 @@ export function openAiCompatMaker(entry) {
 
 export function openAiCompatReviewer(entry) {
   return async function compatReviewer({ prompt, model, signal, onTick, onSession, receiptDir, claims = [], criteria = [], thresholds = [], expectedReported }) {
-    const infra = (error, errorCode = null) => ({
+    const infra = (error, errorCode = null, retryable = null) => ({
       ran: false, error, verdict: 'ERROR', findings: [], questions: [],
       claimAssessments: [], coverageAssessments: [], thresholdAssessments: [],
       usage: null, durationMs: Date.now() - startedAt, ...(errorCode ? { errorCode } : {}),
+      ...(typeof retryable === 'boolean' ? { retryable } : {}),
     });
     const tick = setInterval(() => onTick?.('reviewer reading and drafting findings…'), 8000);
     const startedAt = Date.now();
     try {
       onSession?.('turn started');
       let lastReported = 0;
-      const { text, usage, responseModel, reportedModels } = await streamChatCompletion({
+      const { text, usage, responseModel, reportedModels, finishReason } = await streamChatCompletion({
         entry,
         model,
         prompt,
         signal,
         timeoutMs: REVIEW_TIMEOUT_MS,
         maxTokens: REVIEW_MAX_TOKENS,
+        thinkingTokens: REVIEW_THINKING_TOKENS,
         onDelta: (chars) => {
           if (chars - lastReported >= 1000) { lastReported = chars; onSession?.(`streaming verdict: ${chars} chars`); }
         },
@@ -391,6 +418,14 @@ export function openAiCompatReviewer(entry) {
       const aliases = normalizeExpectedReported(entry.expectedReported, expectedReported, model);
       assertReportedIdentity(entry, model, reportedModels ?? responseModel, aliases);
       const evidence = reportedEvidenceClass(model, responseModel, aliases);
+      const trimmed = String(text ?? '').trim();
+      if (!trimmed) {
+        const exhausted = finishReason === 'length'
+          || (Number.isInteger(usage?.completion_tokens) && usage.completion_tokens >= REVIEW_MAX_TOKENS);
+        return exhausted
+          ? infra(`${entry.name} exhausted its completion limit before returning a visible verdict`, 'completion_limit', false)
+          : infra(`${entry.name} returned an empty verdict`, 'empty_result');
+      }
       onSession?.(`verdict drafted (${String(text ?? '').length} chars)`);
       // The raw verdict lands beside the run like codex's -o file, so a
       // skeptic can re-read exactly what the endpoint said.
@@ -414,7 +449,8 @@ export function openAiCompatReviewer(entry) {
       }
       return norm;
     } catch (err) {
-      return infra(err.message, err.code || null);
+      const retryable = ['missing_key', 'model_identity', 'abort'].includes(err.code) ? false : null;
+      return infra(err.message, err.code || null, retryable);
     } finally {
       clearInterval(tick);
     }

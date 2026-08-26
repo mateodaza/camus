@@ -990,6 +990,7 @@ Members value practical progress over content volume [H1].
           prompts.claude.push(prompt);
           const next = claudeQueue.shift();
           if (next === undefined) throw new Error('claude called more times than scripted');
+          if (next && typeof next === 'object') return next;
           return { ok: true, error: null, text: next, costUsd: 0 };
         },
         reviewer: async ({ prompt }) => {
@@ -1015,6 +1016,22 @@ Members value practical progress over content volume [H1].
 
   const f = (severity, title) => ({ severity, title, detail: 'd', suggestion: 's' });
   const review = harness({ claudeQueue: [], codexQueue: [], answerQueue: [] }).review;
+
+  // A deterministic provider refusal must not silently purchase an identical
+  // second call. The operator can explicitly override, but stopping costs only
+  // the single failed call.
+  {
+    const h = harness({
+      claudeQueue: [{ ok: false, error: 'completion limit exhausted', errorCode: 'completion_limit', retryable: false }],
+      codexQueue: [],
+      answerQueue: ['Stop the run'],
+    });
+    const result = await h.run();
+    assert.equal(result.status, 'stopped', 'the operator can stop after one deterministic provider failure');
+    assert.equal(h.prompts.claude.length, 1, 'a non-retryable result never triggers an automatic duplicate call');
+    const question = h.events.find((event) => event.type === '_asked' && event.kind === 'infra');
+    assert.deepEqual(question.options, ['Retry anyway', 'Stop the run'], 'retry requires an explicit override');
+  }
 
   // --- Case A: verify containment (approve r1, bad draft, ship-anyway) ---
   {

@@ -184,6 +184,18 @@ export async function runLoop(run, ctx) {
         const res = await fn();
         const failed = res.ran === false || res.ok === false;
         if (!failed) return res;
+        if (signal.aborted) throw new Error('aborted');
+        if (res.retryable === false) {
+          log(`${label} non-retryable failure: ${res.error}`);
+          const choice = await ask({
+            kind: 'infra',
+            text: `The ${label} step returned a non-retryable failure: ${res.error}. An identical automatic retry is not expected to help. Retry anyway, or stop the run?`,
+            options: ['Retry anyway', 'Stop the run'],
+          });
+          if (choice !== 'Retry anyway') throw new Error('stopped_by_human');
+          log(`${label}: human chose to retry a non-retryable failure.`);
+          break;
+        }
         log(`${label} infra failure (attempt ${attempt}/2): ${res.error}`);
         if (attempt < 2) await new Promise((r) => setTimeout(r, 5000));
       }

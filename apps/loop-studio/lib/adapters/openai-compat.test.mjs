@@ -37,16 +37,16 @@ try {
 
 console.log('openai-compat.test.mjs: tunnel HTTP errors are private and lease-owned');
 
-assert.deepEqual(makerRequestBudget('make', 'quick'), { timeoutMs: 240_000, maxTokens: 4_096 });
-assert.deepEqual(makerRequestBudget('make', 'standard'), { timeoutMs: 420_000, maxTokens: 6_144 });
-assert.deepEqual(makerRequestBudget('plan', 'unknown'), { timeoutMs: 90_000, maxTokens: 1_024 });
+assert.deepEqual(makerRequestBudget('make', 'quick'), { timeoutMs: 240_000, maxTokens: 4_096, thinkingTokens: 1_024 });
+assert.deepEqual(makerRequestBudget('make', 'standard'), { timeoutMs: 420_000, maxTokens: 6_144, thinkingTokens: 1_536 });
+assert.deepEqual(makerRequestBudget('plan', 'unknown'), { timeoutMs: 90_000, maxTokens: 1_024, thinkingTokens: 256 });
 
 let capturedBody = null;
 globalThis.fetch = async (_url, options) => {
   capturedBody = JSON.parse(options.body);
   const frame = 'data: ' + JSON.stringify({
     model: 'bounded-model',
-    choices: [{ delta: { content: 'bounded result' } }],
+    choices: [{ delta: { content: 'bounded result' }, finish_reason: 'length' }],
     usage: { prompt_tokens: 2, completion_tokens: 3 },
   }) + '\n\ndata: [DONE]\n\n';
   return { ok: true, body: new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(frame)); controller.close(); } }) };
@@ -60,13 +60,16 @@ try {
   assert.equal(capturedBody.max_tokens, 1_234, 'the production request carries the explicit completion ceiling');
   assert.equal(capturedBody.max_completion_tokens, undefined, 'ordinary compatibility targets keep the common max_tokens spelling');
   assert.equal(capturedBody.stream_options.include_usage, true, 'usage streaming remains enabled beside the ceiling');
+  assert.equal(result.finishReason, 'length', 'the provider finish reason survives streaming for retry classification');
 
   await streamChatCompletion({
     entry: { name: 'dashscope-bounded', provider: 'dashscope', baseUrl: 'https://example.invalid/v1', auth: { kind: 'none' } },
-    model: 'bounded-model', prompt: 'test', timeoutMs: 100, maxTokens: 2_345,
+    model: 'qwen3.8-test', prompt: 'test', timeoutMs: 100, maxTokens: 2_345, thinkingTokens: 512,
   });
   assert.equal(capturedBody.max_completion_tokens, 2_345, 'DashScope caps reasoning plus answer with max_completion_tokens');
   assert.equal(capturedBody.max_tokens, undefined, 'DashScope never receives the answer-only cap');
+  assert.equal(capturedBody.enable_thinking, true, 'Qwen 3 reasoning remains explicitly enabled');
+  assert.equal(capturedBody.thinking_budget, 512, 'Qwen 3 reasoning is bounded separately so answer tokens remain');
 } finally {
   globalThis.fetch = originalFetch;
 }

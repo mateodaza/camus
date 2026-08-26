@@ -35,10 +35,10 @@ const ok = (name, fn) => { fn(); passed += 1; if (process.env.VERBOSE) console.l
 // Never paste secret-shaped literals: assemble every fake value from fragments.
 const frag = (...parts) => parts.join('-');
 
-// The credential pass-set: the seat's OWN authentication, the ONLY names the
-// isolated child may see. Direct API key + the three documented OAuth vars.
+// The credential pass-set: subscription automation auth is allowed for the
+// vendor-managed seat. Direct pay-per-use API auth is intentionally absent so
+// it cannot silently override the operator's Claude Code / Max login.
 const PASS_CREDS = [
-  'ANTHROPIC_API_KEY',
   'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_REFRESH_TOKEN', 'CLAUDE_CODE_OAUTH_SCOPES',
 ];
 
@@ -48,6 +48,7 @@ const PASS_CREDS = [
 // model overrides, alternate config dir, and proxies (the claude seat drops
 // proxies entirely — unlike the codex seat — so nothing re-routes its HTTPS).
 const ABSENT = [
+  'ANTHROPIC_API_KEY',
   'ANTHROPIC_AUTH_TOKEN',
   'ANTHROPIC_BASE_URL', 'ANTHROPIC_AWS_BASE_URL', 'ANTHROPIC_BEDROCK_BASE_URL',
   'ANTHROPIC_BEDROCK_MANTLE_BASE_URL', 'ANTHROPIC_VERTEX_BASE_URL', 'ANTHROPIC_FOUNDRY_BASE_URL',
@@ -131,7 +132,6 @@ try {
   // Clear any REAL credentials, then plant fragment-built fakes. Real values are
   // never forwarded to the fake binary.
   for (const n of PASS_CREDS) delete process.env[n];
-  process.env.ANTHROPIC_API_KEY = frag('sk', 'ant', 'api', 'planted');
   process.env.CLAUDE_CODE_OAUTH_TOKEN = frag('sk', 'ant', 'oauth', 'planted');
   process.env.CLAUDE_CODE_OAUTH_REFRESH_TOKEN = frag('sk', 'ant', 'refresh', 'planted');
   process.env.CLAUDE_CODE_OAUTH_SCOPES = frag('user', 'inference', 'planted');
@@ -143,7 +143,8 @@ try {
   // --- pure sanity on the helper (NOT the sole proof) ----------------------
   // Default-deny by construction: the returned object never carries a redirect
   // name, always carries the host memory constant as literal "1", and forwards
-  // planted credentials verbatim. Values are asserted here only against fakes.
+  // only planted subscription credentials verbatim. Values are asserted here
+  // only against fakes.
   ok('claudeDirectEnv is default-deny with host-owned constants', () => {
     const env = claudeDirectEnv();
     for (const n of ABSENT) assert.equal(Object.hasOwn(env, n), false, `${n} must not be copied`);
@@ -169,8 +170,8 @@ try {
     }
     for (const n of PASS_CREDS) assert.equal(control.present[n], true, `[${label} control] ${n} inherited`);
 
-    // The isolated adapter spawn: every redirect name gone, every credential
-    // pass-set name present, memory disabled, and adjacent empty
+    // The isolated adapter spawn: every redirect/direct-API name gone, every
+    // subscription credential pass-set name present, memory disabled, and adjacent empty
     // --setting-sources in argv.
     for (const n of ABSENT) {
       assert.equal(isolated.present[n], false, `[${label}] ${n} must be stripped by claudeDirectEnv`);
