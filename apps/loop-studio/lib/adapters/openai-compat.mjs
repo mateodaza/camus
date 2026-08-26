@@ -24,9 +24,33 @@ import { join, resolve } from 'node:path';
 import { normalizeReview } from './codex.mjs';
 import { getSharedTunnelManager } from '../ssh-tunnel.mjs';
 
-const MAKER_TIMEOUTS = { plan: 120_000, ground: 300_000, make: 540_000, fix: 420_000 };
-const REVIEW_TIMEOUT_MS = 600_000;
+// Paid compatibility endpoints need a bounded generation contract, not only a
+// socket deadline. A healthy stream can otherwise run for the old nine-minute
+// maker window while producing an arbitrarily large completion. Quick mode is
+// intentionally tighter; standard mode retains room for the documented
+// 1,200–1,800-word deliverable. These are output ceilings, not targets.
+const MAKER_BUDGETS = {
+  quick: {
+    plan: { timeoutMs: 90_000, maxTokens: 1_024 },
+    ground: { timeoutMs: 180_000, maxTokens: 1_536 },
+    make: { timeoutMs: 240_000, maxTokens: 4_096 },
+    fix: { timeoutMs: 240_000, maxTokens: 4_096 },
+  },
+  standard: {
+    plan: { timeoutMs: 120_000, maxTokens: 1_536 },
+    ground: { timeoutMs: 300_000, maxTokens: 2_048 },
+    make: { timeoutMs: 420_000, maxTokens: 6_144 },
+    fix: { timeoutMs: 420_000, maxTokens: 6_144 },
+  },
+};
+const REVIEW_TIMEOUT_MS = 360_000;
+const REVIEW_MAX_TOKENS = 6_144;
 const IDLE_MS = () => Number(process.env.OPENAI_COMPAT_IDLE_MS || 120_000);
+
+export function makerRequestBudget(stage = 'make', depth = 'quick') {
+  const mode = depth === 'standard' ? 'standard' : 'quick';
+  return MAKER_BUDGETS[mode][stage] ?? MAKER_BUDGETS[mode].make;
+}
 
 // Scrub credential-shaped tokens from provider-supplied error text BEFORE it is
 // placed in an Error the engine will retry on and persist to events.jsonl /
@@ -49,7 +73,7 @@ function redactSecret(message, secretValue) {
 
 // One SSE stream in, { text, usage, responseModel } out — or a thrown Error
 // whose .code says which kill path fired (abort | idle | timeout | http).
-export async function streamChatCompletion({ entry, model, prompt, signal, timeoutMs, onDelta }) {
+export async function streamChatCompletion({ entry, model, prompt, signal, timeoutMs, maxTokens = null, onDelta }) {
   // auth.kind:none (keyless loopback, e.g. a bare Ollama) neither requires nor
   // emits a bearer credential — no env var is read and no Authorization header
   // is sent. Every other backend reads its key ONLY from the environment.
@@ -90,6 +114,19 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
         stream: true,
         // Tolerated when the endpoint ignores it; usage stays null then.
         stream_options: { include_usage: true },
+        // Most Chat Completions targets implement `max_tokens`. DashScope's
+        // current thinking models are materially different: `max_tokens` caps
+        // only the answer while reasoning remains unbounded, whereas
+        // `max_completion_tokens` caps reasoning + answer. The first live Qwen
+        // screen proved the distinction (8,570 reported completion tokens under
+        // a 4,096 max_tokens request). Use the provider's documented total cap.
+        // Qualification probes omit either field so context testing keeps its
+        // separate contract.
+        ...(Number.isInteger(maxTokens) && maxTokens > 0
+          ? entry.provider === 'dashscope'
+            ? { max_completion_tokens: maxTokens }
+            : { max_tokens: maxTokens }
+          : {}),
       }),
       signal: controller.signal,
     });
@@ -265,7 +302,7 @@ function assertReportedIdentity(entry, model, reportedModels, aliases) {
 // ---- maker seat -------------------------------------------------------------
 
 export function openAiCompatMaker(entry) {
-  return async function compatMaker({ prompt, stage = 'make', model, signal, onTick, onSession, toolPolicy = 'research', expectedReported }) {
+  return async function compatMaker({ prompt, stage = 'make', depth = 'quick', model, signal, onTick, onSession, toolPolicy = 'research', expectedReported }) {
     const fail = (error, errorCode = null) => ({ ok: false, error, ...(errorCode ? { errorCode } : {}), text: null, costUsd: 0 });
     if (toolPolicy === 'hivemind_only') {
       return fail(`backend "${entry.name}" has no tools, so it cannot run Hivemind retrieval — grounded managed-connector runs need the claude backend in the maker seat`);
@@ -275,12 +312,14 @@ export function openAiCompatMaker(entry) {
     const startedAt = Date.now();
     let lastReported = 0;
     try {
+      const budget = makerRequestBudget(stage, depth);
       const { text, usage, responseModel, reportedModels } = await streamChatCompletion({
         entry,
         model,
         prompt,
         signal,
-        timeoutMs: MAKER_TIMEOUTS[stage] ?? 540_000,
+        timeoutMs: budget.timeoutMs,
+        maxTokens: budget.maxTokens,
         onDelta: (chars) => {
           if (chars - lastReported >= 2000) { lastReported = chars; onSession?.(`streaming: ${chars} chars received`); }
         },
@@ -341,6 +380,7 @@ export function openAiCompatReviewer(entry) {
         prompt,
         signal,
         timeoutMs: REVIEW_TIMEOUT_MS,
+        maxTokens: REVIEW_MAX_TOKENS,
         onDelta: (chars) => {
           if (chars - lastReported >= 1000) { lastReported = chars; onSession?.(`streaming verdict: ${chars} chars`); }
         },

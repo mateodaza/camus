@@ -677,7 +677,7 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   process.env.HIVEMIND_VIA_CLAUDE = '1';
   const { searchKnowledge, hivemindStatus, viaClaude } = await import('./lib/adapters/hivemind.mjs');
   const { claudeToolSurface, usageFromClaudeResult } = await import('./lib/adapters/claude.mjs');
-  const { makePrompt, fixPrompt } = await import('./lib/prompts.mjs');
+  const { makePrompt, fixPrompt, planPrompt, reviewPrompt } = await import('./lib/prompts.mjs');
 
   const st = hivemindStatus();
   assert.equal(st.mode, 'claude', 'mode is claude');
@@ -715,8 +715,15 @@ Retention improved 61% [1]. Unrelated reading: https://example.com
   const fx = fixPrompt({ goal: 'g', lane: 'research_memo', draft: 'd', findings: [], answers: [], viaClaude: true });
   assert.ok(fx.includes('select:mcp__claude_ai_Hivemind_Staging__knowledge_search'), 'fix prompt can reload the managed tool');
 
+  const toollessMake = makePrompt({ goal: 'Produce the answer now', acceptanceContract: 'A complete answer exists', lane: 'freeform', depth: 'quick', grounding: null, answers: [], toolPolicy: 'none' });
+  assert.match(toollessMake, /TOOLLESS RUN/);
+  assert.match(toollessMake, /Never say you will gather, research, browse, verify, or return later/);
+  assert.doesNotMatch(toollessMake, /with 4–6 distinct sources/, 'a toolless quick seat is not assigned an impossible source quota');
+  const toollessPlan = planPrompt({ goal: 'Produce the answer now', acceptanceContract: 'A complete answer exists', lane: 'freeform', depth: 'quick', toolPolicy: 'none' });
+  assert.match(toollessPlan, /No retrieval tools are available/);
+  assert.match(toollessPlan, /do not promise future research/);
+
   const contract = 'Every material claim must trace to a live source.';
-  const { planPrompt, reviewPrompt } = await import('./lib/prompts.mjs');
   for (const [name, prompt] of [
     ['plan', planPrompt({ goal: 'g', acceptanceContract: contract, lane: 'research_memo', depth: 'quick' })],
     ['make', makePrompt({ goal: 'g', acceptanceContract: contract, lane: 'research_memo', depth: 'quick', grounding: null, answers: [] })],
@@ -1047,13 +1054,21 @@ Members value practical progress over content volume [H1].
   // --- Case C: done_with_findings lanes ---
   {
     // C1: APPROVED with a low finding → done_with_findings
+    const observedApproval = {
+      ...review('APPROVED', [f('low', 'nit')]),
+      usage: { input_tokens: 90, cached_input_tokens: 10, output_tokens: 20 },
+      durationMs: 4321,
+    };
     const h6 = harness({
       claudeQueue: ['- plan', CLEAN_DRAFT],
-      codexQueue: [review('APPROVED', [f('low', 'nit')])],
+      codexQueue: [observedApproval],
       answerQueue: [],
     });
     assert.equal((await h6.run()).status, 'done_with_findings', 'approved-with-lows is not a plain done');
     assert.equal(h6.published.length, 0, 'publication defaults OFF when no explicit opt-in was recorded');
+    const observedReviewEvent = h6.events.find((e) => e.type === 'review');
+    assert.deepEqual(observedReviewEvent.usage, observedApproval.usage, 'review usage survives into the sealed event');
+    assert.equal(observedReviewEvent.duration_ms, 4321, 'review wall-clock survives into the sealed event');
 
     // C2: stuck (same title twice) → accept → done_with_findings
     const h7 = harness({
@@ -1085,6 +1100,24 @@ Members value practical progress over content volume [H1].
     const capAsk = h8.events.filter((e) => e.type === '_asked' && e.kind === 'stuck');
     assert.equal(capAsk.length, 1, 'exactly one human prompt on the final round (no double-fire)');
     assert.equal(capAsk[0].options.length, 2, 'final-round card offers no "one more round"');
+
+    // C4: accepting a red artifact at the round cap is a STOP decision. Camus
+    // records deterministic failure but must not silently purchase a verify-fix
+    // after the human already chose to stop iterating.
+    const h8red = harness({
+      claudeQueue: ['- plan', BAD_DRAFT, BAD_DRAFT, BAD_DRAFT],
+      codexQueue: [
+        review('REVISE', [f('high', 'A')]),
+        review('REVISE', [f('high', 'B')]),
+        review('REVISE', [f('high', 'C')]),
+      ],
+      answerQueue: ['Accept result (with findings on record)'],
+    });
+    const res8red = await h8red.run();
+    assert.equal(res8red.status, 'verify_failed', 'accepted findings never hide a deterministic red');
+    assert.equal(h8red.prompts.claude.length, 4, 'no verify-fix call occurs after the stop decision');
+    assert.equal(h8red.events.filter((e) => e.type === '_asked').length, 1, 'the accepted stop decision is not immediately re-asked');
+    assert.ok(h8red.events.some((e) => e.type === 'status' && e.status === 'verify_failed'), 'the red standing is emitted explicitly');
   }
 
   // --- Case D: oscillation A → B → A halts ---
@@ -2828,6 +2861,24 @@ Myosin Learns is a live session. A person decides when the evidence is enough.
     assert.ok(seats.reviewer.some((e) => e.backend === 'codex' && e.effort === true), 'codex entries say they honor effort');
     assert.ok(seats.maker.filter((e) => e.backend === 'kimi').every((e) => e.effort === false), 'compat entries say they take no effort request');
     assert.ok(!seatOffered(seats.maker, 'kimi', 'undeclared-model'), 'only DECLARED compat models are offered — the list is a statement, never a probe');
+
+    // Claude has aliases but no live catalog. The exact pinned standing model
+    // is still a real operator decision and must be selectable for a one-run
+    // override; otherwise the launch form shows a current choice the server
+    // itself refuses. No unrelated exact ids are inferred.
+    writeModels({ maker: { backend: 'claude', model: 'claude-opus-4-8' }, reviewer: { backend: 'codex', model: 'gpt-5.4', effort: 'low' }, loop: { roundCap: 3 } });
+    const pinnedSeats = seatCatalog();
+    assert.ok(seatOffered(pinnedSeats.maker, 'claude', 'claude-opus-4-8'), 'the exact pinned Claude maker remains explicitly selectable');
+    assert.ok(seatOffered(pinnedSeats.maker, 'claude', 'opus'), 'stable Claude aliases remain selectable beside the exact pin');
+    assert.ok(!seatOffered(pinnedSeats.maker, 'claude', 'claude-unconfigured-exact'), 'no unrelated exact Claude id is invented');
+
+    // Restore the custom-backend fixture for the malformed-entry assertions.
+    writeModels({
+      maker: { backend: 'claude', model: 'sonnet' },
+      reviewer: { backend: 'codex', model: 'gpt-5.4', effort: 'low' },
+      backends: { kimi: { ...KIMI, seats: ['maker'] } },
+      loop: { roundCap: 3 },
+    });
     // The legacy catalog (Compare & Learn / audit replay) stays claude+codex only.
     const legacy = modelCatalog();
     assert.ok(!legacy.maker.includes('kimi-k2'), 'the frozen-schema catalog never absorbs compat backends');

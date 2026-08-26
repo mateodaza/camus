@@ -28,8 +28,9 @@ function readRegistry() {
 // executors are now proven isolated. codex_cli's hardened spawn uses a scrubbed
 // allowlist environment + --ignore-user-config. claude_cli (Task 9) spawns BOTH
 // the maker and reviewer seats with claudeDirectEnv() — a fresh default-deny
-// environment that copies only a closed credential pass-set and always asserts
-// host-owned routing/memory — plus an unconditional empty --setting-sources, so
+// environment that copies only a closed credential pass-set, pins the model and
+// tool surface, and disables auto-memory — plus an unconditional empty
+// --setting-sources, so
 // an inherited ANTHROPIC_BASE_URL (or any redirect var) can no longer re-point
 // it. That flip is justified by the green lib/adapters/claude.test.mjs isolation
 // acceptance test; never edit this table without such a proof.

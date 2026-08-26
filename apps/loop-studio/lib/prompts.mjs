@@ -20,7 +20,12 @@ const LANE_BRIEFS = {
   freeform: `Structure the deliverable with clear markdown sections that fit the goal. If you make quantitative claims, cite them [n] against a final "## Sources" section with real URLs.`,
 };
 
-export function depthBrief(depth) {
+export function depthBrief(depth, { researchAvailable = true } = {}) {
+  if (!researchAvailable) {
+    return depth === 'standard'
+      ? 'Target 1,200–1,800 words. No retrieval tools are available: favor explicit assumptions and complete reasoning over unsupported breadth.'
+      : 'Target 700–1,100 words. No retrieval tools are available: favor a concise, complete answer with explicit assumptions.';
+  }
   return depth === 'standard'
     ? 'Target 1,200–1,800 words with 6–10 distinct sources.'
     : 'Target 700–1,100 words with 4–6 distinct sources. Depth "quick": favor precision over coverage.';
@@ -47,7 +52,7 @@ You MUST first call ToolSearch with "select:${CLAUDE_HIVEMIND_TOOL}", then call 
 ${groundingPrompt(args)}`;
 }
 
-export function makePrompt({ goal, acceptanceContract, lane, depth, grounding, answers }) {
+export function makePrompt({ goal, acceptanceContract, lane, depth, grounding, answers, toolPolicy = 'research' }) {
   const groundingBlock = grounding === 'claude'
     ? `\n\nGROUNDING — Myosin's specialist marketing knowledge is available through its managed Hivemind connector. First use ToolSearch with "select:${CLAUDE_HIVEMIND_TOOL}" to load the exact tool. Before drafting, normally run 2-4 focused knowledge_search queries on the goal's key angles; use fewer when the acceptance contract explicitly narrows the query or source scope. Where a returned chunk shapes a claim, cite it [H1], [H2], … and list each under a "### Hivemind" subsection inside ## Sources as "[Hn] Title — Author". If the tool errors or returns nothing relevant, draft without it — never fabricate an [Hn] citation.`
     : grounding?.length
@@ -59,6 +64,9 @@ export function makePrompt({ goal, acceptanceContract, lane, depth, grounding, a
     ? `\n\nHUMAN DECISIONS — the goal owner answered these mid-run; they are binding:\n${answers
         .map((a) => `Q: ${a.question}\nA: ${a.answer}`)
         .join('\n')}`
+      : '';
+  const toollessBlock = toolPolicy === 'none'
+    ? `\n\nTOOLLESS RUN — no browser, web search, connector, shell, or file tool exists in this seat. Produce the complete deliverable now from the goal, acceptance contract, supplied grounding (if any), and clearly labeled assumptions. Never say you will gather, research, browse, verify, or return later. Never invent a source or URL. If no source material was supplied, omit Sources rather than fabricating citations.`
     : '';
 
   return `You are a senior researcher and strategist drafting a deliverable the goal owner will defend tomorrow.
@@ -70,29 +78,30 @@ ${contractBlock(acceptanceContract)}
 
 ${LANE_BRIEFS[lane] ?? LANE_BRIEFS.freeform}
 
-${depthBrief(depth)}
+${depthBrief(depth, { researchAvailable: toolPolicy !== 'none' })}
 
 HARD RULES — a deterministic gate checks these mechanically and WILL bounce the draft:
 1. Every quantitative claim (%, $, multiples, big counts) must carry a [n] citation in the same sentence, resolving to a real URL under ## Sources.
    Exception — a PROPOSED decision threshold is your own policy, not an observed statistic, so it has no source to cite. ONLY when the acceptance contract asks for a measurable decision rule AND no retrieved source establishes the number, put it in a "## Decision Rule" (or "## Success Criteria") section as a bullet carrying this EXACT marker: "- Proposed threshold (decision policy, not observed performance): proceed if <metric> exceeds <value>." Any figure you present as observed performance still needs its [n] citation — the marker never covers a factual claim.
 2. Only cite URLs you have actually loaded and that support the claim. Never invent or "remember" a URL.
 3. No promissory financial phrasing (guaranteed returns, risk-free, price multiples like "100x", buy calls). Describe mechanics, not price outcomes.
-4. Write like a person: plain sentences, no filler, no hype.${groundingBlock}${answersBlock}
+4. Write like a person: plain sentences, no filler, no hype.${groundingBlock}${answersBlock}${toollessBlock}
 
 Respond with ONLY the markdown deliverable. No preamble, no commentary.`;
 }
 
-export function planPrompt({ goal, acceptanceContract, lane, depth }) {
+export function planPrompt({ goal, acceptanceContract, lane, depth, toolPolicy = 'research' }) {
+  const toolless = toolPolicy === 'none';
   return `You are planning a research deliverable before writing it. Goal:
 ${goal}
 
 ${contractBlock(acceptanceContract)}
 
-Deliverable type: ${LANES[lane]?.label ?? 'Freeform'}. ${depthBrief(depth)}
+Deliverable type: ${LANES[lane]?.label ?? 'Freeform'}. ${depthBrief(depth, { researchAvailable: !toolless })}
 
 Do NOT ask questions. Planning does not pause the run, so a question here appears only as planner text and cannot be answered. If an input is missing, name it as a risk; Camus raises human questions later through explicit checkpoints.
 
-Reply with 4-6 terse bullet points: the angles you will investigate, the 2-3 source types you will lean on, and the single biggest risk of getting this wrong. Plain text bullets, nothing else.`;
+${toolless ? 'No retrieval tools are available. Plan from the supplied material and explicit assumptions; do not promise future research or list sources you cannot inspect.\n\n' : ''}Reply with 4-6 terse bullet points: the angles you will investigate, the 2-3 source types you will lean on, and the single biggest risk of getting this wrong. Plain text bullets, nothing else.`;
 }
 
 export function reviewPrompt({ goal, acceptanceContract, lane, draft, round, priorFindings, answers, groundingEvidence, claims = [], criteria = [], thresholds = [], closure = false, auditOnly = false }) {

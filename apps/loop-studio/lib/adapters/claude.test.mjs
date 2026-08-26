@@ -11,7 +11,7 @@
 // The proof is not a pure-helper assertion: a REAL fake `claude` binary is put
 // on PATH, each entry point is spawned through the actual adapter, and the child
 // records — for the SAME planted parent environment — which env NAMES it can
-// see plus the two non-secret host constants and its argv. It records only
+// see plus the non-secret auto-memory constant and its argv. It records only
 // PRESENCE for credential/redirect names, never their values. Each entry point
 // is break-on-purpose-proven by contrasting the isolated adapter spawn against a
 // live UNISOLATED control spawn of the same binary that inherits the planted
@@ -25,7 +25,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runClaude, runClaudeReview, claudeDirectEnv } from './claude.mjs';
+import { runClaude, runClaudeReview, claudeDirectEnv, claudeFailureDiagnostic } from './claude.mjs';
 import { seatIdentityFacts } from '../models.mjs';
 import { consultClaudeRoute } from '../grandfather.mjs';
 
@@ -57,13 +57,14 @@ const ABSENT = [
   'ANTHROPIC_SMALL_FAST_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL',
   'CLAUDE_CODE_USE_ANTHROPIC_AWS', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_MANTLE',
   'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
+  'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST',
   'CLAUDE_CONFIG_DIR',
   'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy',
 ];
 
-// Host-owned constants: always "1", never inherited. Planted with a BOGUS parent
-// value below so a child seeing "1" proves overwrite, not inheritance.
-const CONSTANTS = ['CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST', 'CLAUDE_CODE_DISABLE_AUTO_MEMORY'];
+// Host-owned memory constant: always "1", never inherited. Planted with a BOGUS
+// parent value below so a child seeing "1" proves overwrite, not inheritance.
+const CONSTANTS = ['CLAUDE_CODE_DISABLE_AUTO_MEMORY'];
 
 const PROBE_NAMES = [...PASS_CREDS, ...ABSENT, ...CONSTANTS];
 
@@ -71,7 +72,7 @@ const PROBE_NAMES = [...PASS_CREDS, ...ABSENT, ...CONSTANTS];
 // its capture into process.cwd()/capture.json, so a distinct spawn cwd yields a
 // distinct capture file with the SAME binary. It emits one stream-json `result`
 // line both adapter parsers accept, then exits 0. It records only NAME presence
-// (booleans) plus the two non-secret constant values — never a credential value.
+// (booleans) plus the non-secret memory constant — never a credential value.
 const FAKE_SRC = `#!/usr/bin/env node
 'use strict';
 const fs = require('node:fs');
@@ -79,7 +80,6 @@ const path = require('node:path');
 const NAMES = ${JSON.stringify(PROBE_NAMES)};
 const rec = { argv: process.argv.slice(2), present: {}, constants: {} };
 for (const n of NAMES) rec.present[n] = Object.prototype.hasOwnProperty.call(process.env, n);
-rec.constants.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST = process.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST;
 rec.constants.CLAUDE_CODE_DISABLE_AUTO_MEMORY = process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
 fs.writeFileSync(path.join(process.cwd(), 'capture.json'), JSON.stringify(rec));
 process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'ok', total_cost_usd: 0 }) + '\\n');
@@ -102,6 +102,26 @@ const touched = [
 const snapshot = Object.fromEntries(touched.map((n) => [n, process.env[n]]));
 
 try {
+  ok('Claude failure diagnostics prefer the terminal error and redact credentials', () => {
+    const planted = frag('sk', 'ant', 'diagnostic', 'planted');
+    const stdout = [
+      JSON.stringify({ type: 'system', subtype: 'init', cwd: '/private/project', slash_commands: ['many', 'large', 'fields'] }),
+      JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true, result: `Credit balance too low; token=${planted}` }),
+    ].join('\n');
+    const detail = claudeFailureDiagnostic({ stdout });
+    assert.match(detail, /Credit balance too low/);
+    assert.doesNotMatch(detail, /private\/project|slash_commands/);
+    assert.doesNotMatch(detail, new RegExp(planted));
+    assert.match(detail, /redacted/);
+  });
+
+  ok('Claude failure diagnostics never dump unrecognized prompt-bearing events', () => {
+    const stdout = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'private prompt echo' }] } });
+    const detail = claudeFailureDiagnostic({ stdout });
+    assert.equal(detail, 'no terminal error detail (last Claude event: assistant)');
+    assert.doesNotMatch(detail, /private prompt echo/);
+  });
+
   // Put the single fake `claude` on PATH.
   const binDir = freshDir('bin');
   const binPath = join(binDir, 'claude');
@@ -122,12 +142,12 @@ try {
 
   // --- pure sanity on the helper (NOT the sole proof) ----------------------
   // Default-deny by construction: the returned object never carries a redirect
-  // name, always carries the two host constants as literal "1", and forwards
+  // name, always carries the host memory constant as literal "1", and forwards
   // planted credentials verbatim. Values are asserted here only against fakes.
   ok('claudeDirectEnv is default-deny with host-owned constants', () => {
     const env = claudeDirectEnv();
     for (const n of ABSENT) assert.equal(Object.hasOwn(env, n), false, `${n} must not be copied`);
-    assert.equal(env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST, '1');
+    assert.equal(Object.hasOwn(env, 'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST'), false);
     assert.equal(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1');
     for (const n of PASS_CREDS) assert.equal(env[n], process.env[n], `${n} forwarded verbatim`);
     // An explicit parent object is honored, and a missing pass-set name is simply
@@ -136,7 +156,7 @@ try {
     assert.equal(Object.hasOwn(scoped, 'ANTHROPIC_BASE_URL'), false);
     assert.equal(Object.hasOwn(scoped, 'ANTHROPIC_API_KEY'), false);
     assert.equal(scoped.PATH, '/x');
-    assert.equal(scoped.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST, '1');
+    assert.equal(Object.hasOwn(scoped, 'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST'), false);
   });
 
   // Assert one entry point's isolated capture against its unisolated control.
@@ -150,7 +170,7 @@ try {
     for (const n of PASS_CREDS) assert.equal(control.present[n], true, `[${label} control] ${n} inherited`);
 
     // The isolated adapter spawn: every redirect name gone, every credential
-    // pass-set name present, both constants exactly "1", and adjacent empty
+    // pass-set name present, memory disabled, and adjacent empty
     // --setting-sources in argv.
     for (const n of ABSENT) {
       assert.equal(isolated.present[n], false, `[${label}] ${n} must be stripped by claudeDirectEnv`);
@@ -158,14 +178,12 @@ try {
     for (const n of PASS_CREDS) {
       assert.equal(isolated.present[n], true, `[${label}] credential ${n} must be forwarded`);
     }
-    assert.equal(isolated.constants.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST, '1', `[${label}] managed-by-host=1`);
     assert.equal(isolated.constants.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1', `[${label}] disable-auto-memory=1`);
     assert.ok(adjacentSettingSources(isolated.argv), `[${label}] argv has adjacent --setting-sources ""`);
     assert.equal(isolated.argv.filter((arg) => arg === '--strict-mcp-config').length, 1,
       `[${label}] preserves exactly one --strict-mcp-config`);
     // The bogus parent constant proves the control did NOT get "1" for free —
     // the adapter's "1" is an overwrite, not an inheritance.
-    assert.notEqual(control.constants.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST, '1', `[${label} control] constant not "1"`);
     assert.notEqual(control.constants.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1', `[${label} control] memory constant not "1"`);
   };
 

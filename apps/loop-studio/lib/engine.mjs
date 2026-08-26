@@ -54,6 +54,16 @@ export async function runLoop(run, ctx) {
   const makerModel = snapshot.maker?.model;
   const reviewerModel = snapshot.reviewer?.model;
   const reviewerEffort = snapshot.reviewer?.effort;
+  // Claude is the only words-maker adapter with an actual research tool
+  // surface. Codex-maker and every OpenAI-compatible backend are deliberately
+  // toolless. Thread that fact into the prompt as well as the adapter so the
+  // model is never told to plan sources it cannot retrieve — a contradiction
+  // that produced a paid one-sentence "I'll gather…" non-deliverable in the
+  // first Grok/Qwen screen.
+  const makerToolPolicy = () => run.toolPolicy
+    ?? ((snapshot.maker?.backend ?? 'claude') === 'claude'
+      ? (run.frozenKnowledge ? 'web_only' : 'research')
+      : 'none');
   // Operator-declared expected-reported alias mappings (§6.2) ride the snapshot
   // seats; thread them into every adapter call so a configurable mapping endpoint
   // reconciles instead of failing closed on a legitimate served alias.
@@ -191,7 +201,7 @@ export async function runLoop(run, ctx) {
     // ---- Plan ------------------------------------------------------------
     stage('plan', 'active');
     const plan = await withRetries('plan', () =>
-      adapters.maker({ model: makerModel, stage: 'plan', prompt: planPrompt(run), cwd: ctx.scratchDir, signal, onTick: log, onSession: sess('maker'), toolPolicy: run.toolPolicy ?? 'research', expectedReported: makerExpectedReported }),
+      adapters.maker({ model: makerModel, stage: 'plan', depth: run.depth, prompt: planPrompt({ ...run, toolPolicy: makerToolPolicy() }), cwd: ctx.scratchDir, signal, onTick: log, onSession: sess('maker'), toolPolicy: makerToolPolicy(), expectedReported: makerExpectedReported }),
     );
     recordMakerCall('plan', plan);
     costUsd += plan.costUsd || 0;
@@ -248,6 +258,7 @@ export async function runLoop(run, ctx) {
         adapters.maker({
           model: makerModel,
           stage: 'ground',
+          depth: run.depth,
           prompt,
           cwd: ctx.scratchDir,
           signal,
@@ -356,12 +367,13 @@ export async function runLoop(run, ctx) {
       adapters.maker({
         model: makerModel,
         stage: 'make',
-        prompt: makePrompt({ ...run, grounding, answers: contentAnswers() }),
+        depth: run.depth,
+        prompt: makePrompt({ ...run, grounding, answers: contentAnswers(), toolPolicy: makerToolPolicy() }),
         cwd: ctx.scratchDir,
         signal,
         onTick: log,
         onSession: sess('maker'),
-        toolPolicy: run.toolPolicy ?? (run.frozenKnowledge ? 'web_only' : 'research'),
+        toolPolicy: makerToolPolicy(),
         expectedReported: makerExpectedReported,
       }),
     );
@@ -431,6 +443,8 @@ export async function runLoop(run, ctx) {
         questions: lastReview.questions,
         reviewerModel: lastReview.reviewerModel ?? reviewerModel ?? null,
         reviewerEffort: lastReview.reviewerEffort ?? reviewerEffort ?? null,
+        usage: lastReview.usage ?? null,
+        duration_ms: Number.isInteger(lastReview.durationMs) ? lastReview.durationMs : null,
         ...reviewPairingFacts(lastReview),
         claimAssessments: lastReview.claimAssessments ?? [],
         coverageAssessments: lastReview.coverageAssessments ?? [],
@@ -499,12 +513,13 @@ export async function runLoop(run, ctx) {
         adapters.maker({
           model: makerModel,
           stage: 'fix',
+          depth: run.depth,
           prompt: fixPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, findings: lastReview.blocking, answers: contentAnswers(), viaClaude: grounding === 'claude' }),
           cwd: ctx.scratchDir,
           signal,
           onTick: log,
           onSession: sess('maker'),
-          toolPolicy: run.toolPolicy ?? (run.frozenKnowledge ? 'web_only' : 'research'),
+          toolPolicy: makerToolPolicy(),
           expectedReported: makerExpectedReported,
         }),
       );
@@ -569,6 +584,8 @@ export async function runLoop(run, ctx) {
             questions: lastReview.questions,
             reviewerModel: lastReview.reviewerModel ?? reviewerModel ?? null,
             reviewerEffort: lastReview.reviewerEffort ?? reviewerEffort ?? null,
+            usage: lastReview.usage ?? null,
+            duration_ms: Number.isInteger(lastReview.durationMs) ? lastReview.durationMs : null,
             ...reviewPairingFacts(lastReview),
             claimAssessments: lastReview.claimAssessments ?? [],
             coverageAssessments: lastReview.coverageAssessments ?? [],
@@ -592,12 +609,13 @@ export async function runLoop(run, ctx) {
               adapters.maker({
                 model: makerModel,
                 stage: 'fix',
+                depth: run.depth,
                 prompt: fixPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, findings: lastReview.blocking, answers: contentAnswers(), viaClaude: grounding === 'claude' }),
                 cwd: ctx.scratchDir,
                 signal,
                 onTick: log,
                 onSession: sess('maker'),
-                toolPolicy: run.toolPolicy ?? (run.frozenKnowledge ? 'web_only' : 'research'),
+                toolPolicy: makerToolPolicy(),
                 expectedReported: makerExpectedReported,
               }),
             );
@@ -628,6 +646,17 @@ export async function runLoop(run, ctx) {
 
       const failures = result.checks.filter((c) => c.status === 'fail');
       log(`Verify failed: ${failures.map((f) => f.label).join('; ')}`);
+      // "Accept result with findings" is a stopping decision, not permission
+      // for Camus to silently buy another maker call. Still run the cheapest
+      // deterministic checks so their evidence survives; if red, terminate
+      // honestly as verify_failed with the accepted artifact and review intact.
+      // A new repair requires a new explicit run, never hidden spend after the
+      // operator already chose to stop iterating.
+      if (doneWithFindings) {
+        log('The accepted artifact failed deterministic verification; recording verify_failed without an automatic repair call.');
+        emit('status', { status: 'verify_failed', rev, costUsd });
+        return { status: 'verify_failed', draft, rev, costUsd, answers, makerUsage, makerActualModels, makerActualEvidence, makerReportedModel };
+      }
       if (verifyFixBudget > 0) {
         verifyFixBudget -= 1;
         stage('fix', 'active', { verify: true });
@@ -635,12 +664,13 @@ export async function runLoop(run, ctx) {
           adapters.maker({
             model: makerModel,
             stage: 'fix',
+            depth: run.depth,
             prompt: fixPrompt({ goal: run.goal, acceptanceContract: run.acceptanceContract, lane: run.lane, draft, findings: [], verifyFailures: failures, answers: contentAnswers(), viaClaude: grounding === 'claude' }),
             cwd: ctx.scratchDir,
             signal,
             onTick: log,
             onSession: sess('maker'),
-            toolPolicy: run.toolPolicy ?? (run.frozenKnowledge ? 'web_only' : 'research'),
+            toolPolicy: makerToolPolicy(),
             expectedReported: makerExpectedReported,
           }),
         );

@@ -15,6 +15,59 @@ function fail(error) {
   return { ok: false, error, text: null, costUsd: 0 };
 }
 
+// Claude's stream starts with a large `system/init` object. Taking the first N
+// bytes on a non-zero exit therefore hides the terminal error — exactly the
+// information an operator needs to distinguish model availability, auth, quota,
+// and a CLI fault. Extract only known error-bearing fields, prefer the terminal
+// result event, and redact credential-shaped text before it reaches events.jsonl.
+// We intentionally do not fall back to assistant/user content because that can
+// contain the private prompt or deliverable.
+function redactClaudeDiagnostic(value) {
+  return String(value ?? '')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{4,}/gi, 'Bearer ‹redacted›')
+    .replace(/\b(sk|rk|pk|api|key)[-_][A-Za-z0-9._~+/=-]{6,}/gi, '$1-‹redacted›')
+    .replace(/("?(?:authorization|api[_-]?key|token)"?\s*[:=]\s*"?)[^\s",}]+/gi, '$1‹redacted›');
+}
+
+function boundedDiagnostic(value, max = 600) {
+  const text = redactClaudeDiagnostic(value).replace(/\s+/g, ' ').trim();
+  if (text.length <= max) return text;
+  const side = Math.floor((max - 3) / 2);
+  return `${text.slice(0, side)}…${text.slice(-side)}`;
+}
+
+export function claudeFailureDiagnostic({ stderr = '', stdout = '', resultEvent = null } = {}) {
+  const candidateFrom = (ev) => {
+    if (!ev || typeof ev !== 'object') return null;
+    if (ev.type === 'result' && typeof ev.result === 'string' && ev.result.trim()) return ev.result;
+    if (ev.type === 'error') {
+      if (typeof ev.error === 'string' && ev.error.trim()) return ev.error;
+      if (typeof ev.error?.message === 'string' && ev.error.message.trim()) return ev.error.message;
+      if (typeof ev.message === 'string' && ev.message.trim()) return ev.message;
+    }
+    return null;
+  };
+
+  const candidates = [candidateFrom(resultEvent), String(stderr).trim()].filter(Boolean);
+  let lastEvent = null;
+  const lines = String(stdout).split(/\r?\n/).filter((line) => line.trim());
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    try {
+      const event = JSON.parse(lines[i]);
+      lastEvent ??= event;
+      const candidate = candidateFrom(event);
+      if (candidate) candidates.push(candidate);
+    } catch { /* non-JSON stream noise is not safe diagnostic content */ }
+  }
+  if (candidates.length) return boundedDiagnostic(candidates[0]);
+  const eventLabel = lastEvent
+    ? [lastEvent.type, lastEvent.subtype].filter((part) => typeof part === 'string' && part).join('/')
+    : null;
+  return eventLabel
+    ? `no terminal error detail (last Claude event: ${boundedDiagnostic(eventLabel, 120)})`
+    : 'no terminal error detail from Claude CLI';
+}
+
 // Redirect-isolation contract for EVERY headless Claude spawn (maker AND
 // reviewer). A built-in claude seat is Camus's own decision, so the child must
 // NOT inherit ambient routing/credential redirection from the operator's shell.
@@ -39,10 +92,13 @@ function fail(error) {
 //     (https://code.claude.com/docs/en/env-vars). These are the seat's OWN auth
 //     and the ONLY credentials forwarded — never ANTHROPIC_AUTH_TOKEN, which
 //     points at a gateway/proxy.
-//   - CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=1 makes the embedding host (Camus)
-//     own routing/model selection; CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 prevents
-//     creating/loading auto memory. Both are ALWAYS overwritten to the literal
-//     "1" and NEVER inherited — a parent value must not be able to weaken them.
+//   - CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST is deliberately NOT forwarded or
+//     injected. Current Claude Code treats it as provider-hosted mode and stops
+//     consulting the macOS Keychain, so a valid claude.ai Max login becomes
+//     "Not logged in". Camus owns routing through the closed env pass-set,
+//     explicit --model, empty --setting-sources, and restricted --tools instead.
+//   - CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 prevents creating/loading auto memory.
+//     It is always overwritten to the literal "1", never inherited.
 const CLAUDE_ENV_PASS_SET = [
   'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'LANG', 'LC_ALL', 'LC_CTYPE',
   'ANTHROPIC_API_KEY',
@@ -54,8 +110,7 @@ export function claudeDirectEnv(parentEnv = process.env) {
     const value = parentEnv[name];
     if (value !== undefined) out[name] = value; // presence-gated copy; value never examined
   }
-  // Host-owned constants: overwrite/add unconditionally, never inherit.
-  out.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST = '1';
+  // Host-owned memory constant: overwrite/add unconditionally, never inherit.
   out.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '1';
   return out;
 }
@@ -206,7 +261,7 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
   if (exitCode === -1) return fail(`failed to spawn claude (${stderr.trim() || 'unknown'}) — check the Claude Code CLI is installed and on PATH`);
   if (exitCode === -2) return fail(`claude ${stage} stage hit the ${Math.round((TIMEOUTS[stage] ?? 540_000) / 60000)} min timeout`);
   if (exitCode === -4) return fail('aborted by user');
-  if (exitCode !== 0) return fail(`claude exited ${exitCode}: ${(stderr || stdout).slice(0, 300)}`);
+  if (exitCode !== 0) return fail(`claude exited ${exitCode}: ${claudeFailureDiagnostic({ stderr, stdout, resultEvent })}`);
 
   // stream-json: the terminal `result` event carries the final text; fall
   // back to whole-output parse for older CLIs that ignore the format flag.
@@ -219,7 +274,7 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
       try { data = JSON.parse(stdout.slice(start)); } catch { return fail(`no result event and unparseable claude output: ${stdout.slice(0, 200)}`); }
     }
   }
-  if (data.is_error) return fail(`claude reported an error: ${String(data.result).slice(0, 300)}`);
+  if (data.is_error) return fail(`claude reported an error: ${boundedDiagnostic(data.result)}`);
   const text = String(data.result ?? '').trim();
   if (!text) return fail('claude returned an empty result');
   const observed = usageFromClaudeResult(data, model);
@@ -312,13 +367,13 @@ export async function runClaudeReview({ prompt, model, cwd, signal, onTick, onSe
   if (exitCode === -2) return infra('claude review hit the 8 min hard timeout');
   if (exitCode === -3) return infra(`claude went silent for ${Math.round(idleKillMs / 60000)} min — killed (idle watchdog)`);
   if (exitCode === -4) return infra('review aborted by user');
-  if (exitCode !== 0) return infra(`claude exited ${exitCode}: ${(stderr || stdout).slice(0, 300)}`);
+  if (exitCode !== 0) return infra(`claude exited ${exitCode}: ${claudeFailureDiagnostic({ stderr, stdout, resultEvent })}`);
 
   let data = resultEvent;
   if (!data) {
     try { data = JSON.parse(stdout); } catch { return infra(`no result event and unparseable claude output: ${stdout.slice(0, 200)}`); }
   }
-  if (data.is_error) return infra(`claude reported an error: ${String(data.result).slice(0, 300)}`);
+  if (data.is_error) return infra(`claude reported an error: ${boundedDiagnostic(data.result)}`);
   const text = String(data.result ?? '').trim();
   onSession?.(`verdict drafted (${text.length} chars)`);
   // The raw verdict lands beside the run like codex's -o file, so a skeptic

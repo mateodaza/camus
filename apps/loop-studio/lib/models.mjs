@@ -950,7 +950,18 @@ export function seatCatalog() {
     const out = [];
     for (const backend of Object.values(backends)) {
       if (!backend.seats.includes(seatName)) continue;
-      const models = backend.name === 'claude' ? makerAliases
+      // Claude exposes stable aliases but no machine-readable model catalog.
+      // A pinned standing decision is nevertheless an operator-owned exact
+      // model choice and must remain selectable for an explicit one-run pairing.
+      // Without this union the settings panel can show claude-opus-4-8 as the
+      // current seat while POST /api/runs refuses that exact same seat as
+      // "not offered". Keep aliases for convenient future choices and add only
+      // the standing exact id; never invent other Claude ids.
+      const claudeModels = backend.name === seatBackendName
+        && typeof seatDecision?.model === 'string' && seatDecision.model
+        ? [...new Set([...makerAliases, seatDecision.model])]
+        : makerAliases;
+      const models = backend.name === 'claude' ? claudeModels
         : backend.name === 'codex' ? codex.models
           : backend.models;
       const source = backend.name === 'claude' ? 'builtin_alias'
