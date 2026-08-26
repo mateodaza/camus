@@ -42,6 +42,8 @@ import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateRep
   assert.equal(campaign.controls.optimizationOrder[0], 'quality_floor_pass_rate');
   assert.ok(campaign.candidates.some((candidate) => candidate.id === 'gpt-luna' && candidate.model === 'gpt-5.6-luna'), 'Luna is an explicit simple/balanced candidate');
   assert.equal(campaign.profiles.every((profile) => profile.cases.length >= 3), true, 'each tier has multiple representative cases');
+  assert.equal(campaign.profiles.find((profile) => profile.id === 'simple').planPolicy, 'direct_make', 'simple evaluation avoids a separate planning purchase');
+  assert.equal(campaign.profiles.filter((profile) => profile.id !== 'simple').every((profile) => profile.planPolicy === 'plan_then_make'), true, 'judgment-heavy tiers retain planning');
   assert.ok(campaign.calibration.judges.some((judge) => judge.id === 'gpt-luna'), 'Luna is retained as a cost-sensitive judge candidate');
   assert.equal(campaign.candidates.find((candidate) => candidate.id === 'qwen-27b').evidenceEligibility, 'exploratory_only', 'declared Qwen provenance cannot silently become routing evidence');
   const invalid = structuredClone(campaign);
@@ -93,6 +95,9 @@ import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateRep
       artifactId: artifact.id,
       judgeId: judge.id,
       sourceRunId: `${judge.id}-${artifact.sourceRunId}`,
+      actualIdentity: judge.id === 'opus-4-8'
+        ? 'anthropic:multiple[claude-haiku-4-5-20251001+claude-opus-4-8]'
+        : `openai:${judge.model}`,
       verdict: artifact.humanLabel.verdict,
       findingPresence: artifact.humanLabel.findingPresence,
     })));
@@ -106,6 +111,11 @@ import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateRep
   assert.equal(summary.crossScreenRanking, 'eligible');
   assert.equal(summary.judges.find((judge) => judge.id === 'gpt-luna').standing, 'uncalibrated', 'an optional judge does not force extra spend before active screens can compare');
   assert.equal(summary.judges.filter((judge) => judge.id !== 'gpt-luna').every((judge) => judge.standing === 'calibrated'), true);
+  const mixedJudgeRuns = structuredClone(judgeRuns);
+  mixedJudgeRuns.find((run) => run.judgeId === 'opus-4-8').actualIdentity = 'anthropic:claude-opus-4-8';
+  assert.equal(summarizeJudgeCalibration(campaign, {
+    schemaVersion: 1, campaignId: campaign.id, standing: 'uncalibrated', artifacts, judgeRuns: mixedJudgeRuns,
+  }).crossScreenRanking, 'refused_uncalibrated', 'a route that changes its observed actual identity cannot calibrate');
   assert.throws(() => summarizeJudgeCalibration(campaign, {
     schemaVersion: 1, campaignId: campaign.id, standing: 'calibrated', artifacts: [], judgeRuns: [],
   }), /standing is derived/, 'the file cannot award itself calibrated standing');
@@ -1047,7 +1057,7 @@ Members value practical progress over content volume [H1].
   const CLEAN_DRAFT = 'Notes.\n\nCommunity first, paid second.\n';
   const BAD_DRAFT = 'Notes.\n\nRetention rose 61% across cohorts.\n'; // uncited stat → deterministic fail
 
-  function harness({ claudeQueue, codexQueue, answerQueue, abortOnAsk = false, publish, iterationPolicy = 'iterative', evaluationProfile = null, evaluationCaseId = null, evaluationChecks = null }) {
+  function harness({ claudeQueue, codexQueue, answerQueue, abortOnAsk = false, publish, iterationPolicy = 'iterative', evaluationProfile = null, evaluationCaseId = null, evaluationChecks = null, evaluationPlanPolicy = null }) {
     const events = [];
     const prompts = { claude: [], codex: [] };
     const published = [];
@@ -1095,7 +1105,7 @@ Members value practical progress over content volume [H1].
       scratchDir: '.',
       receiptsDir: 'runs/_engine-test',
     };
-    const run = { id: 'engine-test', goal: 'test goal', lane: 'freeform', depth: 'quick', ground: false, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationChecks };
+    const run = { id: 'engine-test', goal: 'test goal', lane: 'freeform', depth: 'quick', ground: false, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationChecks, evaluationPlanPolicy };
     if (publish !== undefined) run.publish = publish;
     return { run: () => runLoop(run, ctx), events, prompts, published, review, abort };
   }
@@ -1104,12 +1114,13 @@ Members value practical progress over content volume [H1].
   // first rung of the grading ladder, not a model-authored quality verdict.
   {
     const h = harness({
-      claudeQueue: ['- plan', CLEAN_DRAFT],
+      claudeQueue: [CLEAN_DRAFT],
       codexQueue: [],
       answerQueue: [],
       iterationPolicy: 'single_pass',
       evaluationProfile: 'simple',
       evaluationCaseId: 'simple-shape-probe',
+      evaluationPlanPolicy: 'direct_make',
       evaluationChecks: [{ id: 'must-name-owner', label: 'owner present', type: 'required_phrases', phrases: ['Owner:'] }],
     });
     const result = await h.run();
@@ -1118,10 +1129,24 @@ Members value practical progress over content volume [H1].
     const precheck = h.events.find((event) => event.type === 'verify_result' && event.source === 'evaluation_case_precheck');
     assert.equal(precheck.pass, false);
     assert.equal(precheck.evaluationCaseId, 'simple-shape-probe');
+    assert.equal(h.events.some((event) => event.type === 'stage' && event.name === 'plan' && event.status === 'skipped'), true, 'the sealed direct policy is visible in the trace');
   }
 
   const f = (severity, title) => ({ severity, title, detail: 'd', suggestion: 's' });
   const review = harness({ claudeQueue: [], codexQueue: [], answerQueue: [] }).review;
+
+  // A purchased plan must reach the draft prompt. Previously it was emitted
+  // and billed, then discarded before the maker wrote anything.
+  {
+    const h = harness({
+      claudeQueue: ['- Lead with the owner mapping', CLEAN_DRAFT],
+      codexQueue: [review('APPROVED')],
+      answerQueue: [],
+    });
+    await h.run();
+    assert.match(h.prompts.claude[1], /SEALED PLAN FROM THIS RUN/);
+    assert.match(h.prompts.claude[1], /Lead with the owner mapping/);
+  }
 
   // Evaluation measures the frozen first pass. A revise verdict is retained,
   // then deterministic verification runs on the untouched artifact: no repair,

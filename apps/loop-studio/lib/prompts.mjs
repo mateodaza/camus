@@ -52,7 +52,7 @@ You MUST first call ToolSearch with "select:${CLAUDE_HIVEMIND_TOOL}", then call 
 ${groundingPrompt(args)}`;
 }
 
-export function makePrompt({ goal, acceptanceContract, lane, depth, grounding, answers, toolPolicy = 'research' }) {
+export function makePrompt({ goal, acceptanceContract, lane, depth, grounding, answers, plan, toolPolicy = 'research' }) {
   const groundingBlock = grounding === 'claude'
     ? `\n\nGROUNDING — Myosin's specialist marketing knowledge is available through its managed Hivemind connector. First use ToolSearch with "select:${CLAUDE_HIVEMIND_TOOL}" to load the exact tool. Before drafting, normally run 2-4 focused knowledge_search queries on the goal's key angles; use fewer when the acceptance contract explicitly narrows the query or source scope. Where a returned chunk shapes a claim, cite it [H1], [H2], … and list each under a "### Hivemind" subsection inside ## Sources as "[Hn] Title — Author". If the tool errors or returns nothing relevant, draft without it — never fabricate an [Hn] citation.`
     : grounding?.length
@@ -67,6 +67,9 @@ export function makePrompt({ goal, acceptanceContract, lane, depth, grounding, a
       : '';
   const toollessBlock = toolPolicy === 'none'
     ? `\n\nTOOLLESS RUN — no browser, web search, connector, shell, or file tool exists in this seat. Produce the complete deliverable now from the goal, acceptance contract, supplied grounding (if any), and clearly labeled assumptions. Never say you will gather, research, browse, verify, or return later. Never invent a source or URL. If no source material was supplied, omit Sources rather than fabricating citations.`
+    : '';
+  const planBlock = plan
+    ? `\n\nSEALED PLAN FROM THIS RUN — use it as scaffolding, but the goal and acceptance contract still outrank it:\n${plan}`
     : '';
 
   return `You are a senior researcher and strategist drafting a deliverable the goal owner will defend tomorrow.
@@ -85,7 +88,7 @@ HARD RULES — a deterministic gate checks these mechanically and WILL bounce th
    Exception — a PROPOSED decision threshold is your own policy, not an observed statistic, so it has no source to cite. ONLY when the acceptance contract asks for a measurable decision rule AND no retrieved source establishes the number, put it in a "## Decision Rule" (or "## Success Criteria") section as a bullet carrying this EXACT marker: "- Proposed threshold (decision policy, not observed performance): proceed if <metric> exceeds <value>." Any figure you present as observed performance still needs its [n] citation — the marker never covers a factual claim.
 2. Only cite URLs you have actually loaded and that support the claim. Never invent or "remember" a URL.
 3. No promissory financial phrasing (guaranteed returns, risk-free, price multiples like "100x", buy calls). Describe mechanics, not price outcomes.
-4. Write like a person: plain sentences, no filler, no hype.${groundingBlock}${answersBlock}${toollessBlock}
+4. Write like a person: plain sentences, no filler, no hype.${planBlock}${groundingBlock}${answersBlock}${toollessBlock}
 
 Respond with ONLY the markdown deliverable. No preamble, no commentary.`;
 }

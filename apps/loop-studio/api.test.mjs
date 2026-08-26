@@ -105,6 +105,7 @@ try {
     assert.ok(['codex_cache', 'fallback'].includes(c.catalog.reviewerSource), 'the catalog names whether the list is CLI-verified');
     assert.deepEqual(c.evaluationCampaign.profiles.map((profile) => profile.id).sort(), ['balanced', 'difficult', 'simple'], 'config exposes the registered routing tiers');
     assert.equal(c.evaluationCampaign.profiles.every((profile) => profile.cases.length >= 3), true, 'config exposes a representative case suite per tier');
+    assert.equal(c.evaluationCampaign.profiles.find((profile) => profile.id === 'simple').planPolicy, 'direct_make', 'config exposes the sealed evaluation plan policy');
   });
 
   await check('the model campaign is local public configuration with bounded Luna coverage', async () => {
@@ -373,6 +374,7 @@ try {
     assert.equal(runMeta.iterationPolicy, 'single_pass');
     assert.equal(runMeta.evaluationProfile, 'simple');
     assert.equal(runMeta.evaluationCaseId, evaluationCase.id);
+    assert.equal(runMeta.evaluationPlanPolicy, 'direct_make');
     assert.equal(runMeta.evaluationCampaignId, campaign.id);
     assert.equal(runMeta.evaluationConfigHash, campaign.configHash);
     assert.equal(runMeta.publishRequested, false);
@@ -386,10 +388,12 @@ try {
     assert.equal(report.iterationPolicy, 'single_pass');
     assert.equal(report.evaluationProfile, 'simple');
     assert.equal(report.evaluationCaseId, evaluationCase.id);
+    assert.equal(report.evaluationPlanPolicy, 'direct_make');
     assert.equal(report.evaluationCampaignId, campaign.id);
     assert.equal(report.evaluationConfigHash, campaign.configHash);
     assert.equal(report.publishRequested, false);
     assert.equal(report.evidence.rounds.length, 1, 'exactly one review is retained');
+    assert.deepEqual(report.makerUsage.map((row) => row.stage), ['make'], 'simple evaluation purchases one maker call, not a discarded plan');
     assert.equal(report.evidence.verify.some((entry) => entry.source === 'evaluation_case_precheck' && entry.evaluationCaseId === evaluationCase.id), true, 'the cheap case precheck is receipt-bound');
     assert.equal(report.makerUsage.some((row) => String(row.stage).includes('fix')), false, 'no repair stage is purchased');
     const events = readFileSync(join(tmp, id, 'events.jsonl'), 'utf8');

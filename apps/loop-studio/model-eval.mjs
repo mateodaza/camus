@@ -70,6 +70,12 @@ function summarize(report, { candidate, profile, evaluationCase, screen }) {
     : null;
   const latestReview = rounds.at(-1) ?? null;
   const deterministicPrecheck = report.evidence?.verify?.find((item) => item.source === 'evaluation_case_precheck')?.pass ?? null;
+  const floorPassed = deterministicPrecheck === true && qualityFloorPassed(report.evidencePack);
+  const qualityVerdict = !floorPassed
+    ? 'fail'
+    : report.evidencePack?.statuses?.verification === 'passed_with_caveats' || report.status === 'done_with_findings'
+      ? 'pass_with_caveats'
+      : 'pass';
   return {
     campaignId: campaign.id,
     evaluationConfigHash: campaignHash,
@@ -78,6 +84,7 @@ function summarize(report, { candidate, profile, evaluationCase, screen }) {
     runId: report.id,
     profile: profile.id,
     case: evaluationCase.id,
+    planPolicy: profile.planPolicy,
     screen: screen.id,
     candidate: candidate.id,
     pairing: {
@@ -88,7 +95,8 @@ function summarize(report, { candidate, profile, evaluationCase, screen }) {
     },
     result: {
       status: report.status,
-      qualityFloorPassed: deterministicPrecheck === true && qualityFloorPassed(report.evidencePack),
+      qualityFloorPassed: floorPassed,
+      qualityVerdict,
       verification: report.statuses?.verification ?? null,
       audit: report.statuses?.audit ?? null,
       reviewVerdict: latestReview?.verdict ?? null,
@@ -238,7 +246,7 @@ try {
   const summary = summarize(report, { candidate, profile, evaluationCase, screen });
   if (args.json) console.log(JSON.stringify(summary, null, 2));
   else {
-    console.log(`${summary.result.qualityFloorPassed ? 'PASS' : 'FAIL'} ${summary.runId} · ${summary.profile}/${summary.case} · ${summary.candidate} → ${summary.screen}`);
+    console.log(`${summary.result.qualityVerdict.toUpperCase()} ${summary.runId} · ${summary.profile}/${summary.case} · ${summary.candidate} → ${summary.screen}`);
     console.log(`eligibility ${summary.evidenceEligibility} · precheck ${summary.result.deterministicPrecheck} · status ${summary.result.status} · verify ${summary.result.verification} · audit ${summary.result.audit} · review ${summary.result.reviewVerdict} · findings ${summary.result.findingCount}`);
     console.log(`wall ${summary.economics.wallDurationMs ?? 'unknown'}ms · maker out ${summary.economics.maker.output_tokens ?? 'unknown'} · reviewer out ${summary.economics.reviewer.output_tokens ?? 'unknown'} · total I/O tokens ${summary.economics.totalInputAndOutputTokens ?? 'unknown'}`);
     console.log(`receipt ${summary.receipt.path}`);

@@ -70,6 +70,9 @@ export function validateModelEvalCampaign(value) {
   const casesByProfile = new Map();
   for (const [index, profile] of value.profiles.entries()) {
     if (!['quick', 'standard'].includes(profile.depth)) throw new Error(`profiles[${index}].depth must be quick or standard`);
+    if (!['direct_make', 'plan_then_make'].includes(profile.planPolicy)) {
+      throw new Error(`profiles[${index}].planPolicy must be direct_make or plan_then_make`);
+    }
     if (!Number.isInteger(profile.wallBudgetMinutes) || profile.wallBudgetMinutes < 1 || profile.wallBudgetMinutes > 60) {
       throw new Error(`profiles[${index}].wallBudgetMinutes must be an integer from 1 to 60`);
     }

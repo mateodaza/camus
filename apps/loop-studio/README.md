@@ -72,14 +72,18 @@ npm run eval:model -- --profile simple --case simple-migration-runbook --candida
 
 One command starts exactly one arm and stops it at the profile's registered wall budget. Provider
 credentials remain in the Studio process; the evaluator reads none. Each tier has three distinct,
-versioned cases; repeated copies of one prompt cannot impersonate task-class coverage. Every case
+versioned cases; repeated copies of one prompt cannot impersonate task-class coverage. Simple cases
+use one direct maker call; balanced and difficult cases retain planning, and that plan is now sealed
+into the drafting prompt instead of being discarded. Every case
 also declares cheap code graders for mechanically checkable structure, length, required content,
 and forbidden content. Those run on the first draft before model review, and a red stops the arm
 without buying a judge call. The campaign includes
 Opus 4.8, GPT-5.6 Luna, GPT-5.6 Sol, Grok 4.6, Qwen A95B, and Qwen 27B. Luna and Sol are reviewed
 under the Opus screen; Anthropic, xAI, and Alibaba makers share the Sol screen. Results are ranked
 only within one screen until Sol and Opus are calibrated on the same human-labeled artifacts; Luna
-is retained as the cost-sensitive judge candidate. The raw calibration file must remain
+is retained as the cost-sensitive judge candidate. The Claude screen is the CLI route pinned to
+Opus 4.8, not a claim that the CLI used no helper model; every receipt records the observed actual
+identity, and a route with mixed actual identities cannot calibrate. The raw calibration file must remain
 `uncalibrated`: standing is derived from constrained verdict and finding-presence agreement, never
 declared by the file. Qwen trials are explicitly exploratory while the configured Alibaba tenant
 endpoint has operator-declared lineage, so they cannot silently clear the independent promotion

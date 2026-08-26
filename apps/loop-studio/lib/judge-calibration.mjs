@@ -54,6 +54,7 @@ export function validateJudgeCalibration(value, campaign) {
     if (!VERDICTS.has(run.verdict)) throw new Error(`judgeRuns[${index}].verdict is invalid`);
     if (!FINDING_PRESENCE.has(run.findingPresence)) throw new Error(`judgeRuns[${index}].findingPresence is invalid`);
     nonempty(run.sourceRunId, `judgeRuns[${index}].sourceRunId`);
+    nonempty(run.actualIdentity, `judgeRuns[${index}].actualIdentity`);
     const key = `${run.artifactId}\u0000${run.judgeId}`;
     if (runKeys.has(key)) throw new Error('judgeRuns may contain only one decision per artifact and judge');
     runKeys.add(key);
@@ -83,12 +84,16 @@ export function summarizeJudgeCalibration(campaign, value) {
     }
     const count = artifactIds.length;
     const jointAgreement = count ? jointMatches / count : null;
+    const actualIdentities = [...new Set(artifactIds.map((artifactId) => runsByJudge.get(judgeId).get(artifactId).actualIdentity))].sort();
+    const identityStable = actualIdentities.length === 1;
     return {
       count,
+      actualIdentities,
+      identityStable,
       verdictAgreement: count ? verdictMatches / count : null,
       findingPresenceAgreement: count ? findingMatches / count : null,
       jointAgreement,
-      standing: count >= minimum && jointAgreement >= threshold ? 'calibrated' : 'uncalibrated',
+      standing: count >= minimum && jointAgreement >= threshold && identityStable ? 'calibrated' : 'uncalibrated',
     };
   };
   const judges = campaign.calibration.judges.map((judge) => {
@@ -98,6 +103,8 @@ export function summarizeJudgeCalibration(campaign, value) {
       id: judge.id,
       seat: `${judge.backend}:${judge.model}`,
       labeledArtifacts: result.count,
+      actualIdentities: result.actualIdentities,
+      identityStable: result.identityStable,
       verdictAgreement: result.verdictAgreement,
       findingPresenceAgreement: result.findingPresenceAgreement,
       jointAgreement: result.jointAgreement,

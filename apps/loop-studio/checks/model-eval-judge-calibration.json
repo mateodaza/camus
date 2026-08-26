@@ -5,7 +5,7 @@
   "labelPolicy": {
     "verdicts": ["APPROVED", "REVISE"],
     "findingPresence": ["clean", "findings"],
-    "rule": "Each content-addressed artifact records its source run and the human label's owner and timestamp. A label records the artifact-level verdict and whether at least one material finding exists. Judge explanations are evidence, never labels; each judge decision records its source run."
+    "rule": "Each content-addressed artifact records its source run and the human label's owner and timestamp. A label records the artifact-level verdict and whether at least one material finding exists. Judge explanations are evidence, never labels; each judge decision records its source run and observed actual identity. A route with mixed actual identities remains uncalibrated."
   },
   "artifacts": [],
   "judgeRuns": []

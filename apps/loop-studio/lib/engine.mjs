@@ -53,6 +53,7 @@ export async function runLoop(run, ctx) {
   // measurement of loop length rather than model quality. Infrastructure
   // failures still fail closed through withRetries.
   const singlePass = run.iterationPolicy === 'single_pass';
+  const directMake = singlePass && run.evaluationPlanPolicy === 'direct_make';
   const ROUND_CAP = singlePass ? 1 : snapshot.loop.roundCap;
   // Acceptance coverage must be comparable across rounds and future arms.
   // Extract once from the immutable run-start contract; the auditor judges
@@ -218,14 +219,21 @@ export async function runLoop(run, ctx) {
 
   try {
     // ---- Plan ------------------------------------------------------------
-    stage('plan', 'active');
-    const plan = await withRetries('plan', () =>
-      adapters.maker({ model: makerModel, stage: 'plan', depth: run.depth, prompt: planPrompt({ ...run, toolPolicy: makerToolPolicy() }), cwd: ctx.scratchDir, signal, onTick: log, onSession: sess('maker'), toolPolicy: makerToolPolicy(), expectedReported: makerExpectedReported }),
-    );
-    recordMakerCall('plan', plan);
-    costUsd += plan.costUsd || 0;
-    emit('plan', { text: plan.text });
-    stage('plan', 'done');
+    let planText = null;
+    if (directMake) {
+      stage('plan', 'skipped', { reason: 'evaluation_direct_make', evaluationCaseId: run.evaluationCaseId });
+      log(`Evaluation profile ${run.evaluationProfile} uses direct_make; no separate planning call was purchased.`);
+    } else {
+      stage('plan', 'active');
+      const plan = await withRetries('plan', () =>
+        adapters.maker({ model: makerModel, stage: 'plan', depth: run.depth, prompt: planPrompt({ ...run, toolPolicy: makerToolPolicy() }), cwd: ctx.scratchDir, signal, onTick: log, onSession: sess('maker'), toolPolicy: makerToolPolicy(), expectedReported: makerExpectedReported }),
+      );
+      recordMakerCall('plan', plan);
+      costUsd += plan.costUsd || 0;
+      planText = String(plan.text ?? '').trim();
+      emit('plan', { text: planText });
+      stage('plan', 'done');
+    }
 
     // ---- Grounding (Hivemind) ---------------------------------------------
     let grounding = null;
@@ -387,7 +395,7 @@ export async function runLoop(run, ctx) {
         model: makerModel,
         stage: 'make',
         depth: run.depth,
-        prompt: makePrompt({ ...run, grounding, answers: contentAnswers(), toolPolicy: makerToolPolicy() }),
+        prompt: makePrompt({ ...run, grounding, answers: contentAnswers(), plan: planText, toolPolicy: makerToolPolicy() }),
         cwd: ctx.scratchDir,
         signal,
         onTick: log,

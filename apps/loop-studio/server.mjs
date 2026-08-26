@@ -250,6 +250,7 @@ async function startRun({
   evaluationProfile = null,
   evaluationCaseId = null,
   evaluationChecks = null,
+  evaluationPlanPolicy = null,
   evaluationCampaignId = null,
   evaluationConfigHash = null,
   displayGoal = null,
@@ -286,9 +287,9 @@ async function startRun({
     id, goal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd,
     models, recovery, publishRequested,
   });
-  const run = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, pairingView, frozenKnowledge, toolPolicy, publish: publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationChecks, evaluationCampaignId, evaluationConfigHash, experimentContext, controlPlane };
+  const run = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, pairingView, frozenKnowledge, toolPolicy, publish: publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationChecks, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, experimentContext, controlPlane };
   // The run exists on disk from second zero — a crash must not orphan it.
-  const runMetadata = () => ({ id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: run.idSalt, engine: ENGINE, models, pairingView, publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationCampaignId, evaluationConfigHash, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, experimentContext, startedAt: run.startedAt });
+  const runMetadata = () => ({ id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: run.idSalt, engine: ENGINE, models, pairingView, publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, experimentContext, startedAt: run.startedAt });
   await writeFile(join(dir, 'run.json'), JSON.stringify(runMetadata(), null, 2))
     .catch((err) => console.error(`[receipts] failed to write run.json for ${id}: ${err.message}`));
   const state = { run, events: [], subscribers: new Set(), answer: null, abort: new AbortController(), writeChain: Promise.resolve() };
@@ -404,7 +405,7 @@ async function startRun({
     })
     : null;
 
-  emit('run', { run: { id, goal: displayGoal ?? goal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, pairingView, recoveryOf: recovery?.sourceRunId ?? null, recovery: recovery ? { sourceRunId: recovery.sourceRunId ?? null, sourceReceiptId: recovery.sourceReceiptId ?? null, parkedSha: recovery.parkedSha ?? null, shaProvenance: recovery.shaProvenance ?? null } : null, engine: ENGINE, roundCap: iterationPolicy === 'single_pass' ? 1 : models.loop.roundCap, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationCampaignId, evaluationConfigHash, experimentContext } });
+  emit('run', { run: { id, goal: displayGoal ?? goal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, pairingView, recoveryOf: recovery?.sourceRunId ?? null, recovery: recovery ? { sourceRunId: recovery.sourceRunId ?? null, sourceReceiptId: recovery.sourceReceiptId ?? null, parkedSha: recovery.parkedSha ?? null, shaProvenance: recovery.shaProvenance ?? null } : null, engine: ENGINE, roundCap: iterationPolicy === 'single_pass' ? 1 : models.loop.roundCap, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, experimentContext } });
   if (!gitOk) emit('log', { line: '⚠ git unavailable; codex reviews will run outside a git repo (different conditions than camus)' });
 
   // A recovery runs the host verifier and NOTHING else — including under the mock
@@ -483,7 +484,7 @@ async function startRun({
     // so a future result field named `models` can never overwrite the sealed pairing
     // (the same reason draft/deliverable are pinned after the spread). simulated is
     // pinned there too: a rehearsal receipt must SAY it is one, permanently.
-    const reportObject = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationCampaignId, evaluationConfigHash, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', experimentContext, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, draft: undefined, deliverable: run.lastMarkdown, evidence, evidencePack, evidencePackError, controlPlane: controlPlane.receipt(), controlRoute: terminalControlRoute, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt };
+    const reportObject = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', experimentContext, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, draft: undefined, deliverable: run.lastMarkdown, evidence, evidencePack, evidencePackError, controlPlane: controlPlane.receipt(), controlRoute: terminalControlRoute, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt };
     const report = JSON.stringify(reportObject, null, 2);
     try {
       await writeFile(join(dir, 'report.json'), report);
@@ -818,7 +819,7 @@ async function captureComparisonKnowledge({ goal, ground, retrieverModel, scratc
   });
 }
 
-async function startParallelComparison({ goal, acceptanceContract, lane, depth, ground, makerModels, reviewerModel, reviewerEffort, catalog, evaluationProfile = null, evaluationCaseId = null, evaluationChecks = null, evaluationCampaignId = null, evaluationConfigHash = null, resumeExperiment = null, resumeSnapshot = null }) {
+async function startParallelComparison({ goal, acceptanceContract, lane, depth, ground, makerModels, reviewerModel, reviewerEffort, catalog, evaluationProfile = null, evaluationCaseId = null, evaluationChecks = null, evaluationPlanPolicy = null, evaluationCampaignId = null, evaluationConfigHash = null, resumeExperiment = null, resumeSnapshot = null }) {
   const id = newId();
   const dir = join(RUNS_DIR, id);
   const scratchDir = join(dir, 'scratch');
@@ -845,6 +846,7 @@ async function startParallelComparison({ goal, acceptanceContract, lane, depth, 
     iterationPolicy: comparisonIterationPolicy,
     evaluationProfile,
     evaluationCaseId,
+    evaluationPlanPolicy,
     evaluationCampaignId,
     evaluationConfigHash,
     status: 'running',
@@ -884,6 +886,7 @@ async function startParallelComparison({ goal, acceptanceContract, lane, depth, 
     iterationPolicy: comparisonIterationPolicy,
     evaluationProfile,
     evaluationCaseId,
+    evaluationPlanPolicy,
     evaluationCampaignId,
     evaluationConfigHash,
     engine: ENGINE,
@@ -924,7 +927,7 @@ async function startParallelComparison({ goal, acceptanceContract, lane, depth, 
     pumpQuestions();
   });
 
-  emit('run', { run: { id, goal: run.displayGoal, acceptanceContract, lane: 'comparison', sourceLane: lane, depth, ground, engine: ENGINE, arms: makerModels, roundCap: modelsAtStart.loop.roundCap, iterationPolicy: comparisonIterationPolicy, evaluationProfile, evaluationCaseId, evaluationCampaignId, evaluationConfigHash } });
+  emit('run', { run: { id, goal: run.displayGoal, acceptanceContract, lane: 'comparison', sourceLane: lane, depth, ground, engine: ENGINE, arms: makerModels, roundCap: modelsAtStart.loop.roundCap, iterationPolicy: comparisonIterationPolicy, evaluationProfile, evaluationCaseId, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash } });
   emit('stage', { name: 'ground', status: 'active', scope: 'comparison' });
 
   void (async () => {
@@ -1024,6 +1027,7 @@ async function startParallelComparison({ goal, acceptanceContract, lane, depth, 
             evaluationProfile,
             evaluationCaseId,
             evaluationChecks,
+            evaluationPlanPolicy,
             evaluationCampaignId,
             evaluationConfigHash,
             displayGoal: `${arm.arm_id} · ${maker}: ${goal}`,
@@ -1100,6 +1104,7 @@ async function startParallelComparison({ goal, acceptanceContract, lane, depth, 
       iterationPolicy: comparisonIterationPolicy,
       evaluationProfile,
       evaluationCaseId,
+      evaluationPlanPolicy,
       evaluationCampaignId,
       evaluationConfigHash,
       engine: ENGINE,
@@ -1176,7 +1181,7 @@ function evaluationBinding(body, evaluationProfile, { goal, acceptanceContract, 
   const suppliedCaseId = body.evaluationCaseId == null ? null : String(body.evaluationCaseId).trim();
   if (!evaluationProfile) {
     return suppliedId === null && suppliedHash === null && suppliedCaseId === null
-      ? { ok: true, id: null, hash: null, caseId: null, checks: null }
+      ? { ok: true, id: null, hash: null, caseId: null, checks: null, planPolicy: null }
       : { ok: false, error: 'evaluation campaign or case identity requires an evaluationProfile' };
   }
   if (suppliedId !== MODEL_EVAL_CAMPAIGN.id || suppliedHash !== MODEL_EVAL_CAMPAIGN_HASH) {
@@ -1187,7 +1192,7 @@ function evaluationBinding(body, evaluationProfile, { goal, acceptanceContract, 
       || lane !== 'freeform' || depth !== treatment.profile.depth || ground !== MODEL_EVAL_CAMPAIGN.controls.ground) {
     return { ok: false, error: 'the evaluation case, goal, contract, lane, depth, or grounding differs from the registered treatment' };
   }
-  return { ok: true, id: suppliedId, hash: suppliedHash, caseId: suppliedCaseId, checks: treatment.evaluationCase.deterministicChecks };
+  return { ok: true, id: suppliedId, hash: suppliedHash, caseId: suppliedCaseId, checks: treatment.evaluationCase.deterministicChecks, planPolicy: treatment.profile.planPolicy };
 }
 // The acceptance contract is deliberately NOT length-capped. A 2,000-char
 // rejection forced operators to compress or weaken the very thing the auditor is
@@ -1490,8 +1495,8 @@ const server = http.createServer(async (req, res) => {
           id: MODEL_EVAL_CAMPAIGN.id,
           configHash: MODEL_EVAL_CAMPAIGN_HASH,
           standing: MODEL_EVAL_CAMPAIGN.standing,
-          profiles: MODEL_EVAL_CAMPAIGN.profiles.map(({ id, depth, wallBudgetMinutes, description, cases }) => ({
-            id, depth, wallBudgetMinutes, description,
+          profiles: MODEL_EVAL_CAMPAIGN.profiles.map(({ id, depth, planPolicy, wallBudgetMinutes, description, cases }) => ({
+            id, depth, planPolicy, wallBudgetMinutes, description,
             cases: cases.map((evaluationCase) => ({
               id: evaluationCase.id,
               description: evaluationCase.description,
@@ -1607,6 +1612,7 @@ const server = http.createServer(async (req, res) => {
           evaluationProfile,
           evaluationCaseId: evaluation.caseId,
           evaluationChecks: evaluation.checks,
+          evaluationPlanPolicy: evaluation.planPolicy,
           evaluationCampaignId: evaluation.id,
           evaluationConfigHash: evaluation.hash,
         });
@@ -1840,6 +1846,7 @@ const server = http.createServer(async (req, res) => {
           evaluationProfile,
           evaluationCaseId: evaluation.caseId,
           evaluationChecks: evaluation.checks,
+          evaluationPlanPolicy: evaluation.planPolicy,
           evaluationCampaignId: evaluation.id,
           evaluationConfigHash: evaluation.hash,
           // Fair evaluation arms receive no live tools. The frozen brief is the
@@ -2096,7 +2103,7 @@ const server = http.createServer(async (req, res) => {
             reviewer: [...experiment.manifest.catalog.reviewer_models],
             reviewerSource: experiment.manifest.catalog.reviewer_source,
           };
-          let recoveryEvaluation = { profile: null, caseId: null, checks: null, id: null, hash: null };
+          let recoveryEvaluation = { profile: null, caseId: null, checks: null, planPolicy: null, id: null, hash: null };
           if (meta.evaluationProfile) {
             if (meta.evaluationCampaignId !== MODEL_EVAL_CAMPAIGN.id || meta.evaluationConfigHash !== MODEL_EVAL_CAMPAIGN_HASH) {
               return json(res, 409, { error: 'this evaluation comparison belongs to an older campaign generation and cannot be resumed under a changed treatment' });
@@ -2107,6 +2114,7 @@ const server = http.createServer(async (req, res) => {
               profile: meta.evaluationProfile,
               caseId: meta.evaluationCaseId,
               checks: treatment.evaluationCase.deterministicChecks,
+              planPolicy: treatment.profile.planPolicy,
               id: meta.evaluationCampaignId,
               hash: meta.evaluationConfigHash,
             };
@@ -2127,6 +2135,7 @@ const server = http.createServer(async (req, res) => {
               evaluationProfile: recoveryEvaluation.profile,
               evaluationCaseId: recoveryEvaluation.caseId,
               evaluationChecks: recoveryEvaluation.checks,
+              evaluationPlanPolicy: recoveryEvaluation.planPolicy,
               evaluationCampaignId: recoveryEvaluation.id,
               evaluationConfigHash: recoveryEvaluation.hash,
               resumeExperiment: experiment,
