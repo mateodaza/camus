@@ -93,7 +93,7 @@
           "acceptanceContract": "The output has one title and exactly four checklist rows. Every row explicitly names Owner, Evidence, and Pass condition. It uses the supplied owner mapping and evidence context for each corresponding behavior. Each pass condition states the observable required outcome instead of merely repeating the row label or evidence cell. The rows separately test default-off behavior, visible opt-in before submission, local persistence, and publication only when enabled. The output ends with an explicit GO/NO-GO rule. It contains no URLs, external claims, or product behavior beyond the supplied specification.",
           "deterministicChecks": [
             { "id": "s1-title", "label": "exactly one level-one title", "type": "regex_count", "pattern": "^#\\s+", "flags": "m", "min": 1, "max": 1 },
-            { "id": "s1-rows", "label": "exactly four owner-first data rows", "type": "regex_count", "pattern": "^\\|\\s*(?:Release|Product|Engineering)\\s*\\|", "flags": "mi", "min": 4, "max": 4 },
+            { "id": "s1-rows", "label": "exactly four owner-first data rows", "type": "regex_count", "pattern": "^\\|\\s*(?:Release|Product|Engineering)(?:\\s+[—-][^|]+)?\\s*\\|", "flags": "mi", "min": 4, "max": 4 },
             { "id": "s1-rule", "label": "explicit final decision rule", "type": "required_phrases", "phrases": ["GO/NO-GO"] },
             { "id": "s1-length", "label": "concise artifact", "type": "word_count", "max": 220 },
             { "id": "s1-no-links", "label": "no external URLs", "type": "forbidden_phrases", "phrases": ["http://", "https://"] }
@@ -106,7 +106,7 @@
           "acceptanceContract": "The output has one title, exactly three owner-first rows, and a final ESCALATE rule. The rows preserve Detect/SRE/dashboard, Contain/Security/integration-key, and Recover/Release/below-alert-threshold mappings in that order. Every row includes Action, Owner, Evidence, and Pass condition. No numeric threshold, deadline, root cause, system name, URL, or extra response step is invented.",
           "deterministicChecks": [
             { "id": "s2-title", "label": "exactly one level-one title", "type": "regex_count", "pattern": "^#\\s+", "flags": "m", "min": 1, "max": 1 },
-            { "id": "s2-rows", "label": "exactly three owner-first data rows", "type": "regex_count", "pattern": "^\\|\\s*(?:SRE|Security|Release)\\s*\\|", "flags": "mi", "min": 3, "max": 3 },
+            { "id": "s2-rows", "label": "exactly three owner-first data rows", "type": "regex_count", "pattern": "^\\|\\s*(?:SRE|Security|Release)(?:\\s+[—-][^|]+)?\\s*\\|", "flags": "mi", "min": 3, "max": 3 },
             { "id": "s2-rule", "label": "explicit escalation rule", "type": "required_phrases", "phrases": ["ESCALATE", "incident commander"] },
             { "id": "s2-length", "label": "concise artifact", "type": "word_count", "max": 220 },
             { "id": "s2-no-links", "label": "no external URLs", "type": "forbidden_phrases", "phrases": ["http://", "https://"] }
@@ -119,7 +119,7 @@
           "acceptanceContract": "The output has one title, exactly three owner-first rows, and a final ROLLBACK rule. Each row includes Owner, Action, Evidence, and Pass condition. The mappings and order exactly preserve App/test-workspace enablement, Data/record-count comparison after reload, and Release/disable-on-difference otherwise remaining-workspace enablement. It contains no invented percentage, time, tool, environment, URL, or deployment stage.",
           "deterministicChecks": [
             { "id": "s3-title", "label": "exactly one level-one title", "type": "regex_count", "pattern": "^#\\s+", "flags": "m", "min": 1, "max": 1 },
-            { "id": "s3-rows", "label": "exactly three owner-first data rows", "type": "regex_count", "pattern": "^\\|\\s*(?:App|Data|Release)\\s*\\|", "flags": "mi", "min": 3, "max": 3 },
+            { "id": "s3-rows", "label": "exactly three owner-first data rows", "type": "regex_count", "pattern": "^\\|\\s*(?:App|Data|Release)(?:\\s+[—-][^|]+)?\\s*\\|", "flags": "mi", "min": 3, "max": 3 },
             { "id": "s3-rule", "label": "explicit rollback rule", "type": "required_phrases", "phrases": ["ROLLBACK"] },
             { "id": "s3-length", "label": "concise artifact", "type": "word_count", "max": 220 },
             { "id": "s3-no-links", "label": "no external URLs", "type": "forbidden_phrases", "phrases": ["http://", "https://"] }

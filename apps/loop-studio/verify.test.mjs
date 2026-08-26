@@ -69,6 +69,21 @@ import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateRep
   const red = runEvaluationChecks('# Title\n\n## Decision\nSee https://example.com.', checks);
   assert.equal(red.pass, false);
   assert.deepEqual(red.checks.filter((check) => check.status === 'fail').map((check) => check.id), ['sections', 'offline']);
+
+  const { loadModelEvalCampaign } = await import('./lib/model-eval-campaign.mjs');
+  const campaign = loadModelEvalCampaign();
+  const incident = campaign.profiles.find((profile) => profile.id === 'simple').cases
+    .find((evaluationCase) => evaluationCase.id === 'simple-incident-handoff');
+  const ownerWithPhase = `# Incident Handoff
+
+| Owner | Action | Evidence | Pass condition |
+|---|---|---|---|
+| SRE — Detect | Check dashboard. | Dashboard. | Error confirmed. |
+| Security — Contain | Disable key. | Confirmation. | Key disabled. |
+| Release — Recover | Restore after threshold. | Dashboard. | Check passes. |
+
+ESCALATE unresolved ownership or a failed recovery check to the incident commander.`;
+  assert.equal(runEvaluationChecks(ownerWithPhase, incident.deterministicChecks).pass, true, 'an owner cell may retain its supplied phase without becoming a false shape failure');
 }
 
 // Judge standing is derived from human labels, never declared by the file.
