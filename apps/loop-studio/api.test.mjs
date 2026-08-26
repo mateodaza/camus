@@ -104,6 +104,7 @@ try {
     assert.ok(!c.catalog.reviewer.includes('codex-auto-review'), 'a hidden internal reviewer model is never offered');
     assert.ok(['codex_cache', 'fallback'].includes(c.catalog.reviewerSource), 'the catalog names whether the list is CLI-verified');
     assert.deepEqual(c.evaluationCampaign.profiles.map((profile) => profile.id).sort(), ['balanced', 'difficult', 'simple'], 'config exposes the registered routing tiers');
+    assert.equal(c.evaluationCampaign.profiles.every((profile) => profile.cases.length >= 3), true, 'config exposes a representative case suite per tier');
   });
 
   await check('the model campaign is local public configuration with bounded Luna coverage', async () => {
@@ -114,6 +115,8 @@ try {
     assert.equal(campaign.controls.publish, false);
     assert.equal(campaign.controls.toolPolicy, 'none');
     assert.ok(campaign.candidates.some((candidate) => candidate.id === 'gpt-luna' && candidate.model === 'gpt-5.6-luna'));
+    assert.equal(campaign.calibration.status, 'human_labels_required');
+    assert.equal(campaign.profiles.every((profile) => profile.cases.length >= 3), true);
     assert.equal(JSON.stringify(campaign).includes('API_KEY'), false, 'the campaign contains no credential name or value');
   });
 
@@ -315,13 +318,15 @@ try {
   await check('single-pass evaluation is explicit, local-only, and seals its profile', async () => {
     const campaign = await (await fetch(`${base}/api/evaluation-campaign`, { headers: { origin: base } })).json();
     const profile = campaign.profiles.find((entry) => entry.id === 'simple');
+    const evaluationCase = profile.cases[0];
     const bound = {
-      goal: profile.goal,
-      acceptanceContract: profile.acceptanceContract,
+      goal: evaluationCase.goal,
+      acceptanceContract: evaluationCase.acceptanceContract,
       lane: 'freeform',
       depth: profile.depth,
       ground: campaign.controls.ground,
       evaluationProfile: profile.id,
+      evaluationCaseId: evaluationCase.id,
       evaluationCampaignId: campaign.id,
       evaluationConfigHash: campaign.configHash,
     };
@@ -338,6 +343,13 @@ try {
       body: JSON.stringify({ ...bound, publish: true }),
     });
     assert.equal(publish.status, 400, 'evaluation cannot opt into an external side effect');
+
+    const missingCase = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify({ ...bound, evaluationCaseId: undefined, publish: false }),
+    });
+    assert.equal(missingCase.status, 400, 'a tier without its exact registered case refuses before spend');
 
     const drifted = await fetch(`${base}/api/runs`, {
       method: 'POST',
@@ -360,6 +372,7 @@ try {
     const runMeta = JSON.parse(readFileSync(join(tmp, id, 'run.json'), 'utf8'));
     assert.equal(runMeta.iterationPolicy, 'single_pass');
     assert.equal(runMeta.evaluationProfile, 'simple');
+    assert.equal(runMeta.evaluationCaseId, evaluationCase.id);
     assert.equal(runMeta.evaluationCampaignId, campaign.id);
     assert.equal(runMeta.evaluationConfigHash, campaign.configHash);
     assert.equal(runMeta.publishRequested, false);
@@ -372,14 +385,44 @@ try {
     assert.ok(report, 'single-pass run seals without a human answer');
     assert.equal(report.iterationPolicy, 'single_pass');
     assert.equal(report.evaluationProfile, 'simple');
+    assert.equal(report.evaluationCaseId, evaluationCase.id);
     assert.equal(report.evaluationCampaignId, campaign.id);
     assert.equal(report.evaluationConfigHash, campaign.configHash);
     assert.equal(report.publishRequested, false);
     assert.equal(report.evidence.rounds.length, 1, 'exactly one review is retained');
+    assert.equal(report.evidence.verify.some((entry) => entry.source === 'evaluation_case_precheck' && entry.evaluationCaseId === evaluationCase.id), true, 'the cheap case precheck is receipt-bound');
     assert.equal(report.makerUsage.some((row) => String(row.stage).includes('fix')), false, 'no repair stage is purchased');
     const events = readFileSync(join(tmp, id, 'events.jsonl'), 'utf8');
     assert.match(events, /"roundCap":1/, 'the live run fact says one round even when standing settings say three');
     assert.doesNotMatch(events, /"type":"answer"/, 'evaluation changes no frozen input through a human answer');
+
+    const redCase = profile.cases[1];
+    const redStart = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify({
+        ...bound,
+        goal: redCase.goal,
+        acceptanceContract: redCase.acceptanceContract,
+        evaluationCaseId: redCase.id,
+        iterationPolicy: 'single_pass',
+        publish: false,
+      }),
+    });
+    assert.equal(redStart.status, 201);
+    const redId = (await redStart.json()).id;
+    let redReport = null;
+    for (let i = 0; i < 120 && !redReport; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const response = await fetch(`${base}/api/runs/${redId}/report`, { headers: { origin: base } });
+      if (response.ok) redReport = await response.json();
+    }
+    assert.ok(redReport, 'a precheck failure still seals a terminal receipt');
+    assert.equal(redReport.status, 'verify_failed');
+    assert.equal(redReport.evidence.rounds.length, 0, 'a deterministic red buys no model review');
+    assert.equal(redReport.evidence.verify.some((entry) => entry.source === 'evaluation_case_precheck' && entry.pass === false), true);
+    assert.equal(redReport.statuses.verification, 'failed');
+    assert.equal(redReport.statuses.audit, 'not_run');
   });
 
   await check('grounded managed-connector runs refuse a non-claude maker before any spend', async () => {

@@ -41,9 +41,79 @@ import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateRep
   assert.equal(campaign.controls.iterationPolicy, 'single_pass');
   assert.equal(campaign.controls.optimizationOrder[0], 'quality_floor_pass_rate');
   assert.ok(campaign.candidates.some((candidate) => candidate.id === 'gpt-luna' && candidate.model === 'gpt-5.6-luna'), 'Luna is an explicit simple/balanced candidate');
+  assert.equal(campaign.profiles.every((profile) => profile.cases.length >= 3), true, 'each tier has multiple representative cases');
+  assert.ok(campaign.calibration.judges.some((judge) => judge.id === 'gpt-luna'), 'Luna is retained as a cost-sensitive judge candidate');
+  assert.equal(campaign.candidates.find((candidate) => candidate.id === 'qwen-27b').evidenceEligibility, 'exploratory_only', 'declared Qwen provenance cannot silently become routing evidence');
   const invalid = structuredClone(campaign);
   invalid.initialSmokeOrder[0].screen = 'sol-screen';
   assert.throws(() => validateModelEvalCampaign(invalid), /non-independent screen/, 'an OpenAI maker cannot be screened by Sol');
+  const repeatedPrompt = structuredClone(campaign);
+  repeatedPrompt.profiles[0].cases = repeatedPrompt.profiles[0].cases.slice(0, 2);
+  assert.throws(() => validateModelEvalCampaign(repeatedPrompt), /at least 3 representative cases/, 'a tier cannot call repeated copies of one prompt a representative suite');
+}
+
+// Campaign graders are intentionally small and declarative. They catch exact
+// shape failures before a model judge is purchased but make no semantic claim.
+{
+  const { runEvaluationChecks } = await import('./lib/evaluation-graders.mjs');
+  const checks = [
+    { id: 'title', label: 'one title', type: 'regex_count', pattern: '^#\\s+', flags: 'm', min: 1, max: 1 },
+    { id: 'sections', label: 'required sections', type: 'required_headings', headings: ['Decision', 'Evidence'] },
+    { id: 'short', label: 'bounded length', type: 'word_count', max: 30 },
+    { id: 'offline', label: 'no links', type: 'forbidden_phrases', phrases: ['https://'] },
+  ];
+  const green = runEvaluationChecks('# Title\n\n## Decision\nUse A.\n\n## Evidence\nReceipt.', checks);
+  assert.equal(green.pass, true);
+  const red = runEvaluationChecks('# Title\n\n## Decision\nSee https://example.com.', checks);
+  assert.equal(red.pass, false);
+  assert.deepEqual(red.checks.filter((check) => check.status === 'fail').map((check) => check.id), ['sections', 'offline']);
+}
+
+// Judge standing is derived from human labels, never declared by the file.
+// Active screen judges share a set; optional candidates calibrate independently.
+{
+  const { loadModelEvalCampaign } = await import('./lib/model-eval-campaign.mjs');
+  const { summarizeJudgeCalibration } = await import('./lib/judge-calibration.mjs');
+  const campaign = loadModelEvalCampaign();
+  const artifacts = Array.from({ length: 12 }, (_, index) => ({
+    id: `sha256:${String(index + 1).padStart(64, '0')}`,
+    caseId: 'simple-publication-checklist',
+    sourceRunId: `maker-run-${index + 1}`,
+    humanLabel: {
+      verdict: index % 2 ? 'APPROVED' : 'REVISE',
+      findingPresence: index % 2 ? 'clean' : 'findings',
+      labeledBy: 'human:test-fixture',
+      labeledAt: '2026-08-26T12:00:00.000Z',
+    },
+  }));
+  const screenSeats = new Set(campaign.independence.judgeScreens.map((screen) => `${screen.reviewer.backend}:${screen.reviewer.model}`));
+  const judgeRuns = campaign.calibration.judges
+    .filter((judge) => screenSeats.has(`${judge.backend}:${judge.model}`))
+    .flatMap((judge) => artifacts.map((artifact) => ({
+      artifactId: artifact.id,
+      judgeId: judge.id,
+      sourceRunId: `${judge.id}-${artifact.sourceRunId}`,
+      verdict: artifact.humanLabel.verdict,
+      findingPresence: artifact.humanLabel.findingPresence,
+    })));
+  const summary = summarizeJudgeCalibration(campaign, {
+    schemaVersion: 1,
+    campaignId: campaign.id,
+    standing: 'uncalibrated',
+    artifacts,
+    judgeRuns,
+  });
+  assert.equal(summary.crossScreenRanking, 'eligible');
+  assert.equal(summary.judges.find((judge) => judge.id === 'gpt-luna').standing, 'uncalibrated', 'an optional judge does not force extra spend before active screens can compare');
+  assert.equal(summary.judges.filter((judge) => judge.id !== 'gpt-luna').every((judge) => judge.standing === 'calibrated'), true);
+  assert.throws(() => summarizeJudgeCalibration(campaign, {
+    schemaVersion: 1, campaignId: campaign.id, standing: 'calibrated', artifacts: [], judgeRuns: [],
+  }), /standing is derived/, 'the file cannot award itself calibrated standing');
+  const untraceable = structuredClone(artifacts);
+  untraceable[0].id = 'artifact-1';
+  assert.throws(() => summarizeJudgeCalibration(campaign, {
+    schemaVersion: 1, campaignId: campaign.id, standing: 'uncalibrated', artifacts: untraceable, judgeRuns: [],
+  }), /sha256 content id/, 'human labels must bind a content-addressed artifact');
 }
 
 // Workspace launch actions are user-facing controls too: the declared port
@@ -977,7 +1047,7 @@ Members value practical progress over content volume [H1].
   const CLEAN_DRAFT = 'Notes.\n\nCommunity first, paid second.\n';
   const BAD_DRAFT = 'Notes.\n\nRetention rose 61% across cohorts.\n'; // uncited stat → deterministic fail
 
-  function harness({ claudeQueue, codexQueue, answerQueue, abortOnAsk = false, publish, iterationPolicy = 'iterative', evaluationProfile = null }) {
+  function harness({ claudeQueue, codexQueue, answerQueue, abortOnAsk = false, publish, iterationPolicy = 'iterative', evaluationProfile = null, evaluationCaseId = null, evaluationChecks = null }) {
     const events = [];
     const prompts = { claude: [], codex: [] };
     const published = [];
@@ -1025,9 +1095,29 @@ Members value practical progress over content volume [H1].
       scratchDir: '.',
       receiptsDir: 'runs/_engine-test',
     };
-    const run = { id: 'engine-test', goal: 'test goal', lane: 'freeform', depth: 'quick', ground: false, iterationPolicy, evaluationProfile };
+    const run = { id: 'engine-test', goal: 'test goal', lane: 'freeform', depth: 'quick', ground: false, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationChecks };
     if (publish !== undefined) run.publish = publish;
     return { run: () => runLoop(run, ctx), events, prompts, published, review, abort };
+  }
+
+  // A registered mechanical miss terminates before review. This is the cheap
+  // first rung of the grading ladder, not a model-authored quality verdict.
+  {
+    const h = harness({
+      claudeQueue: ['- plan', CLEAN_DRAFT],
+      codexQueue: [],
+      answerQueue: [],
+      iterationPolicy: 'single_pass',
+      evaluationProfile: 'simple',
+      evaluationCaseId: 'simple-shape-probe',
+      evaluationChecks: [{ id: 'must-name-owner', label: 'owner present', type: 'required_phrases', phrases: ['Owner:'] }],
+    });
+    const result = await h.run();
+    assert.equal(result.status, 'verify_failed');
+    assert.equal(h.prompts.codex.length, 0, 'a deterministic red buys no reviewer call');
+    const precheck = h.events.find((event) => event.type === 'verify_result' && event.source === 'evaluation_case_precheck');
+    assert.equal(precheck.pass, false);
+    assert.equal(precheck.evaluationCaseId, 'simple-shape-probe');
   }
 
   const f = (severity, title) => ({ severity, title, detail: 'd', suggestion: 's' });

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validateEvaluationChecks } from './evaluation-graders.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_MODEL_EVAL_CAMPAIGN = join(__dirname, '..', 'checks', 'model-eval-campaign.json');
@@ -26,7 +27,7 @@ function seat(value, field) {
 
 export function validateModelEvalCampaign(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('model evaluation campaign must be an object');
-  if (value.schemaVersion !== 1) throw new Error('model evaluation campaign schemaVersion must be 1');
+  if (value.schemaVersion !== 2) throw new Error('model evaluation campaign schemaVersion must be 2');
   nonempty(value.id, 'id');
   if (value.standing !== 'exploratory_only') throw new Error('a new model evaluation campaign must start exploratory_only');
 
@@ -52,6 +53,12 @@ export function validateModelEvalCampaign(value) {
     seat(candidate, `candidates[${index}]`);
     candidateProviders.set(candidate.id, nonempty(candidate.provider, `candidates[${index}].provider`));
     if (!Array.isArray(candidate.priority) || !candidate.priority.length) throw new Error(`candidates[${index}].priority must be non-empty`);
+    if (!['promotion_eligible', 'exploratory_only'].includes(candidate.evidenceEligibility)) {
+      throw new Error(`candidates[${index}].evidenceEligibility must be promotion_eligible or exploratory_only`);
+    }
+    if (candidate.evidenceEligibility === 'exploratory_only') {
+      nonempty(candidate.eligibilityReason, `candidates[${index}].eligibilityReason`);
+    }
   }
 
   const profileIds = uniqueIds(value.profiles, 'profiles');
@@ -59,13 +66,24 @@ export function validateModelEvalCampaign(value) {
   if (requiredProfiles.some((id) => !profileIds.has(id)) || profileIds.size !== requiredProfiles.length) {
     throw new Error('profiles must be exactly simple, balanced, and difficult');
   }
+  const caseIds = new Set();
+  const casesByProfile = new Map();
   for (const [index, profile] of value.profiles.entries()) {
     if (!['quick', 'standard'].includes(profile.depth)) throw new Error(`profiles[${index}].depth must be quick or standard`);
     if (!Number.isInteger(profile.wallBudgetMinutes) || profile.wallBudgetMinutes < 1 || profile.wallBudgetMinutes > 60) {
       throw new Error(`profiles[${index}].wallBudgetMinutes must be an integer from 1 to 60`);
     }
-    nonempty(profile.goal, `profiles[${index}].goal`);
-    nonempty(profile.acceptanceContract, `profiles[${index}].acceptanceContract`);
+    const ids = uniqueIds(profile.cases, `profiles[${index}].cases`);
+    if (ids.size < 3) throw new Error(`profiles[${index}].cases must contain at least 3 representative cases`);
+    casesByProfile.set(profile.id, ids);
+    for (const [caseIndex, evaluationCase] of profile.cases.entries()) {
+      if (caseIds.has(evaluationCase.id)) throw new Error('evaluation case ids must be globally unique');
+      caseIds.add(evaluationCase.id);
+      nonempty(evaluationCase.description, `profiles[${index}].cases[${caseIndex}].description`);
+      nonempty(evaluationCase.goal, `profiles[${index}].cases[${caseIndex}].goal`);
+      nonempty(evaluationCase.acceptanceContract, `profiles[${index}].cases[${caseIndex}].acceptanceContract`);
+      validateEvaluationChecks(evaluationCase.deterministicChecks, `profiles[${index}].cases[${caseIndex}].deterministicChecks`);
+    }
   }
   for (const [index, candidate] of value.candidates.entries()) {
     if (candidate.priority.some((id) => !profileIds.has(id))) throw new Error(`candidates[${index}].priority references an unknown profile`);
@@ -81,9 +99,39 @@ export function validateModelEvalCampaign(value) {
     }
   }
 
+  const calibration = value.calibration;
+  if (!calibration || calibration.status !== 'human_labels_required') {
+    throw new Error('calibration.status must be human_labels_required');
+  }
+  if (!Number.isInteger(calibration.minimumHumanLabeledArtifacts) || calibration.minimumHumanLabeledArtifacts < 12) {
+    throw new Error('calibration.minimumHumanLabeledArtifacts must be at least 12');
+  }
+  if (typeof calibration.minimumAgreement !== 'number' || calibration.minimumAgreement < 0.8 || calibration.minimumAgreement > 1) {
+    throw new Error('calibration.minimumAgreement must be from 0.8 to 1');
+  }
+  const labelsFile = nonempty(calibration.labelsFile, 'calibration.labelsFile');
+  if (!/^checks\/[A-Za-z0-9._-]+\.json$/.test(labelsFile)) {
+    throw new Error('calibration.labelsFile must name a JSON file directly under checks/');
+  }
+  const calibrationJudgeIds = uniqueIds(calibration.judges, 'calibration.judges');
+  const calibrationSeats = new Set();
+  for (const [index, judge] of calibration.judges.entries()) {
+    seat(judge, `calibration.judges[${index}]`);
+    const judgeSeat = `${judge.backend}:${judge.model}`;
+    if (calibrationSeats.has(judgeSeat)) throw new Error('calibration judge seats must be unique');
+    calibrationSeats.add(judgeSeat);
+  }
+  for (const screen of screens) {
+    if (!calibrationSeats.has(`${screen.reviewer.backend}:${screen.reviewer.model}`)) {
+      throw new Error(`judge screen ${screen.id} reviewer is missing from calibration.judges`);
+    }
+  }
+  if (!calibrationJudgeIds.has('gpt-luna')) throw new Error('calibration.judges must retain GPT Luna as a cost-sensitive judge candidate');
+
   if (!Array.isArray(value.initialSmokeOrder) || !value.initialSmokeOrder.length) throw new Error('initialSmokeOrder must be non-empty');
   for (const [index, trial] of value.initialSmokeOrder.entries()) {
     if (!profileIds.has(trial.profile)) throw new Error(`initialSmokeOrder[${index}] references an unknown profile`);
+    if (!casesByProfile.get(trial.profile)?.has(trial.case)) throw new Error(`initialSmokeOrder[${index}] references an unknown case for profile ${trial.profile}`);
     if (!candidateIds.has(trial.maker)) throw new Error(`initialSmokeOrder[${index}] references an unknown maker`);
     if (!screenIds.has(trial.screen)) throw new Error(`initialSmokeOrder[${index}] references an unknown screen`);
     const screen = screenById.get(trial.screen);
@@ -93,6 +141,12 @@ export function validateModelEvalCampaign(value) {
   }
 
   return value;
+}
+
+export function findEvaluationCase(campaign, profileId, caseId) {
+  const profile = campaign.profiles.find((entry) => entry.id === profileId) ?? null;
+  const evaluationCase = profile?.cases.find((entry) => entry.id === caseId) ?? null;
+  return profile && evaluationCase ? { profile, evaluationCase } : null;
 }
 
 export function loadModelEvalCampaign(path = DEFAULT_MODEL_EVAL_CAMPAIGN) {

@@ -65,18 +65,26 @@ Run one arm at a time against an already-running live Studio:
 
 ```bash
 npm run eval:model -- --list
-npm run eval:model -- --profile simple --candidate gpt-luna
-npm run eval:model -- --profile simple --candidate qwen-27b --json
+npm run eval:model -- --calibration
+npm run eval:model -- --profile simple --case simple-incident-handoff --candidate gpt-luna
+npm run eval:model -- --profile simple --case simple-migration-runbook --candidate qwen-27b --json
 ```
 
 One command starts exactly one arm and stops it at the profile's registered wall budget. Provider
-credentials remain in the Studio process; the evaluator reads none. The first campaign includes
+credentials remain in the Studio process; the evaluator reads none. Each tier has three distinct,
+versioned cases; repeated copies of one prompt cannot impersonate task-class coverage. Every case
+also declares cheap code graders for mechanically checkable structure, length, required content,
+and forbidden content. Those run on the first draft before model review, and a red stops the arm
+without buying a judge call. The campaign includes
 Opus 4.8, GPT-5.6 Luna, GPT-5.6 Sol, Grok 4.6, Qwen A95B, and Qwen 27B. Luna and Sol are reviewed
 under the Opus screen; Anthropic, xAI, and Alibaba makers share the Sol screen. Results are ranked
-only within one screen until both judges are calibrated on the same human-labeled artifacts, so a
-reviewer's preference cannot become a fake global model winner. At least five trials per complete
-pairing are required before Camus may present a task-class routing recommendation, and even then
-the user decides.
+only within one screen until Sol and Opus are calibrated on the same human-labeled artifacts; Luna
+is retained as the cost-sensitive judge candidate. The raw calibration file must remain
+`uncalibrated`: standing is derived from constrained verdict and finding-presence agreement, never
+declared by the file. Qwen trials are explicitly exploratory while the configured Alibaba tenant
+endpoint has operator-declared lineage, so they cannot silently clear the independent promotion
+floor. At least five trials per complete pairing across distinct cases are required before Camus
+may present a task-class recommendation, and even then the user decides.
 
 ### Any model in either seat
 

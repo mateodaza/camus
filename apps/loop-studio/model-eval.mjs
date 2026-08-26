@@ -5,8 +5,9 @@
 // already-running Studio process, while this client receives only Studio's
 // short-lived local session token.
 
-import { loadModelEvalCampaign, modelEvalCampaignHash } from './lib/model-eval-campaign.mjs';
+import { findEvaluationCase, loadModelEvalCampaign, modelEvalCampaignHash } from './lib/model-eval-campaign.mjs';
 import { qualityFloorPassed } from './lib/comparison.mjs';
+import { loadJudgeCalibration } from './lib/judge-calibration.mjs';
 
 const campaign = loadModelEvalCampaign();
 const campaignHash = modelEvalCampaignHash(campaign);
@@ -17,12 +18,14 @@ function die(message) {
 }
 
 function parseArgs(argv) {
-  const out = { base: 'http://127.0.0.1:1913', list: false, json: false };
+  const out = { base: 'http://127.0.0.1:1913', list: false, calibration: false, json: false, help: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--list') out.list = true;
+    else if (arg === '--calibration') out.calibration = true;
     else if (arg === '--json') out.json = true;
-    else if (['--profile', '--candidate', '--base'].includes(arg)) {
+    else if (arg === '--help' || arg === '-h') out.help = true;
+    else if (['--profile', '--case', '--candidate', '--base'].includes(arg)) {
       const value = argv[index + 1];
       if (!value || value.startsWith('--')) die(`${arg} requires a value`);
       out[arg.slice(2)] = value;
@@ -57,7 +60,7 @@ function rowUsage(rows) {
   return Object.fromEntries(Object.entries(totals).map(([field, total]) => [field, observed[field] ? total : null]));
 }
 
-function summarize(report, { candidate, profile, screen }) {
+function summarize(report, { candidate, profile, evaluationCase, screen }) {
   const rounds = report.evidence?.rounds ?? [];
   const makerUsage = rowUsage(report.makerUsage ?? []);
   const reviewerUsage = rowUsage(rounds);
@@ -66,12 +69,15 @@ function summarize(report, { candidate, profile, screen }) {
     ? usageRows.reduce((total, usage) => total + usage.input_tokens + usage.output_tokens, 0)
     : null;
   const latestReview = rounds.at(-1) ?? null;
+  const deterministicPrecheck = report.evidence?.verify?.find((item) => item.source === 'evaluation_case_precheck')?.pass ?? null;
   return {
     campaignId: campaign.id,
     evaluationConfigHash: campaignHash,
     standing: campaign.standing,
+    evidenceEligibility: candidate.evidenceEligibility,
     runId: report.id,
     profile: profile.id,
+    case: evaluationCase.id,
     screen: screen.id,
     candidate: candidate.id,
     pairing: {
@@ -82,10 +88,11 @@ function summarize(report, { candidate, profile, screen }) {
     },
     result: {
       status: report.status,
-      qualityFloorPassed: qualityFloorPassed(report.evidencePack),
+      qualityFloorPassed: deterministicPrecheck === true && qualityFloorPassed(report.evidencePack),
       verification: report.statuses?.verification ?? null,
       audit: report.statuses?.audit ?? null,
       reviewVerdict: latestReview?.verdict ?? null,
+      deterministicPrecheck,
       findingCount: latestReview?.findings?.length ?? null,
       coverageMet: latestReview?.coverageAssessments?.filter((item) => item.decision === 'met').length ?? null,
       coverageTotal: latestReview?.coverageAssessments?.length ?? null,
@@ -112,15 +119,35 @@ async function responseJson(response, label) {
 }
 
 const args = parseArgs(process.argv.slice(2));
+if (args.help) {
+  console.log('Usage: node model-eval.mjs --profile <tier> --case <case-id> --candidate <id> [--base http://127.0.0.1:1913] [--json]');
+  console.log('       node model-eval.mjs --list [--json]');
+  console.log('       node model-eval.mjs --calibration [--json]');
+  console.log('One invocation buys one bounded maker/case/judge arm. Failed deterministic case checks stop before model review.');
+  process.exit(0);
+}
+if (args.calibration) {
+  const { summary } = loadJudgeCalibration(campaign);
+  if (args.json) console.log(JSON.stringify(summary, null, 2));
+  else {
+    console.log(`Calibration ${summary.campaignId} · cross-screen ${summary.crossScreenRanking}`);
+    console.log(`Human labels ${summary.humanLabeledArtifacts}; shared screen set ${summary.sharedArtifacts}; minimum ${summary.minimumHumanLabeledArtifacts} at ${summary.minimumAgreement}`);
+    console.table(summary.judges);
+  }
+  process.exit(0);
+}
 if (args.list) {
   const rows = campaign.candidates.map((candidate) => ({
     id: candidate.id,
     seat: `${candidate.backend}:${candidate.model}`,
+    eligibility: candidate.evidenceEligibility,
     priority: candidate.priority.join(', '),
   }));
-  if (args.json) console.log(JSON.stringify({ campaign: campaign.id, profiles: campaign.profiles.map((profile) => profile.id), candidates: rows }, null, 2));
+  const profiles = campaign.profiles.map((profile) => ({ id: profile.id, cases: profile.cases.map((evaluationCase) => evaluationCase.id) }));
+  if (args.json) console.log(JSON.stringify({ campaign: campaign.id, standing: campaign.standing, calibration: campaign.calibration.status, profiles, candidates: rows }, null, 2));
   else {
     console.log(`Campaign ${campaign.id} (${campaign.standing})`);
+    for (const profile of profiles) console.log(`  ${profile.id}: ${profile.cases.join(', ')}`);
     console.table(rows);
   }
   process.exit(0);
@@ -128,6 +155,9 @@ if (args.list) {
 
 const profile = campaign.profiles.find((entry) => entry.id === args.profile);
 if (!profile) die(`choose --profile ${campaign.profiles.map((entry) => entry.id).join('|')}`);
+const treatment = findEvaluationCase(campaign, profile.id, args.case);
+if (!treatment) die(`choose --case ${profile.cases.map((entry) => entry.id).join('|')}`);
+const evaluationCase = treatment.evaluationCase;
 const candidate = campaign.candidates.find((entry) => entry.id === args.candidate);
 if (!candidate) die(`choose --candidate ${campaign.candidates.map((entry) => entry.id).join('|')}`);
 const screen = campaign.independence.judgeScreens.find((entry) => entry.eligibleMakerProviders.includes(candidate.provider));
@@ -162,14 +192,15 @@ try {
     method: 'POST',
     headers,
     body: JSON.stringify({
-      goal: profile.goal,
-      acceptanceContract: profile.acceptanceContract,
+      goal: evaluationCase.goal,
+      acceptanceContract: evaluationCase.acceptanceContract,
       lane: 'freeform',
       depth: profile.depth,
       ground: campaign.controls.ground,
       publish: campaign.controls.publish,
       iterationPolicy: campaign.controls.iterationPolicy,
       evaluationProfile: profile.id,
+      evaluationCaseId: evaluationCase.id,
       evaluationCampaignId: campaign.id,
       evaluationConfigHash: campaignHash,
       pairing: {
@@ -179,7 +210,7 @@ try {
     }),
   }), 'start evaluation');
   activeRunId = started.id;
-  console.error(`model-eval: started ${activeRunId} · ${profile.id} · ${candidate.id} → ${screen.id} · hard wall ${profile.wallBudgetMinutes}m`);
+  console.error(`model-eval: started ${activeRunId} · ${profile.id}/${evaluationCase.id} · ${candidate.id} → ${screen.id} · hard wall ${profile.wallBudgetMinutes}m`);
 
   const startedAt = Date.now();
   const deadline = startedAt + profile.wallBudgetMinutes * 60_000;
@@ -200,14 +231,15 @@ try {
     throw new Error(`the evaluation exceeded its registered ${profile.wallBudgetMinutes}-minute wall budget and was stopped`);
   }
   activeRunId = null;
-  if (report.evaluationCampaignId !== campaign.id || report.evaluationConfigHash !== campaignHash || report.evaluationProfile !== profile.id) {
-    throw new Error('the sealed report does not match the requested campaign generation and profile');
+  if (report.evaluationCampaignId !== campaign.id || report.evaluationConfigHash !== campaignHash
+      || report.evaluationProfile !== profile.id || report.evaluationCaseId !== evaluationCase.id) {
+    throw new Error('the sealed report does not match the requested campaign generation, profile, and case');
   }
-  const summary = summarize(report, { candidate, profile, screen });
+  const summary = summarize(report, { candidate, profile, evaluationCase, screen });
   if (args.json) console.log(JSON.stringify(summary, null, 2));
   else {
-    console.log(`${summary.result.qualityFloorPassed ? 'PASS' : 'FAIL'} ${summary.runId} · ${summary.profile} · ${summary.candidate} → ${summary.screen}`);
-    console.log(`status ${summary.result.status} · verify ${summary.result.verification} · audit ${summary.result.audit} · review ${summary.result.reviewVerdict} · findings ${summary.result.findingCount}`);
+    console.log(`${summary.result.qualityFloorPassed ? 'PASS' : 'FAIL'} ${summary.runId} · ${summary.profile}/${summary.case} · ${summary.candidate} → ${summary.screen}`);
+    console.log(`eligibility ${summary.evidenceEligibility} · precheck ${summary.result.deterministicPrecheck} · status ${summary.result.status} · verify ${summary.result.verification} · audit ${summary.result.audit} · review ${summary.result.reviewVerdict} · findings ${summary.result.findingCount}`);
     console.log(`wall ${summary.economics.wallDurationMs ?? 'unknown'}ms · maker out ${summary.economics.maker.output_tokens ?? 'unknown'} · reviewer out ${summary.economics.reviewer.output_tokens ?? 'unknown'} · total I/O tokens ${summary.economics.totalInputAndOutputTokens ?? 'unknown'}`);
     console.log(`receipt ${summary.receipt.path}`);
   }

@@ -12,6 +12,7 @@ import { deriveIndependence, qualificationForSeat, resolveSeatIdentityFacts } fr
 import { extractClaimCandidates } from './claims.mjs';
 import { extractContractCriteria } from './contract.mjs';
 import { knowledgeSnapshotMatches, sealKnowledgeSnapshot } from './comparison.mjs';
+import { runEvaluationChecks } from './evaluation-graders.mjs';
 
 // Run decisions (models, effort, round cap) resolve per run via getModels().
 
@@ -415,6 +416,30 @@ export async function runLoop(run, ctx) {
     emit('revision', { rev, markdown: draft });
     emit('cost', { costUsd });
     stage('make', 'done');
+
+    // Evaluation cases declare the cheapest mechanically checkable portion of
+    // their contract. Run it before buying the independent reviewer. A red is
+    // terminal first-pass evidence: reviewing an artifact that already misses
+    // an exact shape/phrase/length requirement adds cost without changing the
+    // arm's eligibility, and a repair would mutate the treatment.
+    if (singlePass && Array.isArray(run.evaluationChecks) && run.evaluationChecks.length) {
+      stage('verify', 'active', { scope: 'evaluation_case_precheck', evaluationCaseId: run.evaluationCaseId });
+      const precheck = runEvaluationChecks(draft, run.evaluationChecks);
+      emit('verify_result', {
+        pass: precheck.pass,
+        warnings: 0,
+        skipped: 0,
+        source: 'evaluation_case_precheck',
+        evaluationCaseId: run.evaluationCaseId,
+        checks: precheck.checks,
+      });
+      stage('verify', 'done', { scope: 'evaluation_case_precheck', pass: precheck.pass, evaluationCaseId: run.evaluationCaseId });
+      if (!precheck.pass) {
+        log(`Evaluation case ${run.evaluationCaseId} failed its deterministic precheck; the independent review was not purchased.`);
+        emit('status', { status: 'verify_failed', rev, costUsd });
+        return { status: 'verify_failed', draft, rev, costUsd, answers, makerUsage, makerActualModels, makerActualEvidence, makerReportedModel };
+      }
+    }
 
     // ---- Review ↔ fix ------------------------------------------------------
     const allSeenKeys = new Set();

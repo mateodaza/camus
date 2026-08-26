@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "campaignId": "studio-routing-tiers-2026-08-26-v4",
+  "standing": "uncalibrated",
+  "labelPolicy": {
+    "verdicts": ["APPROVED", "REVISE"],
+    "findingPresence": ["clean", "findings"],
+    "rule": "Each content-addressed artifact records its source run and the human label's owner and timestamp. A label records the artifact-level verdict and whether at least one material finding exists. Judge explanations are evidence, never labels; each judge decision records its source run."
+  },
+  "artifacts": [],
+  "judgeRuns": []
+}

@@ -93,6 +93,21 @@ const PLAN = `- Frame the decision: community-led vs paid-first for a consumer s
 - Anchor the recommendation to the client's actual launch strategy
 - Flag every specific as needing the client's own data before it drives budget`;
 
+// The API suite exercises the registered evaluation path under the rehearsal
+// engine. Give that exact frozen treatment a shape-valid first artifact so the
+// test can prove both the cheap precheck and the one-review ceiling. Ordinary
+// rehearsal runs keep the marketing memo arc above.
+const EVAL_PUBLICATION_CHECKLIST = `# Browser Publication Go/No-Go
+
+| Owner | Evidence | Pass condition |
+|---|---|---|
+| Release | A fresh untouched browser profile | The setting is off before any user action. |
+| Product | The pre-submission screen | The opt-in control is visible before submission. |
+| Engineering | The saved setting after a page reload | The locally saved value remains after reload. |
+| Release | A network trace with the setting first off and then on | Publication is absent while off and occurs only after enablement. |
+
+GO/NO-GO: GO only if all four rows pass; otherwise NO-GO.`;
+
 const REVIEWS = [
   {
     ran: true, error: null, verdict: 'REVISE',
@@ -120,7 +135,7 @@ export function createMockAdapters() {
 
   const adapters = {
     name: 'mock',
-    async claude({ stage, signal, onTick, onSession }) {
+    async claude({ stage, signal, onTick, onSession, prompt }) {
       onTick?.(stage === 'plan' ? 'planning…' : 'drafting: researching sources…');
       if (stage !== 'plan') {
         onSession?.('WebSearch: consumer app ad policy tightening 2026');
@@ -133,6 +148,9 @@ export function createMockAdapters() {
         await sleep(2500, signal);
       }
       if (stage === 'plan') return { ok: true, error: null, text: PLAN, costUsd: 0 }; // rehearsal spends nothing
+      if (String(prompt).includes('browser publication setting')) {
+        return { ok: true, error: null, text: EVAL_PUBLICATION_CHECKLIST, costUsd: 0 };
+      }
       claudeCalls += 1;
       const revs = [REV1, REV2, REV3, REV4];
       return { ok: true, error: null, text: revs[Math.min(claudeCalls - 1, revs.length - 1)], costUsd: 0 }; // rehearsal spends nothing

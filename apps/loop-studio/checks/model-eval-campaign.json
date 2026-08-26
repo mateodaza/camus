@@ -1,8 +1,8 @@
 {
-  "schemaVersion": 1,
-  "id": "studio-routing-tiers-2026-08-26-v3",
+  "schemaVersion": 2,
+  "id": "studio-routing-tiers-2026-08-26-v4",
   "standing": "exploratory_only",
-  "purpose": "Measure candidate model pairings for Camus simple, balanced, and difficult words tasks. This is internal routing evidence; it never removes explicit user model choice or silently changes public defaults.",
+  "purpose": "Measure complete maker/reviewer pairings across representative simple, balanced, and difficult words tasks. This is internal evidence: it never removes explicit user choice, silently changes defaults, or enables automatic routing.",
   "controls": {
     "iterationPolicy": "single_pass",
     "toolPolicy": "none",
@@ -10,107 +10,72 @@
     "ground": false,
     "minimumExplorationTrialsPerArm": 3,
     "minimumRoutingTrialsPerArm": 5,
-    "optimizationOrder": [
-      "quality_floor_pass_rate",
-      "median_duration_ms",
-      "median_total_tokens"
-    ],
+    "optimizationOrder": ["quality_floor_pass_rate", "median_duration_ms", "median_total_tokens"],
     "qualityFloorAudit": "independent_clean",
     "qualityFloor": [
-      "deterministic verification passes",
+      "the registered deterministic case checks pass before model review",
+      "the ordinary deterministic verification passes",
       "the independent review is clean: no findings, every contract criterion met, and every claim supported or not applicable",
       "no human content answer or override was used"
     ],
-    "promotionRule": "No automatic routing or default change. After at least five trials per complete pairing and a passing quality floor, Camus may present a task-class recommendation with its evidence and let the user choose."
+    "promotionRule": "No automatic routing or default change. A task-class recommendation requires at least five trials per complete pairing across distinct registered cases, a passing quality floor, and calibrated judge evidence; the user still chooses."
+  },
+  "calibration": {
+    "status": "human_labels_required",
+    "labelsFile": "checks/model-eval-judge-calibration.json",
+    "minimumHumanLabeledArtifacts": 12,
+    "minimumAgreement": 0.8,
+    "rule": "Calibrate each judge against human labels. Do not compare judge screens until every active screen reviewer reaches the agreement threshold on the same shared human-labeled artifacts; an optional judge candidate does not block the active screens.",
+    "judges": [
+      { "id": "gpt-sol", "backend": "codex", "model": "gpt-5.6-sol", "effort": "high" },
+      { "id": "gpt-luna", "backend": "codex", "model": "gpt-5.6-luna", "effort": "medium" },
+      { "id": "opus-4-8", "backend": "claude", "model": "claude-opus-4-8" }
+    ]
   },
   "independence": {
     "sameVendorReview": "advisory_only",
-    "rankingScope": "Rank within one judge screen only. Do not combine screens or claim a global winner until both judges are calibrated on the same human-labeled artifact set.",
+    "rankingScope": "Rank within one judge screen only. Do not combine screens or claim a global winner until the active screen reviewers are calibrated on the same human-labeled artifact set.",
     "judgeScreens": [
       {
         "id": "sol-screen",
-        "reviewer": {
-          "backend": "codex",
-          "model": "gpt-5.6-sol",
-          "effort": "high"
-        },
-        "eligibleMakerProviders": [
-          "anthropic",
-          "xai",
-          "alibaba"
-        ]
+        "reviewer": { "backend": "codex", "model": "gpt-5.6-sol", "effort": "high" },
+        "eligibleMakerProviders": ["anthropic", "xai", "alibaba"]
       },
       {
         "id": "opus-screen",
-        "reviewer": {
-          "backend": "claude",
-          "model": "claude-opus-4-8"
-        },
-        "eligibleMakerProviders": [
-          "openai"
-        ]
+        "reviewer": { "backend": "claude", "model": "claude-opus-4-8" },
+        "eligibleMakerProviders": ["openai"]
       }
     ]
   },
   "candidates": [
     {
-      "id": "opus-4-8",
-      "provider": "anthropic",
-      "backend": "claude",
-      "model": "claude-opus-4-8",
-      "priority": [
-        "balanced",
-        "difficult"
-      ]
+      "id": "opus-4-8", "provider": "anthropic", "backend": "claude", "model": "claude-opus-4-8",
+      "evidenceEligibility": "promotion_eligible", "priority": ["balanced", "difficult"]
     },
     {
-      "id": "gpt-luna",
-      "provider": "openai",
-      "backend": "codex",
-      "model": "gpt-5.6-luna",
-      "priority": [
-        "simple",
-        "balanced"
-      ]
+      "id": "gpt-luna", "provider": "openai", "backend": "codex", "model": "gpt-5.6-luna",
+      "evidenceEligibility": "promotion_eligible", "priority": ["simple", "balanced"]
     },
     {
-      "id": "gpt-sol",
-      "provider": "openai",
-      "backend": "codex",
-      "model": "gpt-5.6-sol",
-      "priority": [
-        "difficult"
-      ]
+      "id": "gpt-sol", "provider": "openai", "backend": "codex", "model": "gpt-5.6-sol",
+      "evidenceEligibility": "promotion_eligible", "priority": ["difficult"]
     },
     {
-      "id": "grok-4-6",
-      "provider": "xai",
-      "backend": "xai",
-      "model": "grok-4.6",
-      "priority": [
-        "simple",
-        "balanced",
-        "difficult"
-      ]
+      "id": "grok-4-6", "provider": "xai", "backend": "xai", "model": "grok-4.6",
+      "evidenceEligibility": "promotion_eligible", "priority": ["simple", "balanced", "difficult"]
     },
     {
-      "id": "qwen-a95b",
-      "provider": "alibaba",
-      "backend": "dashscope_qwen",
-      "model": "qwen3.8-2.4t-a95b",
-      "priority": [
-        "balanced",
-        "difficult"
-      ]
+      "id": "qwen-a95b", "provider": "alibaba", "backend": "dashscope_qwen", "model": "qwen3.8-2.4t-a95b",
+      "evidenceEligibility": "exploratory_only",
+      "eligibilityReason": "The current Alibaba tenant endpoint derives operator_declared lineage. Its trials remain useful diagnostics but cannot clear an independent promotion floor until endpoint identity is registry-verifiable.",
+      "priority": ["balanced", "difficult"]
     },
     {
-      "id": "qwen-27b",
-      "provider": "alibaba",
-      "backend": "dashscope_qwen",
-      "model": "qwen3.8-27b",
-      "priority": [
-        "simple"
-      ]
+      "id": "qwen-27b", "provider": "alibaba", "backend": "dashscope_qwen", "model": "qwen3.8-27b",
+      "evidenceEligibility": "exploratory_only",
+      "eligibilityReason": "The current Alibaba tenant endpoint derives operator_declared lineage. Its trials remain useful diagnostics but cannot clear an independent promotion floor until endpoint identity is registry-verifiable.",
+      "priority": ["simple"]
     }
   ],
   "profiles": [
@@ -118,47 +83,144 @@
       "id": "simple",
       "depth": "quick",
       "wallBudgetMinutes": 8,
-      "description": "Short, fully specified transformation with exact structure and no external knowledge.",
-      "goal": "Using only the supplied specification, write a concise go/no-go release checklist for a browser publication setting. Behavior: the setting defaults off; the control is visible before submission; the value is stored locally; network publication occurs only when the setting is enabled. Required owner mapping: Release owns default-off and publication gating; Product owns visible opt-in; Engineering owns local persistence. Required evidence contexts, in the same order: a fresh untouched browser profile; the pre-submission screen; the saved setting after a page reload; a network trace with the setting first off and then on. Return one title, exactly four checklist rows, and a final GO/NO-GO rule. Do not invent product behavior.",
-      "acceptanceContract": "The output has one title and exactly four checklist rows. Every row explicitly names Owner, Evidence, and Pass condition. It uses the supplied owner mapping and evidence context for each corresponding behavior. Each pass condition states the observable required outcome instead of merely repeating the row label or evidence cell. The rows separately test default-off behavior, visible opt-in before submission, local persistence, and publication only when enabled. The output ends with an explicit GO/NO-GO rule. It contains no URLs, external claims, or product behavior beyond the supplied specification."
+      "description": "Short, fully specified transformations with exact structure and no external knowledge.",
+      "cases": [
+        {
+          "id": "simple-publication-checklist",
+          "description": "Exact four-row release checklist with no invented product behavior.",
+          "goal": "Using only the supplied specification, write a concise go/no-go release checklist for a browser publication setting. Behavior: the setting defaults off; the control is visible before submission; the value is stored locally; network publication occurs only when the setting is enabled. Required owner mapping: Release owns default-off and publication gating; Product owns visible opt-in; Engineering owns local persistence. Required evidence contexts, in the same order: a fresh untouched browser profile; the pre-submission screen; the saved setting after a page reload; a network trace with the setting first off and then on. Return one level-one title, a table whose first column is Owner and which has exactly four data rows, and a final GO/NO-GO rule. Do not invent product behavior.",
+          "acceptanceContract": "The output has one title and exactly four checklist rows. Every row explicitly names Owner, Evidence, and Pass condition. It uses the supplied owner mapping and evidence context for each corresponding behavior. Each pass condition states the observable required outcome instead of merely repeating the row label or evidence cell. The rows separately test default-off behavior, visible opt-in before submission, local persistence, and publication only when enabled. The output ends with an explicit GO/NO-GO rule. It contains no URLs, external claims, or product behavior beyond the supplied specification.",
+          "deterministicChecks": [
+            { "id": "s1-title", "label": "exactly one level-one title", "type": "regex_count", "pattern": "^#\\s+", "flags": "m", "min": 1, "max": 1 },
+            { "id": "s1-rows", "label": "exactly four owner-first data rows", "type": "regex_count", "pattern": "^\\|\\s*(?:Release|Product|Engineering)\\s*\\|", "flags": "mi", "min": 4, "max": 4 },
+            { "id": "s1-rule", "label": "explicit final decision rule", "type": "required_phrases", "phrases": ["GO/NO-GO"] },
+            { "id": "s1-length", "label": "concise artifact", "type": "word_count", "max": 220 },
+            { "id": "s1-no-links", "label": "no external URLs", "type": "forbidden_phrases", "phrases": ["http://", "https://"] }
+          ]
+        },
+        {
+          "id": "simple-incident-handoff",
+          "description": "Exact three-row incident handoff from supplied facts.",
+          "goal": "Write a concise incident handoff using only these supplied facts. Detect: SRE owns confirming elevated error rate in the service dashboard. Contain: Security owns disabling the affected integration key. Recover: Release owns restoring traffic only after the error rate returns below the supplied alert threshold. Return one level-one title, a table whose first column is Owner and which has exactly three data rows in Detect, Contain, Recover order, and one final ESCALATE rule stating that unresolved ownership or a failed recovery check goes to the incident commander. Do not invent times, systems, thresholds, or causes.",
+          "acceptanceContract": "The output has one title, exactly three owner-first rows, and a final ESCALATE rule. The rows preserve Detect/SRE/dashboard, Contain/Security/integration-key, and Recover/Release/below-alert-threshold mappings in that order. Every row includes Action, Owner, Evidence, and Pass condition. No numeric threshold, deadline, root cause, system name, URL, or extra response step is invented.",
+          "deterministicChecks": [
+            { "id": "s2-title", "label": "exactly one level-one title", "type": "regex_count", "pattern": "^#\\s+", "flags": "m", "min": 1, "max": 1 },
+            { "id": "s2-rows", "label": "exactly three owner-first data rows", "type": "regex_count", "pattern": "^\\|\\s*(?:SRE|Security|Release)\\s*\\|", "flags": "mi", "min": 3, "max": 3 },
+            { "id": "s2-rule", "label": "explicit escalation rule", "type": "required_phrases", "phrases": ["ESCALATE", "incident commander"] },
+            { "id": "s2-length", "label": "concise artifact", "type": "word_count", "max": 220 },
+            { "id": "s2-no-links", "label": "no external URLs", "type": "forbidden_phrases", "phrases": ["http://", "https://"] }
+          ]
+        },
+        {
+          "id": "simple-migration-runbook",
+          "description": "Exact three-row feature-flag migration runbook.",
+          "goal": "Create a concise migration runbook from only these supplied steps. App owns enabling the new parser for one test workspace. Data owns comparing the old and new parser record counts after reload. Release owns disabling the flag if the counts differ, otherwise enabling it for the remaining workspaces. Return one level-one title, a table whose first column is Owner and which has exactly three data rows in App, Data, Release order, and one final ROLLBACK rule. Do not add percentages, time windows, monitoring tools, or deployment stages.",
+          "acceptanceContract": "The output has one title, exactly three owner-first rows, and a final ROLLBACK rule. Each row includes Owner, Action, Evidence, and Pass condition. The mappings and order exactly preserve App/test-workspace enablement, Data/record-count comparison after reload, and Release/disable-on-difference otherwise remaining-workspace enablement. It contains no invented percentage, time, tool, environment, URL, or deployment stage.",
+          "deterministicChecks": [
+            { "id": "s3-title", "label": "exactly one level-one title", "type": "regex_count", "pattern": "^#\\s+", "flags": "m", "min": 1, "max": 1 },
+            { "id": "s3-rows", "label": "exactly three owner-first data rows", "type": "regex_count", "pattern": "^\\|\\s*(?:App|Data|Release)\\s*\\|", "flags": "mi", "min": 3, "max": 3 },
+            { "id": "s3-rule", "label": "explicit rollback rule", "type": "required_phrases", "phrases": ["ROLLBACK"] },
+            { "id": "s3-length", "label": "concise artifact", "type": "word_count", "max": 220 },
+            { "id": "s3-no-links", "label": "no external URLs", "type": "forbidden_phrases", "phrases": ["http://", "https://"] }
+          ]
+        }
+      ]
     },
     {
       "id": "balanced",
       "depth": "quick",
       "wallBudgetMinutes": 15,
-      "description": "Product and architecture judgment with several constraints, but no novel research or repository mutation.",
-      "goal": "Design a concise model-selection policy for an agent product that supports explicit user choice while learning which complete maker/reviewer pairings work best for simple, balanced, and difficult tasks. Quality and velocity have equal product importance, but quality is a hard floor. The policy must use bounded A/B exploration, independent review, deterministic checks where possible, and transparent evidence. Do not recommend automatic routing yet.",
-      "acceptanceContract": "The policy defines simple, balanced, and difficult task classes. It treats deterministic verification and independent review as a quality floor before comparing latency or tokens. It specifies a bounded exploration minimum and retains failed trials. It explains how same-vendor review is treated. It preserves explicit user choice and prohibits silent default changes or automatic routing at this stage. It names the evidence shown with any recommendation and distinguishes local task-class evidence from a universal model claim."
+      "description": "Product and architecture judgment with several constraints, but no research or repository mutation.",
+      "cases": [
+        {
+          "id": "balanced-model-selection",
+          "description": "Evidence-bounded model-selection policy.",
+          "goal": "Design a concise model-selection policy for an agent product that supports explicit user choice while learning which complete maker/reviewer pairings work best for simple, balanced, and difficult tasks. Quality and velocity have equal product importance, but quality is a hard floor. The policy must use bounded A/B exploration, independent review, deterministic checks where possible, transparent uncertainty, and a no-clear-winner outcome. Do not recommend automatic routing yet. Use these exact level-two headings: Task Classes, Quality Floor, Bounded Exploration, User Choice, Evidence, Decision Rule.",
+          "acceptanceContract": "The policy defines simple, balanced, and difficult task classes. Deterministic verification and independent review are a quality floor before latency or tokens. Exploration has a predeclared minimum and cap per pairing/class cell, uses comparable task assignments, retains failed trials, and includes an uncertainty or tie rule. Same-vendor review is labeled weaker. Explicit user choice is preserved and silent default changes or automatic routing are prohibited. Recommendations show exact pair, task class, sample size, failures, latency, tokens, uncertainty, and collection period, and never imply a universal model claim.",
+          "deterministicChecks": [
+            { "id": "b1-headings", "label": "required policy sections", "type": "required_headings", "headings": ["Task Classes", "Quality Floor", "Bounded Exploration", "User Choice", "Evidence", "Decision Rule"] },
+            { "id": "b1-classes", "label": "all task classes named", "type": "required_phrases", "phrases": ["Simple", "Balanced", "Difficult"] },
+            { "id": "b1-length", "label": "bounded policy length", "type": "word_count", "min": 250, "max": 900 },
+            { "id": "b1-no-links", "label": "no external URLs", "type": "forbidden_phrases", "phrases": ["http://", "https://"] }
+          ]
+        },
+        {
+          "id": "balanced-review-routing",
+          "description": "Risk-based human and automated review-routing policy.",
+          "goal": "Design a concise review-routing policy for an agent product. Classify actions as low, medium, or high stakes using reversibility, confidence, and cost of a wrong result. Place input screening, output screening, and tool authorization at distinct boundaries. Low-stakes reversible work may pass automatically after checks; medium-stakes work is sampled or escalated on low confidence; high-stakes or irreversible actions require a human before execution. Name the evidence retained for every route and the fail direction when a control is unavailable. Use these exact level-two headings: Stakes, Control Boundaries, Routing, Human Checkpoints, Evidence, Failure Direction.",
+          "acceptanceContract": "The policy defines low, medium, and high stakes using reversibility, confidence, and consequence. Input screening, output screening, and tool authorization are distinct controls. Routing is by stakes rather than volume and does not send everything to humans. High-stakes or irreversible actions pause before execution. Medium-stakes actions have a sampling and low-confidence rule. Every decision retains inputs, route, reason, control outcomes, actor, and trace identifier without secrets. Unavailable controls fail closed for high-stakes actions and have an explicit bounded direction elsewhere.",
+          "deterministicChecks": [
+            { "id": "b2-headings", "label": "required routing sections", "type": "required_headings", "headings": ["Stakes", "Control Boundaries", "Routing", "Human Checkpoints", "Evidence", "Failure Direction"] },
+            { "id": "b2-levels", "label": "all stakes named", "type": "required_phrases", "phrases": ["low", "medium", "high"] },
+            { "id": "b2-controls", "label": "all control boundaries named", "type": "required_phrases", "phrases": ["input screening", "output screening", "tool authorization"] },
+            { "id": "b2-length", "label": "bounded policy length", "type": "word_count", "min": 250, "max": 900 },
+            { "id": "b2-no-links", "label": "no external URLs", "type": "forbidden_phrases", "phrases": ["http://", "https://"] }
+          ]
+        },
+        {
+          "id": "balanced-provider-admission",
+          "description": "Provider connection and seat-admission policy.",
+          "goal": "Design a concise admission policy for model seats reached through vendor-managed CLI, direct HTTPS, loopback, or managed SSH tunnel connections. A declaration is not qualification. Exact backend, model, role, endpoint identity, credential reference, protocol, and observed reported model must bind to a short-lived qualification receipt. Credentials never enter browser state or artifacts. Tunnel death cannot fall back to direct traffic. Preserve explicit user model choice and describe how unknown or operator-declared lineage limits review standing. Use these exact level-two headings: Connection Types, Qualification, Identity and Lineage, Credential Boundary, Failure Rules, User Choice.",
+          "acceptanceContract": "The policy distinguishes vendor-managed CLI, direct HTTPS, loopback, and managed SSH tunnel connections. It requires exact role/model/backend/connection qualification and refuses substitution, expired receipts, credential drift, endpoint drift, and reported-model mismatch. Declarations grant neither qualification nor verified lineage. Credentials remain server-side by environment reference and never appear in browser state, prompts, logs, or artifacts. SSH is transport-only and tunnel death fails closed without direct fallback. Unknown or operator-declared lineage cannot earn independent standing. Users retain explicit maker and reviewer choice.",
+          "deterministicChecks": [
+            { "id": "b3-headings", "label": "required admission sections", "type": "required_headings", "headings": ["Connection Types", "Qualification", "Identity and Lineage", "Credential Boundary", "Failure Rules", "User Choice"] },
+            { "id": "b3-transports", "label": "all connection forms named", "type": "required_phrases", "phrases": ["vendor-managed", "HTTPS", "loopback", "SSH"] },
+            { "id": "b3-length", "label": "bounded policy length", "type": "word_count", "min": 250, "max": 900 },
+            { "id": "b3-no-links", "label": "no external URLs", "type": "forbidden_phrases", "phrases": ["http://", "https://"] }
+          ]
+        }
+      ]
     },
     {
       "id": "difficult",
       "depth": "standard",
       "wallBudgetMinutes": 30,
-      "description": "Multi-agent control-plane architecture under safety, recovery, privacy, cost, and evidence constraints.",
-      "goal": "Write an architecture decision record for a multi-provider agent orchestrator whose goal is high quality at materially lower wall time. Subagents may fail, disagree, exhaust a budget, or return malformed results; the orchestrator may restart; model providers have different identity and tool capabilities; and internal orchestration data must not leak into the target project. The design must include risk-based human checkpoints, end-to-end traceability, calibrated evaluation, and resumable state. Choose the smallest useful agent topology.",
-      "acceptanceContract": "The ADR contains Context, Decision, Failure recovery, Safety and privacy controls, Evaluation, Human checkpoints, Observability, Cost controls, and Rejected alternatives. It distinguishes deterministic orchestration from semantic model decisions. It defines idempotent subagent units, result validation, explicit conflict handling, and checkpointed orchestrator state. It places input screening, output screening, and tool authorization at distinct boundaries with named fail directions. It prevents Camus-internal prompts, traces, credentials, and receipts from entering the target project. It propagates one trace identifier without storing secrets. It uses code-based grading before calibrated independent LLM judging and human review. It routes human review by stakes and reversibility rather than volume. It includes bounded budgets and a measurable stop rule."
+      "description": "Architecture decisions under safety, recovery, privacy, cost, and evidence constraints.",
+      "cases": [
+        {
+          "id": "difficult-orchestrator-control-plane",
+          "description": "Smallest useful multi-provider orchestrator architecture.",
+          "goal": "Write an architecture decision record for a multi-provider agent orchestrator whose goal is high quality at materially lower wall time. Subagents may fail, disagree, exhaust a budget, or return malformed results; the orchestrator may restart; model providers have different identity and tool capabilities; and internal orchestration data must not leak into the target project. The design must include risk-based human checkpoints, end-to-end traceability, calibrated evaluation, and resumable state. Choose the smallest useful agent topology. Use these exact level-two headings: Context, Decision, Failure Recovery, Safety and Privacy Controls, Evaluation, Human Checkpoints, Observability, Cost Controls, Rejected Alternatives.",
+          "acceptanceContract": "The ADR contains every required section. It distinguishes deterministic orchestration from semantic model decisions. It defines idempotent subagent units whose keys bind dependency output digests, result validation, explicit conflict handling, and crash-consistent checkpointed orchestrator state. Input screening, output screening, and tool authorization sit at distinct boundaries with named fail directions. Camus-internal prompts, traces, credentials, and receipts cannot enter the target project. One trace identifier propagates without secrets. Code grading precedes calibrated independent LLM judging and human review. Human review routes by stakes and reversibility. Budgets are bounded and the wall-time objective has a measurable stop rule.",
+          "deterministicChecks": [
+            { "id": "d1-headings", "label": "complete ADR topology", "type": "required_headings", "headings": ["Context", "Decision", "Failure Recovery", "Safety and Privacy Controls", "Evaluation", "Human Checkpoints", "Observability", "Cost Controls", "Rejected Alternatives"] },
+            { "id": "d1-controls", "label": "three distinct controls named", "type": "required_phrases", "phrases": ["input screening", "output screening", "tool authorization"] },
+            { "id": "d1-length", "label": "bounded ADR length", "type": "word_count", "min": 550, "max": 1600 },
+            { "id": "d1-no-links", "label": "no external URLs", "type": "forbidden_phrases", "phrases": ["http://", "https://"] }
+          ]
+        },
+        {
+          "id": "difficult-crash-recovery",
+          "description": "Crash-consistent resumable orchestration state machine.",
+          "goal": "Write an architecture decision record for crash-consistent recovery in a bounded multi-agent run. The process may die after dispatch, after a result is written, during synthesis, or immediately before a human checkpoint. Subagent calls may be duplicated by a retry and provider responses are not assumed deterministic. The design must resume without repeating accepted work, spending beyond the original budget, or treating a partial write as success. It must also prevent credentials and internal orchestration records from entering the target project. Use these exact level-two headings: Context, Decision, State Machine, Idempotency and Recovery, Safety and Privacy, Human Checkpoints, Observability, Cost Controls, Rejected Alternatives.",
+          "acceptanceContract": "The ADR contains every required section and defines durable states, legal transitions, atomic or journaled writes, and a recovery algorithm for every named crash point. Idempotency keys bind task revision, normalized inputs, dependency artifact digests, capability policy, and provider request identity. Duplicate or late results are validated and deduplicated rather than silently accepted. Accepted work resumes without repeat spend, while in-flight uncertainty consumes or reserves budget fail-closed. Human checkpoints survive restart without fabricating approval. Secrets and Camus-internal state remain outside the target project. A shared trace identifier, bounded logs, and measurable recovery and spend invariants are defined.",
+          "deterministicChecks": [
+            { "id": "d2-headings", "label": "complete recovery ADR topology", "type": "required_headings", "headings": ["Context", "Decision", "State Machine", "Idempotency and Recovery", "Safety and Privacy", "Human Checkpoints", "Observability", "Cost Controls", "Rejected Alternatives"] },
+            { "id": "d2-binding", "label": "critical recovery concepts named", "type": "required_phrases", "phrases": ["dependency", "idempotency", "checkpoint", "budget", "trace"] },
+            { "id": "d2-length", "label": "bounded ADR length", "type": "word_count", "min": 550, "max": 1600 },
+            { "id": "d2-no-links", "label": "no external URLs", "type": "forbidden_phrases", "phrases": ["http://", "https://"] }
+          ]
+        },
+        {
+          "id": "difficult-evaluation-control-plane",
+          "description": "Calibrated evaluation and advisory routing control plane.",
+          "goal": "Write an architecture decision record for an evaluation control plane that learns which complete maker/reviewer pairings work best by task class without silently routing users. Providers differ in price, latency, identity confidence, and tool support. Model and judge behavior drift over time. The system must use multiple representative cases, deterministic graders before model judges, human-labeled judge calibration, bounded counterbalanced exploration, uncertainty-aware recommendations, and rollback. Use these exact level-two headings: Context, Decision, Case Suite, Grading Ladder, Judge Calibration, Experiment Design, Recommendation Gate, Observability and Drift, Cost Controls, Rejected Alternatives.",
+          "acceptanceContract": "The ADR contains every required section. Each task class uses multiple versioned representative cases rather than repeated copies of one prompt. Code graders run before model judges and a failed deterministic gate avoids judge spend. Judges use constrained verdicts, remain separate from the maker, and cannot compare screens until calibrated against the same human labels. Exploration is bounded and counterbalanced, retains failures, records complete-pair latency and tokens, and reports uncertainty or no clear winner. Recommendations require minimum case and trial coverage, preserve explicit user choice, never alter defaults silently, and include rollback and drift invalidation. Traceability excludes secrets and project-internal leakage.",
+          "deterministicChecks": [
+            { "id": "d3-headings", "label": "complete evaluation ADR topology", "type": "required_headings", "headings": ["Context", "Decision", "Case Suite", "Grading Ladder", "Judge Calibration", "Experiment Design", "Recommendation Gate", "Observability and Drift", "Cost Controls", "Rejected Alternatives"] },
+            { "id": "d3-ladder", "label": "grading and calibration concepts named", "type": "required_phrases", "phrases": ["deterministic", "human-labeled", "calibration", "uncertainty", "no clear winner"] },
+            { "id": "d3-length", "label": "bounded ADR length", "type": "word_count", "min": 550, "max": 1600 },
+            { "id": "d3-no-links", "label": "no external URLs", "type": "forbidden_phrases", "phrases": ["http://", "https://"] }
+          ]
+        }
+      ]
     }
   ],
   "initialSmokeOrder": [
-    {
-      "profile": "simple",
-      "screen": "opus-screen",
-      "maker": "gpt-luna"
-    },
-    {
-      "profile": "simple",
-      "screen": "sol-screen",
-      "maker": "qwen-27b"
-    },
-    {
-      "profile": "simple",
-      "screen": "sol-screen",
-      "maker": "grok-4-6"
-    },
-    {
-      "profile": "simple",
-      "screen": "sol-screen",
-      "maker": "opus-4-8"
-    }
+    { "profile": "simple", "case": "simple-incident-handoff", "screen": "opus-screen", "maker": "gpt-luna" },
+    { "profile": "simple", "case": "simple-incident-handoff", "screen": "sol-screen", "maker": "grok-4-6" },
+    { "profile": "simple", "case": "simple-migration-runbook", "screen": "sol-screen", "maker": "qwen-27b" },
+    { "profile": "balanced", "case": "balanced-review-routing", "screen": "sol-screen", "maker": "opus-4-8" },
+    { "profile": "difficult", "case": "difficult-crash-recovery", "screen": "opus-screen", "maker": "gpt-sol" }
   ]
 }

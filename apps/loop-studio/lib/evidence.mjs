@@ -101,11 +101,13 @@ export function deriveEvidence(events) {
       warnings: v.warnings ?? null,
       skipped: v.skipped ?? null,
       source: v.source ?? null,
+      evaluationCaseId: v.evaluationCaseId ?? null,
       derived: v.derived ?? false,
       commitSha: v.commitSha ?? null,
       detail: v.detail ?? null,
       checks: Array.isArray(v.checks) ? v.checks.map((c) => ({
         id: c.id,
+        label: c.label ?? null,
         status: c.status,
         detail: c.detail ?? null,
       })) : null,
