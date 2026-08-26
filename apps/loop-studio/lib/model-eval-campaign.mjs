@@ -29,6 +29,9 @@ export function validateModelEvalCampaign(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('model evaluation campaign must be an object');
   if (value.schemaVersion !== 2) throw new Error('model evaluation campaign schemaVersion must be 2');
   nonempty(value.id, 'id');
+  if (value.treatmentProtocol !== 'visible-deterministic-gate-v1') {
+    throw new Error('treatmentProtocol must bind the visible deterministic gate prompt contract');
+  }
   if (value.standing !== 'exploratory_only') throw new Error('a new model evaluation campaign must start exploratory_only');
 
   const controls = value.controls;

@@ -33,6 +33,25 @@ export function depthBrief(depth, { researchAvailable = true } = {}) {
 
 const contractBlock = (acceptanceContract) => `ACCEPTANCE CONTRACT — the result is only acceptable if this is true:\n${acceptanceContract || 'No explicit contract was supplied (legacy run); do not infer one.'}\nThis contract outranks generic length, source-count, and query-count suggestions below. Never add material merely to hit those defaults.`;
 
+const boundText = (check, unit) => [
+  check.min === undefined ? null : `at least ${check.min}`,
+  check.max === undefined ? null : `at most ${check.max}`,
+].filter(Boolean).join(' and ') + ` ${unit}`;
+
+export function evaluationGateBlock(checks) {
+  if (!Array.isArray(checks) || checks.length === 0) return '';
+  const rows = checks.map((check) => {
+    if (check.type === 'word_count') return `- ${check.label}: ${boundText(check, 'words')}.`;
+    if (check.type === 'regex_count') {
+      return `- ${check.label}: ${boundText(check, 'matches')} for the exact pattern /${check.pattern}/${check.flags ?? ''}.`;
+    }
+    if (check.type === 'required_headings') return `- ${check.label}: include headings named exactly ${check.headings.map((heading) => JSON.stringify(heading)).join(', ')}.`;
+    if (check.type === 'required_phrases') return `- ${check.label}: include ${check.phrases.map((phrase) => JSON.stringify(phrase)).join(', ')}.`;
+    return `- ${check.label}: do not include ${check.phrases.map((phrase) => JSON.stringify(phrase)).join(', ')}.`;
+  });
+  return `\n\nEXACT DETERMINISTIC GATE — these observable acceptance requirements run before independent review. They outrank generic length and structure suggestions:\n${rows.join('\n')}`;
+}
+
 export function groundingPrompt({ goal, acceptanceContract }) {
   return `Freeze the internal knowledge this research run may use. First use ToolSearch with "select:${CLAUDE_HIVEMIND_TOOL}" to load the exact managed Hivemind tool, then use only that knowledge_search tool. Run 2-4 focused queries that can answer the goal, test its assumptions, and expose tradeoffs. If the goal names a document, author, brand, or exact phrase, search that exact wording before broadening. If a query returns nothing, reformulate it rather than treating an empty result as evidence. Do not draft the deliverable and do not use web search.
 
@@ -52,7 +71,7 @@ You MUST first call ToolSearch with "select:${CLAUDE_HIVEMIND_TOOL}", then call 
 ${groundingPrompt(args)}`;
 }
 
-export function makePrompt({ goal, acceptanceContract, lane, depth, grounding, answers, plan, toolPolicy = 'research' }) {
+export function makePrompt({ goal, acceptanceContract, lane, depth, grounding, answers, plan, evaluationChecks, toolPolicy = 'research' }) {
   const groundingBlock = grounding === 'claude'
     ? `\n\nGROUNDING — Myosin's specialist marketing knowledge is available through its managed Hivemind connector. First use ToolSearch with "select:${CLAUDE_HIVEMIND_TOOL}" to load the exact tool. Before drafting, normally run 2-4 focused knowledge_search queries on the goal's key angles; use fewer when the acceptance contract explicitly narrows the query or source scope. Where a returned chunk shapes a claim, cite it [H1], [H2], … and list each under a "### Hivemind" subsection inside ## Sources as "[Hn] Title — Author". If the tool errors or returns nothing relevant, draft without it — never fabricate an [Hn] citation.`
     : grounding?.length
@@ -82,6 +101,7 @@ ${contractBlock(acceptanceContract)}
 ${LANE_BRIEFS[lane] ?? LANE_BRIEFS.freeform}
 
 ${depthBrief(depth, { researchAvailable: toolPolicy !== 'none' })}
+${evaluationGateBlock(evaluationChecks)}
 
 HARD RULES — a deterministic gate checks these mechanically and WILL bounce the draft:
 1. Every quantitative claim (%, $, multiples, big counts) must carry a [n] citation in the same sentence, resolving to a real URL under ## Sources.
@@ -93,7 +113,7 @@ HARD RULES — a deterministic gate checks these mechanically and WILL bounce th
 Respond with ONLY the markdown deliverable. No preamble, no commentary.`;
 }
 
-export function planPrompt({ goal, acceptanceContract, lane, depth, toolPolicy = 'research' }) {
+export function planPrompt({ goal, acceptanceContract, lane, depth, evaluationChecks, toolPolicy = 'research' }) {
   const toolless = toolPolicy === 'none';
   return `You are planning a research deliverable before writing it. Goal:
 ${goal}
@@ -101,6 +121,7 @@ ${goal}
 ${contractBlock(acceptanceContract)}
 
 Deliverable type: ${LANES[lane]?.label ?? 'Freeform'}. ${depthBrief(depth, { researchAvailable: !toolless })}
+${evaluationGateBlock(evaluationChecks)}
 
 Do NOT ask questions. Planning does not pause the run, so a question here appears only as planner text and cannot be answered. If an input is missing, name it as a risk; Camus raises human questions later through explicit checkpoints.
 

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "campaignId": "studio-routing-tiers-2026-08-26-v4",
+  "campaignId": "studio-routing-tiers-2026-08-26-v5",
   "standing": "uncalibrated",
   "labelPolicy": {
     "verdicts": ["APPROVED", "REVISE"],

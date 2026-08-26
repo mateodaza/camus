@@ -1,6 +1,7 @@
 {
   "schemaVersion": 2,
-  "id": "studio-routing-tiers-2026-08-26-v4",
+  "id": "studio-routing-tiers-2026-08-26-v5",
+  "treatmentProtocol": "visible-deterministic-gate-v1",
   "standing": "exploratory_only",
   "purpose": "Measure complete maker/reviewer pairings across representative simple, balanced, and difficult words tasks. This is internal evidence: it never removes explicit user choice, silently changes defaults, or enables automatic routing.",
   "controls": {

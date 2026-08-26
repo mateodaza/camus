@@ -38,6 +38,7 @@ import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateRep
 {
   const { loadModelEvalCampaign, validateModelEvalCampaign } = await import('./lib/model-eval-campaign.mjs');
   const campaign = loadModelEvalCampaign();
+  assert.equal(campaign.treatmentProtocol, 'visible-deterministic-gate-v1', 'campaign identity binds the grader-visible prompt treatment');
   assert.equal(campaign.controls.iterationPolicy, 'single_pass');
   assert.equal(campaign.controls.optimizationOrder[0], 'quality_floor_pass_rate');
   assert.ok(campaign.candidates.some((candidate) => candidate.id === 'gpt-luna' && candidate.model === 'gpt-5.6-luna'), 'Luna is an explicit simple/balanced candidate');
@@ -163,6 +164,24 @@ import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateRep
 
 ESCALATE unresolved ownership or a failed recovery check to the incident commander.`;
   assert.equal(runEvaluationChecks(ownerWithPhase, incident.deterministicChecks).pass, true, 'an owner cell may retain its supplied phase without becoming a false shape failure');
+
+  const balanced = campaign.profiles.find((profile) => profile.id === 'balanced').cases
+    .find((evaluationCase) => evaluationCase.id === 'balanced-model-selection');
+  const { makePrompt, planPrompt } = await import('./lib/prompts.mjs');
+  const promptArgs = {
+    goal: balanced.goal,
+    acceptanceContract: balanced.acceptanceContract,
+    lane: 'freeform',
+    depth: 'quick',
+    evaluationChecks: balanced.deterministicChecks,
+    toolPolicy: 'none',
+  };
+  for (const prompt of [makePrompt(promptArgs), planPrompt(promptArgs)]) {
+    assert.match(prompt, /EXACT DETERMINISTIC GATE/, 'planner and maker see the mechanical contract they are graded against');
+    assert.match(prompt, /at least 250 and at most 900 words/, 'the exact word bound outranks the generic depth target');
+    assert.match(prompt, /"Task Classes"/, 'required headings are visible before generation');
+  }
+  assert.doesNotMatch(makePrompt({ ...promptArgs, evaluationChecks: null }), /EXACT DETERMINISTIC GATE/, 'ordinary runs do not receive evaluation-only instructions');
 }
 
 // Judge standing is derived from human labels, never declared by the file.
