@@ -71,6 +71,44 @@ npm run eval:model -- --profile simple --case simple-incident-handoff --candidat
 npm run eval:model -- --profile simple --case simple-migration-runbook --candidate qwen-27b --json
 ```
 
+Judge calibration is a separate, private operator workflow. It selects 12 distinct active-campaign
+artifacts (four per task class), writes blinded reading copies under `~/.camus/studio`, and never
+shows their maker, reviewer, or prior verdict in the human view:
+
+```bash
+npm run eval:calibrate -- --prepare
+npm run eval:calibrate -- --status
+npm run eval:calibrate -- --show --artifact 1
+npm run eval:calibrate -- --label --artifact 1 --verdict APPROVED --finding-presence clean --human "Your name"
+```
+
+The named person must genuinely read and label all 12 artifacts. Camus rejects an AI/model as the
+human-label owner, rejects a `REVISE` label without findings, and freezes every label as soon as the
+first judge run begins. Only after the queue reports `12/12` human labels should an operator run the
+two active screen judges; each command is resumable, executes one judge at a time with no fallback,
+persists every receipt, and stops before another paid call on infrastructure failure:
+
+```bash
+npm run eval:calibrate -- --run-judge --judge gpt-sol --all
+npm run eval:calibrate -- --run-judge --judge opus-4-8 --all
+# Optional cost-sensitive candidate, not required for cross-screen comparison:
+npm run eval:calibrate -- --run-judge --judge gpt-luna --all
+```
+
+An operator may explicitly delegate a provisional reference pass to an expert AI without laundering
+it into human evidence:
+
+```bash
+npm run eval:calibrate -- --label --artifact 1 --verdict REVISE --finding-presence findings --proxy codex --delegated-by "Your name"
+```
+
+These receipts are stamped `expert_ai_proxy`. They can support a provisional judge comparison, but
+they never increment the human-label count or unlock formal cross-screen ranking.
+
+Human labels, unblinded queue bindings, and raw judge receipts are local `0600`/`0700` operator
+state and are never tracked. Agreement and stable observed identity are derived from those records;
+calibration still never changes routing or model defaults automatically.
+
 One command starts exactly one arm and stops it at the profile's registered wall budget. Provider
 credentials remain in the Studio process; the evaluator reads none. Each tier has three distinct,
 versioned cases; repeated copies of one prompt cannot impersonate task-class coverage. Simple cases

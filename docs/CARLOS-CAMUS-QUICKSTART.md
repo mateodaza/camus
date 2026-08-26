@@ -1,17 +1,19 @@
 # Camus quickstart for CodenameWukong
 
-Camus 0.4.0 supports configurable maker and reviewer seats in Loop Studio for written
-and research work, including reversed Claude/Codex pairings and declared OpenAI-compatible
-backends. The direct code workflow—and Studio's Build lane—currently keep the trusted gate's
-Claude Code maker plus Codex CLI reviewer pairing. Another agent may supervise that code
-workflow, but should not implement alongside Camus.
+Camus 0.4.5 uses a durable native driver for code work and supports configurable maker and
+reviewer seats in Loop Studio for written and research work, including reversed Claude/Codex
+pairings and qualified OpenAI-compatible backends over HTTPS, loopback, or managed SSH. The
+direct code workflow—and Studio's Build lane—still keep the trusted gate's Claude Code maker
+plus Codex CLI reviewer pairing. Grok, Qwen, and generic HTTP code reviewers are benchmark
+candidates, not production routes. Another agent may supervise the code workflow, but should
+not implement alongside Camus.
 
 ## 1. Install once
 
 Requirements: Node 18+, Claude Code signed in, Codex CLI signed in, and .NET 10.
 
 ```bash
-npm install -g camus-cli@0.4.0
+npm install -g camus-cli@0.4.5
 codex login
 camus install
 camus check
@@ -44,8 +46,11 @@ reviewer effort, and the round cap. A fresh checkout uses pragmatic public defau
 standing choices under `~/.camus/studio/models.json` and does not rewrite the tracked
 defaults. Studio's **Build** lane still uses the direct trusted code gate—Claude Code makes
 the change and Codex CLI reviews it—although their models and reviewer effort are
-configurable. Reversing the provider roles applies to Studio's written and research lanes,
-not to Build in 0.4.0.
+configurable. Reversing the provider roles and qualified Grok/Qwen/open-weight seats apply to
+Studio's written and research lanes, not to Build in 0.4.5. A declared connection grants no
+trust: Carlos must explicitly qualify the exact model, role, endpoint, credential reference,
+transport, and reported identity before Studio enables that seat. Tunnel death fails closed and
+never falls back to direct traffic.
 
 For written and research lanes, completed artifacts stay local unless **Publish the
 completed artifact to Hivemind** is checked before launch. Accepting review findings does
@@ -68,7 +73,9 @@ For this repository, pin the deterministic test floor:
 export CAMUS_VERIFY_CMD='dotnet test tests/ActionRpgFramework.Core.Tests/ActionRpgFramework.Core.Tests.csproj -m:1 /nodeReuse:false && dotnet test tests/ActionRpgFramework.MonoGame.Tests/ActionRpgFramework.MonoGame.Tests.csproj -m:1 /nodeReuse:false && dotnet test tests/ActionRpgFramework.Platform.Tests/ActionRpgFramework.Platform.Tests.csproj -m:1 /nodeReuse:false'
 ```
 
-Then launch Claude Code:
+The native driver launches and reattaches its own durable Claude background session; do not start
+a parallel implementation session. Only when deliberately using the legacy slash-command route,
+launch Claude Code with:
 
 ```bash
 claude --permission-mode auto
@@ -76,27 +83,34 @@ claude --permission-mode auto
 
 ## 3. Choose the smallest workflow
 
-For one bounded task:
+The preferred 0.4.5 path is model-free initialization followed by the durable native driver.
+Write the real feature contract to `feature.json`:
 
-```text
-/camus-loop {
-  "task": "Implement <feature>. Acceptance contract: <required behavior, tests, exclusions, and handoff condition>.",
-  "posture": "full",
-  "roundCap": 2,
-  "policy": "ask_on_ambiguity"
+```json
+{
+  "feat": "Implement <bounded game feature>",
+  "tasks": [
+    "Implement <required behavior>. Add <focused tests>. Preserve <named invariant>. Exclude <out-of-scope work>."
+  ],
+  "targetPath": "/absolute/path/to/CodenameWukong",
+  "model": "claude-opus-4-8",
+  "roundCap": 2
 }
 ```
 
-For a multi-part feature, plan first:
+Then run:
 
-```text
-/camus-plan {
-  "request": "Design and implement <feature> from <spec>. Preserve existing behavior. Explicitly exclude <out-of-scope work>.",
-  "policy": "ask_on_ambiguity"
-}
+```bash
+camus start feature.json   # prints the deterministic featId without a model turn
+camus run <featId>         # durable Opus 4.8 maker + Sol reviewer
+camus watch                # optional live board from another terminal
+camus eval                 # local quality, speed, and observed-usage evidence
 ```
 
-Review the generated plan, then run the `/camus-feat` command Camus produces.
+For a multi-task feature, list ordered, independently verifiable tasks in the same JSON. The
+Claude Code workflows remain compatibility surfaces: `/camus-loop` for one bounded task and
+`/camus-plan` followed by `/camus-feat` when an interactive planning conversation is genuinely
+useful.
 
 Use:
 
@@ -118,9 +132,9 @@ The operating sequence is:
 1. **Ground in the source of truth.** Read the live repository, pinned spec or issue, and
    current baseline. Define required behavior, deterministic tests, exclusions, and the
    handoff condition.
-2. **Choose the route.** Use `/camus-loop` for one bounded task, `/camus-plan` followed by
-   `/camus-feat` for a real multi-package feature, or Studio when visible controls,
-   configurable seats, stop/resume, and receipt inspection are useful.
+2. **Choose the route.** Prefer `camus start` + `camus run` for code. Use the legacy workflows
+   only when an interactive Claude Code conversation adds value, or Studio when visible controls,
+   configurable words seats, stop/resume, and receipt inspection are useful.
 3. **Start Camus, then stay outside the implementation.** Camus owns planning,
    implementation, review rounds, fixes, worktrees, verification, and receipts. The outer
    agent must not quietly implement missing work beside it.
@@ -168,7 +182,7 @@ camus retro
   implementation manually.
 - `verify_failed`: the candidate is not shippable.
 
-In 0.4.0, terminals reached after an accepted review receipt report that receipt's reviewer
+In 0.4.5, terminals reached after an accepted review receipt report that receipt's reviewer
 backend, model (or explicit `not_recorded`), effort, and round. Preserve those fields at
 handoff; never substitute the maker model when a reviewer model was not recorded.
 

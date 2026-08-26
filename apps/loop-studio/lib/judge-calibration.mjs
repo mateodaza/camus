@@ -2,15 +2,33 @@
 // agreement from the raw artifact labels and constrained judge decisions; a
 // configured string can never grade a judge up to calibrated standing.
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { homedir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_JUDGE_CALIBRATION = join(__dirname, '..', 'checks', 'model-eval-judge-calibration.json');
 const VERDICTS = new Set(['APPROVED', 'REVISE']);
 const FINDING_PRESENCE = new Set(['clean', 'findings']);
 const ARTIFACT_ID = /^sha256:[a-f0-9]{64}$/;
+const LABEL_AUTHORITIES = new Set(['human', 'expert_ai_proxy']);
+
+export function calibrationLabelAuthority(label) {
+  if (label?.authority) return label.authority;
+  return label?.labeledBy?.startsWith('human:') ? 'human' : null;
+}
+
+export function judgeCalibrationPaths() {
+  const base = process.env.STUDIO_GRANDFATHER_DIR || join(homedir(), '.camus', 'studio');
+  const value = process.env.STUDIO_JUDGE_CALIBRATION_FILE || join(base, 'model-eval-judge-calibration.json');
+  return {
+    value,
+    queue: process.env.STUDIO_JUDGE_CALIBRATION_QUEUE_FILE || join(base, 'model-eval-calibration-queue.json'),
+    artifactsDir: process.env.STUDIO_JUDGE_CALIBRATION_ARTIFACTS_DIR || join(base, 'model-eval-calibration-artifacts'),
+    receiptsDir: process.env.STUDIO_JUDGE_CALIBRATION_RECEIPTS_DIR || join(base, 'model-eval-calibration-receipts'),
+  };
+}
 
 function nonempty(value, field) {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${field} must be a non-empty string`);
@@ -37,7 +55,19 @@ export function validateJudgeCalibration(value, campaign) {
     nonempty(artifact.sourceRunId, `artifacts[${index}].sourceRunId`);
     if (!VERDICTS.has(artifact.humanLabel?.verdict)) throw new Error(`artifacts[${index}].humanLabel.verdict is invalid`);
     if (!FINDING_PRESENCE.has(artifact.humanLabel?.findingPresence)) throw new Error(`artifacts[${index}].humanLabel.findingPresence is invalid`);
-    nonempty(artifact.humanLabel?.labeledBy, `artifacts[${index}].humanLabel.labeledBy`);
+    if (artifact.humanLabel.verdict === 'REVISE' && artifact.humanLabel.findingPresence !== 'findings') {
+      throw new Error(`artifacts[${index}].humanLabel cannot revise without findings`);
+    }
+    const authority = calibrationLabelAuthority(artifact.humanLabel);
+    if (!LABEL_AUTHORITIES.has(authority)) throw new Error(`artifacts[${index}].humanLabel.authority is invalid`);
+    const labeledBy = nonempty(artifact.humanLabel?.labeledBy, `artifacts[${index}].humanLabel.labeledBy`);
+    if (authority === 'human' && !labeledBy.startsWith('human:')) throw new Error(`artifacts[${index}].humanLabel human authority needs a human owner`);
+    if (authority === 'expert_ai_proxy') {
+      if (!labeledBy.startsWith('expert_ai_proxy:')) throw new Error(`artifacts[${index}].humanLabel proxy authority needs a proxy owner`);
+      if (!nonempty(artifact.humanLabel?.delegatedBy, `artifacts[${index}].humanLabel.delegatedBy`).startsWith('human:')) {
+        throw new Error(`artifacts[${index}].humanLabel proxy authority needs a human delegator`);
+      }
+    }
     const labeledAt = nonempty(artifact.humanLabel?.labeledAt, `artifacts[${index}].humanLabel.labeledAt`);
     const labelDate = new Date(labeledAt);
     if (Number.isNaN(labelDate.valueOf()) || labelDate.toISOString() !== labeledAt) {
@@ -53,6 +83,9 @@ export function validateJudgeCalibration(value, campaign) {
     if (!judgeIds.has(run.judgeId)) throw new Error(`judgeRuns[${index}].judgeId is not registered`);
     if (!VERDICTS.has(run.verdict)) throw new Error(`judgeRuns[${index}].verdict is invalid`);
     if (!FINDING_PRESENCE.has(run.findingPresence)) throw new Error(`judgeRuns[${index}].findingPresence is invalid`);
+    if (run.verdict === 'REVISE' && run.findingPresence !== 'findings') {
+      throw new Error(`judgeRuns[${index}] cannot revise without findings`);
+    }
     nonempty(run.sourceRunId, `judgeRuns[${index}].sourceRunId`);
     nonempty(run.actualIdentity, `judgeRuns[${index}].actualIdentity`);
     const key = `${run.artifactId}\u0000${run.judgeId}`;
@@ -65,6 +98,8 @@ export function validateJudgeCalibration(value, campaign) {
 export function summarizeJudgeCalibration(campaign, value) {
   validateJudgeCalibration(value, campaign);
   const artifacts = new Map(value.artifacts.map((artifact) => [artifact.id, artifact]));
+  const humanArtifactIds = [...artifacts.keys()].filter((artifactId) => calibrationLabelAuthority(artifacts.get(artifactId).humanLabel) === 'human');
+  const proxyArtifactIds = [...artifacts.keys()].filter((artifactId) => calibrationLabelAuthority(artifacts.get(artifactId).humanLabel) === 'expert_ai_proxy');
   const runsByJudge = new Map(campaign.calibration.judges.map((judge) => [judge.id, new Map()]));
   for (const run of value.judgeRuns) runsByJudge.get(run.judgeId).set(run.artifactId, run);
   const minimum = campaign.calibration.minimumHumanLabeledArtifacts;
@@ -97,7 +132,7 @@ export function summarizeJudgeCalibration(campaign, value) {
     };
   };
   const judges = campaign.calibration.judges.map((judge) => {
-    const labeledArtifactIds = [...artifacts.keys()].filter((artifactId) => runsByJudge.get(judge.id).has(artifactId));
+    const labeledArtifactIds = humanArtifactIds.filter((artifactId) => runsByJudge.get(judge.id).has(artifactId));
     const result = agreement(judge.id, labeledArtifactIds);
     return {
       id: judge.id,
@@ -111,30 +146,63 @@ export function summarizeJudgeCalibration(campaign, value) {
       standing: result.standing,
     };
   });
+  const proxyJudges = campaign.calibration.judges.map((judge) => {
+    const labeledArtifactIds = proxyArtifactIds.filter((artifactId) => runsByJudge.get(judge.id).has(artifactId));
+    const result = agreement(judge.id, labeledArtifactIds);
+    return {
+      id: judge.id,
+      seat: `${judge.backend}:${judge.model}`,
+      proxyArtifacts: result.count,
+      actualIdentities: result.actualIdentities,
+      identityStable: result.identityStable,
+      verdictAgreement: result.verdictAgreement,
+      findingPresenceAgreement: result.findingPresenceAgreement,
+      jointAgreement: result.jointAgreement,
+      standing: result.standing === 'calibrated' ? 'provisional_aligned' : 'unscored',
+    };
+  });
   const judgeIdBySeat = new Map(campaign.calibration.judges.map((judge) => [`${judge.backend}:${judge.model}`, judge.id]));
   const screenJudgeIds = [...new Set(campaign.independence.judgeScreens.map((screen) => (
     judgeIdBySeat.get(`${screen.reviewer.backend}:${screen.reviewer.model}`)
   )))];
-  const sharedArtifactIds = [...artifacts.keys()].filter((artifactId) => (
+  const sharedArtifactIds = humanArtifactIds.filter((artifactId) => (
+    screenJudgeIds.every((judgeId) => runsByJudge.get(judgeId).has(artifactId))
+  ));
+  const proxySharedArtifactIds = proxyArtifactIds.filter((artifactId) => (
     screenJudgeIds.every((judgeId) => runsByJudge.get(judgeId).has(artifactId))
   ));
   const screenJudgesCalibrated = screenJudgeIds.length >= 2 && screenJudgeIds.every((judgeId) => (
     agreement(judgeId, sharedArtifactIds).standing === 'calibrated'
   ));
+  const proxyScreensAligned = screenJudgeIds.length >= 2 && screenJudgeIds.every((judgeId) => (
+    agreement(judgeId, proxySharedArtifactIds).standing === 'calibrated'
+  ));
   return {
     campaignId: campaign.id,
     minimumHumanLabeledArtifacts: minimum,
     minimumAgreement: threshold,
-    humanLabeledArtifacts: artifacts.size,
+    humanLabeledArtifacts: humanArtifactIds.length,
+    proxyLabeledArtifacts: proxyArtifactIds.length,
     sharedArtifacts: sharedArtifactIds.length,
+    proxySharedArtifacts: proxySharedArtifactIds.length,
     judges,
+    proxyJudges,
     crossScreenRanking: screenJudgesCalibrated ? 'eligible' : 'refused_uncalibrated',
+    proxyCrossScreenComparison: proxyScreensAligned ? 'provisional_eligible' : 'refused_unscored',
   };
 }
 
-export function loadJudgeCalibration(campaign, path = join(__dirname, '..', campaign.calibration.labelsFile)) {
+export function loadJudgeCalibration(campaign, path = null) {
+  const operatorPath = judgeCalibrationPaths().value;
+  const trackedSeed = join(__dirname, '..', campaign.calibration.labelsFile);
+  const resolvedPath = path ?? (existsSync(operatorPath) ? operatorPath : trackedSeed);
   let value;
-  try { value = JSON.parse(readFileSync(path, 'utf8')); }
+  try { value = JSON.parse(readFileSync(resolvedPath, 'utf8')); }
   catch (error) { throw new Error(`cannot read judge calibration: ${error.message}`); }
-  return { value: validateJudgeCalibration(value, campaign), summary: summarizeJudgeCalibration(campaign, value) };
+  return {
+    value: validateJudgeCalibration(value, campaign),
+    summary: summarizeJudgeCalibration(campaign, value),
+    path: resolvedPath,
+    source: resolvedPath === trackedSeed ? 'tracked_empty_seed' : 'local_operator_state',
+  };
 }
