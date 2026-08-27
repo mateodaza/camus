@@ -1,11 +1,12 @@
 # Camus quickstart for CodenameWukong
 
-Camus 0.4.5 uses a durable native driver for code work and supports configurable maker and
+Camus 0.4.6 uses a durable native driver for code work and supports configurable maker and
 reviewer seats in Loop Studio for written and research work, including reversed Claude/Codex
 pairings and qualified OpenAI-compatible backends over HTTPS, loopback, or managed SSH. The
-direct code workflow—and Studio's Build lane—still keep the trusted gate's Claude Code maker
-plus Codex CLI reviewer pairing. Grok, Qwen, and generic HTTP code reviewers are benchmark
-candidates, not production routes. Another agent may supervise the code workflow, but should
+direct code workflow—and Studio's Build lane—keep the trusted gate's Claude Code maker plus Codex
+CLI reviewer pairing. The native driver can now run Grok, Qwen, and generic HTTP reviewers in
+explicit shadow mode on the exact code candidate before Codex closes it. They produce trial/A-B
+evidence, not production authority. Another agent may supervise the code workflow, but should
 not implement alongside Camus.
 
 ## 1. Install once
@@ -13,7 +14,7 @@ not implement alongside Camus.
 Requirements: Node 18+, Claude Code signed in, Codex CLI signed in, and .NET 10.
 
 ```bash
-npm install -g camus-cli@0.4.5
+npm install -g camus-cli@0.4.6
 codex login
 camus install
 camus check
@@ -46,8 +47,9 @@ reviewer effort, and the round cap. A fresh checkout uses pragmatic public defau
 standing choices under `~/.camus/studio/models.json` and does not rewrite the tracked
 defaults. Studio's **Build** lane still uses the direct trusted code gate—Claude Code makes
 the change and Codex CLI reviews it—although their models and reviewer effort are
-configurable. Reversing the provider roles and qualified Grok/Qwen/open-weight seats apply to
-Studio's written and research lanes, not to Build in 0.4.5. A declared connection grants no
+configurable. Reversing the provider roles and independently gating with a qualified
+Grok/Qwen/open-weight seat still apply to Studio's written and research lanes. Build in 0.4.6 may
+evaluate one of those seats as a shadow, but Codex remains its gate. A declared connection grants no
 trust: Carlos must explicitly qualify the exact model, role, endpoint, credential reference,
 transport, and reported identity before Studio enables that seat. Tunnel death fails closed and
 never falls back to direct traffic.
@@ -83,7 +85,7 @@ claude --permission-mode auto
 
 ## 3. Choose the smallest workflow
 
-The preferred 0.4.5 path is model-free initialization followed by the durable native driver.
+The preferred 0.4.6 path is model-free initialization followed by the durable native driver.
 Write the real feature contract to `feature.json`:
 
 ```json
@@ -106,6 +108,43 @@ camus run <featId>         # durable Opus 4.8 maker + Sol reviewer
 camus watch                # optional live board from another terminal
 camus eval                 # local quality, speed, and observed-usage evidence
 ```
+
+### Test Grok, Qwen, or another configured model on the real feature
+
+Configure the endpoint in Studio Settings first; credentials stay in their named environment
+variables. Then verify what this shell can use:
+
+```bash
+camus models
+```
+
+Choose any listed profile/model for one run:
+
+```bash
+camus run <featId> \
+  --shadow-reviewer-backend xai \
+  --shadow-reviewer-model grok-4.6 \
+  --shadow-reviewer-effort medium
+```
+
+The external model reviews every candidate before Codex. Its `trial1:` receipt and comparison are
+stored under `~/.camus`; they never enter CodenameWukong. A missing key, malformed response, model
+substitution, tunnel death, or provider failure is reported as shadow-unavailable and never becomes
+a fallback or green gate. Codex still reviews the unchanged candidate and the repository tests
+still decide whether it ships.
+
+To distribute real tasks across all four currently configured models, copy
+[`CARLOS-OPEN-MODEL-EXPERIMENT.example.json`](CARLOS-OPEN-MODEL-EXPERIMENT.example.json), update
+profile/model ids to match `camus models`, and run:
+
+```bash
+camus run <featId> --experiment /path/to/carlos-open-model-experiment.json
+camus eval --config /path/to/carlos-open-model-experiment.json
+```
+
+This is deliberately `mode: explore`: the report shows shadow verdict agreement, latency, and token
+coverage per exact task class, but names no winning external reviewer. Formal routing still needs
+the repeated Slice G corpus/containment campaign and explicit human admission.
 
 For a multi-task feature, list ordered, independently verifiable tasks in the same JSON. The
 Claude Code workflows remain compatibility surfaces: `/camus-loop` for one bounded task and
@@ -182,7 +221,7 @@ camus retro
   implementation manually.
 - `verify_failed`: the candidate is not shippable.
 
-In 0.4.5, terminals reached after an accepted review receipt report that receipt's reviewer
+In 0.4.6, terminals reached after an accepted review receipt report that receipt's final reviewer
 backend, model (or explicit `not_recorded`), effort, and round. Preserve those fields at
 handoff; never substitute the maker model when a reviewer model was not recorded.
 

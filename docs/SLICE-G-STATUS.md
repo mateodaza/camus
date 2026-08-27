@@ -1,12 +1,20 @@
 # Open Model Seats — Slice G status
 
-**Status:** offline admission gate implemented; live provider campaign not started
+**Status:** offline admission gate implemented; 0.4.6 shadow collection route implemented; formal
+provider campaign and admission not started
 
-**Date:** 2026-08-24
+**Date:** 2026-08-26
 
 Slice G now has the evidence ledger and statistical decision machinery needed to compare Codex
 with Grok, Qwen, Kimi-backed, or generic HTTP reviewer candidates. It intentionally cannot call a
 provider or edit the production reviewer registry.
+
+Camus 0.4.6 adds an intentionally weaker operational bridge: a Studio-configured HTTP model may
+review the same real code candidate immediately before Codex. Its signed `trial1:` receipt,
+availability, latency, usage, and verdict agreement become local experiment evidence. The
+production dispatcher still rejects it, Codex remains the gate, shadow experiments are
+explore-only, and the report names no shadow winner. This starts honest provider-backed learning;
+it does not satisfy the formal repeated campaign below.
 
 ## Implemented offline gate
 

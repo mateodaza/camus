@@ -7,7 +7,7 @@ without you watching: Claude writes the code, Codex (a competing model) reviews
 every change, and your repo's own type-check and tests have the final word. Nothing in
 the loop, Claude included, can approve itself. The pairing is the point.
 
-The preferred 0.4.5 path is a native host driver: `camus start` creates a feature from
+The preferred 0.4.6 path is a native host driver: `camus start` creates a feature from
 JSON without a model turn, and `camus run` gives one kernel-owned worktree to a durable
 Claude Code background session, invokes the independent reviewer directly, and lets code
 perform every mechanical transition. The three Claude Code workflows remain available for
@@ -16,17 +16,21 @@ compatibility: `/camus-plan` turns a raw request into a quality-gated task list,
 v2; v1 remains archived at [mateodaza/nightcrawler](https://github.com/mateodaza/nightcrawler).
 Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMUS-SPEC.md).
 
-> **0.4.5 is released.** The Hybrid Kernel has an actual host driver. Claude background
+> **0.4.6 is released.** The Hybrid Kernel can now evaluate a Studio-configured Grok, Qwen,
+> or other OpenAI-compatible reviewer on the exact code candidate before Codex performs the final
+> gate. External verdict, identity, latency, available usage, and agreement become local A/B
+> evidence under a signed `trial1:` identity; they cannot authorize a commit. Claude background
 > sessions persist independently of the launching terminal and use Claude subscription quota;
 > the driver adopts them after interruption. An append-only local eval ledger supports sequential
 > A/B assignment of model pairings. Arms must clear deterministic verification plus independent
 > clean review before latency or token pressure can influence routing. This release adds the
 > versioned reviewer contract and exact-match dispatcher needed to evaluate more reviewer types.
-> This release adds the controlled Studio connection workflow and provider-free benchmark gate;
+> This release adds the external-model shadow route on top of the controlled Studio connection
+> workflow and provider-free benchmark gate;
 > the legacy workflows remain available for compatibility.
-> [Read the release evidence.](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.5.md)
+> [Read the release evidence.](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.6.md)
 
-> **Reviewer boundary in 0.4.5:** production routing remains exactly Claude → Codex.
+> **Reviewer boundary in 0.4.6:** production routing remains exactly Claude → Codex.
 > `qwen_code`, `grok_cli`, and `http_openai_compat` are recognized candidates but fail closed as
 > `reviewer_benchmark_disabled` until Slice G evidence earns admission. The HTTP candidate is
 > available to the benchmark harness with schema-constrained streaming, bounded custody,
@@ -34,7 +38,14 @@ Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMU
 > implemented candidate is not a supported reviewer yet.
 > See [`docs/SLICE-F-STATUS.md`](https://github.com/mateodaza/camus/blob/main/docs/SLICE-F-STATUS.md).
 
-> **Responsible control plane in 0.4.5:** every governed review now records separate input,
+> **External-model trials in 0.4.6:** `camus models` lists local reviewer profiles without exposing
+> endpoints or secret values. `camus run --shadow-reviewer-backend <profile>
+> --shadow-reviewer-model <id>` runs the selected model before Codex on each candidate. Trial
+> infrastructure failure is visible and has no provider fallback; Codex closure and deterministic
+> verification remain mandatory. Experiment arms may pin the three `shadowReviewer*` fields, but
+> those experiments are `explore`-only and never promote a reviewer.
+
+> **Responsible control plane in 0.4.6:** every governed review now records separate input,
 > action-authorization, and output-screen evidence against a checked-in versioned register.
 > Missing or version-skewed evidence fails closed; provider refusal, Camus policy refusal,
 > reviewer rejection, infrastructure failure, and human escalation stay distinct. Control
@@ -218,6 +229,11 @@ postures are rejected loudly, never silently downgraded.
   interrupted work remains evidence; a cheap failure never wins. Studio continues to own
   parallel same-input comparisons, while CLI uses sequential assignment to avoid paying twice for
   every real feature.
+- **Shadow reviewers accumulate admission evidence safely.** A Grok/Qwen/open-weight profile can
+  inspect the same diff immediately before Codex. The ledger records its usable-trial coverage,
+  verdict agreement, latency, and available token use per arm. Because Codex—not a human-labelled
+  calibration set—supplies the comparison, `camus eval` calls this evidence only, suppresses a
+  shadow leader, and refuses route mode.
 - **Eval reporting fails closed by generation.** `camus eval` groups evidence by the exact
   `(experiment id, configHash, taskClass)` tuple. Without the matching config it reports observed
   coverage but no leader. Configured arms with no trials remain visible at `n=0`, and records from
@@ -378,7 +394,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.4.5
+npm i -g camus-cli@0.4.6
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)
@@ -406,6 +422,21 @@ camus run <featId>             # Opus 4.8 maker, Sol reviewer by default
 camus eval                     # local quality / speed / usage evidence
 ```
 
+List configured external reviewer profiles and run one safely behind Codex:
+
+```bash
+camus models
+camus run <featId> \
+  --shadow-reviewer-backend xai \
+  --shadow-reviewer-model grok-4.6 \
+  --shadow-reviewer-effort medium
+```
+
+The profile comes from `~/.camus/studio/models.json`; only the credential environment-variable
+name lives there. Direct HTTPS, literal loopback, and fixed managed-SSH connections are supported.
+The resulting `trial1:` receipt is non-gating by construction and the production dispatcher still
+returns `reviewer_benchmark_disabled` for `http_openai_compat`.
+
 An A/B config names a task domain and complete pairings; requested model and effort values are
 recorded, never silently substituted:
 
@@ -423,7 +454,10 @@ recorded, never silently substituted:
       "makerEffort": "high",
       "reviewerBackend": "codex",
       "reviewerModel": "gpt-5.6-sol",
-      "reviewerEffort": "high"
+      "reviewerEffort": "high",
+      "shadowReviewerBackend": "xai",
+      "shadowReviewerModel": "grok-4.6",
+      "shadowReviewerEffort": "medium"
     },
     {
       "id": "sonnet-sol",
@@ -431,13 +465,18 @@ recorded, never silently substituted:
       "makerEffort": "medium",
       "reviewerBackend": "codex",
       "reviewerModel": "gpt-5.6-sol",
-      "reviewerEffort": "high"
+      "reviewerEffort": "high",
+      "shadowReviewerBackend": "dashscope_qwen",
+      "shadowReviewerModel": "qwen3.8-2.4t-a95b",
+      "shadowReviewerEffort": "medium"
     }
   ]
 }
 ```
 
-Use `camus run <featId> --experiment experiment.json`. The safer default mode is `explore`, which
+Use `camus run <featId> --experiment experiment.json`. Shadow experiments must use `explore` and
+never name a routing leader; they report comparison coverage, agreement, latency, and usage for the
+formal admission campaign. For ordinary admitted pairings, the safer default mode is `explore`, which
 keeps assignments balanced after the minimum instead of changing routing. `route` is explicit and
 requires at least five trials per arm before quality-gated exploitation. Even then, promotion is
 local evidence for that declared task class, never a universal model leaderboard.

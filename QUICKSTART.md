@@ -22,7 +22,7 @@ standing.
 Requirements: Node 18+, Claude Code signed in, Codex CLI signed in, Python 3, and Git.
 
 ```bash
-npm install -g camus-cli@0.4.5
+npm install -g camus-cli@0.4.6
 codex login
 camus install
 camus check
@@ -110,6 +110,21 @@ camus run <featId>
 and lets the local kernel own verification, commits, recovery, and landing. If the launching
 terminal is interrupted, rerun the same command: Camus adopts the exact background session rather
 than buying a duplicate turn.
+
+To compare a Studio-configured Grok, Qwen, or another OpenAI-compatible reviewer on the exact
+candidate without changing the trusted gate:
+
+```bash
+camus models
+camus run <featId> \
+  --shadow-reviewer-backend <profile> \
+  --shadow-reviewer-model <model-id>
+```
+
+The selected model runs first as an explicitly non-gating shadow. Its identity, verdict, latency,
+available token usage, and agreement with Codex become local eval evidence; Codex still closes
+every accepted review. Credentials remain in the environment variable named by the local Studio
+profile, never in the feature spec or target repository.
 
 For a feature that genuinely needs decomposition, `/camus-plan` remains an optional compatibility
 surface inside Claude Code:

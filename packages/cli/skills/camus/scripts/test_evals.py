@@ -103,7 +103,9 @@ def test_experiment_config_rejects_unknown_fields_and_accepts_pairings():
             "id": "pair-v1", "taskClass": "feature", "minimumTrials": 2,
             "arms": [
                 {"id": "opus-sol", "makerModel": "claude-opus-4-8", "makerEffort": "high",
-                 "reviewerBackend": "codex", "reviewerModel": "gpt-5.6-sol", "reviewerEffort": "high"},
+                 "reviewerBackend": "codex", "reviewerModel": "gpt-5.6-sol", "reviewerEffort": "high",
+                 "shadowReviewerBackend": "xai", "shadowReviewerModel": "grok-4.6",
+                 "shadowReviewerEffort": "medium"},
                 {"id": "sonnet-sol", "makerModel": "claude-sonnet-4-7", "makerEffort": "medium",
                  "reviewerBackend": "codex", "reviewerModel": "gpt-5.6-sol", "reviewerEffort": "high"},
             ],
@@ -112,6 +114,7 @@ def test_experiment_config_rejects_unknown_fields_and_accepts_pairings():
             json.dump(value, fh)
         plan = E.load_experiment(path)
         assert [arm["id"] for arm in plan["arms"]] == ["opus-sol", "sonnet-sol"]
+        assert plan["arms"][0]["shadowReviewerModel"] == "grok-4.6"
         assert plan["mode"] == "explore"
         assert plan["configHash"].startswith("sha256:")
         value["arms"][0]["secret"] = "must-not-pass"
@@ -122,6 +125,90 @@ def test_experiment_config_rejects_unknown_fields_and_accepts_pairings():
             assert False, "unknown experiment field accepted"
         except E.EvalError:
             pass
+
+
+def test_shadow_experiment_requires_complete_tuple_and_codex_closure():
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "experiment.json")
+        base = {
+            "id": "shadow-v1", "taskClass": "feature", "minimumTrials": 1,
+            "arms": [
+                {"id": "a", "makerModel": "opus", "reviewerBackend": "codex",
+                 "reviewerModel": "sol", "reviewerEffort": "high",
+                 "shadowReviewerBackend": "xai"},
+                {"id": "b", "makerModel": "opus", "reviewerBackend": "codex",
+                 "reviewerModel": "sol", "reviewerEffort": "high"},
+            ],
+        }
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(base, fh)
+        try:
+            E.load_experiment(path)
+            assert False, "partial shadow tuple accepted"
+        except E.EvalError as exc:
+            assert "requires backend, model, and effort" in str(exc)
+        base["arms"][0].update({
+            "shadowReviewerModel": "grok", "shadowReviewerEffort": "medium",
+            "reviewerBackend": "http_openai_compat",
+        })
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(base, fh)
+        try:
+            E.load_experiment(path)
+            assert False, "shadow experiment without Codex closure accepted"
+        except E.EvalError as exc:
+            assert "Codex" in str(exc)
+        base["arms"][0]["reviewerBackend"] = "codex"
+        base["mode"] = "route"
+        base["minimumTrials"] = 5
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(base, fh)
+        try:
+            E.load_experiment(path)
+            assert False, "shadow evidence was accepted for automatic routing"
+        except E.EvalError as exc:
+            assert "evidence-only" in str(exc)
+
+
+def test_shadow_stats_report_agreement_without_naming_a_leader():
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "experiment.json")
+        value = {
+            "id": "shadow", "taskClass": "feature", "minimumTrials": 1,
+            "qualityFloor": 0.8, "mode": "explore",
+            "arms": [
+                {"id": "grok", "makerModel": "opus", "reviewerBackend": "codex",
+                 "reviewerModel": "sol", "reviewerEffort": "high",
+                 "shadowReviewerBackend": "xai", "shadowReviewerModel": "grok",
+                 "shadowReviewerEffort": "medium"},
+                {"id": "qwen", "makerModel": "opus", "reviewerBackend": "codex",
+                 "reviewerModel": "sol", "reviewerEffort": "high",
+                 "shadowReviewerBackend": "qwen", "shadowReviewerModel": "qwen",
+                 "shadowReviewerEffort": "medium"},
+            ],
+        }
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(value, fh)
+        plan = E.load_experiment(path)
+        rows = []
+        for number, arm, agreement in ((1, "grok", True), (2, "qwen", False)):
+            row = _episode(number, arm, quality=True, wall=1000)
+            row["experiment"]["id"] = "shadow"
+            row["experiment"]["configHash"] = plan["configHash"]
+            row["taskClass"] = "feature"
+            row["outcome"].update({
+                "shadowReview": "clean", "shadowCodexVerdictAgreement": agreement,
+                "shadowStanding": "experimental_shadow",
+            })
+            row["economics"].update({"shadowWallMs": number * 100, "shadowInputTokens": 10,
+                                     "shadowOutputTokens": 5})
+            rows.append(row)
+        report = E.summarize(rows, plans=[plan])
+        segment = report["segments"][0]
+        assert segment["standing"] == "shadow_evidence_only"
+        assert segment["leader"] is None and segment["routingEligible"] is False
+        assert segment["arms"]["grok"]["shadowVerdictAgreementRate"] == 1.0
+        assert segment["arms"]["qwen"]["shadowVerdictAgreementRate"] == 0.0
 
 
 def test_route_mode_is_explicit_and_requires_a_larger_sample_floor():

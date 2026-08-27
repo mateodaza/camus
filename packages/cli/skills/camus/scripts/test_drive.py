@@ -69,6 +69,43 @@ def test_event_log_is_append_only_and_deduplicates_phase_keys():
         assert os.stat(os.path.dirname(log.path)).st_mode & 0o777 == 0o700
 
 
+def test_shadow_review_is_durable_deduplicated_and_never_becomes_the_gate():
+    with tempfile.TemporaryDirectory() as root:
+        log = D.EventLog("feat-a", base=root)
+        run = {"state": {"kernel": {"traceId": "trace:a"}}}
+        node = {"taskId": "task-a", "worktree": os.path.join(root, "worktree")}
+        pairing = {
+            "reviewerBackend": "codex", "shadowReviewerBackend": "xai",
+            "shadowReviewerModel": "grok-4.6", "shadowReviewerEffort": "medium",
+        }
+        result = {
+            "ran": True, "standing": "experimental_shadow", "backend": "xai",
+            "model": "grok-4.6", "effort": "medium", "clean": True,
+            "blocking": [], "nonblocking": [], "receiptSha256": "a" * 64,
+            "finalGate": "codex",
+        }
+        with mock.patch.object(K, "_candidate_fingerprint", return_value="candidate1:" + "b" * 64), \
+                mock.patch.object(D.model_trials, "run_review", return_value=result) as called:
+            first = D._run_shadow_review(log, run, node, pairing, root, "task", 1)
+            second = D._run_shadow_review(log, run, node, pairing, root, "task", 1)
+        assert called.call_count == 1
+        assert first == second and first["standing"] == "experimental_shadow"
+        comparison = D._record_shadow_comparison(
+            log, "trace:a", "task-a", first, {"clean": True},
+            codex_candidate_fingerprint="candidate1:" + "b" * 64,
+        )
+        assert comparison["verdictAgreement"] is True
+        assert comparison["shadowComparable"] is True and comparison["sameCandidate"] is True
+        assert comparison["standing"] == "experimental_shadow"
+        assert len([row for row in log.records() if row["type"] == "shadow.reviewed"]) == 1
+        changed = D._record_shadow_comparison(
+            log, "trace:a", "task-a", first, {"clean": True},
+            codex_candidate_fingerprint="candidate1:" + "c" * 64,
+        )
+        assert changed["shadowRan"] is True and changed["shadowComparable"] is False
+        assert changed["verdictAgreement"] is None and changed["shadowClean"] is None
+
+
 def test_controller_decision_keys_deduplicate_replay_but_allow_corrected_evidence():
     task_id = "task-a"
     human = D._decision_event_key(task_id, "decision", 1, {"action": "human"})

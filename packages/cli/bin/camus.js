@@ -86,6 +86,9 @@ usage: npx camus-cli <command>
   start <spec.json>  initialize a native feature run without spending a model turn
   run <featId>       drive it with durable Claude background makers + direct independent review
                        --experiment <json> assigns model pairings and records quality/cost/latency
+                       --shadow-reviewer-backend <profile> --shadow-reviewer-model <id>
+                                                  evaluates Grok/Qwen/open-weight on the same diff;
+                                                  Codex still performs the final gate
                        --direct-output-reserve <n> reserves direct-output runway before maker/fix
                                                   (0 disables the reserve; not a hard cap)
                        --human-action <action> resumes a durable native controller handoff
@@ -97,6 +100,11 @@ usage: npx camus-cli <command>
                        append --campaign <json> --ledger <jsonl> --receipt <json>
                        summarize --campaign <json> --ledger <jsonl> [--out <json>] [--json]
                        a passing row is evidence for human admission; it never enables a backend
+  models [--json]    list Studio-configured Grok/Qwen/open-weight reviewer profiles; shows only
+                       credential presence, never endpoints or secret values
+  trial-review [...] run one explicitly non-gating external-model review of a Camus worktree:
+                       --backend <profile> --model <id> --worktree <path> --task "<contract>"
+                       emits trial1 evidence; Codex remains the final gate
   resume       list interrupted feat runs (canonical resumeArgs, JSON)
   retro        read-only run-history analytics over ~/.camus/reports: per-feat lines,
                  aggregates (status/posture mix, rounds, token p50/p90), evidence-gated
@@ -167,6 +175,12 @@ switch (cmd) {
     break;
   case 'benchmark':
     py('benchmark_reviewers.py', rest);
+    break;
+  case 'models':
+    py('model_trials.py', ['list', ...rest]);
+    break;
+  case 'trial-review':
+    py('model_trials.py', ['review', ...rest]);
     break;
   case 'retro':
     py('retro.py', rest);

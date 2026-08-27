@@ -47,7 +47,7 @@ import time
 VALID_EFFORT = ("low", "medium", "high", "xhigh")
 VALID_SCOPE = ("full", "light")
 VALID_QUALIFICATION = ("builtin1", "qual1")
-QUALIFICATION_RE = re.compile(r"^(?:builtin1|qual1)(?::[0-9a-f]{64})?$")
+QUALIFICATION_RE = re.compile(r"^(?:builtin1|qual1)(?::[0-9a-f]{64})?$|^trial1:[0-9a-f]{64}$")
 # The REVIEW-CONTRACT.md version this writer speaks. Recorded so a request that
 # outlives a contract bump is a visible mismatch downstream, never a silent one.
 REVIEW_CONTRACT = "rc1"
@@ -96,8 +96,14 @@ def build_request(worktree, round_value, effort=None, nonce=None, model=None, ba
         return None, "review scope %r is not one of %s" % (scope, "|".join(VALID_SCOPE))
     if qualification is not None and not valid_qualification(qualification):
         return None, (
-            "review qualification %r is not a tier label or versioned builtin1:/qual1: fingerprint"
+            "review qualification %r is not a tier label, admitted builtin1:/qual1:, or explicit trial1: fingerprint"
             % qualification
+        )
+    if isinstance(qualification, str) and qualification.startswith("trial1:") and (
+            backend != "http_openai_compat" or scope != "light"
+            or origin != "camus_model_trial"):
+        return None, (
+            "trial1 authority is valid only for the explicit light http_openai_compat model-trial route"
         )
     return {
         "schema_version": 1,

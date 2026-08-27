@@ -36,6 +36,7 @@ import urllib.request
 import adapter
 import review_request
 import review_qualification
+import review_trial
 import review_watch
 
 
@@ -435,8 +436,12 @@ def _binding_and_config(worktree, task, round_arg, effort_arg, scope_arg, env=No
         "request": request.get("qualification"),
         "environment": env.get("CAMUS_REVIEW_QUALIFICATION"),
     }, "review qualification")
-    if not re.fullmatch(r"qual1:[0-9a-f]{64}", qualification):
-        raise ValueError("configurable HTTP reviewers require an exact accepted qual1: fingerprint")
+    admitted_qualification = re.fullmatch(r"qual1:[0-9a-f]{64}", qualification)
+    trial_qualification = re.fullmatch(r"trial1:[0-9a-f]{64}", qualification)
+    if not admitted_qualification and not trial_qualification:
+        raise ValueError("configurable HTTP reviewers require an exact qual1: or trial1: fingerprint")
+    if trial_qualification and env.get("CAMUS_HTTP_REVIEW_TRIAL") != "1":
+        raise ValueError("trial1 review requires the explicit non-gating trial route")
     origin = review_request.consistent_value({"request": request.get("origin"), "environment": env.get("CAMUS_REVIEW_ORIGIN")}, "review origin")
     operator = review_request.consistent_value({"request": request.get("operator"), "environment": env.get("CAMUS_REVIEW_OPERATOR")}, "review operator")
     transport = review_request.consistent_value({"request": request.get("transport"), "environment": env.get("CAMUS_HTTP_REVIEW_TRANSPORT")}, "review transport")
@@ -445,18 +450,6 @@ def _binding_and_config(worktree, task, round_arg, effort_arg, scope_arg, env=No
     connection = review_request.consistent_value({"request": request.get("connection"), "environment": env.get("CAMUS_HTTP_REVIEW_CONNECTION")}, "review connection")
     if not NAME_RE.fullmatch(connection):
         raise ValueError("review connection name is invalid")
-    training_org = review_qualification.accepted_training_org(
-        qualification, BACKEND, model, transport, connection, env,
-    )
-    declared_training_org = (env.get("CAMUS_REVIEWER_TRAINING_ORG") or "").strip().lower()
-    if declared_training_org and declared_training_org != training_org:
-        raise ValueError("ambient reviewer training organization conflicts with the accepted qualification record")
-    maker_org = (env.get("CAMUS_MAKER_TRAINING_ORG") or "").strip().lower()
-    if not ORG_RE.fullmatch(maker_org):
-        raise ValueError("maker training organization is missing or invalid")
-    if maker_org == training_org:
-        raise ValueError("maker and HTTP reviewer share training organization %r" % maker_org)
-
     base_url = _safe_url(env.get("CAMUS_HTTP_REVIEW_BASE_URL"), transport)
     auth = (env.get("CAMUS_HTTP_REVIEW_AUTH") or "none").strip()
     if auth not in ("none", "env"):
@@ -470,6 +463,27 @@ def _binding_and_config(worktree, task, round_arg, effort_arg, scope_arg, env=No
     elif key_env:
         raise ValueError("keyless review may not name a credential environment variable")
     credential_revision = _credential_revision(auth, key_env or None, env)
+
+    if admitted_qualification:
+        training_org = review_qualification.accepted_training_org(
+            qualification, BACKEND, model, transport, connection, env,
+        )
+        standing = "admission_candidate"
+    else:
+        profile_backend = (env.get("CAMUS_HTTP_REVIEW_PROFILE_BACKEND") or "").strip()
+        training_org = review_trial.accepted_training_org(
+            qualification, BACKEND, profile_backend, model, transport, connection,
+            base_url, auth, key_env or None, env,
+        )
+        standing = "experimental_shadow"
+    declared_training_org = (env.get("CAMUS_REVIEWER_TRAINING_ORG") or "").strip().lower()
+    if declared_training_org and declared_training_org != training_org:
+        raise ValueError("ambient reviewer training organization conflicts with the signed review authority")
+    maker_org = (env.get("CAMUS_MAKER_TRAINING_ORG") or "").strip().lower()
+    if not ORG_RE.fullmatch(maker_org):
+        raise ValueError("maker training organization is missing or invalid")
+    if maker_org == training_org:
+        raise ValueError("maker and HTTP reviewer share training organization %r" % maker_org)
 
     tunnel_pid = tunnel_started = None
     if transport == "ssh_tunnel":
@@ -516,6 +530,7 @@ def _binding_and_config(worktree, task, round_arg, effort_arg, scope_arg, env=No
         "connection": connection,
         "reviewer_training_org": training_org,
         "maker_training_org": maker_org,
+        "standing": standing,
         # Only a one-way digest is durable. It prevents a completed result or live process from
         # being adopted after endpoint/auth-mode/timeout drift without persisting the endpoint,
         # its resolved tunnel port, or any credential value.
@@ -553,6 +568,8 @@ def _binding(meta):
         "operator": meta.get("operator"),
         "transport": meta.get("transport"),
         "connection": meta.get("connection"),
+        "standing": meta.get("standing"),
+        "input_fingerprint": meta.get("input_fingerprint"),
     }
 
 
@@ -572,6 +589,8 @@ def _audit_binding(meta):
         "operator": meta.get("operator"),
         "transport": meta.get("transport"),
         "connection": meta.get("connection"),
+        "standing": meta.get("standing"),
+        "input_fingerprint": meta.get("input_fingerprint"),
         "round_actual": meta.get("round"),
         "effort_actual": meta.get("effort"),
         "reviewer_model": meta.get("reviewer_model"),
@@ -602,6 +621,8 @@ def _write_audit(review_dir, meta, exit_code, raw, failure=None):
         "reviewer_effort": meta.get("effort"),
         "reviewer_training_org": meta.get("reviewer_training_org"),
         "maker_training_org": meta.get("maker_training_org"),
+        "standing": meta.get("standing"),
+        "input_fingerprint": meta.get("input_fingerprint"),
         "codex_raw": raw,
         "codex_parsed": parsed,
         "binding": _audit_binding(meta),
@@ -619,7 +640,8 @@ def _write_audit(review_dir, meta, exit_code, raw, failure=None):
         compared = (
             "worktree", "worktree_canonical", "round", "codex_exit", "backend_exit",
             "reviewer_model", "reviewer_effort", "reviewer_training_org",
-            "maker_training_org", "codex_raw", "codex_parsed", "binding",
+            "maker_training_org", "standing", "input_fingerprint",
+            "codex_raw", "codex_parsed", "binding",
             "infrastructure_failure",
         )
         drift = [key for key in compared if prior.get(key) != record.get(key)]
@@ -719,6 +741,8 @@ def _emit_outcome(envelope, watch_dir, review_dir, meta):
         normalized["binding"] = _binding(meta)
         normalized["reviewer_training_org"] = meta.get("reviewer_training_org")
         normalized["maker_training_org"] = meta.get("maker_training_org")
+        normalized["standing"] = meta.get("standing")
+        normalized["input_fingerprint"] = meta.get("input_fingerprint")
         if isinstance(envelope.get("usage"), dict):
             normalized["usage"] = envelope["usage"]
         return _emit(normalized)
@@ -788,7 +812,7 @@ def _start_review_claimed(args, worktree, locked_review_dir):
                 "target_dir", "round", "effort", "scope", "reviewer_model", "reviewer_backend",
                 "gate_nonce", "input_fingerprint", "input_sha256", "contract", "qualification", "origin",
                 "operator", "transport", "connection", "reviewer_training_org",
-                "maker_training_org", "runtime_fingerprint",
+                "maker_training_org", "standing", "runtime_fingerprint",
             )
             drift = [key for key in compared if prior.get(key) != meta.get(key)]
             if drift:

@@ -153,7 +153,8 @@ def load_experiment(path):
     normalized = []
     allowed = {
         "id", "makerModel", "makerEffort", "reviewerBackend", "reviewerModel",
-        "reviewerEffort", "orchestratorModel",
+        "reviewerEffort", "orchestratorModel", "shadowReviewerBackend",
+        "shadowReviewerModel", "shadowReviewerEffort",
     }
     for index, raw in enumerate(arms):
         if not isinstance(raw, dict) or set(raw) - allowed:
@@ -165,6 +166,16 @@ def load_experiment(path):
         arm_ids.add(arm_id)
         for key in ("makerModel", "reviewerBackend", "reviewerModel", "reviewerEffort"):
             _nonempty(arm.get(key), "%s.%s" % (arm_id, key))
+        shadow_fields = ("shadowReviewerBackend", "shadowReviewerModel", "shadowReviewerEffort")
+        present_shadow = [key for key in shadow_fields if key in arm]
+        if present_shadow and len(present_shadow) != len(shadow_fields):
+            raise EvalError("%s shadow reviewer requires backend, model, and effort together" % arm_id)
+        for key in present_shadow:
+            _nonempty(arm.get(key), "%s.%s" % (arm_id, key))
+        if arm.get("shadowReviewerEffort") not in (None, "low", "medium", "high", "xhigh"):
+            raise EvalError("%s.shadowReviewerEffort must be low|medium|high|xhigh" % arm_id)
+        if present_shadow and arm.get("reviewerBackend") != "codex":
+            raise EvalError("%s shadow evaluation requires Codex as the final reviewer gate" % arm_id)
         arm.setdefault("makerEffort", "high")
         arm.setdefault("orchestratorModel", "sonnet")
         normalized.append(arm)
@@ -180,6 +191,8 @@ def load_experiment(path):
         raise EvalError("mode must be explore|route")
     if mode == "route" and minimum < 5:
         raise EvalError("route mode requires minimumTrials >= 5")
+    if mode == "route" and any(arm.get("shadowReviewerBackend") for arm in normalized):
+        raise EvalError("shadow reviewer experiments are evidence-only and must use mode explore")
     plan = {
         "schemaVersion": SCHEMA_VERSION,
         "id": experiment_id,
@@ -256,6 +269,13 @@ def arm_stats(records, experiment_id, arm_id, task_class=None, config_hash=_ANY_
     ]
     passed = sum(1 for row in rows if _floor_pass(row))
     economics = [row.get("economics") for row in rows if isinstance(row.get("economics"), dict)]
+    shadow_economics = [item for item in economics if (item.get("shadowCalls") or 0) > 0
+                        or any(key in item for key in ("shadowInputTokens", "shadowOutputTokens"))]
+    outcomes = [row.get("outcome") for row in rows if isinstance(row.get("outcome"), dict)]
+    shadow_attempts = [item for item in outcomes if item.get("shadowReview") not in (None, "not_configured")]
+    shadow_usable = [item for item in shadow_attempts if item.get("shadowReview") in ("clean", "findings")]
+    shadow_agreements = [item for item in shadow_usable
+                         if isinstance(item.get("shadowCodexVerdictAgreement"), bool)]
     pairs = _timing_pairs(economics)
     return {
         "trials": len(rows),
@@ -265,6 +285,15 @@ def arm_stats(records, experiment_id, arm_id, task_class=None, config_hash=_ANY_
         "medianModelWallMs": _median([model for _wall, model in pairs]),
         "medianOrchestrationOverheadMs": _median(_orchestration_overheads(pairs)),
         "medianOutputTokens": _median([item.get("outputTokens") for item in economics]),
+        "shadowTrials": len(shadow_attempts),
+        "shadowUsableTrials": len(shadow_usable),
+        "shadowVerdictAgreementRate": (
+            sum(1 for item in shadow_agreements if item["shadowCodexVerdictAgreement"])
+            / len(shadow_agreements) if shadow_agreements else None
+        ),
+        "medianShadowWallMs": _median([item.get("shadowWallMs") for item in shadow_economics]),
+        "medianShadowInputTokens": _median([item.get("shadowInputTokens") for item in shadow_economics]),
+        "medianShadowOutputTokens": _median([item.get("shadowOutputTokens") for item in shadow_economics]),
     }
 
 
@@ -378,6 +407,9 @@ def _segment_report(rows, experiment_id, config_hash, task_class, arm_ids, plan)
         "routingConfigured": False,
         "routingEligible": False,
         "leader": None,
+        "shadowExperiment": bool(plan and any(
+            arm.get("shadowReviewerBackend") for arm in plan.get("arms", [])
+        )),
     }
     if plan is None:
         # Without the matching configured qualityFloor and minimumTrials we cannot name a
@@ -398,6 +430,11 @@ def _segment_report(rows, experiment_id, config_hash, task_class, arm_ids, plan)
     segment["coverageComplete"] = covered
     if not covered:
         segment["standing"] = "coverage_incomplete"
+        return segment
+    if segment["shadowExperiment"]:
+        # Codex closure proves the shipped candidate, not that the shadow reviewer is calibrated.
+        # Report agreement/latency/usage, but never name a shadow-model routing leader here.
+        segment["standing"] = "shadow_evidence_only"
         return segment
     # A leader may only be named among the configured arms.
     eligible = _rank_eligible(stats, plan_arm_ids, plan["qualityFloor"])
@@ -467,7 +504,8 @@ def summarize(records, experiment_id=None, plans=None, task_class=None):
         ),
         "note": (
             "Operational quality uses deterministic verification plus an independent clean review. "
-            "It is not human calibration and does not establish a universal best model."
+            "It is not human calibration. Shadow-model agreement is comparison evidence, not reviewer "
+            "admission. Neither establishes a universal best model."
         ),
     }
 
@@ -486,6 +524,7 @@ def _standing_line(segment):
         "exploratory_only": "no leader — configured qualityFloor/minimumTrials unavailable",
         "coverage_incomplete": "no leader — minimumTrials coverage not yet reached",
         "no_arm_clears_quality_floor": "no leader — no arm clears the quality floor",
+        "shadow_evidence_only": "no leader — shadow agreement/latency evidence is not reviewer admission",
     }
     return reasons.get(segment["standing"], segment["standing"])
 
@@ -538,10 +577,14 @@ def main(argv=None):
                     else "%.1fm" % (stats["medianModelWallMs"] / 60000)
                 overhead = "—" if stats["medianOrchestrationOverheadMs"] is None \
                     else "%.1fm" % (stats["medianOrchestrationOverheadMs"] / 60000)
+                shadow_agreement = "—" if stats["shadowVerdictAgreementRate"] is None \
+                    else "%.0f%%" % (100 * stats["shadowVerdictAgreementRate"])
+                shadow_wall = "—" if stats["medianShadowWallMs"] is None \
+                    else "%.1fs" % (stats["medianShadowWallMs"] / 1000)
                 coverage = "n=%d" % stats["trials"] if minimum is None \
                     else "n=%d/%d" % (stats["trials"], minimum)
-                print("  %-18s %s quality=%s median=%s model=%s overhead=%s" % (
-                    arm, coverage, rate, wall, model_wall, overhead))
+                print("  %-18s %s quality=%s median=%s model=%s overhead=%s shadow-agree=%s shadow=%s" % (
+                    arm, coverage, rate, wall, model_wall, overhead, shadow_agreement, shadow_wall))
             print("  → %s" % _standing_line(segment))
         print("\n" + report["note"])
     return 0

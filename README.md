@@ -34,7 +34,7 @@ You need [Claude Code](https://code.claude.com) and the [Codex CLI](https://gith
 (`codex login`) — the cross-vendor pairing is the product, so both halves are required.
 
 ```bash
-npm i -g camus-cli@0.4.5
+npm i -g camus-cli@0.4.6
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 ```
@@ -58,21 +58,28 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.4.5
+### Public alpha: 0.4.6
 
-Camus 0.4.5 ships the open-model operating surface without grading a new reviewer into service.
+Camus 0.4.6 brings the open-model operating surface into real code dogfood without grading a new
+reviewer into service. `camus models` lists local Studio profiles without revealing endpoints or
+secret values. A native run may select Grok, Qwen, or another OpenAI-compatible model as a shadow:
+it reviews the exact candidate first, then Codex performs the only accepted gate. The trial model's
+identity, verdict, latency, available usage, and agreement with Codex become task-class-segmented
+A/B evidence under a signed, expiring `trial1:` receipt that the production dispatcher rejects.
+
 Loop Studio can qualify declared Grok, Kimi, Qwen, local, or other OpenAI-compatible seats over
 loopback, direct HTTPS, or a Camus-owned SSH forward. The accepted capability receipt, observed
 identity, transport, connection, and lineage stay bound through the run and sealed evidence pack;
 missing, stale, substituted, or tampered evidence fails closed. Managed SSH is forward-only, owns
 its lease and teardown, redacts diagnostics, and never falls back to a direct connection.
 
-The CLI now has a versioned reviewer contract and an exact-match dispatcher. It recognizes Codex,
+The CLI has a versioned reviewer contract and an exact-match dispatcher. It recognizes Codex,
 Qwen Code, Grok CLI, and a hermetic OpenAI-compatible HTTP candidate, but **Codex remains the only
 reviewer admitted for production routing**. Every additional backend returns
 `reviewer_benchmark_disabled` until Slice G's provider-backed evals meet the declared quality and
-transport thresholds. Responses transport remains later work. See
-the [0.4.5 release notes](docs/RELEASE-0.4.5.md).
+transport thresholds. Shadow experiments are explore-only and deliberately name no external-model
+winner; Codex agreement is evidence, not human calibration. Responses transport remains later work.
+See the [0.4.6 release notes](docs/RELEASE-0.4.6.md).
 
 Studio now includes a local connection editor, a shared responsible control plane, and the offline
 half of the Slice G admission harness. Connection templates cover xAI,
@@ -82,7 +89,8 @@ human-authorized provider action with live redacted progress. Input screening, e
 authorization, and output screening leave versioned receipts without changing the immutable
 evidence-pack schemas. Benchmark attempts are append-only and compared with conservative
 intervals; even a statistically passing candidate still requires human admission. Provider-backed
-campaigns and additional reviewer routing remain off until model testing begins. See the
+formal admission campaigns and additional reviewer routing remain off while non-gating shadow
+evidence accumulates. See the
 [Slice E status](docs/SLICE-E-STATUS.md) and [Slice G status](docs/SLICE-G-STATUS.md).
 
 ## Makes it work
@@ -109,6 +117,10 @@ campaigns and additional reviewer routing remain off until model testing begins.
 - **Real tasks become local eval evidence.** Assignment and reporting stay segmented by exact
   experiment generation and task class. Deterministic verification plus independent clean review
   is the quality floor; only then may latency or token pressure influence routing.
+- **External reviewers can be tested without weakening the gate.** `camus run
+  --shadow-reviewer-backend <profile> --shadow-reviewer-model <id>` gives the same diff to a
+  configured Grok/Qwen/open-weight reviewer, records its comparison, and still requires Codex plus
+  repository verification before landing.
 
 ## Knows when to stop
 
@@ -167,7 +179,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.4.5
+npm i -g camus-cli@0.4.6
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```

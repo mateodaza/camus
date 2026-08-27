@@ -11,6 +11,7 @@ receipts, verification, merge, and experiment assignment stay deterministic.
 import argparse
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -21,6 +22,7 @@ import time
 import background_agent
 import evals
 import feat_kernel as kernel
+import model_trials
 import resume_scan
 
 
@@ -665,21 +667,150 @@ def _pairing(args, options, plan, ledger, assignment_key, assigned_arm=None):
             why = {"reason": "resumed durable assignment"}
         else:
             arm, why = evals.select_arm(plan, ledger.records(), assignment_key)
-        return {
+        pairing = {
             "makerModel": arm["makerModel"], "makerEffort": arm.get("makerEffort", "high"),
             "reviewerBackend": arm["reviewerBackend"], "reviewerModel": arm["reviewerModel"],
             "reviewerEffort": arm["reviewerEffort"],
             "orchestratorModel": arm.get("orchestratorModel", options.controller_model),
-        }, {"id": plan["id"], "configHash": plan["configHash"],
+        }
+        for key in ("shadowReviewerBackend", "shadowReviewerModel", "shadowReviewerEffort"):
+            if arm.get(key):
+                pairing[key] = arm[key]
+        return pairing, {"id": plan["id"], "configHash": plan["configHash"],
             "armId": arm["id"], "assignment": why["reason"]}
-    return {
+    pairing = {
         "makerModel": options.maker_model or args.get("model") or "claude-opus-4-8",
         "makerEffort": options.maker_effort,
         "reviewerBackend": options.reviewer_backend,
         "reviewerModel": options.reviewer_model,
         "reviewerEffort": options.reviewer_effort,
         "orchestratorModel": options.controller_model,
-    }, None
+    }
+    shadow_backend = getattr(options, "shadow_reviewer_backend", None)
+    shadow_model = getattr(options, "shadow_reviewer_model", None)
+    if shadow_backend or shadow_model:
+        if not shadow_backend or not shadow_model:
+            raise DriverError("shadow reviewer requires both --shadow-reviewer-backend and --shadow-reviewer-model")
+        pairing.update({
+            "shadowReviewerBackend": shadow_backend,
+            "shadowReviewerModel": shadow_model,
+            "shadowReviewerEffort": getattr(options, "shadow_reviewer_effort", "medium"),
+        })
+    return pairing, None
+
+
+def _shadow_config(pairing):
+    keys = ("shadowReviewerBackend", "shadowReviewerModel", "shadowReviewerEffort")
+    values = [pairing.get(key) for key in keys]
+    if not any(values):
+        return None
+    if not all(isinstance(value, str) and value for value in values):
+        raise DriverError("durable shadow reviewer pairing is incomplete")
+    if pairing.get("reviewerBackend") != "codex":
+        raise DriverError("shadow evaluation requires Codex as the final reviewer gate")
+    return {"backend": values[0], "model": values[1], "effort": values[2]}
+
+
+def _shadow_event_key(task_id, shadow, round_no, candidate_fingerprint):
+    digest = hashlib.sha256(_canonical({
+        "taskId": task_id, "shadow": shadow, "round": round_no,
+        "candidateFingerprint": candidate_fingerprint,
+    }).encode("utf-8")).hexdigest()
+    return "%s:shadow:%s" % (task_id, digest)
+
+
+def _run_shadow_review(log, run, node, pairing, repo, task, round_no):
+    """Run or adopt an advisory external review; Codex closure always follows."""
+    shadow = _shadow_config(pairing)
+    if shadow is None:
+        return None
+    candidate = kernel._candidate_fingerprint(node["worktree"])
+    key = _shadow_event_key(node["taskId"], shadow, round_no, candidate)
+    prior = log.latest("shadow.reviewed", key)
+    if isinstance(prior, dict) and isinstance(prior.get("data"), dict):
+        return prior["data"]
+    started = time.monotonic()
+    try:
+        result = model_trials.run_review(
+            shadow["backend"], shadow["model"], node["worktree"], task,
+            round_no=round_no, effort=shadow["effort"], repo=repo,
+            nonce="%s:%s:shadow" % (kernel._kernel(run["state"])["traceId"], node["taskId"]),
+        )
+    except model_trials.TrialError as exc:
+        result = {
+            "ran": False, "standing": "experimental_shadow",
+            "backend": shadow["backend"], "model": shadow["model"],
+            "effort": shadow["effort"], "errorCode": "shadow_review_unavailable",
+            "error": str(exc)[:500], "finalGate": "codex",
+        }
+    data = {
+        **result,
+        "candidateFingerprint": candidate,
+        "round": round_no,
+        "durationMs": int((time.monotonic() - started) * 1000),
+    }
+    log.append(
+        "shadow.reviewed", trace_id=kernel._kernel(run["state"])["traceId"],
+        task_id=node["taskId"], key=key, data=data,
+    )
+    if data.get("ran") is True:
+        print("  shadow %s:%s → %s (Codex still gates)" % (
+            shadow["backend"], shadow["model"],
+            "clean" if data.get("clean") is True else "findings",
+        ), flush=True)
+    else:
+        print("  shadow %s:%s → unavailable (%s); Codex still gates" % (
+            shadow["backend"], shadow["model"], data.get("errorCode") or "infrastructure",
+        ), flush=True)
+    return data
+
+
+def _record_shadow_comparison(log, trace_id, task_id, shadow, codex_review,
+                              codex_candidate_fingerprint=None):
+    if not isinstance(shadow, dict):
+        return None
+    same_candidate = (
+        isinstance(shadow.get("candidateFingerprint"), str)
+        and isinstance(codex_candidate_fingerprint, str)
+        and shadow["candidateFingerprint"] == codex_candidate_fingerprint
+    )
+    comparable = shadow.get("ran") is True and same_candidate
+    compared = {
+        "standing": "experimental_shadow",
+        "shadowRan": shadow.get("ran") is True,
+        "shadowComparable": comparable,
+        "sameCandidate": same_candidate,
+        "shadowClean": shadow.get("clean") if comparable else None,
+        "codexClean": codex_review.get("clean") is True,
+        "verdictAgreement": (
+            shadow.get("clean") is (codex_review.get("clean") is True)
+            if comparable else None
+        ),
+        "backend": shadow.get("backend"), "model": shadow.get("model"),
+        "round": shadow.get("round"),
+        "candidateFingerprint": shadow.get("candidateFingerprint"),
+        "codexCandidateFingerprint": codex_candidate_fingerprint,
+        "receiptSha256": shadow.get("receiptSha256"),
+    }
+    key = "%s:shadow-comparison:%s:%s" % (
+        task_id, shadow.get("round"), shadow.get("candidateFingerprint"),
+    )
+    log.append("shadow.compared", trace_id=trace_id, task_id=task_id, key=key, data=compared)
+    return compared
+
+
+def _review_with_shadow(log, run, node, pairing, repo, task, round_no, feat_id, base):
+    shadow = _run_shadow_review(log, run, node, pairing, repo, task, round_no)
+    review = kernel.review_task(feat_id, node["taskId"], repo=repo, base=base)
+    closed_run = kernel._validated_run(feat_id, base)
+    closed_node = next(item for item in closed_run["nodes"] if item["taskId"] == node["taskId"])
+    direct = closed_node.get("directReview") \
+        if isinstance(closed_node.get("directReview"), dict) else {}
+    _record_shadow_comparison(
+        log, kernel._kernel(run["state"])["traceId"], node["taskId"], shadow, review,
+        codex_candidate_fingerprint=direct.get("candidateFingerprint"),
+    )
+    return review
 
 
 def _task_metrics(run, node, log, ended_at=None):
@@ -717,6 +848,9 @@ def _task_metrics(run, node, log, ended_at=None):
     attempted_sessions = len({row.get("key") for row in launched_rows if row.get("key")})
     measured_sessions = len({row.get("key") for row in agent_rows if row.get("key")})
     incomplete_sessions = max(0, attempted_sessions - measured_sessions)
+    shadow_rows = [row.get("data") for row in task_rows if row.get("type") == "shadow.reviewed"
+                   and isinstance(row.get("data"), dict)]
+    shadow_usage = [row.get("usage") for row in shadow_rows if isinstance(row.get("usage"), dict)]
     return {
         "wallMs": wall_ms,
         "modelWallMs": model_duration or int(totals.get("durationMs") or 0),
@@ -728,6 +862,13 @@ def _task_metrics(run, node, log, ended_at=None):
         "attemptedSessions": attempted_sessions,
         "measuredSessions": measured_sessions,
         "incompleteSessions": incomplete_sessions,
+        "shadowCalls": len(shadow_rows),
+        "shadowMeasuredCalls": sum(1 for row in shadow_rows if row.get("ran") is True),
+        "shadowWallMs": sum(int(row.get("durationMs") or 0) for row in shadow_rows),
+        "shadowInputTokens": sum(int(item.get("prompt_tokens") or item.get("input_tokens") or 0)
+                                 for item in shadow_usage),
+        "shadowOutputTokens": sum(int(item.get("completion_tokens") or item.get("output_tokens") or 0)
+                                  for item in shadow_usage),
         "measurementCoverage": (
             "incomplete_background_models_missing_terminal_receipts"
             if incomplete_sessions else
@@ -755,6 +896,11 @@ def _pairing_evidence(pairing, node, log):
                 if isinstance(name, str) and name and name not in observed_makers:
                     observed_makers.append(name)
     review = node.get("directReview") if isinstance(node.get("directReview"), dict) else {}
+    shadow_row = next((row for row in reversed(log.records())
+                       if row.get("type") == "shadow.reviewed"
+                       and row.get("taskId") == node.get("taskId")), None)
+    shadow = shadow_row.get("data") if isinstance(shadow_row, dict) \
+        and isinstance(shadow_row.get("data"), dict) else None
     return {
         **pairing,
         "makerObserved": observed_makers,
@@ -762,6 +908,11 @@ def _pairing_evidence(pairing, node, log):
             "backend": review.get("backend"), "model": review.get("model"),
             "effort": review.get("effort"),
         } if review else None,
+        "shadowReviewerObserved": {
+            "backend": shadow.get("backend"), "model": shadow.get("model"),
+            "effort": shadow.get("effort"), "standing": shadow.get("standing"),
+            "ran": shadow.get("ran") is True,
+        } if shadow else None,
     }
 
 
@@ -769,6 +920,11 @@ def _record_episode(ledger, log, run, node, pairing, experiment, seal):
     metrics, transcripts = _task_metrics(run, node, log)
     final_review = node.get("directReview") if isinstance(node.get("directReview"), dict) else {}
     verification = seal.get("verification") if isinstance(seal, dict) else {}
+    comparison_row = next((row for row in reversed(log.records())
+                           if row.get("type") == "shadow.compared"
+                           and row.get("taskId") == node.get("taskId")), None)
+    comparison = comparison_row.get("data") if isinstance(comparison_row, dict) \
+        and isinstance(comparison_row.get("data"), dict) else None
     episode = evals.make_episode(
         trace_id=kernel._kernel(run["state"]).get("traceId"),
         feat_id=run["state"]["featId"], task_id=node["taskId"],
@@ -780,6 +936,15 @@ def _record_episode(ledger, log, run, node, pairing, experiment, seal):
             "independentReview": "clean" if final_review.get("clean") is True else "findings",
             "humanIntervention": False,
             "provenStatus": seal.get("provenStatus"),
+            "shadowReview": (
+                "clean" if comparison and comparison.get("shadowComparable") is True
+                and comparison.get("shadowClean") is True
+                else "findings" if comparison and comparison.get("shadowComparable") is True
+                else "candidate_changed" if comparison and comparison.get("shadowRan") is True
+                else "unavailable" if comparison else "not_configured"
+            ),
+            "shadowCodexVerdictAgreement": comparison.get("verdictAgreement") if comparison else None,
+            "shadowStanding": comparison.get("standing") if comparison else None,
         },
         economics=metrics,
         artifact={"commit": seal.get("commit"), "transcriptHashes": transcripts},
@@ -940,9 +1105,18 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                 "makerModel", "makerEffort", "reviewerBackend", "reviewerModel",
                 "reviewerEffort", "orchestratorModel",
             }
-            if not isinstance(pairing, dict) or set(pairing) != required \
-                    or not all(isinstance(value, str) and value for value in pairing.values()):
+            shadow_keys = {
+                "shadowReviewerBackend", "shadowReviewerModel", "shadowReviewerEffort",
+            }
+            if not isinstance(pairing, dict) or not required.issubset(pairing) \
+                    or set(pairing) - required - shadow_keys \
+                    or not all(isinstance(pairing.get(key), str) and pairing.get(key)
+                               for key in required) \
+                    or (set(pairing) & shadow_keys and set(pairing) & shadow_keys != shadow_keys) \
+                    or not all(isinstance(pairing.get(key), str) and pairing.get(key)
+                               for key in set(pairing) & shadow_keys):
                 raise DriverError("durable task pairing is malformed")
+            _shadow_config(pairing)
             if plan and (not isinstance(experiment, dict)
                          or experiment.get("configHash") != plan["configHash"]):
                 raise DriverError("durable task pairing disagrees with the experiment config")
@@ -1114,7 +1288,13 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                     "action": "stop", "reason": budget_stop,
                     "featId": feat_id, "taskId": task_id,
                 }, terminal=True)
-            review = kernel.review_task(feat_id, task_id, repo=repo, base=base)
+            target_round = current.get("directReviewRound")
+            if isinstance(target_round, bool) or not isinstance(target_round, int) or target_round < 1:
+                target_round = round_no + 1
+            review = _review_with_shadow(
+                log, run, node, pairing, repo, run["specs"][selected], target_round,
+                feat_id, base,
+            )
             round_no = review.get("reviewer", {}).get("round", round_no)
         elif phase == "ready":
             kernel.dispatch_task(feat_id, task_id, repo=repo, base=base)
@@ -1161,7 +1341,10 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                     "action": "stop", "reason": budget_stop,
                     "featId": feat_id, "taskId": task_id,
                 }, terminal=True)
-            review = kernel.review_task(feat_id, task_id, repo=repo, base=base)
+            review = _review_with_shadow(
+                log, run, node, pairing, repo, run["specs"][selected], round_no + 1,
+                feat_id, base,
+            )
             round_no = review.get("reviewer", {}).get("round", 1)
 
         # A failed verifier is a semantic fork: the controller chooses a bounded retry or a fresh
@@ -1201,7 +1384,12 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                     "action": "stop", "reason": budget_stop,
                     "featId": feat_id, "taskId": task_id,
                 }, review_evidence=review, terminal=True)
-            review = kernel.review_task(feat_id, task_id, repo=repo, base=base)
+            run = kernel._validated_run(feat_id, base)
+            node = next(item for item in run["nodes"] if item["taskId"] == task_id)
+            review = _review_with_shadow(
+                log, run, node, pairing, repo, run["specs"][selected], round_no,
+                feat_id, base,
+            )
             fixed_unreviewed = False
 
         while seal is None and review is not None and not review.get("clean"):
@@ -1283,7 +1471,12 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
             if decision["action"] == "fix_verify":
                 fixed_unreviewed = True
                 break
-            review = kernel.review_task(feat_id, task_id, repo=repo, base=base)
+            run = kernel._validated_run(feat_id, base)
+            node = next(item for item in run["nodes"] if item["taskId"] == task_id)
+            review = _review_with_shadow(
+                log, run, node, pairing, repo, run["specs"][selected], round_no,
+                feat_id, base,
+            )
 
         if seal is None:
             seal = kernel.seal_task(
@@ -1332,6 +1525,12 @@ def _parser():
     run.add_argument("--reviewer-backend", default="codex")
     run.add_argument("--reviewer-model", default="gpt-5.6-sol")
     run.add_argument("--reviewer-effort", choices=("low", "medium", "high", "xhigh"), default="high")
+    run.add_argument("--shadow-reviewer-backend", default=None,
+                     help="Studio profile to evaluate before the Codex gate")
+    run.add_argument("--shadow-reviewer-model", default=None,
+                     help="exact declared model id for the shadow reviewer")
+    run.add_argument("--shadow-reviewer-effort", choices=("low", "medium", "high", "xhigh"),
+                     default="medium")
     run.add_argument("--controller-model", default="sonnet")
     run.add_argument("--round-cap", type=int, default=None)
     run.add_argument(

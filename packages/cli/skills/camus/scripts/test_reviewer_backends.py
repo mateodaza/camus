@@ -6,6 +6,7 @@ import io
 import http.server
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,7 @@ sys.path.insert(0, HERE)
 
 import review_request
 import review_qualification
+import review_trial
 import review_watch
 import reviewer_dispatch
 import http_openai_compat_review as http_review
@@ -311,7 +313,10 @@ def test_http_clean_replay_and_secret_hygiene():
         env = base_env(repo, reviews, server, 1)
         clean = call_http(wt, repo, env, 1)
         assert clean["ran"] is True and clean["clean"] is True
-        assert clean["binding"] == {
+        binding = dict(clean["binding"])
+        assert binding.pop("standing") == "admission_candidate"
+        assert re.fullmatch(r"fp1:[0-9a-f]{64}", binding.pop("input_fingerprint"))
+        assert binding == {
             "round": 1, "effort": "medium", "model": "qwen-test",
             "backend": "http_openai_compat", "worktree": os.path.realpath(wt),
             "nonce": "trace:test", "round_requested": 1, "effort_requested": "medium",
@@ -365,6 +370,52 @@ def test_http_clean_replay_and_secret_hygiene():
             for name in files:
                 with open(os.path.join(dirpath, name), "rb") as fh:
                     assert secret.encode() not in fh.read(), "%s persisted the planted credential" % name
+
+
+def test_http_trial_is_signed_explicit_and_never_dispatch_admitted():
+    with repo_fixture() as (_root, repo, wt, reviews), fixture_server() as server:
+        env = base_env(repo, reviews, server, 1)
+        env.update({
+            "CAMUS_HTTP_REVIEW_TRIAL": "1",
+            "CAMUS_HTTP_REVIEW_PROFILE_BACKEND": "fixture_qwen",
+            "CAMUS_REVIEW_ORIGIN": "camus_model_trial",
+            "CAMUS_REVIEW_OPERATOR": "fixture",
+        })
+        trial = review_trial.issue(
+            "http_openai_compat", "fixture_qwen", "qwen-test", "alibaba",
+            "loopback", "fixture", env["CAMUS_HTTP_REVIEW_BASE_URL"],
+            "none", None, env=env, ttl_seconds=3600,
+        )["trial"]
+        env["CAMUS_REVIEW_QUALIFICATION"] = trial
+        record, error = review_request.build_request(
+            wt, 1, effort="medium", nonce="trace:test", model="qwen-test",
+            backend="http_openai_compat", scope="light", qualification=trial,
+            origin="camus_model_trial", operator="fixture", transport="loopback",
+            connection="fixture", contract="rc1", now=1,
+        )
+        assert error is None
+        os.makedirs(reviews, exist_ok=True)
+        with open(os.path.join(reviews, os.path.basename(wt) + "-request.json"), "w", encoding="utf-8") as fh:
+            json.dump(record, fh)
+        result = call_http(wt, repo, env, 1)
+        assert result["ran"] is True and result["clean"] is True, result
+        assert result["standing"] == "experimental_shadow"
+        assert result["binding"]["qualification"] == trial
+        assert result["binding"]["standing"] == "experimental_shadow"
+        decision, refused = reviewer_dispatch.decide("http_openai_compat", env)
+        assert decision is None and refused["error_code"] == "reviewer_benchmark_disabled"
+
+        # The endpoint/profile tuple is part of the HMAC-bound trial identity.
+        try:
+            review_trial.accepted_training_org(
+                trial, "http_openai_compat", "other_profile", "qwen-test",
+                "loopback", "fixture", env["CAMUS_HTTP_REVIEW_BASE_URL"],
+                "none", None, env,
+            )
+        except ValueError as exc:
+            assert "review trial" in str(exc)
+        else:
+            raise AssertionError("trial authority survived profile drift")
 
 
 def test_http_refusals_and_tunnel_death():
@@ -700,6 +751,7 @@ def test_direct_https_url_boundary():
 
 def main():
     tests = [test_dispatch, test_http_clean_replay_and_secret_hygiene,
+             test_http_trial_is_signed_explicit_and_never_dispatch_admitted,
              test_http_refusals_and_tunnel_death, test_http_failed_attempt_is_preserved_and_retryable,
              test_http_concurrent_retry_starts_one_request,
              test_http_connect_timeout_does_not_cap_sse_stream,

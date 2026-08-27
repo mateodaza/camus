@@ -1,0 +1,53 @@
+{
+  "id": "codenamewukong-shadow-reviewers-v1",
+  "taskClass": "bounded_game_feature",
+  "mode": "explore",
+  "minimumTrials": 3,
+  "qualityFloor": 0.8,
+  "arms": [
+    {
+      "id": "grok-4-6",
+      "makerModel": "claude-opus-4-8",
+      "makerEffort": "high",
+      "reviewerBackend": "codex",
+      "reviewerModel": "gpt-5.6-sol",
+      "reviewerEffort": "high",
+      "shadowReviewerBackend": "xai",
+      "shadowReviewerModel": "grok-4.6",
+      "shadowReviewerEffort": "medium"
+    },
+    {
+      "id": "qwen-3-8-max",
+      "makerModel": "claude-opus-4-8",
+      "makerEffort": "high",
+      "reviewerBackend": "codex",
+      "reviewerModel": "gpt-5.6-sol",
+      "reviewerEffort": "high",
+      "shadowReviewerBackend": "dashscope_qwen",
+      "shadowReviewerModel": "qwen3.8-max",
+      "shadowReviewerEffort": "medium"
+    },
+    {
+      "id": "qwen-3-8-2-4t",
+      "makerModel": "claude-opus-4-8",
+      "makerEffort": "high",
+      "reviewerBackend": "codex",
+      "reviewerModel": "gpt-5.6-sol",
+      "reviewerEffort": "high",
+      "shadowReviewerBackend": "dashscope_qwen",
+      "shadowReviewerModel": "qwen3.8-2.4t-a95b",
+      "shadowReviewerEffort": "medium"
+    },
+    {
+      "id": "qwen-3-8-27b",
+      "makerModel": "claude-opus-4-8",
+      "makerEffort": "high",
+      "reviewerBackend": "codex",
+      "reviewerModel": "gpt-5.6-sol",
+      "reviewerEffort": "high",
+      "shadowReviewerBackend": "dashscope_qwen",
+      "shadowReviewerModel": "qwen3.8-27b",
+      "shadowReviewerEffort": "medium"
+    }
+  ]
+}
