@@ -1037,6 +1037,30 @@ def test_incomplete_attempt_is_retained_in_eval_denominator():
         assert D.evals.arm_stats(ledger.records(), "ab", "opus-sol")["qualityFloorRate"] == 0
 
 
+def test_native_pairing_freezes_the_complete_admitted_external_route():
+    options = SimpleNamespace(
+        maker_model="claude-opus-4-8", maker_effort="high",
+        reviewer_backend="http_openai_compat", reviewer_model="grok-4.6",
+        reviewer_effort="medium", controller_model="sonnet",
+        shadow_reviewer_backend=None, shadow_reviewer_model=None,
+        reviewer_profile_backend="xai", reviewer_training_org="xai",
+        reviewer_transport="direct_https", reviewer_connection="xai-primary",
+        reviewer_qualification="qual1:" + "a" * 64,
+    )
+    pairing, experiment = D._pairing({}, options, None, None, "fixture")
+    assert experiment is None
+    assert D._reviewer_route(pairing) == {
+        "profileBackend": "xai", "trainingOrg": "xai", "transport": "direct_https",
+        "connection": "xai-primary", "qualification": "qual1:" + "a" * 64,
+    }
+    options.reviewer_qualification = None
+    try:
+        D._pairing({}, options, None, None, "fixture")
+        assert False, "partial admitted route was accepted"
+    except D.DriverError as exc:
+        assert "complete exact" in str(exc)
+
+
 if __name__ == "__main__":
     import sys
     tests = [value for key, value in sorted(globals().items())

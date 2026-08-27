@@ -139,6 +139,20 @@
         <button type="button" id="pairing-change" class="ghost">settings</button>
       </div>
       <div class="hint" id="pairing-note">One model makes the work. A different one tries to break it.</div>
+      <label class="checkline" id="model-routing-control">
+        <input type="checkbox" id="model-routing-auto">
+        <span>Auto-route from calibrated A/B evidence</span>
+      </label>
+      <label class="routing-class" id="model-routing-class-wrap" for="model-routing-class">
+        <span>Task class</span>
+        <select id="model-routing-class" aria-label="Task class for automatic routing">
+          <option value="">Infer from run depth</option>
+          <option value="simple">Simple</option>
+          <option value="balanced">Balanced</option>
+          <option value="difficult">Difficult</option>
+        </select>
+      </label>
+      <div class="hint" id="model-routing-note">Off. The pairing shown above stays in control.</div>
       <div class="hint hidden" id="build-gate-note"></div>
 
       <label class="lbl sub-lbl">Lane</label>

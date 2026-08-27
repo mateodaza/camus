@@ -106,6 +106,8 @@ try {
     assert.deepEqual(c.evaluationCampaign.profiles.map((profile) => profile.id).sort(), ['balanced', 'difficult', 'simple'], 'config exposes the registered routing tiers');
     assert.equal(c.evaluationCampaign.profiles.every((profile) => profile.cases.length >= 3), true, 'config exposes a representative case suite per tier');
     assert.equal(c.evaluationCampaign.profiles.find((profile) => profile.id === 'simple').planPolicy, 'direct_make', 'config exposes the sealed evaluation plan policy');
+    assert.equal(c.evaluationCampaign.routingMode, 'opt_in');
+    assert.equal(c.evaluationCampaign.minimumRoutingTrialsPerArm, 10);
   });
 
   await check('the model campaign is local public configuration with bounded Luna coverage', async () => {
@@ -117,8 +119,19 @@ try {
     assert.equal(campaign.controls.toolPolicy, 'none');
     assert.ok(campaign.candidates.some((candidate) => candidate.id === 'gpt-luna' && candidate.model === 'gpt-5.6-luna'));
     assert.equal(campaign.calibration.status, 'human_labels_required');
+    assert.equal(campaign.controls.routingMode, 'opt_in');
+    assert.equal(campaign.controls.minimumRoutingTrialsPerArm, 10);
     assert.equal(campaign.profiles.every((profile) => profile.cases.length >= 3), true);
     assert.equal(JSON.stringify(campaign).includes('API_KEY'), false, 'the campaign contains no credential name or value');
+  });
+
+  await check('automatic routing fails open only to the selected pairing while calibration is incomplete', async () => {
+    const response = await fetch(`${base}/api/model-routing?taskClass=simple`, { headers: { origin: base } });
+    assert.equal(response.status, 200);
+    const decision = await response.json();
+    assert.equal(decision.routed, false);
+    assert.equal(decision.reason, 'human_calibration_incomplete');
+    assert.deepEqual(decision.classification, { taskClass: 'simple', source: 'explicit' });
   });
 
   await check('config POST validates model choices server-side (400 on an unoffered reviewer)', async () => {

@@ -12,6 +12,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import statistics
 import sys
 import time
@@ -155,6 +156,8 @@ def load_experiment(path):
         "id", "makerModel", "makerEffort", "reviewerBackend", "reviewerModel",
         "reviewerEffort", "orchestratorModel", "shadowReviewerBackend",
         "shadowReviewerModel", "shadowReviewerEffort",
+        "reviewerProfileBackend", "reviewerTrainingOrg", "reviewerTransport",
+        "reviewerConnection", "reviewerQualification",
     }
     for index, raw in enumerate(arms):
         if not isinstance(raw, dict) or set(raw) - allowed:
@@ -176,6 +179,21 @@ def load_experiment(path):
             raise EvalError("%s.shadowReviewerEffort must be low|medium|high|xhigh" % arm_id)
         if present_shadow and arm.get("reviewerBackend") != "codex":
             raise EvalError("%s shadow evaluation requires Codex as the final reviewer gate" % arm_id)
+        route_fields = (
+            "reviewerProfileBackend", "reviewerTrainingOrg", "reviewerTransport",
+            "reviewerConnection", "reviewerQualification",
+        )
+        present_route = [key for key in route_fields if key in arm]
+        if arm.get("reviewerBackend") == "http_openai_compat":
+            if len(present_route) != len(route_fields):
+                raise EvalError("%s admitted HTTP reviewer requires its complete exact route" % arm_id)
+            for key in route_fields:
+                _nonempty(arm.get(key), "%s.%s" % (arm_id, key))
+            if arm["reviewerTransport"] not in ("loopback", "direct_https", "ssh_tunnel") \
+                    or not re.fullmatch(r"qual1:[0-9a-f]{64}", arm["reviewerQualification"]):
+                raise EvalError("%s admitted HTTP reviewer route is malformed" % arm_id)
+        elif present_route:
+            raise EvalError("%s external reviewer route fields require http_openai_compat" % arm_id)
         arm.setdefault("makerEffort", "high")
         arm.setdefault("orchestratorModel", "sonnet")
         normalized.append(arm)
@@ -189,10 +207,15 @@ def load_experiment(path):
     mode = value.get("mode", "explore")
     if mode not in ("explore", "route"):
         raise EvalError("mode must be explore|route")
-    if mode == "route" and minimum < 5:
-        raise EvalError("route mode requires minimumTrials >= 5")
+    if mode == "route" and minimum < 10:
+        raise EvalError("route mode requires minimumTrials >= 10")
     if mode == "route" and any(arm.get("shadowReviewerBackend") for arm in normalized):
         raise EvalError("shadow reviewer experiments are evidence-only and must use mode explore")
+    if mode == "route" and any(arm.get("reviewerBackend") not in ("codex", "http_openai_compat")
+                               for arm in normalized):
+        raise EvalError(
+            "automatic CLI routing requires Codex or an exact Slice G-admitted HTTP reviewer"
+        )
     plan = {
         "schemaVersion": SCHEMA_VERSION,
         "id": experiment_id,
@@ -248,6 +271,43 @@ def _timing_pairs(economics):
     ]
 
 
+def _identity_match(row):
+    """Exact requested/observed seat binding for one routing episode.
+
+    Older and hand-authored rows without observations stay useful as exploratory
+    evidence, but can never authorize an automatic route.
+    """
+    pairing = row.get("pairing") if isinstance(row.get("pairing"), dict) else {}
+    requested_maker = pairing.get("makerModel")
+    observed_makers = pairing.get("makerObserved")
+    reviewer = pairing.get("reviewerObserved")
+    if not isinstance(requested_maker, str) or not requested_maker \
+            or not isinstance(observed_makers, list) or not observed_makers \
+            or any(item != requested_maker for item in observed_makers):
+        return False
+    if not isinstance(reviewer, dict):
+        return False
+    expected = {
+        "backend": pairing.get("reviewerBackend"),
+        "model": pairing.get("reviewerModel"),
+        "effort": pairing.get("reviewerEffort"),
+    }
+    if not all(isinstance(value, str) and value and reviewer.get(key) == value
+               for key, value in expected.items()):
+        return False
+    if expected["backend"] == "http_openai_compat":
+        external = {
+            "qualification": pairing.get("reviewerQualification"),
+            "transport": pairing.get("reviewerTransport"),
+            "connection": pairing.get("reviewerConnection"),
+        }
+        return all(isinstance(value, str) and value and reviewer.get(key) == value
+                   for key, value in external.items()) \
+            and isinstance(reviewer.get("admissionId"), str) \
+            and bool(re.fullmatch(r"admit1:[0-9a-f]{64}", reviewer["admissionId"]))
+    return True
+
+
 def _orchestration_overheads(pairs):
     """Per-episode native orchestration overhead over complete timing pairs.
 
@@ -281,6 +341,8 @@ def arm_stats(records, experiment_id, arm_id, task_class=None, config_hash=_ANY_
         "trials": len(rows),
         "qualityFloorPasses": passed,
         "qualityFloorRate": passed / len(rows) if rows else None,
+        "identityMatches": sum(1 for row in rows if _identity_match(row)),
+        "identityStable": bool(rows) and all(_identity_match(row) for row in rows),
         "medianWallMs": _median([item.get("wallMs") for item in economics]),
         "medianModelWallMs": _median([model for _wall, model in pairs]),
         "medianOrchestrationOverheadMs": _median(_orchestration_overheads(pairs)),
@@ -317,7 +379,8 @@ def select_arm(plan, records, assignment_key):
     else:
         eligible = [
             arm for arm in plan["arms"]
-            if (stats[arm["id"]]["qualityFloorRate"] or 0) >= plan["qualityFloor"]
+            if stats[arm["id"]]["qualityFloorPasses"] == stats[arm["id"]]["trials"]
+            and stats[arm["id"]]["identityStable"] is True
         ]
         if eligible:
             candidates = sorted(eligible, key=lambda arm: (
@@ -328,7 +391,7 @@ def select_arm(plan, records, assignment_key):
                 arm["id"],
             ))
             candidates = [candidates[0]]
-            reason = "quality floor met; lowest observed median latency/token pressure"
+            reason = "quality floor met on every routing trial with exact stable identities; lowest observed median latency/token pressure"
         else:
             candidates = least_sampled
             reason = "no arm clears the quality floor; continue balanced exploration"
@@ -372,9 +435,13 @@ def _matching_plan(plans, experiment_id, config_hash, task_class):
     return None
 
 
-def _rank_eligible(stats, arm_ids, quality_floor):
+def _rank_eligible(stats, arm_ids, quality_floor, require_routing_evidence=False):
     """Lexicographic quality-first ranking: floor first, then latency, then token pressure."""
     eligible = [arm for arm in arm_ids if (stats[arm]["qualityFloorRate"] or 0) >= quality_floor]
+    if require_routing_evidence:
+        eligible = [arm for arm in eligible
+                    if stats[arm]["qualityFloorPasses"] == stats[arm]["trials"]
+                    and stats[arm]["identityStable"] is True]
     eligible.sort(key=lambda arm: (
         stats[arm]["medianWallMs"] is None,
         stats[arm]["medianWallMs"] if stats[arm]["medianWallMs"] is not None else 0.0,
@@ -437,9 +504,15 @@ def _segment_report(rows, experiment_id, config_hash, task_class, arm_ids, plan)
         segment["standing"] = "shadow_evidence_only"
         return segment
     # A leader may only be named among the configured arms.
-    eligible = _rank_eligible(stats, plan_arm_ids, plan["qualityFloor"])
+    eligible = _rank_eligible(
+        stats, plan_arm_ids, plan["qualityFloor"],
+        require_routing_evidence=segment["routingConfigured"],
+    )
     if not eligible:
-        segment["standing"] = "no_arm_clears_quality_floor"
+        segment["standing"] = (
+            "routing_evidence_not_eligible"
+            if segment["routingConfigured"] else "no_arm_clears_quality_floor"
+        )
         return segment
     segment["leader"] = eligible[0]
     segment["routingEligible"] = segment["routingConfigured"]
@@ -524,6 +597,7 @@ def _standing_line(segment):
         "exploratory_only": "no leader — configured qualityFloor/minimumTrials unavailable",
         "coverage_incomplete": "no leader — minimumTrials coverage not yet reached",
         "no_arm_clears_quality_floor": "no leader — no arm clears the quality floor",
+        "routing_evidence_not_eligible": "no leader — routing needs every trial green and exact stable observed identities",
         "shadow_evidence_only": "no leader — shadow agreement/latency evidence is not reviewer admission",
     }
     return reasons.get(segment["standing"], segment["standing"])

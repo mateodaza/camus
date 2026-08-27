@@ -44,6 +44,9 @@ import { connectionFingerprint, getSharedTunnelManager } from './lib/ssh-tunnel.
 import { installTunnelLifecycle } from './lib/tunnel-lifecycle.mjs';
 import { createQualificationControl, createStudioControlPlane } from './lib/control-plane.mjs';
 import { findEvaluationCase, loadModelEvalCampaign, modelEvalCampaignHash } from './lib/model-eval-campaign.mjs';
+import { loadEvaluationReports, summarizeEvaluationReports } from './lib/model-eval-summary.mjs';
+import { loadJudgeCalibration } from './lib/judge-calibration.mjs';
+import { classifyTaskClass, deriveAutomaticRoute } from './lib/model-routing.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dirname, 'public');
@@ -54,6 +57,32 @@ const PORT = Number(process.env.PORT || 1913); // Camus, b. 1913
 const ENGINE = process.env.ENGINE === 'mock' ? 'mock' : 'live';
 const MODEL_EVAL_CAMPAIGN = loadModelEvalCampaign();
 const MODEL_EVAL_CAMPAIGN_HASH = modelEvalCampaignHash(MODEL_EVAL_CAMPAIGN);
+
+function automaticRouteDecision({ taskClass = null, lane = 'freeform', depth = 'standard' } = {}) {
+  const classification = classifyTaskClass({ taskClass, lane, depth });
+  if (!classification.taskClass) return { routed: false, reason: classification.source, classification };
+  try {
+    const calibration = loadJudgeCalibration(MODEL_EVAL_CAMPAIGN).summary;
+    const { reports, unreadableReports } = loadEvaluationReports(RUNS_DIR);
+    if (unreadableReports) return { routed: false, reason: 'evaluation_reports_unreadable', classification, unreadableReports };
+    const summary = summarizeEvaluationReports(
+      MODEL_EVAL_CAMPAIGN, MODEL_EVAL_CAMPAIGN_HASH, reports, calibration,
+      { profile: classification.taskClass },
+    );
+    return {
+      ...deriveAutomaticRoute({
+        campaign: MODEL_EVAL_CAMPAIGN, summary, calibrationSummary: calibration,
+        catalog: admissionCatalog(), taskClass: classification.taskClass,
+      }),
+      classification,
+    };
+  } catch (error) {
+    return {
+      routed: false, reason: 'routing_evidence_unavailable', classification,
+      errorClass: error?.constructor?.name ?? 'Error',
+    };
+  }
+}
 
 const runs = new Map(); // id -> { run, events, subscribers, answer, abort }
 
@@ -255,6 +284,7 @@ async function startRun({
   evaluationConfigHash = null,
   displayGoal = null,
   experimentContext = null,
+  modelRouting = null,
   questionBroker = null,
   onComplete = null,
   reservationParentId = null,
@@ -287,9 +317,9 @@ async function startRun({
     id, goal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd,
     models, recovery, publishRequested,
   });
-  const run = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, pairingView, frozenKnowledge, toolPolicy, publish: publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationChecks, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, experimentContext, controlPlane };
+  const run = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, pairingView, frozenKnowledge, toolPolicy, publish: publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationChecks, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, experimentContext, modelRouting, controlPlane };
   // The run exists on disk from second zero — a crash must not orphan it.
-  const runMetadata = () => ({ id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: run.idSalt, engine: ENGINE, models, pairingView, publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, experimentContext, startedAt: run.startedAt });
+  const runMetadata = () => ({ id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: run.idSalt, engine: ENGINE, models, pairingView, publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, experimentContext, modelRouting, startedAt: run.startedAt });
   await writeFile(join(dir, 'run.json'), JSON.stringify(runMetadata(), null, 2))
     .catch((err) => console.error(`[receipts] failed to write run.json for ${id}: ${err.message}`));
   const state = { run, events: [], subscribers: new Set(), answer: null, abort: new AbortController(), writeChain: Promise.resolve() };
@@ -405,7 +435,7 @@ async function startRun({
     })
     : null;
 
-  emit('run', { run: { id, goal: displayGoal ?? goal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, pairingView, recoveryOf: recovery?.sourceRunId ?? null, recovery: recovery ? { sourceRunId: recovery.sourceRunId ?? null, sourceReceiptId: recovery.sourceReceiptId ?? null, parkedSha: recovery.parkedSha ?? null, shaProvenance: recovery.shaProvenance ?? null } : null, engine: ENGINE, roundCap: iterationPolicy === 'single_pass' ? 1 : models.loop.roundCap, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, experimentContext } });
+  emit('run', { run: { id, goal: displayGoal ?? goal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, pairingView, modelRouting, recoveryOf: recovery?.sourceRunId ?? null, recovery: recovery ? { sourceRunId: recovery.sourceRunId ?? null, sourceReceiptId: recovery.sourceReceiptId ?? null, parkedSha: recovery.parkedSha ?? null, shaProvenance: recovery.shaProvenance ?? null } : null, engine: ENGINE, roundCap: iterationPolicy === 'single_pass' ? 1 : models.loop.roundCap, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, experimentContext } });
   if (!gitOk) emit('log', { line: '⚠ git unavailable; codex reviews will run outside a git repo (different conditions than camus)' });
 
   // A recovery runs the host verifier and NOTHING else — including under the mock
@@ -484,7 +514,7 @@ async function startRun({
     // so a future result field named `models` can never overwrite the sealed pairing
     // (the same reason draft/deliverable are pinned after the spread). simulated is
     // pinned there too: a rehearsal receipt must SAY it is one, permanently.
-    const reportObject = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', experimentContext, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, draft: undefined, deliverable: run.lastMarkdown, evidence, evidencePack, evidencePackError, controlPlane: controlPlane.receipt(), controlRoute: terminalControlRoute, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt };
+    const reportObject = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', experimentContext, modelRouting, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, draft: undefined, deliverable: run.lastMarkdown, evidence, evidencePack, evidencePackError, controlPlane: controlPlane.receipt(), controlRoute: terminalControlRoute, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt };
     const report = JSON.stringify(reportObject, null, 2);
     try {
       await writeFile(join(dir, 'report.json'), report);
@@ -1473,6 +1503,19 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ...MODEL_EVAL_CAMPAIGN, configHash: MODEL_EVAL_CAMPAIGN_HASH });
     }
 
+    if (path === '/api/model-routing' && req.method === 'GET') {
+      const requestedClass = url.searchParams.get('taskClass');
+      const lane = url.searchParams.get('lane') || 'freeform';
+      const depth = url.searchParams.get('depth') || 'standard';
+      try {
+        return json(res, 200, automaticRouteDecision({
+          taskClass: requestedClass || null, lane, depth,
+        }));
+      } catch (error) {
+        return json(res, 400, { error: String(error?.message || error).slice(0, 500) });
+      }
+    }
+
     if (path === '/api/config' && req.method === 'GET') {
       const m = getModels();
       const seats = admissionCatalog();
@@ -1495,6 +1538,8 @@ const server = http.createServer(async (req, res) => {
           id: MODEL_EVAL_CAMPAIGN.id,
           configHash: MODEL_EVAL_CAMPAIGN_HASH,
           standing: MODEL_EVAL_CAMPAIGN.standing,
+          routingMode: MODEL_EVAL_CAMPAIGN.controls.routingMode,
+          minimumRoutingTrialsPerArm: MODEL_EVAL_CAMPAIGN.controls.minimumRoutingTrialsPerArm,
           profiles: MODEL_EVAL_CAMPAIGN.profiles.map(({ id, depth, planPolicy, wallBudgetMinutes, description, cases }) => ({
             id, depth, planPolicy, wallBudgetMinutes, description,
             cases: cases.map((evaluationCase) => ({
@@ -1662,6 +1707,17 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: 'Build produces a local branch; Hivemind artifact publication applies only to words lanes' });
       }
 
+      const routingMode = body.modelRouting == null ? 'selected' : String(body.modelRouting).trim();
+      if (!['selected', 'automatic'].includes(routingMode)) {
+        return json(res, 400, { error: 'modelRouting must be selected or automatic' });
+      }
+      if (routingMode === 'automatic' && body.pairing !== undefined) {
+        return json(res, 400, { error: 'choose either an explicit pairing or automatic model routing, not both' });
+      }
+      if (routingMode === 'automatic' && evaluationProfile) {
+        return json(res, 400, { error: 'evaluation runs freeze their treatment pairing and cannot use automatic routing' });
+      }
+
       // Per-run pairing (docs/MULTI-MODEL-SEATS.md): explicit seat choices for
       // THIS run, validated against the same catalog the picker reads, with
       // `run request` recorded as the decision source. Absent → the standing
@@ -1679,6 +1735,41 @@ const server = http.createServer(async (req, res) => {
       // awaits, or the run banner could describe a newer pairing than the one
       // whose backend objects and fingerprints are actually running.
       let pairingView = null;
+      let modelRouting = null;
+      if (routingMode === 'automatic') {
+        let decision;
+        try {
+          decision = automaticRouteDecision({
+            taskClass: body.taskClass == null ? null : String(body.taskClass).trim(),
+            lane, depth,
+          });
+        } catch (error) {
+          return json(res, 400, { error: String(error?.message || error).slice(0, 500) });
+        }
+        modelRouting = { mode: 'automatic', applied: decision.routed === true, ...decision };
+        if (decision.routed === true) {
+          const seats = admissionCatalog();
+          const makerEntry = admittedSeat(seats.maker, decision.maker.backend, decision.maker.model);
+          const reviewerEntry = admittedSeat(seats.reviewer, decision.reviewer.backend, decision.reviewer.model);
+          if (!makerEntry || !reviewerEntry
+              || makerEntry.admission?.fingerprint !== decision.evidence?.makerAdmission?.fingerprint
+              || reviewerEntry.admission?.fingerprint !== decision.evidence?.reviewerAdmission?.fingerprint) {
+            modelRouting = { ...modelRouting, applied: false, routed: false, reason: 'route_admission_changed' };
+          } else {
+            const standing = getModels();
+            const effort = reviewerEntry.effort ? (decision.reviewer.effort ?? 'medium') : null;
+            modelsSnapshot = {
+              maker: { ...snapshotSeat(makerEntry, decision.maker.model), source: 'automatic task-class route' },
+              reviewer: {
+                ...snapshotSeat(reviewerEntry, decision.reviewer.model), effort,
+                modelSource: 'automatic task-class route',
+                effortSource: reviewerEntry.effort ? 'automatic task-class route' : 'not honored by this backend',
+              },
+              loop: { ...standing.loop },
+            };
+          }
+        }
+      }
       if (body.pairing !== undefined) {
         if (lane === 'build') return json(res, 400, { error: 'the Build lane runs the camus gate with its own model decisions; per-run pairing applies to the words lanes' });
         const p = body.pairing;
@@ -1849,6 +1940,7 @@ const server = http.createServer(async (req, res) => {
           evaluationPlanPolicy: evaluation.planPolicy,
           evaluationCampaignId: evaluation.id,
           evaluationConfigHash: evaluation.hash,
+          modelRouting,
           // Fair evaluation arms receive no live tools. The frozen brief is the
           // complete input for every maker, including built-in Claude.
           toolPolicy: iterationPolicy === 'single_pass' ? 'none' : null,

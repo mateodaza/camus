@@ -8,7 +8,7 @@
     "node": ">=18.17"
   },
   "scripts": {
-    "pretest": "node --require ./test-env.cjs control-plane.test.mjs",
+    "pretest": "node --require ./test-env.cjs control-plane.test.mjs && node --require ./test-env.cjs lib/model-routing.test.mjs",
     "start": "node server.mjs",
     "rehearse": "ENGINE=mock node server.mjs",
     "doctor": "node server.mjs --doctor",

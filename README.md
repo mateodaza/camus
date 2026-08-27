@@ -34,7 +34,7 @@ You need [Claude Code](https://code.claude.com) and the [Codex CLI](https://gith
 (`codex login`) — the cross-vendor pairing is the product, so both halves are required.
 
 ```bash
-npm i -g camus-cli@0.4.6
+npm i -g camus-cli@0.4.7
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 ```
@@ -58,14 +58,14 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.4.6
+### Public alpha: 0.4.7
 
-Camus 0.4.6 brings the open-model operating surface into real code dogfood without grading a new
-reviewer into service. `camus models` lists local Studio profiles without revealing endpoints or
-secret values. A native run may select Grok, Qwen, or another OpenAI-compatible model as a shadow:
-it reviews the exact candidate first, then Codex performs the only accepted gate. The trial model's
-identity, verdict, latency, available usage, and agreement with Codex become task-class-segmented
-A/B evidence under a signed, expiring `trial1:` receipt that the production dispatcher rejects.
+Camus 0.4.7 ships the experimental infrastructure needed to decide whether an external reviewer
+has earned production trust—without granting that trust. A public 25-case corpus, resumable
+spend-bounded live campaigns, content-addressed attempt receipts, conservative statistical
+eligibility, expiring human-owned admission records, and opt-in task-class routing now form one
+fail-closed path. The checked-in admission registry is empty, so Grok and every other external
+reviewer remain explicit shadow experiments; Codex is still the only production reviewer gate.
 
 Loop Studio can qualify declared Grok, Kimi, Qwen, local, or other OpenAI-compatible seats over
 loopback, direct HTTPS, or a Camus-owned SSH forward. The accepted capability receipt, observed
@@ -79,7 +79,7 @@ reviewer admitted for production routing**. Every additional backend returns
 `reviewer_benchmark_disabled` until Slice G's provider-backed evals meet the declared quality and
 transport thresholds. Shadow experiments are explore-only and deliberately name no external-model
 winner; Codex agreement is evidence, not human calibration. Responses transport remains later work.
-See the [0.4.6 release notes](docs/RELEASE-0.4.6.md).
+See the [0.4.7 release notes](docs/RELEASE-0.4.7.md).
 
 Studio now includes a local connection editor, a shared responsible control plane, and the offline
 half of the Slice G admission harness. Connection templates cover xAI,
@@ -88,9 +88,12 @@ saving a declaration is spend-free and grants no trust. Exact qualification is a
 human-authorized provider action with live redacted progress. Input screening, exact action
 authorization, and output screening leave versioned receipts without changing the immutable
 evidence-pack schemas. Benchmark attempts are append-only and compared with conservative
-intervals; even a statistically passing candidate still requires human admission. Provider-backed
-formal admission campaigns and additional reviewer routing remain off while non-gating shadow
-evidence accumulates. See the
+intervals; even a statistically passing candidate still requires human admission. None silently
+promotes today's candidates: the first Grok campaign has sealed all 24 spend-free kill controls
+and two post-fix normalized quality cells, but 414 provider-backed quality cells remain pending;
+the admission registry is empty, and routing holds on incomplete human calibration. The dormant compatibility-
+workflow activation lane now also requires the dispatcher-issued exact `admit1:` authority in the
+accepted reviewer binding. See the
 [Slice E status](docs/SLICE-E-STATUS.md) and [Slice G status](docs/SLICE-G-STATUS.md).
 
 ## Makes it work
@@ -179,7 +182,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.4.6
+npm i -g camus-cli@0.4.7
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```

@@ -9,13 +9,26 @@ import tempfile
 import benchmark_reviewers as B
 
 
+KILL_CASES = (
+    ("kill-abort", "abort", "review_watch.start+abort"),
+    ("kill-malformed", "malformed_output", "adapter.normalize_codex"),
+    ("kill-identity", "identity_substitution", "review_request.consistent_value"),
+    ("kill-transport", "transport_interrupt", "review_watch.start+await+adapter.normalize_codex"),
+)
+
+
 def test_published_schemas_match_the_runtime_required_fields():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     with open(os.path.join(root, "benchmark-receipt.v1.schema.json"), encoding="utf-8") as fh:
+        receipt_v1_schema = json.load(fh)
+    with open(os.path.join(root, "benchmark-receipt.v2.schema.json"), encoding="utf-8") as fh:
         receipt_schema = json.load(fh)
     with open(os.path.join(root, "benchmark-campaign.v1.schema.json"), encoding="utf-8") as fh:
         campaign_schema = json.load(fh)
     assert set(receipt_schema["required"]) == set(B.RECEIPT_KEYS)
+    assert set(receipt_v1_schema["required"]) == set(B.RECEIPT_KEYS_V1)
+    assert receipt_v1_schema["properties"]["schemaVersion"]["const"] == 1
+    assert receipt_schema["properties"]["schemaVersion"]["const"] == 2
     assert set(campaign_schema["properties"]["thresholds"]["required"]) == set(B.THRESHOLD_KEYS)
     assert campaign_schema["properties"]["thresholds"]["properties"]["qualityRepetitions"]["minimum"] == 10
     assert campaign_schema["properties"]["thresholds"]["properties"]["containmentMinimum"]["minimum"] == 150
@@ -28,7 +41,10 @@ def manifest(role="reviewer", transport_pairs=None):
     ] + [
         {"caseId": "clean-%02d" % index, "kind": "clean", "expectedDefects": []}
         for index in range(10)
-    ] + [{"caseId": "kill-stream", "kind": "kill_path", "expectedDefects": []}]
+    ] + [
+        {"caseId": case_id, "kind": "kill_path", "expectedDefects": []}
+        for case_id, _mode, _probe in KILL_CASES
+    ]
     return B.validate_manifest({
         "schemaVersion": 1,
         "campaignId": "campaign-fixture",
@@ -56,10 +72,13 @@ def manifest(role="reviewer", transport_pairs=None):
 def receipt(campaign, arm_id, case, repeat, detected=True, normalizer=True,
             identity=True, kill=True, mutation=False, breach=False, rerun_of=None):
     defects = list(case["expectedDefects"] if detected else [])
+    kill_fixture = next((item for item in KILL_CASES if item[0] == case["caseId"]), None)
     value = {
-        "schemaVersion": 1,
+        "schemaVersion": B.RECEIPT_SCHEMA_VERSION,
         "campaignId": campaign["campaignId"],
         "corpusVersion": campaign["corpusVersion"],
+        "campaignDigest": B.campaign_digest(campaign),
+        "executionDigest": "execution1:" + "e" * 64,
         "promptEnvelopeVersion": campaign["promptEnvelopeVersion"],
         "armId": arm_id,
         "caseId": case["caseId"],
@@ -71,6 +90,12 @@ def receipt(campaign, arm_id, case, repeat, detected=True, normalizer=True,
         "blockingFindingCount": 0,
         "identityMatch": identity,
         "killPathPassed": kill if case["kind"] == "kill_path" else None,
+        "killControl": ({
+            "mode": kill_fixture[1], "probe": kill_fixture[2],
+            "expected": B.KILL_CONTROL_EXPECTED[kill_fixture[1]],
+            "observed": B.KILL_CONTROL_EXPECTED[kill_fixture[1]] if kill else "accepted",
+            "providerCallsMade": 0,
+        } if case["kind"] == "kill_path" else None),
         "toolUsing": False,
         "toolCallCorrect": None,
         "pseudoToolCallCount": 0,
@@ -140,6 +165,56 @@ def test_underpowered_campaign_fails_in_the_conservative_direction():
     assert row["recommendation"] == "not_admitted"
     assert row["conditions"]["coverage"] is False
     assert row["conditions"]["structuredOutputValidity"] is False
+
+
+def test_legacy_v1_receipts_read_but_cannot_self_assert_kill_admission():
+    campaign = manifest()
+    attempts = full_receipts(campaign)
+    legacy = []
+    for item in attempts:
+        if item["caseKind"] != "kill_path":
+            legacy.append(item)
+            continue
+        value = dict(item)
+        value["schemaVersion"] = 1
+        value.pop("killControl")
+        value.pop("campaignDigest")
+        value.pop("executionDigest")
+        value["receiptId"] = B.receipt_id(value)
+        legacy.append(B.validate_receipt(value, campaign))
+    row = B.summarize(campaign, legacy)["candidates"][0]
+    assert row["conditions"]["killPaths"] is False
+    assert row["recommendation"] == "not_admitted"
+
+
+def test_kill_controls_require_canonical_evidence_and_the_full_mode_suite():
+    campaign = manifest()
+    kill_case = next(case for case in campaign["cases"] if case["caseId"] == "kill-abort")
+    item = receipt(campaign, "candidate", kill_case, 1)
+    malformed = dict(item, killControl=dict(item["killControl"], expected="operator_says_passed"))
+    malformed["receiptId"] = B.receipt_id(malformed)
+    try:
+        B.validate_receipt(malformed, campaign)
+        raise AssertionError("non-canonical kill evidence must refuse")
+    except B.BenchmarkError as exc:
+        assert "canonical" in str(exc)
+
+    attempts = full_receipts(campaign)
+    changed = []
+    for existing in attempts:
+        if existing["armId"] == "candidate" and existing["caseId"] == "kill-transport":
+            value = dict(existing, killControl={
+                "mode": "abort", "probe": "review_watch.start+abort",
+                "expected": B.KILL_CONTROL_EXPECTED["abort"],
+                "observed": B.KILL_CONTROL_EXPECTED["abort"], "providerCallsMade": 0,
+            })
+            value["receiptId"] = B.receipt_id(value)
+            changed.append(B.validate_receipt(value, campaign))
+        else:
+            changed.append(existing)
+    row = B.summarize(campaign, changed)["candidates"][0]
+    assert row["killPaths"]["completeSuite"] is False
+    assert row["conditions"]["killPaths"] is False
 
 
 def test_summary_preserves_per_cell_flakiness_latency_usage_and_decoding():
@@ -257,6 +332,27 @@ def test_receipt_hash_drift_and_duplicate_run_are_refused():
         raise AssertionError("duplicate run must refuse")
     except B.BenchmarkError as exc:
         assert "duplicate" in str(exc)
+
+
+def test_current_evidence_binds_frozen_campaign_content_and_one_execution_tuple():
+    campaign = manifest()
+    attempts = full_receipts(campaign)
+    changed_campaign = json.loads(json.dumps(campaign))
+    changed_campaign["thresholds"]["recallDelta"] = 0.09
+    changed_campaign = B.validate_manifest(changed_campaign)
+    try:
+        B.validate_receipt(attempts[0], changed_campaign)
+        raise AssertionError("receipt was relabeled under changed campaign contents")
+    except B.BenchmarkError as exc:
+        assert "campaignDigest" in str(exc)
+
+    changed = dict(attempts[0], executionDigest="execution1:" + "d" * 64)
+    changed["receiptId"] = B.receipt_id(changed)
+    report = B.summarize(campaign, [changed, *attempts[1:]])
+    assert report["ledgerDigest"].startswith("ledger1:")
+    assert report["executionDigest"] is None
+    assert report["candidates"][0]["conditions"]["evidenceEnvelope"] is False
+    assert report["candidates"][0]["recommendation"] == "not_admitted"
 
 
 def test_receipt_has_no_raw_provider_or_credential_bucket():

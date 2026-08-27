@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Benchmark-candidate OpenAI-compatible HTTP reviewer.
 
-This module deliberately is *not* admitted by ``reviewer_dispatch.py``.  It exists so the Slice G
-benchmark can exercise the real gate contract before deciding whether it deserves production
-routing.  Its public forms match every reviewer backend:
+This module is the candidate and admitted executor behind ``reviewer_dispatch.py``. Before Slice G
+admission it runs only through the explicit signed trial route; production dispatch additionally
+requires an exact checked-in ``admit1:`` record and seals that id into its binding. Its public forms
+match every reviewer backend:
 
   http_openai_compat_review.py WORKTREE TASK ROUND EFFORT light
   http_openai_compat_review.py await WATCH_DIR
@@ -107,6 +108,24 @@ def _infra(code, message, **extra):
 def _emit(value):
     print(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
     return 0
+
+
+def response_identity_error(requested_model, response_models):
+    """Return the production refusal for absent/substituted response model identity."""
+    if not response_models:
+        return (
+            "model_identity_unproven",
+            "HTTP reviewer response did not identify the model that produced the verdict",
+        )
+    unexpected = [value for value in response_models if value != requested_model]
+    if unexpected:
+        return (
+            "model_identity_mismatch",
+            "HTTP reviewer reported model %r instead of requested %r" % (
+                unexpected[0], requested_model,
+            ),
+        )
+    return None
 
 
 def _read_json(path):
@@ -442,6 +461,13 @@ def _binding_and_config(worktree, task, round_arg, effort_arg, scope_arg, env=No
         raise ValueError("configurable HTTP reviewers require an exact qual1: or trial1: fingerprint")
     if trial_qualification and env.get("CAMUS_HTTP_REVIEW_TRIAL") != "1":
         raise ValueError("trial1 review requires the explicit non-gating trial route")
+    admission_id = (env.get("CAMUS_REVIEW_ADMISSION_ID") or "").strip() or None
+    if admission_id is not None and not re.fullmatch(r"admit1:[0-9a-f]{64}", admission_id):
+        raise ValueError("review admission id is invalid")
+    if trial_qualification and admission_id is not None:
+        raise ValueError("a non-gating trial may not claim production admission")
+    if admitted_qualification and admission_id is None:
+        raise ValueError("an admitted qualification requires the exact checked-in admission id")
     origin = review_request.consistent_value({"request": request.get("origin"), "environment": env.get("CAMUS_REVIEW_ORIGIN")}, "review origin")
     operator = review_request.consistent_value({"request": request.get("operator"), "environment": env.get("CAMUS_REVIEW_OPERATOR")}, "review operator")
     transport = review_request.consistent_value({"request": request.get("transport"), "environment": env.get("CAMUS_HTTP_REVIEW_TRANSPORT")}, "review transport")
@@ -465,10 +491,12 @@ def _binding_and_config(worktree, task, round_arg, effort_arg, scope_arg, env=No
     credential_revision = _credential_revision(auth, key_env or None, env)
 
     if admitted_qualification:
+        profile_backend = (env.get("CAMUS_HTTP_REVIEW_PROFILE_BACKEND") or "").strip()
         training_org = review_qualification.accepted_training_org(
-            qualification, BACKEND, model, transport, connection, env,
+            qualification, admission_id, BACKEND, profile_backend, model, transport, connection,
+            auth, key_env or None, env,
         )
-        standing = "admission_candidate"
+        standing = "admitted_gate"
     else:
         profile_backend = (env.get("CAMUS_HTTP_REVIEW_PROFILE_BACKEND") or "").strip()
         training_org = review_trial.accepted_training_org(
@@ -531,6 +559,7 @@ def _binding_and_config(worktree, task, round_arg, effort_arg, scope_arg, env=No
         "reviewer_training_org": training_org,
         "maker_training_org": maker_org,
         "standing": standing,
+        "admission_id": admission_id,
         # Only a one-way digest is durable. It prevents a completed result or live process from
         # being adopted after endpoint/auth-mode/timeout drift without persisting the endpoint,
         # its resolved tunnel port, or any credential value.
@@ -569,6 +598,7 @@ def _binding(meta):
         "transport": meta.get("transport"),
         "connection": meta.get("connection"),
         "standing": meta.get("standing"),
+        "admission_id": meta.get("admission_id"),
         "input_fingerprint": meta.get("input_fingerprint"),
     }
 
@@ -590,6 +620,7 @@ def _audit_binding(meta):
         "transport": meta.get("transport"),
         "connection": meta.get("connection"),
         "standing": meta.get("standing"),
+        "admission_id": meta.get("admission_id"),
         "input_fingerprint": meta.get("input_fingerprint"),
         "round_actual": meta.get("round"),
         "effort_actual": meta.get("effort"),
@@ -622,6 +653,7 @@ def _write_audit(review_dir, meta, exit_code, raw, failure=None):
         "reviewer_training_org": meta.get("reviewer_training_org"),
         "maker_training_org": meta.get("maker_training_org"),
         "standing": meta.get("standing"),
+        "admission_id": meta.get("admission_id"),
         "input_fingerprint": meta.get("input_fingerprint"),
         "codex_raw": raw,
         "codex_parsed": parsed,
@@ -640,7 +672,7 @@ def _write_audit(review_dir, meta, exit_code, raw, failure=None):
         compared = (
             "worktree", "worktree_canonical", "round", "codex_exit", "backend_exit",
             "reviewer_model", "reviewer_effort", "reviewer_training_org",
-            "maker_training_org", "standing", "input_fingerprint",
+            "maker_training_org", "standing", "admission_id", "input_fingerprint",
             "codex_raw", "codex_parsed", "binding",
             "infrastructure_failure",
         )
@@ -742,6 +774,7 @@ def _emit_outcome(envelope, watch_dir, review_dir, meta):
         normalized["reviewer_training_org"] = meta.get("reviewer_training_org")
         normalized["maker_training_org"] = meta.get("maker_training_org")
         normalized["standing"] = meta.get("standing")
+        normalized["admission_id"] = meta.get("admission_id")
         normalized["input_fingerprint"] = meta.get("input_fingerprint")
         if isinstance(envelope.get("usage"), dict):
             normalized["usage"] = envelope["usage"]
@@ -812,7 +845,7 @@ def _start_review_claimed(args, worktree, locked_review_dir):
                 "target_dir", "round", "effort", "scope", "reviewer_model", "reviewer_backend",
                 "gate_nonce", "input_fingerprint", "input_sha256", "contract", "qualification", "origin",
                 "operator", "transport", "connection", "reviewer_training_org",
-                "maker_training_org", "standing", "runtime_fingerprint",
+                "maker_training_org", "standing", "admission_id", "runtime_fingerprint",
             )
             drift = [key for key in compared if prior.get(key) != meta.get(key)]
             if drift:
@@ -1143,17 +1176,9 @@ def _worker(args):
                 break
         if not saw_response or not saw_sse:
             return _worker_failure(watch, "streaming_unproven", "HTTP reviewer produced no non-empty SSE content delta", 76)
-        if not response_models:
-            return _worker_failure(
-                watch, "model_identity_unproven",
-                "HTTP reviewer response did not identify the model that produced the verdict", 75,
-            )
-        unexpected = [value for value in response_models if value != model]
-        if unexpected:
-            return _worker_failure(
-                watch, "model_identity_mismatch",
-                "HTTP reviewer reported model %r instead of requested %r" % (unexpected[0], model), 75,
-            )
+        identity_error = response_identity_error(model, response_models)
+        if identity_error is not None:
+            return _worker_failure(watch, identity_error[0], identity_error[1], 75)
         raw = _redact("".join(text_parts), secret)
         # Persist provider output only after credential redaction; normalization remains shared.
         _atomic_write(os.path.join(watch, "last.txt"), raw)

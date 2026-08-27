@@ -140,6 +140,9 @@ const state = {
   // Depth is a run preference, set from Settings and remembered locally. It is
   // not part of the model decision record (checks/models.json).
   depth: ['quick', 'standard'].includes(localStorage.getItem('cls-depth')) ? localStorage.getItem('cls-depth') : 'quick',
+  automaticModelRouting: localStorage.getItem('cls-model-routing') === 'automatic',
+  automaticTaskClass: ['simple', 'balanced', 'difficult'].includes(localStorage.getItem('cls-routing-task-class'))
+    ? localStorage.getItem('cls-routing-task-class') : '',
   runId: null,
   es: null,
   revs: [],
@@ -903,6 +906,37 @@ $('open-settings').addEventListener('click', openSettings);
 // nobody can read must not look like a choice.
 let pairingDirty = false;
 let pairingPresentationRequest = 0;
+let routingPreviewRequest = 0;
+async function reflectAutomaticRouting() {
+  const automatic = state.automaticModelRouting && state.lane !== 'build';
+  $('model-routing-auto').checked = automatic;
+  $('model-routing-class').value = state.automaticTaskClass;
+  $('model-routing-class').disabled = !automatic;
+  $('pair-maker').disabled = automatic;
+  $('pair-reviewer').disabled = automatic;
+  const note = $('model-routing-note');
+  if (!automatic) {
+    note.textContent = state.lane === 'build'
+      ? 'Build keeps its fixed Camus gate pairing.'
+      : 'Off. The pairing shown above stays in control.';
+    return;
+  }
+  const request = ++routingPreviewRequest;
+  note.textContent = 'Checking calibrated evidence for this task class…';
+  try {
+    const query = new URLSearchParams({ lane: state.lane, depth: state.depth });
+    if (state.automaticTaskClass) query.set('taskClass', state.automaticTaskClass);
+    const response = await fetch(`${API}/api/model-routing?${query}`);
+    if (!response.ok) throw new Error(`routing preview returned ${response.status}`);
+    const decision = await response.json();
+    if (request !== routingPreviewRequest) return;
+    note.textContent = decision.routed
+      ? `Ready: ${decision.classification.taskClass} routes to ${decision.maker.backend}:${decision.maker.model} → ${decision.reviewer.backend}:${decision.reviewer.model}. Evidence ${decision.routeId.slice(0, 19)}…`
+      : `Waiting: ${String(decision.reason || 'insufficient evidence').replaceAll('_', ' ')}. The saved pairing remains the fallback.`;
+  } catch {
+    if (request === routingPreviewRequest) note.textContent = 'Routing evidence is unavailable. The saved pairing remains the fallback.';
+  }
+}
 async function reflectPairingNote(prefix = '') {
   const maker = seatEntry(state.seats?.maker, seatOf($('pair-maker')));
   const reviewer = seatEntry(state.seats?.reviewer, seatOf($('pair-reviewer')));
@@ -960,6 +994,7 @@ async function refreshPairing() {
       prefix = `The saved ${missing} is not admitted on this machine, so the run uses exactly the pairing shown here (recorded as a run request). `;
     }
     await reflectPairingNote(prefix);
+    await reflectAutomaticRouting();
   } catch {
     $('pairing-note').textContent = 'pairing unavailable: the local studio server is unreachable';
   }
@@ -968,6 +1003,18 @@ for (const id of ['pair-maker', 'pair-reviewer']) {
   $(id).addEventListener('change', () => { pairingDirty = true; void reflectPairingNote(); });
 }
 $('pairing-change').addEventListener('click', openSettings);
+$('model-routing-auto').addEventListener('change', async () => {
+  state.automaticModelRouting = $('model-routing-auto').checked;
+  localStorage.setItem('cls-model-routing', state.automaticModelRouting ? 'automatic' : 'selected');
+  if (state.automaticModelRouting) await refreshPairing();
+  else await reflectAutomaticRouting();
+});
+$('model-routing-class').addEventListener('change', async () => {
+  state.automaticTaskClass = $('model-routing-class').value;
+  if (state.automaticTaskClass) localStorage.setItem('cls-routing-task-class', state.automaticTaskClass);
+  else localStorage.removeItem('cls-routing-task-class');
+  await reflectAutomaticRouting();
+});
 $('jump-recents').addEventListener('click', () => {
   // Compute the target rather than scrollIntoView: that derives its position
   // from viewport height and silently no-ops where the height is degenerate.
@@ -1035,9 +1082,13 @@ $('lanes').addEventListener('click', (e) => {
   if (state.lane === 'build') $('publish-artifact').checked = false;
   $('pairing').classList.toggle('hidden', state.lane === 'build');
   $('pairing-note').classList.toggle('hidden', state.lane === 'build');
+  $('model-routing-control').classList.toggle('hidden', state.lane === 'build');
+  $('model-routing-class-wrap').classList.toggle('hidden', state.lane === 'build');
+  $('model-routing-note').classList.toggle('hidden', state.lane === 'build');
   if (state.lane === 'build') $('compare-panel').classList.add('hidden');
   reflectEnginePill();
   reflectLaneControls();
+  void reflectAutomaticRouting();
 });
 
 $('rungoal').addEventListener('click', toggleRunGoal);
@@ -1174,7 +1225,7 @@ $('start').addEventListener('click', async () => {
     // server refuses an override.
     const pairMaker = seatOf($('pair-maker'));
     const pairReviewer = seatOf($('pair-reviewer'));
-    const pairing = pairingDirty && state.lane !== 'build' && pairMaker && pairReviewer
+    const pairing = !state.automaticModelRouting && pairingDirty && state.lane !== 'build' && pairMaker && pairReviewer
       ? { maker: pairMaker, reviewer: pairReviewer }
       : undefined;
     const res = await fetch(`${API}/api/runs`, {
@@ -1184,6 +1235,9 @@ $('start').addEventListener('click', async () => {
         // Only the Build lane verifies a repository, so the command only rides
         // that lane's request; empty means "detect the stack".
         verifyCmd: state.lane === 'build' && $('verify-cmd').value.trim() ? $('verify-cmd').value.trim() : undefined,
+        modelRouting: state.lane !== 'build' && state.automaticModelRouting ? 'automatic' : 'selected',
+        taskClass: state.lane !== 'build' && state.automaticModelRouting && state.automaticTaskClass
+          ? state.automaticTaskClass : undefined,
         pairing }),
     });
     const data = await res.json();
@@ -1865,6 +1919,12 @@ function handle(ev) {
           facts.appendChild(el('strong', null, 'Auditor '));
           appendSeatBadges(facts, view.reviewerBadges ?? []);
           pairing.appendChild(facts);
+        }
+        if (ev.run?.modelRouting?.mode === 'automatic') {
+          const routed = ev.run.modelRouting.applied === true;
+          feed(el('div', routed ? 'banner good' : 'banner meh', routed
+            ? `AUTO-ROUTED ${ev.run.modelRouting.classification?.taskClass || 'task'} · ${ev.run.modelRouting.routeId}`
+            : `AUTO-ROUTING HELD · ${String(ev.run.modelRouting.reason || 'insufficient evidence').replaceAll('_', ' ')} · saved pairing used`));
         }
       }
       if (ev.at) { state.runStartAt = ev.at; startTimer(ev.at); }

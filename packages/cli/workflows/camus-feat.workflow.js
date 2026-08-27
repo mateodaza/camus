@@ -117,6 +117,11 @@ const REVIEWER_BACKEND = (typeof A.reviewerBackend === 'string' && A.reviewerBac
 const REVIEWER_EFFORT = (typeof A.reviewerEffort === 'string' && A.reviewerEffort) || ''
 const REVIEWER_CODEX_ARGS = (typeof A.reviewerCodexArgs === 'string' && A.reviewerCodexArgs) || ''
 const REVIEWER_LIGHT_MODEL = (typeof A.reviewerLightModel === 'string' && A.reviewerLightModel) || ''
+const REVIEWER_PROFILE_BACKEND = (typeof A.reviewerProfileBackend === 'string' && A.reviewerProfileBackend) || ''
+const REVIEWER_TRAINING_ORG = (typeof A.reviewerTrainingOrg === 'string' && A.reviewerTrainingOrg) || ''
+const REVIEWER_TRANSPORT = (typeof A.reviewerTransport === 'string' && A.reviewerTransport) || ''
+const REVIEWER_CONNECTION = (typeof A.reviewerConnection === 'string' && A.reviewerConnection) || ''
+const REVIEWER_QUALIFICATION = (typeof A.reviewerQualification === 'string' && A.reviewerQualification) || ''
 const SKIP_PLAN = A.skipPlan === true   // opt-in; forwarded only when set (loop gates it to autonomous)
 // Per-task review↔fix cap, forwarded UNCHANGED to every loop (the loop bounds it 1..10). Lets a
 // caller give a known-large feat more rounds to converge. Omit → the loop's default (3).
@@ -265,6 +270,16 @@ const resumeArgs = {
   ...(TARGET ? { targetPath: TARGET } : {}),
   ...(MODEL ? { model: MODEL } : {}),
   ...(MODEL_TIER ? { modelTier: MODEL_TIER } : {}),
+  ...(REVIEWER_MODEL ? { reviewerModel: REVIEWER_MODEL } : {}),
+  ...(REVIEWER_BACKEND ? { reviewerBackend: REVIEWER_BACKEND } : {}),
+  ...(REVIEWER_EFFORT ? { reviewerEffort: REVIEWER_EFFORT } : {}),
+  ...(REVIEWER_CODEX_ARGS ? { reviewerCodexArgs: REVIEWER_CODEX_ARGS } : {}),
+  ...(REVIEWER_LIGHT_MODEL ? { reviewerLightModel: REVIEWER_LIGHT_MODEL } : {}),
+  ...(REVIEWER_PROFILE_BACKEND ? { reviewerProfileBackend: REVIEWER_PROFILE_BACKEND } : {}),
+  ...(REVIEWER_TRAINING_ORG ? { reviewerTrainingOrg: REVIEWER_TRAINING_ORG } : {}),
+  ...(REVIEWER_TRANSPORT ? { reviewerTransport: REVIEWER_TRANSPORT } : {}),
+  ...(REVIEWER_CONNECTION ? { reviewerConnection: REVIEWER_CONNECTION } : {}),
+  ...(REVIEWER_QUALIFICATION ? { reviewerQualification: REVIEWER_QUALIFICATION } : {}),
   ...(SKIP_PLAN ? { skipPlan: true } : {}),
   ...(ROUND_CAP != null ? { roundCap: ROUND_CAP } : {}),
   ...(BUDGET_TOKENS != null ? { budgetTokens: BUDGET_TOKENS } : {}),
@@ -1225,6 +1240,11 @@ Return {written:true} once that file is on disk with exactly that content.`,
       ...(REVIEWER_EFFORT ? { reviewerEffort: REVIEWER_EFFORT } : {}),
       ...(REVIEWER_CODEX_ARGS ? { reviewerCodexArgs: REVIEWER_CODEX_ARGS } : {}),
       ...(REVIEWER_LIGHT_MODEL ? { reviewerLightModel: REVIEWER_LIGHT_MODEL } : {}),
+      ...(REVIEWER_PROFILE_BACKEND ? { reviewerProfileBackend: REVIEWER_PROFILE_BACKEND } : {}),
+      ...(REVIEWER_TRAINING_ORG ? { reviewerTrainingOrg: REVIEWER_TRAINING_ORG } : {}),
+      ...(REVIEWER_TRANSPORT ? { reviewerTransport: REVIEWER_TRANSPORT } : {}),
+      ...(REVIEWER_CONNECTION ? { reviewerConnection: REVIEWER_CONNECTION } : {}),
+      ...(REVIEWER_QUALIFICATION ? { reviewerQualification: REVIEWER_QUALIFICATION } : {}),
       ...(SKIP_PLAN ? { skipPlan: true } : {}),       // opt-in; loop honors only under policy:autonomous
       ...(ROUND_CAP != null ? { roundCap: ROUND_CAP } : {}),   // per-task review-round budget
       ...(VERIFY_CMD_OVERRIDE ? { verifyCmd: VERIFY_CMD_OVERRIDE } : {}),   // headless verify override (finding 3)

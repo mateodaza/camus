@@ -30,6 +30,11 @@ def qualification_for(model="qwen-test", transport="loopback", connection="fixtu
     return "qual1:" + hashlib.sha256(value).hexdigest()
 
 
+def admission_for(model="qwen-test", transport="loopback", connection="fixture"):
+    qualification = qualification_for(model, transport, connection)
+    return "admit1:" + hashlib.sha256(("admission\0" + qualification).encode("utf-8")).hexdigest()
+
+
 def run(command, cwd=None, env=None, check=True):
     result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True, timeout=30)
     if check and result.returncode != 0:
@@ -180,6 +185,7 @@ def request_for(reviews, wt, rnd, *, model="qwen-test", transport="loopback", co
 
 def base_env(repo, reviews, server, rnd, *, transport="loopback", connection="fixture"):
     qualification = qualification_for("qwen-test", transport, connection)
+    admission_id = admission_for("qwen-test", transport, connection)
     env = os.environ.copy()
     env.update({
         "CAMUS_REPO_ROOT": repo,
@@ -189,11 +195,13 @@ def base_env(repo, reviews, server, rnd, *, transport="loopback", connection="fi
         "CAMUS_REVIEW_EFFORT": "medium",
         "CAMUS_REVIEW_SCOPE": "light",
         "CAMUS_REVIEW_QUALIFICATION": qualification,
+        "CAMUS_REVIEW_ADMISSION_ID": admission_id,
         "CAMUS_GATE_NONCE": "trace:test",
         "CAMUS_REVIEW_ORIGIN": "camus-test",
         "CAMUS_REVIEW_OPERATOR": "test-runner",
         "CAMUS_REVIEWER_TRAINING_ORG": "alibaba",
         "CAMUS_MAKER_TRAINING_ORG": "anthropic",
+        "CAMUS_HTTP_REVIEW_PROFILE_BACKEND": "fixture_qwen",
         "CAMUS_HTTP_REVIEW_MODEL": "qwen-test",
         "CAMUS_HTTP_REVIEW_BASE_URL": "http://127.0.0.1:%d/v1" % server.server_port,
         "CAMUS_HTTP_REVIEW_AUTH": "none",
@@ -216,8 +224,8 @@ def base_env(repo, reviews, server, rnd, *, transport="loopback", connection="fi
             fh.write("11" * 32)
         os.chmod(salt_path, 0o600)
     record = review_qualification.build_record(
-        qualification, "http_openai_compat", "qwen-test", "alibaba",
-        transport, connection, int(time.time()) + 3600, env,
+        qualification, admission_id, "http_openai_compat", "fixture_qwen", "qwen-test", "alibaba",
+        transport, connection, "none", int(time.time()) + 3600, env,
     )
     record_path = review_qualification.record_path(qualification, env)
     os.makedirs(os.path.dirname(record_path), mode=0o700, exist_ok=True)
@@ -314,7 +322,8 @@ def test_http_clean_replay_and_secret_hygiene():
         clean = call_http(wt, repo, env, 1)
         assert clean["ran"] is True and clean["clean"] is True
         binding = dict(clean["binding"])
-        assert binding.pop("standing") == "admission_candidate"
+        assert binding.pop("standing") == "admitted_gate"
+        assert binding.pop("admission_id") == env["CAMUS_REVIEW_ADMISSION_ID"]
         assert re.fullmatch(r"fp1:[0-9a-f]{64}", binding.pop("input_fingerprint"))
         assert binding == {
             "round": 1, "effort": "medium", "model": "qwen-test",
@@ -359,17 +368,54 @@ def test_http_clean_replay_and_secret_hygiene():
             fh.write("11" * 32)
         os.chmod(salt_path, 0o600)
         assert http_review._credential_revision("env", "FIXTURE_REVIEW_KEY", env) == "add3afc20a075a75"
+        credential_record = review_qualification.build_record(
+            qualification_for(), admission_for(), "http_openai_compat", "fixture_qwen", "qwen-test", "alibaba",
+            "loopback", "fixture", "add3afc20a075a75", int(time.time()) + 3600, env,
+        )
+        with open(review_qualification.record_path(qualification_for(), env), "w", encoding="utf-8") as fh:
+            json.dump(credential_record, fh)
+        os.chmod(review_qualification.record_path(qualification_for(), env), 0o600)
         result = call_http(wt, repo, env, 2)
         assert result["ran"] is True and secret not in json.dumps(result)
         assert server.fixture["authorization"] == "Bearer " + secret
         credential_requests = server.fixture["requests"]
         rotated = call_http(wt, repo, dict(env, FIXTURE_REVIEW_KEY="ROTATED"), 2)
-        assert rotated["ran"] is False and rotated["error_code"] == "http_review_replay_drift"
+        assert rotated["ran"] is False and rotated["error_code"] == "http_review_configuration"
         assert server.fixture["requests"] == credential_requests, "credential rotation replayed the prior account's verdict"
         for dirpath, _dirs, files in os.walk(reviews):
             for name in files:
                 with open(os.path.join(dirpath, name), "rb") as fh:
                     assert secret.encode() not in fh.read(), "%s persisted the planted credential" % name
+
+
+def test_http_admitted_gate_seals_the_exact_human_admission_id():
+    with repo_fixture() as (_root, repo, wt, reviews), fixture_server() as server:
+        request_for(reviews, wt, 1)
+        env = base_env(repo, reviews, server, 1)
+        admission_id = env["CAMUS_REVIEW_ADMISSION_ID"]
+        result = call_http(wt, repo, env, 1)
+        assert result["ran"] is True and result["standing"] == "admitted_gate"
+        assert result["admission_id"] == admission_id
+        assert result["binding"]["admission_id"] == admission_id
+        with open(os.path.join(reviews, os.path.basename(wt) + "-r1.json"), encoding="utf-8") as fh:
+            audit = json.load(fh)
+        assert audit["admission_id"] == admission_id
+        assert audit["binding"]["admission_id"] == admission_id
+        before = server.fixture["requests"]
+        request_for(reviews, wt, 2)
+        forged = base_env(repo, reviews, server, 2)
+        forged["CAMUS_REVIEW_ADMISSION_ID"] = "admit1:" + "f" * 64
+        refused = call_http(wt, repo, forged, 2)
+        assert refused["ran"] is False and refused["error_code"] == "http_review_configuration"
+        assert "admission_id" in refused["error"]
+        assert server.fixture["requests"] == before
+        request_for(reviews, wt, 3)
+        missing = base_env(repo, reviews, server, 3)
+        missing.pop("CAMUS_REVIEW_ADMISSION_ID")
+        refused = call_http(wt, repo, missing, 3)
+        assert refused["ran"] is False and refused["error_code"] == "http_review_configuration"
+        assert "admission id" in refused["error"]
+        assert server.fixture["requests"] == before
 
 
 def test_http_trial_is_signed_explicit_and_never_dispatch_admitted():
@@ -381,6 +427,7 @@ def test_http_trial_is_signed_explicit_and_never_dispatch_admitted():
             "CAMUS_REVIEW_ORIGIN": "camus_model_trial",
             "CAMUS_REVIEW_OPERATOR": "fixture",
         })
+        env.pop("CAMUS_REVIEW_ADMISSION_ID")
         trial = review_trial.issue(
             "http_openai_compat", "fixture_qwen", "qwen-test", "alibaba",
             "loopback", "fixture", env["CAMUS_HTTP_REVIEW_BASE_URL"],
@@ -445,16 +492,16 @@ def test_http_refusals_and_tunnel_death():
         assert forged_record["ran"] is False and "HMAC does not verify" in forged_record["error"]
         assert server.fixture["requests"] == 0
         qualification_record = review_qualification.build_record(
-            qualification_for(), "http_openai_compat", "qwen-test", "alibaba",
-            "loopback", "fixture", int(time.time()) + 3600, env,
+            qualification_for(), admission_for(), "http_openai_compat", "fixture_qwen", "qwen-test", "alibaba",
+            "loopback", "fixture", "none", int(time.time()) + 3600, env,
         )
         with open(qualification_path, "w", encoding="utf-8") as fh:
             json.dump(qualification_record, fh)
         os.chmod(qualification_path, 0o600)
 
         expired_record = review_qualification.build_record(
-            qualification_for(), "http_openai_compat", "qwen-test", "alibaba",
-            "loopback", "fixture", int(time.time()) - 1, env,
+            qualification_for(), admission_for(), "http_openai_compat", "fixture_qwen", "qwen-test", "alibaba",
+            "loopback", "fixture", "none", int(time.time()) - 1, env,
         )
         with open(qualification_path, "w", encoding="utf-8") as fh:
             json.dump(expired_record, fh)
@@ -463,8 +510,8 @@ def test_http_refusals_and_tunnel_death():
         assert expired["ran"] is False and "has expired" in expired["error"]
         assert server.fixture["requests"] == 0
         qualification_record = review_qualification.build_record(
-            qualification_for(), "http_openai_compat", "qwen-test", "alibaba",
-            "loopback", "fixture", int(time.time()) + 3600, env,
+            qualification_for(), admission_for(), "http_openai_compat", "fixture_qwen", "qwen-test", "alibaba",
+            "loopback", "fixture", "none", int(time.time()) + 3600, env,
         )
         with open(qualification_path, "w", encoding="utf-8") as fh:
             json.dump(qualification_record, fh)
@@ -751,6 +798,7 @@ def test_direct_https_url_boundary():
 
 def main():
     tests = [test_dispatch, test_http_clean_replay_and_secret_hygiene,
+             test_http_admitted_gate_seals_the_exact_human_admission_id,
              test_http_trial_is_signed_explicit_and_never_dispatch_admitted,
              test_http_refusals_and_tunnel_death, test_http_failed_attempt_is_preserved_and_retryable,
              test_http_concurrent_retry_starts_one_request,

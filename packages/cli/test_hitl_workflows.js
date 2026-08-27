@@ -130,12 +130,21 @@ function bindReviewOutput(out, prompt) {
   })
   const modelPinned = !!model || hasModelFlag(codexArgs)
     || (effort === 'medium' && lightModel.trim() !== '')
-  const connection = (!modelPinned && !nonvendorConn(codexArgs) && backend === 'codex') ? 'vendor_managed' : 'configured'
-  const qualification = (backend === 'codex' && connection === 'vendor_managed') ? 'builtin1' : 'qual1'
+  const requestedTransport = (prompt.match(/--transport (\S+)/) || [])[1] || 'cli-detached'
+  const requestedConnection = (prompt.match(/--connection (\S+)/) || [])[1] || null
+  const requestedQualification = (prompt.match(/--qualification (\S+)/) || [])[1] || null
+  const connection = requestedConnection
+    || ((!modelPinned && !nonvendorConn(codexArgs) && backend === 'codex') ? 'vendor_managed' : 'configured')
+  const qualification = requestedQualification
+    || ((backend === 'codex' && connection === 'vendor_managed') ? 'builtin1' : 'qual1')
   g.binding = {
     round: Number.isFinite(round) ? round : null, effort, model, backend, nonce, worktree,
     round_requested: Number.isFinite(round) ? round : null, effort_requested: effort,
-    contract, scope, qualification, origin, operator, transport: 'cli-detached', connection,
+    contract, scope, qualification, origin, operator, transport: requestedTransport, connection,
+    // The HTTP dispatcher is the independent authority that adds this after an exact checked-in
+    // admission match. The harness uses a deterministic well-shaped id; break fixtures may supply
+    // their own binding to prove that a missing or malformed authority fails closed.
+    ...(backend === 'http_openai_compat' ? { admission_id: `admit1:${'a'.repeat(64)}` } : {}),
   }
   lastStartBinding = g.binding      // what a later AWAIT reconstructs from meta.json
   return J(g)
@@ -855,7 +864,7 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
       review: J({ ran: true, clean: true, blocking: [], nonblocking: [], usage: { input_tokens: 15655, output_tokens: 900, reasoning_output_tokens: 4000 } }),
       commit: J({ committed: true, sha: h40('abc123') }), prep: J({ prepped: true, ran: [] }), verify: J({ pass: true, failures: [], head: h40('abc123') }) }, calls2),
       () => {}, (m) => logs.push(m), async () => { throw new Error('no workflow') }, undefined)
-    ok('S22d codex usage in the clean-round log', logs.some((m) => /codex ~16k in\/900 out \(4000 reasoning\)/.test(m)), logs.filter((m) => /CLEAN/.test(m)).join(' | '))
+    ok('S22d reviewer usage in the clean-round log', logs.some((m) => /reviewer ~16k in\/900 out \(4000 reasoning\)/.test(m)), logs.filter((m) => /CLEAN/.test(m)).join(' | '))
   }
 
   // S23 (VELOCITY §1, 0.2.6): ONESHOT posture — one review; blocking findings get ONE fix pass
@@ -958,6 +967,87 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     const cmd = prompts[reviewLbl(calls, 1)] || ''
     ok(`S23i reviewerCodexArgs='${bypass}' → expectation is qual1/configured`, / --qualification qual1 /.test(cmd) && / --connection configured\b/.test(cmd), cmd.slice(0, 260))
     ok(`S23i …and the review is ACCEPTED (loop reaches done, not infra drift) [${bypass}]`, res.status === 'done', res.status)
+  }
+
+  // S23j: an admitted OpenAI-compatible reviewer is a first-class workflow lane, not merely a
+  // dispatcher implementation. Its exact public route + qualification travel through the child
+  // environment, and the independently issued admit1 authority must come back in the binding.
+  {
+    const qualification = `qual1:${'b'.repeat(64)}`
+    const external = {
+      task: 't', reviewerBackend: 'http_openai_compat', reviewerModel: 'grok-4.6',
+      reviewerProfileBackend: 'xai', reviewerTrainingOrg: 'xai',
+      reviewerTransport: 'direct_https', reviewerConnection: 'xai-primary',
+      reviewerQualification: qualification,
+    }
+    let missingThrew = null
+    try {
+      await runLoop({ ...external, reviewerQualification: undefined }, {})
+    } catch (e) { missingThrew = String((e && e.message) || e) }
+    ok('S23j external reviewer missing exact route metadata refuses before work starts',
+      !!missingThrew && /requires exact/.test(missingThrew), missingThrew)
+
+    const { res, calls, prompts } = await runLoop(external, { ...clsStd, ...planOf('clear', ''), ...happyTail })
+    const cmd = prompts[reviewLbl(calls, 1)] || ''
+    ok('S23j external reviewer request binds exact backend/model/route/qualification',
+      cmd.includes('--backend "http_openai_compat"') && cmd.includes('--model "grok-4.6"')
+      && cmd.includes('--transport direct_https') && cmd.includes('--connection xai-primary')
+      && cmd.includes(`--qualification ${qualification}`), cmd.slice(0, 420))
+    ok('S23j external reviewer child receives non-secret exact profile identity',
+      cmd.includes('CAMUS_HTTP_REVIEW_PROFILE_BACKEND="xai"')
+      && cmd.includes('CAMUS_HTTP_REVIEW_MODEL="grok-4.6"')
+      && cmd.includes('CAMUS_HTTP_REVIEW_TRANSPORT="direct_https"')
+      && cmd.includes('CAMUS_HTTP_REVIEW_CONNECTION="xai-primary"')
+      && cmd.includes('CAMUS_REVIEWER_TRAINING_ORG="xai"')
+      && cmd.includes(`CAMUS_REVIEW_QUALIFICATION="${qualification}"`), cmd.slice(-800))
+    ok('S23j admitted external review reaches done and preserves exact admission provenance',
+      res.status === 'done' && res.reviewerAdmissionId === `admit1:${'a'.repeat(64)}`,
+      `${res.status}/${res.reviewerAdmissionId}`)
+
+    const noAdmission = {
+      ...clsStd, ...planOf('clear', ''), ...happyTail,
+      review: (p) => {
+        const gate = JSON.parse(bindReviewOutput(J({ ran: true, clean: true, blocking: [], nonblocking: [] }), p))
+        delete gate.binding.admission_id
+        return J(gate)
+      },
+    }
+    const refused = await runLoop(external, noAdmission)
+    ok('S23j external verdict without admit1 authority fails closed as reviewer infra',
+      refused.res.status === 'infra_error' && /admission/.test(refused.res.error || ''),
+      `${refused.res.status}/${refused.res.error}`)
+
+    const handle = `/home/u/.camus/reviews/${wtName('t')}-r1.watch`
+    let attached = 0
+    const pendingThenClean = {
+      ...clsStd, ...planOf('clear', ''), implement: happyTail.implement, ...cleanVerify,
+      commit: happyTail.commit, verify: happyTail.verify,
+      review: () => (++attached === 1
+        ? J({ pending: true, handle, last_event_age: 2 })
+        : J({ ran: true, clean: true, blocking: [], nonblocking: [] })),
+    }
+    const awaited = await runLoop(external, pendingThenClean)
+    const awaitLabel = awaited.calls.find((c) => /await1$/.test(c))
+    const awaitCmd = awaited.prompts[awaitLabel] || ''
+    ok('S23j external await preserves exact admitted route and effort', awaited.res.status === 'done'
+      && awaitCmd.includes('CAMUS_REVIEWER="http_openai_compat"')
+      && awaitCmd.includes('CAMUS_HTTP_REVIEW_PROFILE_BACKEND="xai"')
+      && awaitCmd.includes('CAMUS_HTTP_REVIEW_CONNECTION="xai-primary"')
+      && awaitCmd.includes('CAMUS_REVIEW_EFFORT=medium'), awaitCmd.slice(-650))
+
+    const neverCompletes = {
+      ...clsStd, ...planOf('clear', ''), implement: happyTail.implement,
+      review: J({ pending: true, handle, last_event_age: 2 }),
+      'review-abort': J({ ran: false, error: 'aborted', clean: false, blocking: [], nonblocking: [] }),
+    }
+    const aborted = await runLoop({ ...external, roundCap: 1 }, neverCompletes)
+    const abortLabel = aborted.calls.find((c) => c.startsWith('review-abort'))
+    const abortCmd = aborted.prompts[abortLabel] || ''
+    ok('S23j external abort preserves exact admitted route and effort', aborted.res.status === 'infra_error'
+      && abortCmd.includes('CAMUS_REVIEWER="http_openai_compat"')
+      && abortCmd.includes('CAMUS_HTTP_REVIEW_MODEL="grok-4.6"')
+      && abortCmd.includes('CAMUS_HTTP_REVIEW_TRANSPORT="direct_https"')
+      && abortCmd.includes('CAMUS_REVIEW_EFFORT=medium'), abortCmd.slice(-650))
   }
 
   // S24 (smoke 2026-06-12): ONESHOT carries the fix agent's CLAIMED resolution per finding —
@@ -1860,17 +1950,28 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
   // F4: model and reviewer run-start identity passthrough — forwarded UNCHANGED into each
   // per-task loop call. The loop cannot recover these values from a process environment.
   {
-    const { loopArgs } = await runFeat({ feat: 'F', tasks: ['only task'], model: 'opus', modelTier: 'high',
-      reviewerModel: 'gpt-5.6-sol', reviewerBackend: 'codex', reviewerEffort: 'high',
-      reviewerCodexArgs: '--config=model_provider=proxy', reviewerLightModel: 'gpt-5.4-mini' }, featBase,
+    const qualification = `qual1:${'c'.repeat(64)}`
+    const { loopArgs, argsJSON } = await runFeat({ feat: 'F', tasks: ['only task'], model: 'opus', modelTier: 'high',
+      reviewerModel: 'grok-4.6', reviewerBackend: 'http_openai_compat', reviewerEffort: 'high',
+      reviewerCodexArgs: '--config=model_provider=proxy', reviewerLightModel: 'gpt-5.4-mini',
+      reviewerProfileBackend: 'xai', reviewerTrainingOrg: 'xai', reviewerTransport: 'direct_https',
+      reviewerConnection: 'xai-primary', reviewerQualification: qualification }, featBase,
       [{ status: 'done', branch: 'camus/feat/x/only', decisions: [] }])
     ok('F4 model forwarded to loop', loopArgs.length === 1 && loopArgs[0].model === 'opus', J(loopArgs[0]))
     ok('F4 modelTier forwarded to loop', loopArgs[0] && loopArgs[0].modelTier === 'high')
     ok('F4 reviewer identity/settings forwarded to loop', loopArgs[0]
-      && loopArgs[0].reviewerModel === 'gpt-5.6-sol' && loopArgs[0].reviewerBackend === 'codex'
+      && loopArgs[0].reviewerModel === 'grok-4.6' && loopArgs[0].reviewerBackend === 'http_openai_compat'
       && loopArgs[0].reviewerEffort === 'high'
       && loopArgs[0].reviewerCodexArgs === '--config=model_provider=proxy'
-      && loopArgs[0].reviewerLightModel === 'gpt-5.4-mini', J(loopArgs[0]))
+      && loopArgs[0].reviewerLightModel === 'gpt-5.4-mini'
+      && loopArgs[0].reviewerProfileBackend === 'xai' && loopArgs[0].reviewerTrainingOrg === 'xai'
+      && loopArgs[0].reviewerTransport === 'direct_https' && loopArgs[0].reviewerConnection === 'xai-primary'
+      && loopArgs[0].reviewerQualification === qualification, J(loopArgs[0]))
+    ok('F4 reviewer identity/settings persist in canonical resume args', argsJSON
+      && argsJSON.reviewerBackend === 'http_openai_compat' && argsJSON.reviewerModel === 'grok-4.6'
+      && argsJSON.reviewerProfileBackend === 'xai' && argsJSON.reviewerTrainingOrg === 'xai'
+      && argsJSON.reviewerTransport === 'direct_https' && argsJSON.reviewerConnection === 'xai-primary'
+      && argsJSON.reviewerQualification === qualification, J(argsJSON))
   }
   {
     // No override → loop call must NOT carry model/modelTier (loop keeps its own defaults).
@@ -1879,7 +1980,9 @@ const planOf = (clarity, question = 'Q', interpretations = []) =>
     ok('F4 no model/reviewer keys when unset', loopArgs[0] && !('model' in loopArgs[0]) && !('modelTier' in loopArgs[0])
       && !('reviewerModel' in loopArgs[0]) && !('reviewerBackend' in loopArgs[0])
       && !('reviewerEffort' in loopArgs[0]) && !('reviewerCodexArgs' in loopArgs[0])
-      && !('reviewerLightModel' in loopArgs[0]))
+      && !('reviewerLightModel' in loopArgs[0]) && !('reviewerProfileBackend' in loopArgs[0])
+      && !('reviewerTrainingOrg' in loopArgs[0]) && !('reviewerTransport' in loopArgs[0])
+      && !('reviewerConnection' in loopArgs[0]) && !('reviewerQualification' in loopArgs[0]))
     ok('F4 no roundCap key when unset', loopArgs[0] && !('roundCap' in loopArgs[0]))
   }
   {

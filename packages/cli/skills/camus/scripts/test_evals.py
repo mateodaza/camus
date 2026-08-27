@@ -12,7 +12,11 @@ def _episode(number, arm, quality=True, wall=1000):
     return E.make_episode(
         trace_id="f:a%d" % number, feat_id="f", task_id="t%d" % number,
         task_hash="sha256:%064d" % number, task_class="feature",
-        pairing={"makerModel": arm, "reviewerModel": "judge"},
+        pairing={
+            "makerModel": arm, "makerObserved": [arm],
+            "reviewerBackend": "codex", "reviewerModel": "judge", "reviewerEffort": "high",
+            "reviewerObserved": {"backend": "codex", "model": "judge", "effort": "high"},
+        },
         outcome={
             "verificationPass": quality,
             "independentReview": "clean" if quality else "findings",
@@ -160,7 +164,7 @@ def test_shadow_experiment_requires_complete_tuple_and_codex_closure():
             assert "Codex" in str(exc)
         base["arms"][0]["reviewerBackend"] = "codex"
         base["mode"] = "route"
-        base["minimumTrials"] = 5
+        base["minimumTrials"] = 10
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(base, fh)
         try:
@@ -230,17 +234,94 @@ def test_route_mode_is_explicit_and_requires_a_larger_sample_floor():
             assert False, "small-sample automatic routing accepted"
         except E.EvalError as exc:
             assert "minimumTrials" in str(exc)
-        value["minimumTrials"] = 5
+        value["minimumTrials"] = 10
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(value, fh)
         assert E.load_experiment(path)["mode"] == "route"
+
+
+def test_route_mode_requires_the_complete_slice_g_admission_tuple():
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "experiment.json")
+        value = {
+            "id": "route-external", "taskClass": "feature", "mode": "route", "minimumTrials": 10,
+            "arms": [
+                {"id": "a", "makerModel": "opus", "reviewerBackend": "http_openai_compat",
+                 "reviewerModel": "grok", "reviewerEffort": "medium"},
+                {"id": "b", "makerModel": "sonnet", "reviewerBackend": "codex",
+                 "reviewerModel": "sol", "reviewerEffort": "high"},
+            ],
+        }
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(value, fh)
+        try:
+            E.load_experiment(path)
+            assert False, "external reviewer without its exact admission route entered routing"
+        except E.EvalError as exc:
+            assert "complete exact route" in str(exc)
+        value["arms"][0].update({
+            "reviewerProfileBackend": "xai", "reviewerTrainingOrg": "xai",
+            "reviewerTransport": "direct_https", "reviewerConnection": "xai-primary",
+            "reviewerQualification": "qual1:" + "a" * 64,
+        })
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(value, fh)
+        plan = E.load_experiment(path)
+        assert plan["arms"][0]["reviewerQualification"] == "qual1:" + "a" * 64
+
+
+def test_route_requires_every_quality_trial_and_exact_observed_identities():
+    plan = {
+        "id": "exp", "taskClass": "feature", "minimumTrials": 2, "qualityFloor": 0.5,
+        "mode": "route", "arms": [{"id": "fast"}, {"id": "slow"}],
+    }
+    rows = [
+        _episode(1, "fast", quality=True, wall=10),
+        _episode(2, "fast", quality=False, wall=10),
+        _episode(3, "slow", quality=True, wall=1000),
+        _episode(4, "slow", quality=True, wall=1000),
+    ]
+    arm, evidence = E.select_arm(plan, rows, "route-quality")
+    assert arm["id"] == "slow", evidence
+    assert evidence["stats"]["fast"]["qualityFloorRate"] == 0.5
+
+    rows[3]["pairing"]["reviewerObserved"]["model"] = "substituted"
+    arm, evidence = E.select_arm(plan, rows, "route-identity")
+    # Neither arm is now route-eligible; exploration continues instead of
+    # promoting the faster failed arm or the identity-drifted clean arm.
+    assert "no arm clears" in evidence["reason"]
+    assert evidence["stats"]["slow"]["identityStable"] is False
+
+
+def test_external_route_identity_requires_qualification_route_and_admission_authority():
+    row = _episode(9, "grok", quality=True, wall=20)
+    row["pairing"].update({
+        "reviewerBackend": "http_openai_compat", "reviewerModel": "grok-4.6",
+        "reviewerEffort": "medium", "reviewerQualification": "qual1:" + "a" * 64,
+        "reviewerTransport": "direct_https", "reviewerConnection": "xai-primary",
+        "reviewerObserved": {
+            "backend": "http_openai_compat", "model": "grok-4.6", "effort": "medium",
+            "qualification": "qual1:" + "a" * 64, "transport": "direct_https",
+            "connection": "xai-primary", "admissionId": "admit1:" + "b" * 64,
+        },
+    })
+    assert E._identity_match(row) is True
+    row["pairing"]["reviewerObserved"]["qualification"] = "qual1:" + "c" * 64
+    assert E._identity_match(row) is False
+    row["pairing"]["reviewerObserved"]["qualification"] = "qual1:" + "a" * 64
+    row["pairing"]["reviewerObserved"]["admissionId"] = None
+    assert E._identity_match(row) is False
 
 
 def _seg_episode(number, arm, config_hash, task_class="feature", quality=True, wall=1000):
     return E.make_episode(
         trace_id="f:a%d" % number, feat_id="f", task_id="t%d" % number,
         task_hash="sha256:%064d" % number, task_class=task_class,
-        pairing={"makerModel": arm, "reviewerModel": "judge"},
+        pairing={
+            "makerModel": arm, "makerObserved": [arm],
+            "reviewerBackend": "codex", "reviewerModel": "judge", "reviewerEffort": "high",
+            "reviewerObserved": {"backend": "codex", "model": "judge", "effort": "high"},
+        },
         outcome={
             "verificationPass": quality,
             "independentReview": "clean" if quality else "findings",
@@ -440,7 +521,11 @@ def _timed_episode(number, arm, config_hash="sha256:cfg", economics=None):
     return E.make_episode(
         trace_id="f:a%d" % number, feat_id="f", task_id="t%d" % number,
         task_hash="sha256:%064d" % number, task_class="feature",
-        pairing={"makerModel": arm, "reviewerModel": "judge"},
+        pairing={
+            "makerModel": arm, "makerObserved": [arm],
+            "reviewerBackend": "codex", "reviewerModel": "judge", "reviewerEffort": "high",
+            "reviewerObserved": {"backend": "codex", "model": "judge", "effort": "high"},
+        },
         outcome={"verificationPass": True, "independentReview": "clean", "humanIntervention": False},
         economics=economics if economics is not None else {"wallMs": 1000, "outputTokens": 100},
         artifact={"commit": "%040d" % number},

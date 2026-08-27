@@ -35,6 +35,10 @@ ALLOWED_SPEC_FIELDS = {
 }
 CONTROLLER_ACTIONS = {"fix_recheck", "fix_verify", "retry_verify", "human", "stop"}
 HUMAN_RESUME_ACTIONS = {"fix_recheck", "fix_verify", "retry_verify"}
+EXTERNAL_REVIEW_ROUTE_FIELDS = (
+    "reviewerProfileBackend", "reviewerTrainingOrg", "reviewerTransport",
+    "reviewerConnection", "reviewerQualification",
+)
 
 
 class DriverError(Exception):
@@ -676,6 +680,10 @@ def _pairing(args, options, plan, ledger, assignment_key, assigned_arm=None):
         for key in ("shadowReviewerBackend", "shadowReviewerModel", "shadowReviewerEffort"):
             if arm.get(key):
                 pairing[key] = arm[key]
+        for key in EXTERNAL_REVIEW_ROUTE_FIELDS:
+            if arm.get(key):
+                pairing[key] = arm[key]
+        _reviewer_route(pairing)
         return pairing, {"id": plan["id"], "configHash": plan["configHash"],
             "armId": arm["id"], "assignment": why["reason"]}
     pairing = {
@@ -696,7 +704,41 @@ def _pairing(args, options, plan, ledger, assignment_key, assigned_arm=None):
             "shadowReviewerModel": shadow_model,
             "shadowReviewerEffort": getattr(options, "shadow_reviewer_effort", "medium"),
         })
+    for key, option in (
+        ("reviewerProfileBackend", "reviewer_profile_backend"),
+        ("reviewerTrainingOrg", "reviewer_training_org"),
+        ("reviewerTransport", "reviewer_transport"),
+        ("reviewerConnection", "reviewer_connection"),
+        ("reviewerQualification", "reviewer_qualification"),
+    ):
+        value = getattr(options, option, None)
+        if value:
+            pairing[key] = value
+    _reviewer_route(pairing)
     return pairing, None
+
+
+def _reviewer_route(pairing):
+    present = [key for key in EXTERNAL_REVIEW_ROUTE_FIELDS if pairing.get(key)]
+    if pairing.get("reviewerBackend") != "http_openai_compat":
+        if present:
+            raise DriverError("external reviewer route fields require --reviewer-backend http_openai_compat")
+        return None
+    if len(present) != len(EXTERNAL_REVIEW_ROUTE_FIELDS):
+        raise DriverError("admitted HTTP reviewer requires its complete exact non-secret route")
+    route = {
+        "profileBackend": pairing["reviewerProfileBackend"],
+        "trainingOrg": pairing["reviewerTrainingOrg"],
+        "transport": pairing["reviewerTransport"],
+        "connection": pairing["reviewerConnection"],
+        "qualification": pairing["reviewerQualification"],
+    }
+    if route["transport"] not in ("loopback", "direct_https", "ssh_tunnel") \
+            or not re.fullmatch(r"qual1:[0-9a-f]{64}", route["qualification"]):
+        raise DriverError("admitted HTTP reviewer route is malformed")
+    if not all(isinstance(value, str) and value for value in route.values()):
+        raise DriverError("admitted HTTP reviewer route contains an empty identity field")
+    return route
 
 
 def _shadow_config(pairing):
@@ -801,7 +843,10 @@ def _record_shadow_comparison(log, trace_id, task_id, shadow, codex_review,
 
 def _review_with_shadow(log, run, node, pairing, repo, task, round_no, feat_id, base):
     shadow = _run_shadow_review(log, run, node, pairing, repo, task, round_no)
-    review = kernel.review_task(feat_id, node["taskId"], repo=repo, base=base)
+    review = kernel.review_task(
+        feat_id, node["taskId"], repo=repo, base=base,
+        reviewer_route=_reviewer_route(pairing),
+    )
     closed_run = kernel._validated_run(feat_id, base)
     closed_node = next(item for item in closed_run["nodes"] if item["taskId"] == node["taskId"])
     direct = closed_node.get("directReview") \
@@ -906,7 +951,9 @@ def _pairing_evidence(pairing, node, log):
         "makerObserved": observed_makers,
         "reviewerObserved": {
             "backend": review.get("backend"), "model": review.get("model"),
-            "effort": review.get("effort"),
+            "effort": review.get("effort"), "qualification": review.get("qualification"),
+            "transport": review.get("transport"), "connection": review.get("connection"),
+            "admissionId": review.get("admissionId"),
         } if review else None,
         "shadowReviewerObserved": {
             "backend": shadow.get("backend"), "model": shadow.get("model"),
@@ -1108,8 +1155,9 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
             shadow_keys = {
                 "shadowReviewerBackend", "shadowReviewerModel", "shadowReviewerEffort",
             }
+            route_keys = set(EXTERNAL_REVIEW_ROUTE_FIELDS)
             if not isinstance(pairing, dict) or not required.issubset(pairing) \
-                    or set(pairing) - required - shadow_keys \
+                    or set(pairing) - required - shadow_keys - route_keys \
                     or not all(isinstance(pairing.get(key), str) and pairing.get(key)
                                for key in required) \
                     or (set(pairing) & shadow_keys and set(pairing) & shadow_keys != shadow_keys) \
@@ -1117,6 +1165,7 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                                for key in set(pairing) & shadow_keys):
                 raise DriverError("durable task pairing is malformed")
             _shadow_config(pairing)
+            _reviewer_route(pairing)
             if plan and (not isinstance(experiment, dict)
                          or experiment.get("configHash") != plan["configHash"]):
                 raise DriverError("durable task pairing disagrees with the experiment config")
@@ -1525,6 +1574,16 @@ def _parser():
     run.add_argument("--reviewer-backend", default="codex")
     run.add_argument("--reviewer-model", default="gpt-5.6-sol")
     run.add_argument("--reviewer-effort", choices=("low", "medium", "high", "xhigh"), default="high")
+    run.add_argument("--reviewer-profile-backend", default=None,
+                     help="exact admitted Studio profile id for http_openai_compat")
+    run.add_argument("--reviewer-training-org", default=None,
+                     help="exact admission-bound reviewer training organization")
+    run.add_argument("--reviewer-transport", choices=("loopback", "direct_https", "ssh_tunnel"),
+                     default=None)
+    run.add_argument("--reviewer-connection", default=None,
+                     help="exact admitted Studio connection id")
+    run.add_argument("--reviewer-qualification", default=None,
+                     help="exact qual1 fingerprint from the checked-in admission")
     run.add_argument("--shadow-reviewer-backend", default=None,
                      help="Studio profile to evaluate before the Codex gate")
     run.add_argument("--shadow-reviewer-model", default=None,

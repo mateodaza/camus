@@ -6,10 +6,10 @@ CAMUS_CONTROL: cli.review.origin_separation
 CAMUS_CONTROL: cli.review.executable_authorization
 
 The shell entrypoint delegates here so backend selection is one argv-safe decision instead of
-shell pattern matching.  Candidate names are intentionally visible before they are usable: a
-backend becomes executable only by changing its checked-in ``admitted`` bit after the benchmark
-contract is satisfied.  Environment variables can narrow/refuse a decision; they can never admit
-a backend or replace its executable.
+shell pattern matching. Candidate names are intentionally visible before they are usable. The
+generic HTTP executor requires one exact, unexpired admission in the checked-in registry after
+its benchmark and human-calibration contracts are satisfied. Environment variables can
+narrow/refuse a decision; they can never admit a backend or replace its executable.
 """
 import json
 import os
@@ -17,6 +17,7 @@ import re
 import sys
 
 import control_plane
+import reviewer_admission
 
 
 ORG_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
@@ -100,7 +101,7 @@ def _write_control_preflight(decision, argv, env):
     events = [
         control_plane.control_event(
             "cli.review.backend_admission", action, "passed", "checked_in_backend_admitted",
-            details={"backend": decision["backend"]},
+            details={"backend": decision["backend"], "admission_id": decision.get("admission_id")},
         ),
         control_plane.control_event(
             "cli.review.origin_separation", action, "passed", "maker_and_reviewer_origins_separated",
@@ -128,7 +129,7 @@ def _write_control_preflight(decision, argv, env):
     return {"path": path, "action": action, "route": route}
 
 
-def decide(backend, env=None):
+def decide(backend, env=None, admissions=None, now=None):
     """Return (decision, error).  Only an admitted decision may be executed."""
     env = os.environ if env is None else env
     spec = BACKENDS.get(backend)
@@ -158,20 +159,58 @@ def decide(backend, env=None):
                 "reviewer backend %r has no training-organization authority" % backend,
                 backend=backend, maker_org=maker_org,
             )
-        if spec["admitted"] is not True:
+        # External admission is exact and checked in. A trial receipt remains
+        # non-gating even if its tuple later earns production admission.
+        admission = None
+        if not env.get("CAMUS_HTTP_REVIEW_TRIAL"):
+            try:
+                registry = reviewer_admission.load_registry() if admissions is None \
+                    else reviewer_admission.validate_registry(admissions)
+                admission = reviewer_admission.match(
+                    registry,
+                    (env.get("CAMUS_HTTP_REVIEW_PROFILE_BACKEND") or "").strip(),
+                    (env.get("CAMUS_CODEX_MODEL") or env.get("CAMUS_HTTP_REVIEW_MODEL") or "").strip(),
+                    (env.get("CAMUS_REVIEW_EFFORT") or "").strip(),
+                    (env.get("CAMUS_REVIEWER_TRAINING_ORG") or "").strip().lower(),
+                    (env.get("CAMUS_HTTP_REVIEW_TRANSPORT") or "").strip(),
+                    (env.get("CAMUS_HTTP_REVIEW_CONNECTION") or "").strip(),
+                    (env.get("CAMUS_REVIEW_QUALIFICATION") or "").strip(),
+                    now=now,
+                )
+            except reviewer_admission.AdmissionError:
+                admission = None
+        if admission is None:
             return None, _infra(
                 "reviewer_benchmark_disabled",
-                "reviewer backend %r is known but disabled until it passes the Slice G benchmark admission gate"
+                "reviewer backend %r has no unexpired checked-in Slice G admission for this exact profile/model/effort/qualification/organization/transport/connection tuple"
                 % backend,
                 backend=backend, maker_org=maker_org,
             )
+        reviewer_org = admission["trainingOrg"]
+        declared = (env.get("CAMUS_REVIEWER_TRAINING_ORG") or "").strip().lower()
+        if declared and declared != reviewer_org:
+            return None, _infra(
+                "reviewer_origin_conflict",
+                "reviewer admission is bound to %r, not the declared %r" % (reviewer_org, declared),
+                backend=backend, reviewer_org=reviewer_org, maker_org=maker_org,
+            )
+        if reviewer_org == maker_org:
+            return None, _infra(
+                "reviewer_same_origin",
+                "reviewer backend %r and the maker share training organization %r; no agent grades its own work"
+                % (backend, maker_org),
+                backend=backend, reviewer_org=reviewer_org, maker_org=maker_org,
+            )
         return {
             "backend": backend,
-            "training_org": None,
+            "training_org": admission["trainingOrg"],
             "origin_authority": "qualification_record",
             "executable": spec["executable"],
             "runner": spec["runner"],
             "admitted": True,
+            "admission_id": admission["admissionId"],
+            "profile_backend": admission["profileBackend"],
+            "qualification": admission["qualificationFingerprint"],
         }, None
 
     declared = (env.get("CAMUS_REVIEWER_TRAINING_ORG") or "").strip().lower()
@@ -240,6 +279,9 @@ def main(argv=None):
     child_env["CAMUS_REVIEW_BACKEND"] = decision["backend"]
     if decision["training_org"] is not None:
         child_env["CAMUS_REVIEWER_TRAINING_ORG"] = decision["training_org"]
+    if decision.get("admission_id"):
+        child_env["CAMUS_REVIEW_ADMISSION_ID"] = decision["admission_id"]
+        child_env["CAMUS_REVIEW_QUALIFICATION"] = decision["qualification"]
     if control is not None:
         child_env["CAMUS_CONTROL_RECEIPT"] = control["path"]
         child_env["CAMUS_CONTROL_ACTION_FINGERPRINT"] = control_plane.action_fingerprint(control["action"])

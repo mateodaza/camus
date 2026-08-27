@@ -96,10 +96,21 @@ usage: npx camus-cli <command>
                        --config <json> supplies a generation's qualityFloor/minimumTrials so a
                        leader may be named (repeatable); --experiment <id> filters to one experiment;
                        --task-class <name> filters observed rows AND config context to one scenario
-  benchmark [...]    Slice G append-only reviewer campaign evidence (no provider calls by itself):
+  benchmark [...]    Slice G append-only reviewer campaign (only explicit bounded run calls providers):
+                       plan --candidate-backend <profile> --candidate-model <id> ...
+                                                  freezes corpus/baseline/candidate at zero spend
+                       status --campaign <json> --state <json> --ledger <jsonl>
+                                                  reports resumable quality + kill-path coverage
+                       run --max-cells <n> ...      bounded live provider cells, sealed one by one
+                       kill --max-cells <n> ...     spend-free watchdog/normalizer/identity controls
+                       recover --action seal-infra ...
+                                                  closes an interrupted cell before further spend
                        append --campaign <json> --ledger <jsonl> --receipt <json>
                        summarize --campaign <json> --ledger <jsonl> [--out <json>] [--json]
-                       a passing row is evidence for human admission; it never enables a backend
+                       admission-proposal ...      validates evidence + real-human calibration;
+                                                  checked-in reviewed registry change still required
+                       admission-activate --admission-id <admit1:...>
+                                                  network-free local activation after that reviewed entry ships
   models [--json]    list Studio-configured Grok/Qwen/open-weight reviewer profiles; shows only
                        credential presence, never endpoints or secret values
   trial-review [...] run one explicitly non-gating external-model review of a Camus worktree:
@@ -174,7 +185,10 @@ switch (cmd) {
     py('evals.py', rest);
     break;
   case 'benchmark':
-    py('benchmark_reviewers.py', rest);
+    py(['admission-proposal', 'admission-activate'].includes(rest[0]) ? 'reviewer_admission.py'
+      : ['plan', 'status', 'run', 'kill', 'recover'].includes(rest[0]) ? 'benchmark_live.py' : 'benchmark_reviewers.py',
+    rest[0] === 'admission-proposal' ? ['proposal', ...rest.slice(1)]
+      : rest[0] === 'admission-activate' ? ['activate', ...rest.slice(1)] : rest);
     break;
   case 'models':
     py('model_trials.py', ['list', ...rest]);

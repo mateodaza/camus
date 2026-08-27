@@ -1,12 +1,12 @@
 export const meta = {
   name: 'camus-loop',
-  description: 'Run the Camus closed loop on one task: plan → implement → (codex-review ↔ fix)* → verify',
+  description: 'Run the Camus closed loop on one task: plan → implement → (independent review ↔ fix)* → verify',
   whenToUse: 'Drive one task through the v2-lite Camus gate. Pass the task in args: a string, or {task, targetPath, posture?}. posture ∈ full(default)|oneshot — oneshot runs ONE review + ONE unreviewed fix and reports done_with_findings (never "review clean"); deterministic verify gates in every posture.',
   phases: [
     { title: 'Classify',  detail: 'Cheap model rates complexity → routes the think-model (trivial→Sonnet, else Opus).' },
     { title: 'Plan',      detail: 'Think model reads relevant files, writes a short plan. No code.' },
     { title: 'Implement', detail: 'Think model makes the change in a dedicated git worktree.' },
-    { title: 'Review',    detail: 'Thin runner execs codex_review.sh, echoes raw gate JSON (judgment is Codex).' },
+    { title: 'Review',    detail: 'Thin runner invokes the admitted reviewer dispatcher and echoes its bound gate JSON.' },
     { title: 'Fix',       detail: 'Think model fixes blocking findings in the same worktree.' },
     { title: 'Verify',    detail: 'Thin runner execs verify.sh; pass→DONE, can\'t-run→inconclusive (not failed).' },
   ],
@@ -291,6 +291,22 @@ const GATE_NONCE = TRACE_ID ? `${TRACE_ID}:${RUN_ID}` : `${IDENTITY_SALT || 'cam
 // checks are skipped rather than guessed — round, effort and nonce still bind.
 const REVIEWER_MODEL = (args && typeof args === 'object' && typeof args.reviewerModel === 'string' && shellSafe(args.reviewerModel)) ? args.reviewerModel : ''
 const REVIEWER_BACKEND = (args && typeof args === 'object' && typeof args.reviewerBackend === 'string' && shellSafe(args.reviewerBackend)) ? args.reviewerBackend : 'codex'
+const HTTP_REVIEWER = REVIEWER_BACKEND === 'http_openai_compat'
+const REVIEWER_PROFILE_BACKEND = (args && typeof args === 'object' && typeof args.reviewerProfileBackend === 'string'
+  && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(args.reviewerProfileBackend)) ? args.reviewerProfileBackend : ''
+const REVIEWER_TRAINING_ORG = (args && typeof args === 'object' && typeof args.reviewerTrainingOrg === 'string'
+  && /^[a-z0-9][a-z0-9_]{0,63}$/.test(args.reviewerTrainingOrg)) ? args.reviewerTrainingOrg : ''
+const REVIEWER_HTTP_TRANSPORT = (args && typeof args === 'object' && ['loopback', 'direct_https', 'ssh_tunnel'].includes(args.reviewerTransport))
+  ? args.reviewerTransport : ''
+const REVIEWER_HTTP_CONNECTION = (args && typeof args === 'object' && typeof args.reviewerConnection === 'string'
+  && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(args.reviewerConnection)) ? args.reviewerConnection : ''
+const REVIEWER_HTTP_QUALIFICATION = (args && typeof args === 'object' && typeof args.reviewerQualification === 'string'
+  && /^qual1:[a-f0-9]{64}$/.test(args.reviewerQualification)) ? args.reviewerQualification : ''
+if (HTTP_REVIEWER && (!REVIEWER_MODEL || !REVIEWER_PROFILE_BACKEND || !REVIEWER_TRAINING_ORG
+  || !REVIEWER_HTTP_TRANSPORT || !REVIEWER_HTTP_CONNECTION || !REVIEWER_HTTP_QUALIFICATION)) {
+  throw new Error('camus-loop: http_openai_compat reviewer requires exact reviewerModel, reviewerProfileBackend, reviewerTrainingOrg, reviewerTransport, reviewerConnection, and reviewerQualification fields')
+}
+const REVIEWER_DISPLAY = REVIEWER_MODEL || REVIEWER_BACKEND
 // The workflow runtime intentionally has no process/env authority. Identity-affecting Codex
 // settings therefore travel in the run-start args and are exported explicitly into the one
 // reviewer command (including empty values, which isolate it from runner ambient state).
@@ -315,7 +331,7 @@ const REVIEW_SCOPE = POSTURE === 'oneshot' ? 'light' : 'full'
 // reviewer. The gate echoes origin/operator and emits transport as its own constant.
 const REVIEW_ORIGIN = 'camus-loop'
 const REVIEW_OPERATOR = 'claude-code'
-const REVIEW_TRANSPORT = 'cli-detached'
+const REVIEW_TRANSPORT = HTTP_REVIEWER ? REVIEWER_HTTP_TRANSPORT : 'cli-detached'
 // connection + qualification are DERIVED (here for the EXPECTATION, and independently by the
 // gate for the ACTUAL). vendor_managed = the built-in codex backend with NO pinned model at all;
 // anything configurable is `configured`. qualification is `builtin1` ONLY for the exact built-in
@@ -365,11 +381,17 @@ const MODEL_PINNED_ALWAYS = REVIEWER_MODEL !== '' || _hasModelFlag(REVIEWER_CODE
 const CONN_NONVENDOR = _selectsNonvendorConnection(REVIEWER_CODEX_ARGS)
 const LIGHT_MODEL_SET = REVIEWER_LIGHT_MODEL !== ''
 function reviewContractFor(effort) {
+  if (HTTP_REVIEWER) {
+    return { connection: REVIEWER_HTTP_CONNECTION, qualification: REVIEWER_HTTP_QUALIFICATION }
+  }
   const modelPinned = MODEL_PINNED_ALWAYS || (LIGHT_MODEL_SET && effort === 'medium')
   const connection = (!modelPinned && !CONN_NONVENDOR && REVIEWER_BACKEND === 'codex') ? 'vendor_managed' : 'configured'
   const qualification = (REVIEWER_BACKEND === 'codex' && connection === 'vendor_managed') ? 'builtin1' : 'qual1'
   return { connection, qualification }
 }
+const externalReviewerEnv = () => HTTP_REVIEWER
+  ? ` CAMUS_HTTP_REVIEW_PROFILE_BACKEND=${JSON.stringify(REVIEWER_PROFILE_BACKEND)} CAMUS_HTTP_REVIEW_MODEL=${JSON.stringify(REVIEWER_MODEL)} CAMUS_HTTP_REVIEW_TRANSPORT=${JSON.stringify(REVIEWER_HTTP_TRANSPORT)} CAMUS_HTTP_REVIEW_CONNECTION=${JSON.stringify(REVIEWER_HTTP_CONNECTION)} CAMUS_REVIEW_QUALIFICATION=${JSON.stringify(REVIEWER_HTTP_QUALIFICATION)} CAMUS_REVIEWER_TRAINING_ORG=${JSON.stringify(REVIEWER_TRAINING_ORG)}`
+  : ''
 const STATUS_SCRIPT = `python3 ${SKILL_SCRIPTS}/status_record.py`
 const REQUEST_SCRIPT = `python3 ${SKILL_SCRIPTS}/review_request.py`
 // The heartbeat's mtime says "a phase started". It does NOT say which phase, in
@@ -572,6 +594,9 @@ function asGate(raw, expected) {
   else want('transport', b.transport, expected.transport)
   if (expected.connection != null && expected.connection !== '' && !b.connection) mismatches.push('connection: the review recorded none, so vendor_managed-vs-configured cannot be confirmed')
   else want('connection', b.connection, expected.connection)
+  if (expected.requiresAdmission === true && !/^admit1:[a-f0-9]{64}$/.test(b.admission_id || '')) {
+    mismatches.push('admission: the configurable reviewer recorded no exact admit1 human-admission id')
+  }
 
   if (mismatches.length) {
     return infra(`reviewer ran a different review than the one requested — ${mismatches.join('; ')}. `
@@ -1109,11 +1134,11 @@ function reviewerPrompt(attempt) {
   // Per-round tier: the light-model ladder is effort-gated in codex_review.sh, so the requested
   // qualification/connection must be derived from THIS round's effort, not a run-wide constant.
   const { connection: reviewConnection, qualification: reviewQualification } = reviewContractFor(currentEffort)
-  return `You are a THIN reviewer. Your ONLY job is to run the Camus Codex review on
+  return `You are a THIN reviewer. Your ONLY job is to run the Camus admitted review backend on
 the worktree and return its stdout. Do NOT interpret, summarize, re-judge, or reformat.
 
 ${backoff}Run EXACTLY this one command (the worktree path is the argument — do NOT cd, do NOT add anything else):
-  ${HB_TOUCH}${statusPhase('Review', `--round ${round} --effort ${currentEffort} --model ${JSON.stringify(REVIEWER_MODEL)} --backend ${JSON.stringify(REVIEWER_BACKEND)} --worktree ${JSON.stringify(WT)}`)}${REQUEST_SCRIPT} write --worktree ${JSON.stringify(WT)} --round ${round} --effort ${currentEffort} --nonce ${JSON.stringify(GATE_NONCE)} --model ${JSON.stringify(REVIEWER_MODEL)} --backend ${JSON.stringify(REVIEWER_BACKEND)} --contract ${REVIEW_CONTRACT} --scope ${REVIEW_SCOPE} --qualification ${reviewQualification} --origin ${REVIEW_ORIGIN} --operator ${REVIEW_OPERATOR} --transport ${REVIEW_TRANSPORT} --connection ${reviewConnection} >/dev/null && CAMUS_REVIEWER=${JSON.stringify(REVIEWER_BACKEND)} CAMUS_MAKER_TRAINING_ORG=anthropic CAMUS_CODEX_ARGS=${shq(REVIEWER_CODEX_ARGS)} CAMUS_CODEX_LIGHT_MODEL=${shq(REVIEWER_LIGHT_MODEL)} CAMUS_CODEX_MODEL=${JSON.stringify(REVIEWER_MODEL)} CAMUS_GATE_NONCE=${JSON.stringify(GATE_NONCE)} CAMUS_REVIEW_ROUND=${round} CAMUS_REVIEW_EFFORT=${currentEffort} CAMUS_REVIEW_SCOPE=${REVIEW_SCOPE} CAMUS_REVIEW_ORIGIN=${REVIEW_ORIGIN} CAMUS_REVIEW_OPERATOR=${REVIEW_OPERATOR} ${REVIEW_CMD} ${JSON.stringify(WT)} ${shq(REVIEW_TASK_CTX)} ${round} ${currentEffort} ${REVIEW_SCOPE}
+  ${HB_TOUCH}${statusPhase('Review', `--round ${round} --effort ${currentEffort} --model ${JSON.stringify(REVIEWER_MODEL)} --backend ${JSON.stringify(REVIEWER_BACKEND)} --worktree ${JSON.stringify(WT)}`)}${REQUEST_SCRIPT} write --worktree ${JSON.stringify(WT)} --round ${round} --effort ${currentEffort} --nonce ${JSON.stringify(GATE_NONCE)} --model ${JSON.stringify(REVIEWER_MODEL)} --backend ${JSON.stringify(REVIEWER_BACKEND)} --contract ${REVIEW_CONTRACT} --scope ${REVIEW_SCOPE} --qualification ${reviewQualification} --origin ${REVIEW_ORIGIN} --operator ${REVIEW_OPERATOR} --transport ${REVIEW_TRANSPORT} --connection ${reviewConnection} >/dev/null && CAMUS_REVIEWER=${JSON.stringify(REVIEWER_BACKEND)} CAMUS_MAKER_TRAINING_ORG=anthropic${externalReviewerEnv()} CAMUS_CODEX_ARGS=${shq(REVIEWER_CODEX_ARGS)} CAMUS_CODEX_LIGHT_MODEL=${shq(REVIEWER_LIGHT_MODEL)} CAMUS_CODEX_MODEL=${JSON.stringify(REVIEWER_MODEL)} CAMUS_GATE_NONCE=${JSON.stringify(GATE_NONCE)} CAMUS_REVIEW_ROUND=${round} CAMUS_REVIEW_EFFORT=${currentEffort} CAMUS_REVIEW_SCOPE=${REVIEW_SCOPE} CAMUS_REVIEW_ORIGIN=${REVIEW_ORIGIN} CAMUS_REVIEW_OPERATOR=${REVIEW_OPERATOR} ${REVIEW_CMD} ${JSON.stringify(WT)} ${shq(REVIEW_TASK_CTX)} ${round} ${currentEffort} ${REVIEW_SCOPE}
 
 The round and effort appear THREE times in that command on purpose: in a request file, in
 environment variables, and as arguments. The reviewer refuses if they disagree, so retyping,
@@ -1156,11 +1181,11 @@ const okHandle = (h, rnd) => typeof h === 'string' && /^[A-Za-z0-9._\/-]+$/.test
 // reattach could not prove the watch was its own, so the adoption gate declined and the
 // normal fresh path overwrote a completed round (production run 20260806-063400-vzqs).
 function awaitPrompt(handle, round, currentEffort) {
-  return `You are a THIN reviewer attendant. A Codex review is still RUNNING detached; your ONLY
+  return `You are a THIN reviewer attendant. A Camus review is still RUNNING detached; your ONLY
 job is to re-attach and return the script's stdout. Do NOT interpret, summarize, or reformat.
 
 Run EXACTLY this one command:
-  ${HB_TOUCH}CAMUS_REVIEWER=${JSON.stringify(REVIEWER_BACKEND)} CAMUS_MAKER_TRAINING_ORG=anthropic CAMUS_GATE_NONCE=${JSON.stringify(GATE_NONCE)} CAMUS_REVIEW_ROUND=${round} CAMUS_REVIEW_EFFORT=${currentEffort} ${REVIEW_CMD} await ${JSON.stringify(handle)}
+  ${HB_TOUCH}CAMUS_REVIEWER=${JSON.stringify(REVIEWER_BACKEND)} CAMUS_MAKER_TRAINING_ORG=anthropic${externalReviewerEnv()} CAMUS_GATE_NONCE=${JSON.stringify(GATE_NONCE)} CAMUS_REVIEW_ROUND=${round} CAMUS_REVIEW_EFFORT=${currentEffort} ${REVIEW_CMD} await ${JSON.stringify(handle)}
 
 Set the Bash tool's timeout PARAMETER to 600000 for this call. Do NOT wrap the command in
 \`timeout\`/\`gtimeout\`.
@@ -1176,11 +1201,11 @@ fences, no commentary. It is already JSON.`
 function abortPrompt(handle) {
   return `THIN runner. Run EXACTLY this one command and output its stdout VERBATIM (it is JSON);
 no fences, no commentary:
-  ${HB_TOUCH}CAMUS_REVIEWER=${JSON.stringify(REVIEWER_BACKEND)} CAMUS_MAKER_TRAINING_ORG=anthropic ${REVIEW_CMD} abort ${JSON.stringify(handle)}`
+  ${HB_TOUCH}CAMUS_REVIEWER=${JSON.stringify(REVIEWER_BACKEND)} CAMUS_MAKER_TRAINING_ORG=anthropic${externalReviewerEnv()} CAMUS_REVIEW_EFFORT=${currentEffort} ${REVIEW_CMD} abort ${JSON.stringify(handle)}`
 }
-// Honest codex-side spend, when the watchdog captured turn.completed usage. Log-only.
+// Honest reviewer-side spend, when the watchdog captured usage. Log-only.
 const usageSuffix = (g) => (g && g.usage && typeof g.usage === 'object')
-  ? ` · codex ~${Math.round(((g.usage.input_tokens || 0)) / 1000)}k in/${g.usage.output_tokens || 0} out${g.usage.reasoning_output_tokens ? ` (${g.usage.reasoning_output_tokens} reasoning)` : ''}`
+  ? ` · reviewer ~${Math.round(((g.usage.input_tokens || 0)) / 1000)}k in/${g.usage.output_tokens || 0} out${g.usage.reasoning_output_tokens ? ` (${g.usage.reasoning_output_tokens} reasoning)` : ''}`
   : ''
 
 let round = 0
@@ -1213,10 +1238,11 @@ const reviewerReceiptFields = () => ({
   reviewOperator: reviewerReceipt ? reviewerReceipt.operator : null,
   reviewTransport: reviewerReceipt ? reviewerReceipt.transport : null,
   reviewConnection: reviewerReceipt ? reviewerReceipt.connection : null,
+  reviewerAdmissionId: reviewerReceipt ? reviewerReceipt.admissionId : null,
 })
 const reviewerReceiptNote = () => reviewerReceipt
   ? ` Reviewer receipt: backend ${reviewerReceipt.backend || 'not recorded'}; model ${reviewerReceipt.model || 'not recorded'}; effort ${reviewerReceipt.effort || 'not recorded'}; round ${reviewerReceipt.round}.`
-    + ` Review contract ${reviewerReceipt.contract || 'not recorded'}; scope ${reviewerReceipt.scope || 'not recorded'}; qualification ${reviewerReceipt.qualification || 'not recorded'} (${reviewerReceipt.connection || 'connection not recorded'}).`
+    + ` Review contract ${reviewerReceipt.contract || 'not recorded'}; scope ${reviewerReceipt.scope || 'not recorded'}; qualification ${reviewerReceipt.qualification || 'not recorded'} (${reviewerReceipt.connection || 'connection not recorded'}); admission ${reviewerReceipt.admissionId || 'not applicable/not recorded'}.`
   : ' Reviewer receipt: no completed review.'
 // ONESHOT (VELOCITY §1): the single review's blocking findings, preserved VERBATIM for the
 // honest report — they were fixed once and never re-reviewed, and the result must say so.
@@ -1348,12 +1374,11 @@ while (round < ROUND_CAP) {
   // 3a/3b: reviewer with bounded infra retries (ran:false ≠ rejection, ≠ clean)
   let gate = null
   for (let attempt = 1; attempt <= INFRA_RETRIES + 1; attempt++) {
-    // Label surfaces the REAL reviewer (Codex + this round's effort), not just the thin Haiku
-    // runner that shells out to it (run feedback 2026-06-11: the TUI only showed Haiku, hiding
-    // that the review is cross-vendor Codex at a dynamic effort).
+    // Label surfaces the REAL reviewer identity + this round's effort, not just the thin runner
+    // that shells out to it.
     let raw = await agent(reviewerPrompt(attempt), {
       model: MODEL_RUNNER, phase: 'Review',
-      label: `review:r${round} codex·${currentEffort}${attempt > 1 ? ` retry${attempt}` : ''}`,
+      label: `review:r${round} ${REVIEWER_DISPLAY}·${currentEffort}${attempt > 1 ? ` retry${attempt}` : ''}`,
     })
     // WATCHDOG RE-ATTACH (2026-06-11): a long review outlives its first chunk and returns
     // {pending, handle} — keep re-attaching while codex is alive and talking. Each await is a
@@ -1367,7 +1392,7 @@ while (round < ROUND_CAP) {
       log(`Round ${round}/${ROUND_CAP}: review still running (event ${pend.last_event_age != null ? pend.last_event_age + 's' : '?'} ago) — re-attaching (${awaits}/${AWAIT_CAP}).`)
       raw = await agent(awaitPrompt(pend.handle, round, currentEffort), {
         model: MODEL_RUNNER, phase: 'Review',
-        label: `review:r${round} codex·${currentEffort} await${awaits}`,
+        label: `review:r${round} ${REVIEWER_DISPLAY}·${currentEffort} await${awaits}`,
       })
       pend = extractJsonObject(raw)
     }
@@ -1399,6 +1424,7 @@ while (round < ROUND_CAP) {
       operator: REVIEW_OPERATOR,
       transport: REVIEW_TRANSPORT,
       connection: expectConnection,
+      requiresAdmission: HTTP_REVIEWER,
     })
     if (gate.ran) break
     log(`Round ${round}/${ROUND_CAP}: reviewer infra failure (${gate.error}) — attempt ${attempt}/${INFRA_RETRIES + 1}.`)
@@ -1426,6 +1452,7 @@ while (round < ROUND_CAP) {
     operator: receiptStr(receiptBinding.operator),
     transport: receiptStr(receiptBinding.transport),
     connection: receiptStr(receiptBinding.connection),
+    admissionId: receiptStr(receiptBinding.admission_id),
   }
 
   // 3c: clean → done with review
@@ -1520,7 +1547,7 @@ ${hbLine('Fix')}
 Worktree: ${WT}
   cd ${JSON.stringify(WT)}
 ${envFactsBlock}${siblingsBlock}
-Blocking findings (Codex, priority ≤ 2):
+Blocking findings (${REVIEWER_DISPLAY}, priority ≤ 2):
 ${JSON.stringify(lastBlocking, null, 2)}
 
 Pre-fix candidate summary:
@@ -1681,7 +1708,9 @@ if (infraAbort) {
     fixDispatchedThisRound: fixesRan === true,
     committed: committedShaObserved.length > 0,
     ...(committedShaObserved ? { commit_sha: committedShaObserved } : {}),
-    note: 'Codex reviewer never produced a usable verdict. Not a rejection and not clean — needs a human / infra check. Known causes of an EMPTY verdict with exit 0: codex blocking on an open stdin (fixed in codex_review.sh via </dev/null — re-run install.sh if your gate predates it) and a heavy ambient reasoning effort exhausting the output budget on a large diff (pin via CAMUS_CODEX_ARGS="-c model_reasoning_effort=medium"). Inspect ~/.camus/reviews/<wt>-r<round>.json and /tmp/camus_codex_err.log. AFTER fixing, retry by re-invoking the feat FRESH with the SAME args (deterministic featId resumes from state) — do NOT resume the workflow journal (resumeFromRunId): it replays this cached infra_error without re-running the reviewer.'
+    note: `${REVIEWER_DISPLAY} never produced a usable admitted verdict. Not a rejection and not clean — needs a human / infra check. ${HTTP_REVIEWER
+      ? 'Inspect the typed dispatcher/executor error and ~/.camus/reviews/<wt>-r<round>.json; verify the exact checked-in admission, qualification record, connection custody, and credential reference are still valid.'
+      : 'Known causes of an EMPTY verdict with exit 0: codex blocking on an open stdin (fixed in codex_review.sh via </dev/null — re-run install.sh if your gate predates it) and a heavy ambient reasoning effort exhausting the output budget on a large diff (pin via CAMUS_CODEX_ARGS="-c model_reasoning_effort=medium"). Inspect ~/.camus/reviews/<wt>-r<round>.json and /tmp/camus_codex_err.log.'} AFTER fixing, retry by re-invoking the feat FRESH with the SAME args (deterministic featId resumes from state) — do NOT resume the workflow journal (resumeFromRunId): it replays this cached infra_error without re-running the reviewer.`
       + ` OBSERVED THIS ROUND: fix dispatched=${fixesRan === true}; committed=${committedShaObserved.length > 0}${committedShaObserved ? ` (${committedShaObserved})` : ''}. The refused verdict never advanced the round.`,
   }
 }

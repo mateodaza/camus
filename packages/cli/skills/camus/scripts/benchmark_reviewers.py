@@ -21,9 +21,10 @@ import tempfile
 
 
 SCHEMA_VERSION = 1
+RECEIPT_SCHEMA_VERSION = 2
 METHOD = "paired_exact_factorized_bonferroni.v1"
 RECEIPT_ID = re.compile(r"^bench1:[0-9a-f]{64}$")
-RECEIPT_KEYS = (
+RECEIPT_KEYS_V1 = (
     "schemaVersion", "receiptId", "campaignId", "corpusVersion",
     "promptEnvelopeVersion", "armId", "caseId", "caseKind", "repeat",
     "normalizerRan", "expectedDefects", "detectedDefects",
@@ -32,12 +33,37 @@ RECEIPT_KEYS = (
     "mutationEntered", "containmentConclusive", "containmentBreach",
     "wallMs", "latencyClass", "usage", "decoding", "rerunOf",
 )
+RECEIPT_KEYS = RECEIPT_KEYS_V1[:4] + ("campaignDigest", "executionDigest",) \
+    + RECEIPT_KEYS_V1[4:15] + ("killControl",) + RECEIPT_KEYS_V1[15:]
+CAMPAIGN_DIGEST = re.compile(r"^campaign1:[0-9a-f]{64}$")
+EXECUTION_DIGEST = re.compile(r"^execution1:[0-9a-f]{64}$")
+KILL_CONTROL_KEYS = ("mode", "probe", "expected", "observed", "providerCallsMade")
+KILL_CONTROL_MODES = ("abort", "malformed_output", "identity_substitution", "transport_interrupt")
+KILL_CONTROL_EXPECTED = {
+    "abort": "aborted_and_process_group_dead",
+    "malformed_output": "malformed_output_refused_as_infrastructure",
+    "identity_substitution": "substituted_model_identity_refused",
+    "transport_interrupt": "interrupted_transport_refused_without_verdict",
+}
+KILL_CONTROL_PROBES = {
+    "abort": ("review_watch.start+abort",),
+    "malformed_output": ("adapter.normalize_codex",),
+    "identity_substitution": (
+        "http_openai_compat_review.response_identity_error",
+        "review_request.consistent_value",
+    ),
+    "transport_interrupt": ("review_watch.start+await+adapter.normalize_codex",),
+}
 ARM_KEYS = ("armId", "backend", "model", "effort", "transport", "role")
 CASE_KEYS = ("caseId", "kind", "expectedDefects")
 THRESHOLD_KEYS = (
     "validityLower", "recallDelta", "fprEpsilon", "transportDelta",
     "qualityRepetitions", "killRepetitions", "containmentMinimum",
     "containmentConclusive",
+)
+EXECUTION_STATE_KEYS = (
+    "schemaVersion", "campaignId", "corpusVersion", "candidateProfileBackend",
+    "candidateModel", "candidateTrainingOrg", "candidateConnection", "candidateTransport",
 )
 
 
@@ -98,7 +124,7 @@ def validate_manifest(value):
         "baseline", "candidates", "cases", "transportPairs", "thresholds",
     )
     _exact(value, keys, "campaign")
-    if value["schemaVersion"] != SCHEMA_VERSION:
+    if isinstance(value["schemaVersion"], bool) or value["schemaVersion"] != SCHEMA_VERSION:
         raise BenchmarkError("campaign.schemaVersion must be 1")
     result = dict(value)
     for key in ("campaignId", "corpusVersion", "promptEnvelopeVersion"):
@@ -182,18 +208,67 @@ def validate_manifest(value):
     return result
 
 
+def campaign_digest(manifest):
+    """Content-address the complete normalized campaign, not its operator-chosen id."""
+    validated = validate_manifest(manifest)
+    return "campaign1:" + hashlib.sha256(canonical(validated).encode("utf-8")).hexdigest()
+
+
+def validate_execution_state(value, manifest):
+    """Validate the private execution tuple later cited by human admission."""
+    _exact(value, EXECUTION_STATE_KEYS, "campaign state")
+    if isinstance(value["schemaVersion"], bool) or value["schemaVersion"] != 1:
+        raise BenchmarkError("campaign state.schemaVersion must be 1")
+    result = dict(value)
+    for key in EXECUTION_STATE_KEYS[1:]:
+        result[key] = _text(value[key], "campaign state.%s" % key)
+    if len(manifest["candidates"]) != 1 or manifest["candidates"][0]["armId"] != "candidate":
+        raise BenchmarkError("live campaign requires exactly one candidate arm named candidate")
+    candidate = manifest["candidates"][0]
+    if result["campaignId"] != manifest["campaignId"] \
+            or result["corpusVersion"] != manifest["corpusVersion"] \
+            or candidate["backend"] != "http_openai_compat" \
+            or result["candidateModel"] != candidate["model"] \
+            or result["candidateTransport"] != candidate["transport"]:
+        raise BenchmarkError("campaign state candidate identity drifted from the frozen manifest")
+    return result
+
+
+def execution_digest(state, manifest):
+    """Content-address the exact non-secret execution tuple used by the live runner."""
+    validated = validate_execution_state(state, validate_manifest(manifest))
+    return "execution1:" + hashlib.sha256(canonical(validated).encode("utf-8")).hexdigest()
+
+
 def receipt_id(value):
     material = dict(value)
     material.pop("receiptId", None)
     return "bench1:" + hashlib.sha256(canonical(material).encode("utf-8")).hexdigest()
 
 
+def ledger_digest(receipts):
+    """Address the exact ordered receipt set cited by a derived summary."""
+    return "ledger1:" + hashlib.sha256(canonical(receipts).encode("utf-8")).hexdigest()
+
+
 def validate_receipt(value, manifest):
-    _exact(value, RECEIPT_KEYS, "benchmark receipt")
-    if value["schemaVersion"] != SCHEMA_VERSION:
-        raise BenchmarkError("benchmark receipt schemaVersion must be 1")
+    if not isinstance(value, dict):
+        raise BenchmarkError("benchmark receipt must be an object")
+    version = value.get("schemaVersion")
+    if isinstance(version, bool) or version not in (1, RECEIPT_SCHEMA_VERSION):
+        raise BenchmarkError("benchmark receipt schemaVersion must be 1 or 2")
+    _exact(value, RECEIPT_KEYS if version == RECEIPT_SCHEMA_VERSION else RECEIPT_KEYS_V1,
+           "benchmark receipt")
     if value["receiptId"] != receipt_id(value):
         raise BenchmarkError("benchmark receiptId does not match its canonical content")
+    if version == RECEIPT_SCHEMA_VERSION:
+        if not isinstance(value["campaignDigest"], str) \
+                or not CAMPAIGN_DIGEST.fullmatch(value["campaignDigest"]) \
+                or value["campaignDigest"] != campaign_digest(manifest):
+            raise BenchmarkError("benchmark receipt campaignDigest mismatches frozen campaign content")
+        if not isinstance(value["executionDigest"], str) \
+                or not EXECUTION_DIGEST.fullmatch(value["executionDigest"]):
+            raise BenchmarkError("benchmark receipt executionDigest is invalid")
     for key, manifest_key in (
         ("campaignId", "campaignId"), ("corpusVersion", "corpusVersion"),
         ("promptEnvelopeVersion", "promptEnvelopeVersion"),
@@ -222,6 +297,25 @@ def validate_receipt(value, manifest):
         raise BenchmarkError("kill-path receipt must carry killPathPassed")
     if value["caseKind"] != "kill_path" and value["killPathPassed"] is not None:
         raise BenchmarkError("quality receipt may not carry killPathPassed")
+    kill_control = value.get("killControl")
+    if value["caseKind"] == "kill_path" and version == RECEIPT_SCHEMA_VERSION:
+        _exact(kill_control, KILL_CONTROL_KEYS, "benchmark receipt.killControl")
+        if kill_control["mode"] not in KILL_CONTROL_MODES:
+            raise BenchmarkError("benchmark receipt.killControl.mode is invalid")
+        for key in ("probe", "expected", "observed"):
+            _text(kill_control[key], "benchmark receipt.killControl.%s" % key)
+        mode = kill_control["mode"]
+        if kill_control["expected"] != KILL_CONTROL_EXPECTED[mode]:
+            raise BenchmarkError("benchmark receipt.killControl.expected is not canonical for its mode")
+        if kill_control["probe"] not in KILL_CONTROL_PROBES[mode]:
+            raise BenchmarkError("benchmark receipt.killControl.probe is not canonical for its mode")
+        if isinstance(kill_control["providerCallsMade"], bool) \
+                or kill_control["providerCallsMade"] != 0:
+            raise BenchmarkError("kill control must prove providerCallsMade is exactly zero")
+        if value["killPathPassed"] != (kill_control["expected"] == kill_control["observed"]):
+            raise BenchmarkError("killPathPassed must equal the expected/observed control result")
+    elif value["caseKind"] != "kill_path" and kill_control is not None:
+        raise BenchmarkError("quality receipt may not carry killControl")
     detected = value["detectedDefects"]
     if not isinstance(detected, list) or len(detected) > 64 \
             or any(not isinstance(x, str) or not x for x in detected):
@@ -589,11 +683,26 @@ def _kill_paths(receipts, manifest):
         if case["kind"] != "kill_path":
             continue
         attempts = [item for item in receipts if item["caseId"] == case["caseId"]]
+        modes = sorted(set(
+            item.get("killControl", {}).get("mode")
+            for item in attempts if isinstance(item.get("killControl"), dict)
+        ))
         rows.append({
             "caseId": case["caseId"], "attempts": len(attempts),
-            "passed": len(attempts) >= floor and all(item["killPathPassed"] is True for item in attempts),
+            "modes": modes,
+            "passed": len(attempts) >= floor and len(modes) == 1 and all(
+                item["schemaVersion"] >= 2 and item["killPathPassed"] is True
+                and isinstance(item.get("killControl"), dict)
+                and item["killControl"].get("providerCallsMade") == 0
+                for item in attempts
+            ),
         })
-    return {"passed": all(row["passed"] for row in rows), "cases": rows}
+    represented = sorted(set(mode for row in rows for mode in row["modes"]))
+    complete_suite = represented == sorted(KILL_CONTROL_MODES)
+    return {
+        "passed": complete_suite and all(row["passed"] for row in rows),
+        "completeSuite": complete_suite, "modes": represented, "cases": rows,
+    }
 
 
 def _quality_observations(receipts):
@@ -626,6 +735,14 @@ def summarize(manifest, receipts):
     for item in receipts:
         by_arm.setdefault(item["armId"], []).append(item)
     baseline_arm = manifest["baseline"]
+    current_envelope = bool(receipts) and all(
+        item["schemaVersion"] == RECEIPT_SCHEMA_VERSION for item in receipts
+    )
+    execution_digests = sorted(set(
+        item.get("executionDigest") for item in receipts
+        if item["schemaVersion"] == RECEIPT_SCHEMA_VERSION
+    ))
+    evidence_bound = current_envelope and len(execution_digests) == 1
     baseline_receipts = by_arm.get(baseline_arm["armId"], [])
     arms = {baseline_arm["armId"]: _arm_metrics(baseline_arm, baseline_receipts, manifest)}
     candidates = []
@@ -639,6 +756,7 @@ def summarize(manifest, receipts):
         kill = _kill_paths(items, manifest)
         containment = _containment(arm, items, thresholds)
         conditions = {
+            "evidenceEnvelope": evidence_bound,
             "coverage": coverage["complete"],
             "structuredOutputValidity": (
                 metrics["validity"]["interval95"]["lower"] is not None
@@ -704,9 +822,13 @@ def summarize(manifest, receipts):
     return {
         "schemaVersion": 1,
         "campaignId": manifest["campaignId"],
+        "campaignDigest": campaign_digest(manifest),
+        "executionDigest": execution_digests[0] if evidence_bound else None,
+        "ledgerDigest": ledger_digest(receipts),
         "corpusVersion": manifest["corpusVersion"],
         "promptEnvelopeVersion": manifest["promptEnvelopeVersion"],
         "receiptCount": len(receipts),
+        "receiptSchemaVersions": sorted(set(item["schemaVersion"] for item in receipts)),
         "statisticalMethod": METHOD,
         "thresholds": thresholds,
         "baselineArmId": baseline_arm["armId"],

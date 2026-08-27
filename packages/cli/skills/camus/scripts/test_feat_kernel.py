@@ -853,6 +853,55 @@ def test_direct_lane_opens_reviews_seals_and_lands_without_model_relays():
     assert _git(world["repo"], "merge-base", "--is-ancestor", sealed["commit"], world["state"]["featBranch"]) == ""
 
 
+def test_native_external_reviewer_admission_provenance_survives_seal():
+    world = _direct_fixture()
+    qualification = "qual1:" + "a" * 64
+    admission_id = "admit1:" + "b" * 64
+    route = {
+        "profileBackend": "xai", "trainingOrg": "xai", "transport": "direct_https",
+        "connection": "xai-primary", "qualification": qualification,
+    }
+    state_path = os.path.join(world["base"], "feats", world["feat_id"] + ".json")
+    state = json.load(open(state_path, encoding="utf-8"))
+    state["kernel"]["seats"].update({
+        "reviewerBackend": "http_openai_compat", "reviewerModel": "grok-4.6",
+        "reviewerEffort": "high",
+    })
+    _write(state_path, state)
+    receipt = json.load(open(world["receipt_path"], encoding="utf-8"))
+    receipt["binding"].update({
+        "reviewer_backend": "http_openai_compat", "reviewer_model": "grok-4.6",
+        "qualification": qualification, "transport": "direct_https",
+        "connection": "xai-primary", "admission_id": admission_id,
+    })
+    _write(world["receipt_path"], receipt)
+
+    with mock.patch.object(K, "_run_direct_review", return_value=world["verdict"]):
+        reviewed = K.review_task(
+            world["feat_id"], world["node"]["taskId"], repo=world["repo"],
+            base=world["base"], now=103, reviewer_route=route,
+        )
+    assert reviewed["reviewer"]["admissionId"] == admission_id
+    reviewed_node = K._validated_run(world["feat_id"], world["base"])["nodes"][0]
+    assert reviewed_node["reviewerAdmissionId"] == admission_id
+    assert reviewed_node["directReview"]["admissionId"] == admission_id
+
+    def green(_run, worktree, _timeout):
+        return {
+            "pass": True, "tampered": False, "failures": [],
+            "head": _git(worktree, "rev-parse", "HEAD"),
+        }
+
+    with mock.patch.object(K, "_run_verify", side_effect=green):
+        sealed = K.seal_task(
+            world["feat_id"], world["node"]["taskId"], repo=world["repo"],
+            base=world["base"], now=104,
+        )
+    assert sealed["reviewer"]["admissionId"] == admission_id
+    sealed_node = K._validated_run(world["feat_id"], world["base"])["nodes"][0]
+    assert sealed_node["kernelEvidence"]["reviewReceipt"]["admissionId"] == admission_id
+
+
 def test_direct_review_normalizes_a_maker_commit_without_losing_the_candidate():
     world = _direct_fixture()
     _git(world["worktree"], "add", "direct.txt")
@@ -1637,6 +1686,62 @@ def test_direct_review_contract_derives_tier_from_every_pin_lever():
     assert tier({}, system_config_present=True) == ("configured", "qual1")
     # An alternate backend is configured/qual1 regardless of pins.
     assert tier({}, backend="claude") == ("configured", "qual1")
+    external = {
+        "profileBackend": "xai", "trainingOrg": "xai", "transport": "direct_https",
+        "connection": "xai-primary", "qualification": "qual1:" + "a" * 64,
+    }
+    contract = K._direct_review_contract(
+        "http_openai_compat", "grok-4.6", effort="medium", reviewer_route=external,
+    )
+    assert (contract["transport"], contract["connection"], contract["qualification"]) == (
+        "direct_https", "xai-primary", "qual1:" + "a" * 64,
+    )
+    try:
+        K._direct_review_contract("http_openai_compat", "grok-4.6", effort="medium")
+        assert False, "external direct review accepted no exact route"
+    except K.Refusal as exc:
+        assert "complete exact" in str(exc)
+
+
+def test_native_external_review_uses_private_profile_with_frozen_public_route():
+    route = {
+        "profileBackend": "xai", "trainingOrg": "xai", "transport": "direct_https",
+        "connection": "xai-primary", "qualification": "qual1:" + "a" * 64,
+    }
+    profile = {
+        "name": "xai", "training_org": "xai", "auth": "env", "key_env": "TEST_XAI_KEY",
+        "connection": {"name": "xai-primary", "kind": "direct_https"},
+    }
+    runtime = mock.MagicMock()
+    runtime.__enter__.return_value = {
+        "base_url": "https://api.example.invalid/v1", "tunnel_pid": None, "tunnel_started": None,
+    }
+    captured = {}
+    def execute(*args):
+        captured["env"] = args[-2]
+        captured["contract"] = args[-1]
+        return {"ran": True}
+    run = {
+        "base": "/tmp/camus-fixture", "state": {"kernel": {"traceId": "trace:test"}},
+        "specs": ["fixture task"], "nodes": [],
+    }
+    node = {"taskId": "task-abc123"}
+    run["nodes"].append(node)
+    with mock.patch.dict(os.environ, {"TEST_XAI_KEY": "private-value"}, clear=False), \
+            mock.patch.object(K.model_trials, "resolve_profile", return_value=profile), \
+            mock.patch.object(K.model_trials, "admitted_runtime", return_value=runtime), \
+            mock.patch.object(K, "_execute_direct_review", side_effect=execute):
+        assert K._run_direct_review(
+            run, "/repo", node, "/worktree", "http_openai_compat", "grok-4.6", "medium",
+            reviewer_route=route,
+        ) == {"ran": True}
+    env = captured["env"]
+    assert env["CAMUS_HTTP_REVIEW_PROFILE_BACKEND"] == "xai"
+    assert env["CAMUS_HTTP_REVIEW_BASE_URL"] == "https://api.example.invalid/v1"
+    assert env["CAMUS_HTTP_REVIEW_API_KEY_ENV"] == "TEST_XAI_KEY"
+    assert env["CAMUS_REVIEW_QUALIFICATION"] == route["qualification"]
+    assert captured["contract"]["transport"] == "direct_https"
+    assert captured["contract"]["connection"] == "xai-primary"
 
 
 if __name__ == "__main__":

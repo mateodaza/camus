@@ -53,6 +53,9 @@ import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateRep
   const repeatedPrompt = structuredClone(campaign);
   repeatedPrompt.profiles[0].cases = repeatedPrompt.profiles[0].cases.slice(0, 2);
   assert.throws(() => validateModelEvalCampaign(repeatedPrompt), /at least 3 representative cases/, 'a tier cannot call repeated copies of one prompt a representative suite');
+  const underpoweredRoute = structuredClone(campaign);
+  underpoweredRoute.controls.minimumRoutingTrialsPerArm = 9;
+  assert.throws(() => validateModelEvalCampaign(underpoweredRoute), /at least 10/, 'automatic routing cannot weaken the ten-trial floor');
 }
 
 // Evaluation summaries are read-only evidence views. They accept only the
@@ -115,6 +118,15 @@ import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateRep
   assert.equal(clean.groups[0].medianReviewerDurationMs, 40);
   assert.equal(clean.groups[0].medianTotalObservedTokens, 35);
   assert.equal(clean.groups[0].recommendationStanding, 'uncalibrated_judge', 'a complete clean screen cannot outrun judge calibration');
+
+  const substituted = summarizeEvaluationReports(
+    campaign, configHash,
+    cleanReports.map((report) => ({ ...report, makerActualModels: ['openai:substituted-model'] })),
+    { judges: campaign.calibration.judges.map((judge) => ({ id: judge.id, standing: 'calibrated' })) },
+    { qualityFloor: (pack) => pack?.green === true },
+  );
+  assert.equal(substituted.groups[0].identityStable, false);
+  assert.equal(substituted.groups[0].recommendationStanding, 'identity_unstable', 'stable substitution is still an identity failure');
 
   const withHumanAnswer = summarizeEvaluationReports(campaign, configHash, [
     ...cleanReports,
@@ -234,6 +246,10 @@ ESCALATE unresolved ownership or a failed recovery check to the incident command
   assert.equal(summarizeJudgeCalibration(campaign, {
     schemaVersion: 1, campaignId: campaign.id, standing: 'uncalibrated', artifacts, judgeRuns: mixedJudgeRuns,
   }).crossScreenRanking, 'refused_uncalibrated', 'a route that changes its observed actual identity cannot calibrate');
+  const sameActualJudgeRuns = judgeRuns.map((run) => ({ ...run, actualIdentity: 'shared:same-actual-model' }));
+  assert.equal(summarizeJudgeCalibration(campaign, {
+    schemaVersion: 1, campaignId: campaign.id, standing: 'uncalibrated', artifacts, judgeRuns: sameActualJudgeRuns,
+  }).crossScreenRanking, 'refused_uncalibrated', 'two screen labels over the same actual model identity cannot unlock routing');
   assert.throws(() => summarizeJudgeCalibration(campaign, {
     schemaVersion: 1, campaignId: campaign.id, standing: 'calibrated', artifacts: [], judgeRuns: [],
   }), /standing is derived/, 'the file cannot award itself calibrated standing');

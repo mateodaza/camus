@@ -115,12 +115,25 @@ export function summarizeEvaluationReports(campaign, configHash, reports, calibr
       profileDef.cases.length,
       campaign.controls.minimumExplorationTrialsPerArm,
     );
-    let recommendationStanding = 'eligible_for_human_consideration';
+    const reviewerCandidate = campaign.candidates.find((entry) => (
+      entry.backend === screen.reviewer.backend && entry.model === screen.reviewer.model
+    ));
+    const reviewerProvider = reviewerCandidate?.provider
+      ?? ({ claude: 'anthropic', codex: 'openai' }[screen.reviewer.backend] ?? screen.reviewer.backend);
+    const expectedMakerIdentity = `${candidate.provider}:${candidate.model}`;
+    const expectedReviewerIdentity = `${reviewerProvider}:${screen.reviewer.model}`;
+    const identityStable = rows.length > 0
+      && rows.every((row) => row.makerActuals.length > 0 && row.reviewerActuals.length > 0)
+      && rows.every((row) => row.makerActuals.every((identity) => identity === expectedMakerIdentity))
+      && rows.every((row) => row.reviewerActuals.every((identity) => identity === expectedReviewerIdentity));
+    let recommendationStanding = 'routing_eligible';
     if (candidate.evidenceEligibility === 'exploratory_only') recommendationStanding = 'exploratory_only';
     else if (rows.length < campaign.controls.minimumExplorationTrialsPerArm || distinctCases.length < requiredDistinctCases) recommendationStanding = 'insufficient_exploration';
     else if (rows.some((row) => !row.floorPass)) recommendationStanding = 'quality_floor_not_met';
     else if (judgeCalibration?.standing !== 'calibrated') recommendationStanding = 'uncalibrated_judge';
+    else if (!identityStable) recommendationStanding = 'identity_unstable';
     else if (rows.length < campaign.controls.minimumRoutingTrialsPerArm) recommendationStanding = 'insufficient_routing_trials';
+    else if (distinctCases.length < profileDef.cases.length) recommendationStanding = 'incomplete_case_coverage';
     return {
       profile: profileDef.id,
       candidate: candidate.id,
@@ -129,6 +142,9 @@ export function summarizeEvaluationReports(campaign, configHash, reports, calibr
       evidenceEligibility: candidate.evidenceEligibility,
       recommendationStanding,
       judgeCalibration: judgeCalibration?.standing ?? 'uncalibrated',
+      identityStable,
+      expectedMakerIdentity,
+      expectedReviewerIdentity,
       trials: rows.length,
       distinctCases,
       requiredDistinctCases,

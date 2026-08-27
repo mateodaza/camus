@@ -30,7 +30,6 @@ import { runClaudeReview } from './lib/adapters/claude.mjs';
 
 const campaign = loadModelEvalCampaign();
 const configHash = modelEvalCampaignHash(campaign);
-const paths = judgeCalibrationPaths();
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function die(message) {
@@ -50,7 +49,7 @@ function parseArgs(argv) {
     else if (arg === '--all') out.all = true;
     else if (arg === '--json') out.json = true;
     else if (arg === '--help' || arg === '-h') out.help = true;
-    else if (['--runs', '--artifact', '--verdict', '--finding-presence', '--human', '--proxy', '--delegated-by', '--judge'].includes(arg)) {
+    else if (['--runs', '--artifact', '--verdict', '--finding-presence', '--human', '--proxy', '--delegated-by', '--judge', '--generation'].includes(arg)) {
       const value = argv[index + 1];
       if (!value || value.startsWith('--')) die(`${arg} requires a value`);
       out[arg.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = value;
@@ -60,10 +59,10 @@ function parseArgs(argv) {
   return out;
 }
 
-function printStatus(queue, asJson) {
+function printStatus(queue, asJson, paths) {
   const workflow = calibrationQueueSummary(queue, campaign);
-  const calibration = loadJudgeCalibration(campaign).summary;
-  const value = { workflow, calibration, paths: { queue: paths.queue, labels: paths.value, artifacts: paths.artifactsDir } };
+  const calibration = loadJudgeCalibration(campaign, paths.value).summary;
+  const value = { generation: paths.generation, workflow, calibration, paths: { queue: paths.queue, labels: paths.value, artifacts: paths.artifactsDir } };
   if (asJson) console.log(JSON.stringify(value, null, 2));
   else {
     console.log(`Calibration ${campaign.id} · labels ${workflow.labels}/${workflow.artifacts} (${workflow.humanLabels} human, ${workflow.proxyLabels} expert AI proxy) · judge runs ${workflow.judgeRuns}`);
@@ -75,11 +74,14 @@ function printStatus(queue, asJson) {
 }
 
 const args = parseArgs(process.argv.slice(2));
+const paths = judgeCalibrationPaths(
+  args.generation ?? process.env.STUDIO_JUDGE_CALIBRATION_GENERATION ?? campaign.id,
+);
 const commands = [args.prepare, args.status, args.show, args.label, args.runJudge].filter(Boolean).length;
 if (args.help || commands === 0) {
   console.log('Usage:');
-  console.log('  node model-calibrate.mjs --prepare [--runs ./runs]');
-  console.log('  node model-calibrate.mjs --status [--json]');
+  console.log('  node model-calibrate.mjs --prepare [--runs ./runs] [--generation <name>]');
+  console.log('  node model-calibrate.mjs --status [--json] [--generation <name>]');
   console.log('  node model-calibrate.mjs --show --artifact <ordinal|id>');
   console.log('  node model-calibrate.mjs --label --artifact <ordinal|id> --verdict APPROVED|REVISE --finding-presence clean|findings --human <person>');
   console.log('  node model-calibrate.mjs --label --artifact <ordinal|id> --verdict APPROVED|REVISE --finding-presence clean|findings --proxy <agent> --delegated-by <person>');
@@ -94,14 +96,14 @@ if (args.prepare) {
   if (unreadableReports) die(`${unreadableReports} report(s) are unreadable; repair them before selecting calibration evidence`);
   const result = prepareCalibrationQueue(campaign, configHash, reports, { paths });
   if (!args.json) console.log(`${result.created ? 'Prepared' : 'Reused'} ${result.queue.artifacts.length} blinded artifacts at ${paths.artifactsDir}`);
-  printStatus(result.queue, args.json);
+  printStatus(result.queue, args.json, paths);
   process.exit(0);
 }
 
 const queue = loadCalibrationQueue(campaign, configHash, paths);
 
 if (args.status) {
-  printStatus(queue, args.json);
+  printStatus(queue, args.json, paths);
   process.exit(0);
 }
 
@@ -128,7 +130,7 @@ if (args.label) {
   persistCalibrationQueue(queue, campaign, configHash, paths);
   const artifact = resolveCalibrationArtifact(queue, args.artifact);
   console.log(`Recorded immutable ${artifact.humanLabel.authority} label for artifact ${artifact.ordinal}: ${artifact.humanLabel.verdict}/${artifact.humanLabel.findingPresence} by ${artifact.humanLabel.labeledBy}`);
-  printStatus(queue, args.json);
+  printStatus(queue, args.json, paths);
   process.exit(0);
 }
 
@@ -145,7 +147,7 @@ const requested = args.all ? queue.artifacts : [resolveCalibrationArtifact(queue
 const targets = requested.filter((artifact) => !already.has(artifact.id));
 if (!targets.length) {
   console.log(`Judge ${judge.id} already has every requested artifact; no model call was made.`);
-  printStatus(queue, args.json);
+  printStatus(queue, args.json, paths);
   process.exit(0);
 }
 
@@ -216,4 +218,4 @@ try {
 }
 
 if (fatalError) die(fatalError);
-printStatus(queue, args.json);
+printStatus(queue, args.json, paths);

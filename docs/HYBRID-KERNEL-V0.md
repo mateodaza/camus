@@ -222,9 +222,11 @@ unavailable where the backend does not expose it.
 
 An experiment config declares a task class and two or more complete maker/reviewer/controller arms.
 Assignment is balanced until every arm reaches `minimumTrials`. Default `explore` mode stays
-balanced; explicit `route` mode requires at least five trials per arm, after which only an arm whose
-observed floor-pass rate clears `qualityFloor` may be preferred for lower median latency and token
-pressure. The normalized config is hashed, assignments are persisted before execution, config drift
+balanced; explicit `route` mode requires at least ten trials per arm, every routing trial green, and
+exact requested and observed maker/reviewer identities before lower median latency and token pressure may
+choose an arm. Automatic CLI routing retains the admitted Codex reviewer gate; external reviewers
+remain evidence-only until Slice G admission and activation. The normalized config is hashed,
+assignments are persisted before execution, config drift
 refuses, failures are never dropped, and no result is called human-calibrated or globally best.
 Studio retains parallel frozen-input comparison; CLI uses
 sequential assignment over real tasks so learning does not automatically double execution spend.

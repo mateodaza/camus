@@ -375,6 +375,11 @@ def _endpoint(profile):
             pass
 
 
+def admitted_runtime(profile):
+    """Return the same managed endpoint custody used by trials, for an admitted gate run."""
+    return _endpoint(profile)
+
+
 def _atomic_request(review_dir, worktree, record):
     os.makedirs(review_dir, mode=0o700, exist_ok=True)
     os.chmod(review_dir, 0o700)

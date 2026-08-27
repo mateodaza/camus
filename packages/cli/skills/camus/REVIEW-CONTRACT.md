@@ -4,9 +4,10 @@
 
 This is the versioned agreement between the review REQUESTER (the `camus-loop` /
 `camus-feat` workflows) and the review EXECUTOR (`review.sh` → an admitted backend).
-`codex_review.sh` remains the only production-admitted executor. The
-`http_openai_compat` implementation is a benchmark candidate and cannot be selected through
-the dispatcher until Slice G admission changes its checked-in gate.
+`codex_review.sh` is admitted by default. The `http_openai_compat` implementation is selectable
+only when the dispatcher finds one unexpired, content-addressed Slice G admission for the exact
+profile/model/effort/transport/connection tuple in the checked-in registry. The shipped registry
+is empty, so no external reviewer is admitted merely by installing this code.
 It names the fields that must travel, unchanged, through every artifact a review
 produces — so a receipt can be checked against the request that asked for it, not
 merely trusted because it parsed.
@@ -60,6 +61,12 @@ settings therefore enter a workflow through its run-start arguments (`reviewerMo
 review child, including empty values that clear runner ambient state. Native/direct
 callers may derive the same expectation from their finalized child environment.
 
+An admitted HTTP run additionally carries the exact non-secret route snapshot through
+`reviewerProfileBackend`, `reviewerTrainingOrg`, `reviewerTransport`, `reviewerConnection`, and
+`reviewerQualification`. `camus-feat` persists those fields in its canonical resume sidecar and
+forwards them unchanged on start, await, and abort. Endpoint URLs, SSH details, and credential
+values remain host-private executor configuration and never enter workflow arguments.
+
 On resume, every stored field in this table belongs to the original thread. The
 executor compares all seven against the current invocation before launching
 `codex exec resume`; missing or drifted fields are refused. A resumed thread is never
@@ -94,7 +101,8 @@ The admitted Codex lane retains the rc1 tier labels above until its receipt migr
 A configurable backend candidate must already bind the exact accepted qualification receipt
 fingerprint (`qual1:<64 lowercase hex>`); a bare `qual1` request is insufficient and refuses.
 For the generic HTTP candidate, that fingerprint also locates an expiring local authority record
-whose HMAC covers the reviewer backend, model, training organization, transport, and connection.
+whose HMAC covers the exact admission id, executor/profile backend, model, training organization,
+transport, connection, and opaque credential revision.
 The reviewer organization comes from that record—not from the request or process environment—so
 caller text cannot forge a cross-vendor pairing.
 Admission cannot be flipped merely by changing the dispatcher registry: the workflow must first
@@ -106,6 +114,22 @@ built-in gate was quietly reconfigured), and a request expecting `qual1` is not
 satisfied by a `builtin1` review (a receipt claiming the built-in tier the run did
 not actually request). Neither direction passes.
 
+## Admission authority
+
+`admission_id` is executor-owned supplemental authority, not requester-carried `rc1` data. The
+HTTP dispatcher derives it from the exact checked-in registry entry after independently matching
+the frozen route and its content-derived `qual1:` fingerprint, then injects
+`CAMUS_REVIEW_ADMISSION_ID` into the child. A separate network-free activation exact-matches that
+entry to the private profile and current opaque credential revision; a credential change invalidates
+the local machine-HMAC authority until an operator explicitly activates the still-current entry
+again. The executor requires the dispatcher-supplied admission id to equal that HMAC-bound value,
+not merely match its syntax, then seals the
+same `admit1:<sha256>` value into metadata, audit, result, and binding. The workflow requires its
+presence and shape for every `http_openai_compat` gate before accepting the verdict; a trial or a
+direct candidate invocation cannot manufacture production standing. Because this field is added
+after request validation rather than echoed from the requester, adding it does not relabel or
+weaken the seven carried `rc1` axes above.
+
 Workflow runtimes cannot inspect host configuration. On a managed host, the executor therefore
 emits `qual1`; an unpinned workflow that expected `builtin1` fails closed on the mismatch. Pin a
 reviewer model in the run-start arguments when that managed review is intentional, which makes
@@ -114,6 +138,6 @@ the requester independently expect `qual1` too.
 ## Terminal provenance
 
 The run's reported provenance (backend, model, effort, scope, qualification, origin,
-operator, transport, connection) is derived ONLY from a binding that `asGate`
+operator, transport, connection, and external admission id when applicable) is derived ONLY from a binding that `asGate`
 ACCEPTED. A rejected or unbindable review contributes no provenance — an infra
 failure is never a source of truth about who reviewed what.

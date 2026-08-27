@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
+import { createHash } from 'node:crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_JUDGE_CALIBRATION = join(__dirname, '..', 'checks', 'model-eval-judge-calibration.json');
@@ -14,19 +15,37 @@ const FINDING_PRESENCE = new Set(['clean', 'findings']);
 const ARTIFACT_ID = /^sha256:[a-f0-9]{64}$/;
 const LABEL_AUTHORITIES = new Set(['human', 'expert_ai_proxy']);
 
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function digest(value) {
+  return `sha256:${createHash('sha256').update(canonical(value), 'utf8').digest('hex')}`;
+}
+
 export function calibrationLabelAuthority(label) {
   if (label?.authority) return label.authority;
   return label?.labeledBy?.startsWith('human:') ? 'human' : null;
 }
 
-export function judgeCalibrationPaths() {
+export function judgeCalibrationPaths(generation = null) {
   const base = process.env.STUDIO_GRANDFATHER_DIR || join(homedir(), '.camus', 'studio');
-  const value = process.env.STUDIO_JUDGE_CALIBRATION_FILE || join(base, 'model-eval-judge-calibration.json');
+  const requested = generation ?? process.env.STUDIO_JUDGE_CALIBRATION_GENERATION ?? null;
+  if (requested !== null && (typeof requested !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(requested))) {
+    throw new Error('judge calibration generation must use 1-64 safe name characters');
+  }
+  const generationBase = requested ? join(base, 'judge-calibration', requested) : base;
+  const value = process.env.STUDIO_JUDGE_CALIBRATION_FILE || join(generationBase, 'model-eval-judge-calibration.json');
   return {
+    generation: requested,
     value,
-    queue: process.env.STUDIO_JUDGE_CALIBRATION_QUEUE_FILE || join(base, 'model-eval-calibration-queue.json'),
-    artifactsDir: process.env.STUDIO_JUDGE_CALIBRATION_ARTIFACTS_DIR || join(base, 'model-eval-calibration-artifacts'),
-    receiptsDir: process.env.STUDIO_JUDGE_CALIBRATION_RECEIPTS_DIR || join(base, 'model-eval-calibration-receipts'),
+    queue: process.env.STUDIO_JUDGE_CALIBRATION_QUEUE_FILE || join(generationBase, 'model-eval-calibration-queue.json'),
+    artifactsDir: process.env.STUDIO_JUDGE_CALIBRATION_ARTIFACTS_DIR || join(generationBase, 'model-eval-calibration-artifacts'),
+    receiptsDir: process.env.STUDIO_JUDGE_CALIBRATION_RECEIPTS_DIR || join(generationBase, 'model-eval-calibration-receipts'),
   };
 }
 
@@ -171,21 +190,46 @@ export function summarizeJudgeCalibration(campaign, value) {
   const proxySharedArtifactIds = proxyArtifactIds.filter((artifactId) => (
     screenJudgeIds.every((judgeId) => runsByJudge.get(judgeId).has(artifactId))
   ));
-  const screenJudgesCalibrated = screenJudgeIds.length >= 2 && screenJudgeIds.every((judgeId) => (
-    agreement(judgeId, sharedArtifactIds).standing === 'calibrated'
-  ));
+  const screenAgreements = screenJudgeIds.map((judgeId) => agreement(judgeId, sharedArtifactIds));
+  const screenActualIdentities = new Set(screenAgreements.flatMap((result) => result.actualIdentities));
+  const screenJudgesCalibrated = screenJudgeIds.length >= 2
+    && screenAgreements.every((result) => result.standing === 'calibrated')
+    && screenActualIdentities.size >= 2;
   const proxyScreensAligned = screenJudgeIds.length >= 2 && screenJudgeIds.every((judgeId) => (
     agreement(judgeId, proxySharedArtifactIds).standing === 'calibrated'
   ));
+  const sharedSet = new Set(sharedArtifactIds);
+  const screenRuns = value.judgeRuns.filter((run) => (
+    screenJudgeIds.includes(run.judgeId) && sharedSet.has(run.artifactId)
+  )).map((run) => ({
+    artifactId: run.artifactId,
+    judgeId: run.judgeId,
+    sourceRunId: run.sourceRunId,
+    actualIdentity: run.actualIdentity,
+  })).sort((left, right) => canonical(left).localeCompare(canonical(right)));
+  const calibrationDigest = digest(value);
+  const screenEvidenceDigest = digest({
+    campaignId: campaign.id,
+    calibrationDigest,
+    artifactIds: [...sharedArtifactIds].sort(),
+    judgeIds: [...screenJudgeIds].sort(),
+    runs: screenRuns,
+  });
   return {
     campaignId: campaign.id,
+    calibrationDigest,
+    screenEvidenceDigest,
     minimumHumanLabeledArtifacts: minimum,
     minimumAgreement: threshold,
     humanLabeledArtifacts: humanArtifactIds.length,
     proxyLabeledArtifacts: proxyArtifactIds.length,
     sharedArtifacts: sharedArtifactIds.length,
+    sharedArtifactIds: [...sharedArtifactIds].sort(),
     proxySharedArtifacts: proxySharedArtifactIds.length,
     judges,
+    screenJudgeIds: [...screenJudgeIds].sort(),
+    screenActualIdentities: [...screenActualIdentities].sort(),
+    screenJudgeRunIds: [...new Set(screenRuns.map((run) => run.sourceRunId))].sort(),
     proxyJudges,
     crossScreenRanking: screenJudgesCalibrated ? 'eligible' : 'refused_uncalibrated',
     proxyCrossScreenComparison: proxyScreensAligned ? 'provisional_eligible' : 'refused_unscored',
@@ -193,7 +237,9 @@ export function summarizeJudgeCalibration(campaign, value) {
 }
 
 export function loadJudgeCalibration(campaign, path = null) {
-  const operatorPath = judgeCalibrationPaths().value;
+  const operatorPath = judgeCalibrationPaths(
+    process.env.STUDIO_JUDGE_CALIBRATION_GENERATION ?? campaign.id,
+  ).value;
   const trackedSeed = join(__dirname, '..', campaign.calibration.labelsFile);
   const resolvedPath = path ?? (existsSync(operatorPath) ? operatorPath : trackedSeed);
   let value;

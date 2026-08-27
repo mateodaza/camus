@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { loadModelEvalCampaign, modelEvalCampaignHash } from './model-eval-campaign.mjs';
-import { loadJudgeCalibration, summarizeJudgeCalibration } from './judge-calibration.mjs';
+import { judgeCalibrationPaths, loadJudgeCalibration, summarizeJudgeCalibration } from './judge-calibration.mjs';
 import {
   calibrationValueFromQueue,
   labelCalibrationArtifact,
@@ -65,6 +65,17 @@ function fixtureReports() {
 }
 
 try {
+  const priorBase = process.env.STUDIO_GRANDFATHER_DIR;
+  process.env.STUDIO_GRANDFATHER_DIR = root;
+  const generated = judgeCalibrationPaths('human-v1');
+  assert.equal(generated.generation, 'human-v1');
+  assert.equal(generated.queue, join(root, 'judge-calibration', 'human-v1', 'model-eval-calibration-queue.json'));
+  const active = judgeCalibrationPaths(campaign.id);
+  assert.equal(active.queue, join(root, 'judge-calibration', campaign.id, 'model-eval-calibration-queue.json'));
+  assert.throws(() => judgeCalibrationPaths('../escape'), /safe name characters/);
+  if (priorBase === undefined) delete process.env.STUDIO_GRANDFATHER_DIR;
+  else process.env.STUDIO_GRANDFATHER_DIR = priorBase;
+
   const reports = fixtureReports();
   const selected = selectCalibrationArtifacts(campaign, configHash, reports);
   assert.equal(selected.length, 12);
@@ -155,6 +166,11 @@ try {
 
   const calibrated = loadJudgeCalibration(campaign, paths.value).summary;
   assert.equal(calibrated.crossScreenRanking, 'eligible');
+  assert.match(calibrated.calibrationDigest, /^sha256:[a-f0-9]{64}$/);
+  assert.match(calibrated.screenEvidenceDigest, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(calibrated.screenJudgeIds.length, 2);
+  assert.equal(calibrated.screenActualIdentities.length, 2);
+  assert.equal(calibrated.screenJudgeRunIds.length, 24);
   assert.equal(calibrated.judges.find((judge) => judge.id === 'gpt-luna').standing, 'uncalibrated');
   assert.equal(calibrated.judges.filter((judge) => judge.id !== 'gpt-luna').every((judge) => judge.standing === 'calibrated'), true);
   assert.throws(() => labelCalibrationArtifact(queue, 1, {
@@ -164,6 +180,9 @@ try {
   const mixedIdentity = calibrationValueFromQueue(structuredClone(queue));
   mixedIdentity.judgeRuns.find((run) => run.judgeId === 'opus-4-8').actualIdentity = 'anthropic:claude-opus-4-8';
   assert.equal(summarizeJudgeCalibration(campaign, mixedIdentity).crossScreenRanking, 'refused_uncalibrated');
+  const sameActualIdentity = calibrationValueFromQueue(structuredClone(queue));
+  for (const run of sameActualIdentity.judgeRuns) run.actualIdentity = 'shared:same-actual-model';
+  assert.equal(summarizeJudgeCalibration(campaign, sameActualIdentity).crossScreenRanking, 'refused_uncalibrated');
   const proxyOnly = calibrationValueFromQueue(structuredClone(queue));
   for (const artifact of proxyOnly.artifacts) {
     artifact.humanLabel = {

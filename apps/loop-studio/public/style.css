@@ -451,6 +451,10 @@ textarea:focus { outline: none; border-color: var(--ink); }
 .pairing .mono { font-size: 13px; color: var(--ink); }
 .pairing-arrow { color: var(--faint); }
 .pairing .ghost { font-size: 12px; padding: 2px 8px; }
+.checkline { display: flex; align-items: center; gap: 8px; margin-top: 9px; font-size: 13px; color: var(--muted); cursor: pointer; }
+.checkline input { accent-color: var(--ink); }
+.routing-class { display: flex; align-items: center; gap: 8px; margin-top: 6px; color: var(--muted); font-size: 12px; }
+.routing-class select { max-width: 190px; }
 
 /* A zero-model run has no model work to reveal; the control states that rather than
    offering to open an empty panel. */

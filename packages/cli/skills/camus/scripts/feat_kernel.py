@@ -70,6 +70,7 @@ import time
 
 import adapter
 import env_check
+import model_trials
 import resume_scan
 
 
@@ -169,7 +170,8 @@ def _managed_or_system_config_present(env):
     return False
 
 
-def _direct_review_contract(backend, model, env=None, effort=None, system_config_present=None):
+def _direct_review_contract(backend, model, env=None, effort=None, system_config_present=None,
+                            reviewer_route=None):
     """The rc1 carried fields the native direct path REQUESTS and then re-checks against
     the emitted binding. connection/qualification are DERIVED the SAME way codex_review.sh
     (and asGate) derive them from the FINAL codex args — a model can be pinned by MORE than
@@ -180,6 +182,23 @@ def _direct_review_contract(backend, model, env=None, effort=None, system_config
     configured/qual1. Examining only `model` here (as an earlier cut did) falsely certified a
     review pinned via CAMUS_CODEX_ARGS/CAMUS_CODEX_LIGHT_MODEL as vendor_managed/builtin1."""
     env = os.environ if env is None else env
+    if backend == "http_openai_compat":
+        route = reviewer_route if isinstance(reviewer_route, dict) else {}
+        required = ("profileBackend", "trainingOrg", "transport", "connection", "qualification")
+        if set(route) != set(required) or not all(isinstance(route.get(key), str) and route.get(key)
+                                                  for key in required):
+            raise Refusal("admitted HTTP reviewer requires its complete exact non-secret route")
+        if route["transport"] not in ("loopback", "direct_https", "ssh_tunnel") \
+                or not re.fullmatch(r"qual1:[0-9a-f]{64}", route["qualification"]):
+            raise Refusal("admitted HTTP reviewer route is malformed")
+        return {
+            "contract": REVIEW_CONTRACT, "scope": DIRECT_REVIEW_SCOPE,
+            "qualification": route["qualification"], "origin": DIRECT_REVIEW_ORIGIN,
+            "operator": DIRECT_REVIEW_OPERATOR, "transport": route["transport"],
+            "connection": route["connection"],
+        }
+    if reviewer_route:
+        raise Refusal("external reviewer route cannot be attached to backend %r" % backend)
     model_pinned = (
         bool(model)
         or bool((env.get("CAMUS_CODEX_MODEL") or "").strip())
@@ -919,6 +938,13 @@ def _validate_review_receipt(run, node, worktree, round_no, backend, model, effo
                 raise Refusal("review receipt recorded no %s, so the rc1 contract field cannot be confirmed" % key)
             if actual != value:
                 raise Refusal("review receipt %s %r does not match the requested %r" % (key, actual, value))
+    admission_id = binding.get("admission_id")
+    if backend == "http_openai_compat" and not (
+        isinstance(admission_id, str) and re.fullmatch(r"admit1:[0-9a-f]{64}", admission_id)
+    ):
+        raise Refusal("external review receipt has no exact checked-in admission authority")
+    if backend != "http_openai_compat" and admission_id is not None:
+        raise Refusal("built-in review receipt unexpectedly claims external admission authority")
     receipt_worktree = review.get("worktree_canonical") or review.get("worktree")
     if not isinstance(receipt_worktree, str) or os.path.realpath(receipt_worktree) != os.path.realpath(worktree):
         raise Refusal("review receipt worktree does not match the task worktree")
@@ -974,6 +1000,7 @@ def _validate_review_receipt(run, node, worktree, round_no, backend, model, effo
         "operator": binding.get("operator"),
         "transport": binding.get("transport"),
         "connection": binding.get("connection"),
+        "admissionId": admission_id,
         "parsed": parsed,
         "normalized": normalized_review,
     }
@@ -1008,12 +1035,15 @@ def _review_receipt_evidence(run, node, workflow, explicit=None):
     }
     if not all(isinstance(v, str) and v for v in expected_contract.values()):
         raise Refusal("workflow result is missing rc1 contract provenance from the accepted review binding")
-    return _validate_review_receipt(
+    receipt = _validate_review_receipt(
         run, node, result.get("worktree"), round_no,
         result.get("reviewerBackend"), result.get("reviewerModel"), result.get("reviewerEffort"),
         expected_blocking=result.get("findings"), explicit=explicit, allow_legacy=True,
         expected_contract=expected_contract,
     )
+    if receipt["admissionId"] != result.get("reviewerAdmissionId"):
+        raise Refusal("workflow reviewer admission authority disagrees with its durable receipt")
+    return receipt
 
 
 def prepare(feat_id, repo=None, wall_seconds=None, token_budget=None, retry_budget=None,
@@ -1793,37 +1823,9 @@ def record_maker_usage(feat_id, task_id, result_file, role="maker", repo=None, b
         }
 
 
-def _run_direct_review(run, repo, node, worktree, backend, model, effort, round_no=1):
+def _execute_direct_review(run, repo, node, worktree, backend, reviewer_model, effort,
+                           round_no, nonce, env, contract):
     scripts = os.path.dirname(os.path.abspath(__file__))
-    nonce = "%s:%s" % (_kernel(run["state"])["traceId"], node["taskId"].rsplit("-", 1)[-1])
-    env = os.environ.copy()
-    # subprocess requires string env/argv values. More importantly, an unpinned seat must
-    # actively clear an ambient model before we derive the expected connection/qualification;
-    # the contract has to describe the finalized child environment, not its parent snapshot.
-    reviewer_model = model or ""
-    env.update({
-        "CAMUS_REVIEW_DIR": os.path.join(run["base"], "reviews"),
-        "CAMUS_REPO_ROOT": repo,
-        "CAMUS_REVIEWER": backend,
-        "CAMUS_REVIEW_BACKEND": backend,
-        # The native Build maker is Claude today. The dispatcher compares the reviewer's
-        # registry-backed training organization against this explicit fact before it can exec;
-        # an ambient shell value must not redefine who authored the candidate.
-        "CAMUS_MAKER_TRAINING_ORG": "anthropic",
-        "CAMUS_CODEX_MODEL": reviewer_model,
-        "CAMUS_GATE_NONCE": nonce,
-        "CAMUS_REVIEW_ROUND": str(round_no),
-        "CAMUS_REVIEW_EFFORT": effort,
-    })
-    # rc1 carried fields: sealed into the REQUEST, cross-checked by codex_review.sh, and
-    # re-verified against the emitted binding in _validate_review_receipt below. Derived from
-    # the FINAL env inherited by the review child and effort the executor will actually run.
-    contract = _direct_review_contract(backend, reviewer_model, env=env, effort=effort)
-    env.update({
-        "CAMUS_REVIEW_SCOPE": contract["scope"],
-        "CAMUS_REVIEW_ORIGIN": contract["origin"],
-        "CAMUS_REVIEW_OPERATOR": contract["operator"],
-    })
     request = _json_command([
         sys.executable, os.path.join(scripts, "review_request.py"), "write",
         "--worktree", worktree, "--round", str(round_no), "--effort", effort,
@@ -1861,7 +1863,64 @@ def _run_direct_review(run, repo, node, worktree, backend, model, effort, round_
     return verdict
 
 
-def review_task(feat_id, task_id, repo=None, base=None, now=None):
+def _run_direct_review(run, repo, node, worktree, backend, model, effort, round_no=1,
+                       reviewer_route=None):
+    nonce = "%s:%s" % (_kernel(run["state"])["traceId"], node["taskId"].rsplit("-", 1)[-1])
+    env = os.environ.copy()
+    reviewer_model = model or ""
+    env.update({
+        "CAMUS_REVIEW_DIR": os.path.join(run["base"], "reviews"),
+        "CAMUS_REPO_ROOT": repo,
+        "CAMUS_REVIEWER": backend,
+        "CAMUS_REVIEW_BACKEND": backend,
+        "CAMUS_MAKER_TRAINING_ORG": "anthropic",
+        "CAMUS_CODEX_MODEL": reviewer_model,
+        "CAMUS_GATE_NONCE": nonce,
+        "CAMUS_REVIEW_ROUND": str(round_no),
+        "CAMUS_REVIEW_EFFORT": effort,
+    })
+    runtime = contextlib.nullcontext(None)
+    if backend == "http_openai_compat":
+        route = reviewer_route if isinstance(reviewer_route, dict) else {}
+        try:
+            profile = model_trials.resolve_profile(route.get("profileBackend"), reviewer_model, env)
+        except model_trials.TrialError as exc:
+            raise Refusal(str(exc)) from exc
+        connection = profile["connection"]
+        if (profile["training_org"], connection["kind"], connection["name"]) != (
+                route.get("trainingOrg"), route.get("transport"), route.get("connection")):
+            raise Refusal("local reviewer profile differs from the frozen admitted route")
+        runtime = model_trials.admitted_runtime(profile)
+    with runtime as endpoint:
+        if backend == "http_openai_compat":
+            env.update({
+                "CAMUS_HTTP_REVIEW_PROFILE_BACKEND": reviewer_route["profileBackend"],
+                "CAMUS_HTTP_REVIEW_MODEL": reviewer_model,
+                "CAMUS_HTTP_REVIEW_BASE_URL": endpoint["base_url"],
+                "CAMUS_HTTP_REVIEW_AUTH": profile["auth"],
+                "CAMUS_HTTP_REVIEW_API_KEY_ENV": profile["key_env"] or "",
+                "CAMUS_HTTP_REVIEW_TRANSPORT": reviewer_route["transport"],
+                "CAMUS_HTTP_REVIEW_CONNECTION": reviewer_route["connection"],
+                "CAMUS_HTTP_REVIEW_TUNNEL_PID": str(endpoint["tunnel_pid"] or ""),
+                "CAMUS_HTTP_REVIEW_TUNNEL_STARTED_AT": str(endpoint["tunnel_started"] or ""),
+                "CAMUS_REVIEWER_TRAINING_ORG": reviewer_route["trainingOrg"],
+                "CAMUS_REVIEW_QUALIFICATION": reviewer_route["qualification"],
+            })
+        contract = _direct_review_contract(
+            backend, reviewer_model, env=env, effort=effort, reviewer_route=reviewer_route,
+        )
+        env.update({
+            "CAMUS_REVIEW_SCOPE": contract["scope"],
+            "CAMUS_REVIEW_ORIGIN": contract["origin"],
+            "CAMUS_REVIEW_OPERATOR": contract["operator"],
+        })
+        return _execute_direct_review(
+            run, repo, node, worktree, backend, reviewer_model, effort,
+            round_no, nonce, env, contract,
+        )
+
+
+def review_task(feat_id, task_id, repo=None, base=None, now=None, reviewer_route=None):
     """Run one direct, trace-bound independent review with no model relay."""
     now = int(time.time()) if now is None else int(now)
     base = base or camus_home()
@@ -1903,6 +1962,13 @@ def review_task(feat_id, task_id, repo=None, base=None, now=None):
         )
         if not all(isinstance(value, str) and value for value in (backend, model, effort)):
             raise Refusal("direct review requires pinned backend, model, and effort")
+        exact_route = dict(reviewer_route) if isinstance(reviewer_route, dict) else None
+        _direct_review_contract(backend, model, effort=effort, reviewer_route=exact_route)
+        stored_route = node.get("directReviewerRoute")
+        if stored_route is not None and stored_route != exact_route:
+            raise Refusal("direct reviewer route changed across review recovery")
+        if backend == "http_openai_compat":
+            node["directReviewerRoute"] = exact_route
         candidate_before = _candidate_fingerprint(worktree)
         if kernel.get("phase") == "task_reviewing":
             round_no = kernel.get("directReviewRound")
@@ -1919,7 +1985,10 @@ def review_task(feat_id, task_id, repo=None, base=None, now=None):
         run["state"]["stage"] = "kernel_task_reviewing"
         _atomic_write(run["statePath"], run["state"])
 
-    verdict = _run_direct_review(run, repo, node, worktree, backend, model, effort, round_no=round_no)
+    verdict = _run_direct_review(
+        run, repo, node, worktree, backend, model, effort, round_no=round_no,
+        reviewer_route=exact_route,
+    )
 
     with _locked(feats_dir, feat_id):
         run = _validated_run(feat_id, base)
@@ -1930,7 +1999,9 @@ def review_task(feat_id, task_id, repo=None, base=None, now=None):
         review = _validate_review_receipt(
             run, node, worktree, round_no, backend, model, effort,
             expected_blocking=verdict.get("blocking"), allow_legacy=False,
-            expected_contract=_direct_review_contract(backend, model, effort=effort),
+            expected_contract=_direct_review_contract(
+                backend, model, effort=effort, reviewer_route=node.get("directReviewerRoute"),
+            ),
         )
         if verdict.get("clean") is not review["normalized"].get("clean"):
             raise Refusal("reviewer stdout disagrees with its durable receipt")
@@ -1959,12 +2030,17 @@ def review_task(feat_id, task_id, repo=None, base=None, now=None):
             "operator": review["operator"],
             "transport": review["transport"],
             "connection": review["connection"],
+            "admissionId": review["admissionId"],
             "reviewedAt": now,
         }
         node["reviewerBackend"] = review["backend"]
         node["reviewerModel"] = review["model"]
         node["reviewerEffort"] = review["effort"]
         node["reviewerRound"] = review["round"]
+        node["reviewerQualification"] = review["qualification"]
+        node["reviewTransport"] = review["transport"]
+        node["reviewConnection"] = review["connection"]
+        node["reviewerAdmissionId"] = review["admissionId"]
         kernel["phase"] = "task_reviewed"
         kernel["updatedAt"] = now
         run["state"]["kernel"] = kernel
@@ -1979,7 +2055,10 @@ def review_task(feat_id, task_id, repo=None, base=None, now=None):
             "action": "seal" if review["normalized"]["clean"] else "fix_then_seal",
             "taskId": task_id,
             "worktree": worktree,
-            "reviewer": {key: review[key] for key in ("backend", "model", "effort", "round")},
+            "reviewer": {key: review[key] for key in (
+                "backend", "model", "effort", "round", "qualification", "transport",
+                "connection", "admissionId",
+            )},
             "clean": review["normalized"]["clean"],
             "blocking": review["normalized"]["blocking"],
             "nonblocking": review["normalized"]["nonblocking"],
@@ -2012,9 +2091,12 @@ def seal_task(feat_id, task_id, fixed_unreviewed=False, repo=None, verify_timeou
             direct.get("model"), direct.get("effort"),
             expected_blocking=direct.get("blocking"), explicit=direct.get("receiptPath"),
             allow_legacy=False,
-            expected_contract=_direct_review_contract(
-                direct.get("backend"), direct.get("model"), effort=direct.get("effort")),
+            expected_contract={key: direct.get(key) for key in (
+                "contract", "scope", "qualification", "origin", "operator", "transport", "connection",
+            )},
         )
+        if review["admissionId"] != direct.get("admissionId"):
+            raise Refusal("direct review admission authority changed after the review boundary")
         if review["sha256"] != direct.get("receiptSha256"):
             raise Refusal("direct review receipt changed after the review boundary")
         blocking = review["normalized"]["blocking"]
@@ -2113,6 +2195,7 @@ def seal_task(feat_id, task_id, fixed_unreviewed=False, repo=None, verify_timeou
             "mode": "direct_hybrid",
             "reviewReceipt": {
                 "path": review["path"], "sha256": review["sha256"], "nonce": review["nonce"],
+                "admissionId": review["admissionId"],
             },
             "reviewedCandidateFingerprint": direct.get("candidateFingerprint"),
             "sealedCandidateFingerprint": current_fp,
@@ -2145,7 +2228,10 @@ def seal_task(feat_id, task_id, fixed_unreviewed=False, repo=None, verify_timeou
             "status": "ready_to_merge",
             "provenStatus": proven_status,
             "commit": head,
-            "reviewer": {key: review[key] for key in ("backend", "model", "effort", "round")},
+            "reviewer": {key: review[key] for key in (
+                "backend", "model", "effort", "round", "qualification", "transport",
+                "connection", "admissionId",
+            )},
             "verification": verification,
         }
 
@@ -2247,6 +2333,7 @@ def accept_task(feat_id, task_id, result_file, final_commit=None, review_receipt
         node["reviewOperator"] = review["operator"]
         node["reviewTransport"] = review["transport"]
         node["reviewConnection"] = review["connection"]
+        node["reviewerAdmissionId"] = review["admissionId"]
         findings = result.get("findings") if isinstance(result.get("findings"), list) else []
         if findings:
             node["findingsDeferred"] = len(findings)
@@ -2269,6 +2356,7 @@ def accept_task(feat_id, task_id, result_file, final_commit=None, review_receipt
             "reviewReceipt": {
                 "path": review["path"], "sha256": review["sha256"],
                 "nonce": review["nonce"], "traceBinding": review["traceBinding"],
+                "admissionId": review["admissionId"],
             },
             "workflowCommit": result_commit,
             "acceptedCommit": head,
@@ -2657,6 +2745,12 @@ def _parser():
         p.add_argument("feat_id")
         p.add_argument("task_id")
         p.add_argument("--repo", default=None)
+        if name == "review":
+            p.add_argument("--reviewer-profile-backend", default=None)
+            p.add_argument("--reviewer-training-org", default=None)
+            p.add_argument("--reviewer-transport", default=None)
+            p.add_argument("--reviewer-connection", default=None)
+            p.add_argument("--reviewer-qualification", default=None)
         p.add_argument("--dir", dest="base", default=None, help=argparse.SUPPRESS)
     p = sub.add_parser("maker-usage")
     p.add_argument("feat_id")
@@ -2718,8 +2812,19 @@ def main(argv=None):
                 options.feat_id, options.task_id, repo=options.repo, base=options.base,
             )
         elif options.command == "review":
+            route = None
+            route_values = {
+                "profileBackend": options.reviewer_profile_backend,
+                "trainingOrg": options.reviewer_training_org,
+                "transport": options.reviewer_transport,
+                "connection": options.reviewer_connection,
+                "qualification": options.reviewer_qualification,
+            }
+            if any(route_values.values()):
+                route = route_values
             value = review_task(
                 options.feat_id, options.task_id, repo=options.repo, base=options.base,
+                reviewer_route=route,
             )
         elif options.command == "maker-usage":
             value = record_maker_usage(

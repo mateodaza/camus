@@ -1,6 +1,6 @@
 # Camus quickstart for CodenameWukong
 
-Camus 0.4.6 uses a durable native driver for code work and supports configurable maker and
+Camus 0.4.7 uses a durable native driver for code work and supports configurable maker and
 reviewer seats in Loop Studio for written and research work, including reversed Claude/Codex
 pairings and qualified OpenAI-compatible backends over HTTPS, loopback, or managed SSH. The
 direct code workflow—and Studio's Build lane—keep the trusted gate's Claude Code maker plus Codex
@@ -14,7 +14,7 @@ not implement alongside Camus.
 Requirements: Node 18+, Claude Code signed in, Codex CLI signed in, and .NET 10.
 
 ```bash
-npm install -g camus-cli@0.4.6
+npm install -g camus-cli@0.4.7
 codex login
 camus install
 camus check
@@ -48,7 +48,7 @@ standing choices under `~/.camus/studio/models.json` and does not rewrite the tr
 defaults. Studio's **Build** lane still uses the direct trusted code gate—Claude Code makes
 the change and Codex CLI reviews it—although their models and reviewer effort are
 configurable. Reversing the provider roles and independently gating with a qualified
-Grok/Qwen/open-weight seat still apply to Studio's written and research lanes. Build in 0.4.6 may
+Grok/Qwen/open-weight seat still apply to Studio's written and research lanes. Build in 0.4.7 may
 evaluate one of those seats as a shadow, but Codex remains its gate. A declared connection grants no
 trust: Carlos must explicitly qualify the exact model, role, endpoint, credential reference,
 transport, and reported identity before Studio enables that seat. Tunnel death fails closed and
@@ -85,7 +85,7 @@ claude --permission-mode auto
 
 ## 3. Choose the smallest workflow
 
-The preferred 0.4.6 path is model-free initialization followed by the durable native driver.
+The preferred 0.4.7 path is model-free initialization followed by the durable native driver.
 Write the real feature contract to `feature.json`:
 
 ```json
@@ -221,7 +221,7 @@ camus retro
   implementation manually.
 - `verify_failed`: the candidate is not shippable.
 
-In 0.4.6, terminals reached after an accepted review receipt report that receipt's final reviewer
+In 0.4.7, terminals reached after an accepted review receipt report that receipt's final reviewer
 backend, model (or explicit `not_recorded`), effort, and round. Preserve those fields at
 handoff; never substitute the maker model when a reviewer model was not recorded.
 

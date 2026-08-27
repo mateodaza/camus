@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://camus.sh/schemas/reviewer-admissions.v1.schema.json",
+  "title": "Camus checked-in reviewer admissions v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "admissions"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "admissions": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["admissionId", "executorBackend", "profileBackend", "model", "effort", "trainingOrg", "transport", "connection", "qualificationFingerprint", "campaignId", "corpusVersion", "promptEnvelopeVersion", "summarySha256", "humanCalibrationCampaignId", "humanCalibrationId", "approvedBy", "approvedAt", "expiresAt", "scope"],
+        "properties": {
+          "admissionId": { "type": "string", "pattern": "^admit1:[a-f0-9]{64}$" },
+          "executorBackend": { "const": "http_openai_compat" },
+          "profileBackend": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "model": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "effort": { "enum": ["low", "medium", "high", "xhigh"] },
+          "trainingOrg": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_]{0,63}$" },
+          "transport": { "enum": ["loopback", "direct_https", "ssh_tunnel"] },
+          "connection": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "qualificationFingerprint": { "type": "string", "pattern": "^qual1:[a-f0-9]{64}$" },
+          "campaignId": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "corpusVersion": { "type": "string", "pattern": "^corpus1:[a-f0-9]{64}$" },
+          "promptEnvelopeVersion": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "summarySha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+          "humanCalibrationCampaignId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+          "humanCalibrationId": { "type": "string", "pattern": "^human1:[a-f0-9]{64}$" },
+          "approvedBy": { "type": "string", "pattern": "^human:.+$", "maxLength": 200 },
+          "approvedAt": { "type": "string", "format": "date-time" },
+          "expiresAt": { "type": "string", "format": "date-time" },
+          "scope": { "const": "cli_code_reviewer_gate" }
+        }
+      }
+    }
+  }
+}

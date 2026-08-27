@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://camus.sh/schemas/benchmark-corpus.v1.schema.json",
+  "title": "Camus public reviewer benchmark corpus v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "name", "promptEnvelopeVersion", "cases"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "promptEnvelopeVersion": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "cases": {
+      "type": "array",
+      "minItems": 25,
+      "maxItems": 40,
+      "items": { "$ref": "#/$defs/case" }
+    }
+  },
+  "$defs": {
+    "files": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 8,
+      "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$" },
+      "additionalProperties": { "type": "string", "maxLength": 20000 }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["defectId", "class", "file", "startLine", "endLine", "matchAny"],
+      "properties": {
+        "defectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "class": { "enum": ["logic_inversion", "missing_error_path", "resource_leak", "injection", "off_by_one", "dead_guard", "spec_deviation", "async_control", "data_loss", "unsafe_default"] },
+        "file": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "startLine": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "endLine": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "matchAny": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 6,
+            "items": { "type": "string", "minLength": 2, "maxLength": 80 }
+          }
+        }
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["caseId", "kind", "taskClass", "task", "baseFiles", "patchFiles", "expectedFindings", "killMode"],
+      "properties": {
+        "caseId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+        "kind": { "enum": ["defect", "clean", "kill_path"] },
+        "taskClass": { "enum": ["simple", "balanced", "difficult", "control"] },
+        "task": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "baseFiles": { "$ref": "#/$defs/files" },
+        "patchFiles": { "$ref": "#/$defs/files" },
+        "expectedFindings": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/finding" } },
+        "killMode": { "enum": ["none", "abort", "malformed_output", "identity_substitution", "transport_interrupt"] }
+      }
+    }
+  }
+}

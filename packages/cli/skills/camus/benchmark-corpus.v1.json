@@ -1,0 +1,257 @@
+{
+  "schemaVersion": 1,
+  "name": "slice-g-public-review-corpus-v1",
+  "promptEnvelopeVersion": "camus-review-prompt-rc1-light",
+  "cases": [
+    {
+      "caseId": "logic-inversion-admin",
+      "kind": "defect",
+      "taskClass": "simple",
+      "task": "Keep admin-only access strict while extracting the role comparison into a named helper.",
+      "baseFiles": {"access.py": "def can_manage(role):\n    return role == \"admin\"\n"},
+      "patchFiles": {"access.py": "def is_privileged(role):\n    return role != \"admin\"\n\ndef can_manage(role):\n    return is_privileged(role)\n"},
+      "expectedFindings": [{"defectId": "logic-inversion-admin", "class": "logic_inversion", "file": "access.py", "startLine": 2, "endLine": 2, "matchAny": [["!=", "admin"], ["non-admin"], ["invert", "privilege"]]}],
+      "killMode": "none"
+    },
+    {
+      "caseId": "missing-file-fallback",
+      "kind": "defect",
+      "taskClass": "simple",
+      "task": "Refactor configuration loading but preserve the contract that a missing file returns an empty object.",
+      "baseFiles": {"config.py": "import json\n\ndef load_config(path):\n    try:\n        with open(path) as handle:\n            return json.load(handle)\n    except FileNotFoundError:\n        return {}\n"},
+      "patchFiles": {"config.py": "import json\n\ndef load_config(path):\n    with open(path) as handle:\n        return json.load(handle)\n"},
+      "expectedFindings": [{"defectId": "missing-file-fallback", "class": "missing_error_path", "file": "config.py", "startLine": 4, "endLine": 5, "matchAny": [["FileNotFoundError"], ["missing", "raise"], ["empty", "missing"]]}],
+      "killMode": "none"
+    },
+    {
+      "caseId": "resource-leak-report",
+      "kind": "defect",
+      "taskClass": "simple",
+      "task": "Return the first line of a report without leaving file descriptors open.",
+      "baseFiles": {"report.py": "def first_line(path):\n    with open(path) as handle:\n        return handle.readline().strip()\n"},
+      "patchFiles": {"report.py": "def first_line(path):\n    handle = open(path)\n    return handle.readline().strip()\n"},
+      "expectedFindings": [{"defectId": "resource-leak-report", "class": "resource_leak", "file": "report.py", "startLine": 2, "endLine": 3, "matchAny": [["close"], ["file descriptor"], ["context manager"]]}],
+      "killMode": "none"
+    },
+    {
+      "caseId": "shell-injection-export",
+      "kind": "defect",
+      "taskClass": "balanced",
+      "task": "Add a helper that exports the user-selected report name without allowing it to alter the command being executed.",
+      "baseFiles": {"exporter.py": "import subprocess\n\ndef export_report(name):\n    return subprocess.run([\"reportctl\", \"export\", name], check=True)\n"},
+      "patchFiles": {"exporter.py": "import subprocess\n\ndef export_report(name):\n    command = f\"reportctl export {name}\"\n    return subprocess.run(command, shell=True, check=True)\n"},
+      "expectedFindings": [{"defectId": "shell-injection-export", "class": "injection", "file": "exporter.py", "startLine": 4, "endLine": 5, "matchAny": [["shell=True", "injection"], ["user", "shell"], ["name", "command"]]}],
+      "killMode": "none"
+    },
+    {
+      "caseId": "off-by-one-pages",
+      "kind": "defect",
+      "taskClass": "simple",
+      "task": "Generate exactly one zero-based index for each page.",
+      "baseFiles": {"pages.py": "def page_indexes(page_count):\n    return list(range(page_count))\n"},
+      "patchFiles": {"pages.py": "def page_indexes(page_count):\n    indexes = []\n    for index in range(page_count + 1):\n        indexes.append(index)\n    return indexes\n"},
+      "expectedFindings": [{"defectId": "off-by-one-pages", "class": "off_by_one", "file": "pages.py", "startLine": 3, "endLine": 3, "matchAny": [["page_count + 1"], ["extra", "page"], ["off-by-one"]]}],
+      "killMode": "none"
+    },
+    {
+      "caseId": "dead-negative-guard",
+      "kind": "defect",
+      "taskClass": "simple",
+      "task": "Normalize positive amounts but continue rejecting negative inputs.",
+      "baseFiles": {"amounts.py": "def normalize(amount):\n    if amount < 0:\n        raise ValueError(\"negative amount\")\n    return round(amount, 2)\n"},
+      "patchFiles": {"amounts.py": "def normalize(amount):\n    amount = abs(amount)\n    if amount < 0:\n        raise ValueError(\"negative amount\")\n    return round(amount, 2)\n"},
+      "expectedFindings": [{"defectId": "dead-negative-guard", "class": "dead_guard", "file": "amounts.py", "startLine": 2, "endLine": 3, "matchAny": [["abs", "negative"], ["unreachable", "guard"], ["never", "raise"]]}],
+      "killMode": "none"
+    },
+    {
+      "caseId": "spec-deviation-battery",
+      "kind": "defect",
+      "taskClass": "simple",
+      "task": "Cap the displayed battery percentage at the product-specified maximum of 80 percent.",
+      "baseFiles": {"battery.py": "def display_percent(value):\n    return min(max(value, 0), 80)\n"},
+      "patchFiles": {"battery.py": "def display_percent(value):\n    bounded = min(max(value, 0), 100)\n    return bounded\n"},
+      "expectedFindings": [{"defectId": "spec-deviation-battery", "class": "spec_deviation", "file": "battery.py", "startLine": 2, "endLine": 2, "matchAny": [["80", "100"], ["maximum", "80"], ["cap", "100"]]}],
+      "killMode": "none"
+    },
+    {
+      "caseId": "missing-await-save",
+      "kind": "defect",
+      "taskClass": "balanced",
+      "task": "Save the record before returning success; callers must never observe success while persistence is still pending.",
+      "baseFiles": {"save.js": "export async function saveAndConfirm(store, record) {\n  await store.save(record);\n  return { saved: true };\n}\n"},
+      "patchFiles": {"save.js": "export async function saveAndConfirm(store, record) {\n  store.save(record);\n  return { saved: true };\n}\n"},
+      "expectedFindings": [{"defectId": "missing-await-save", "class": "async_control", "file": "save.js", "startLine": 2, "endLine": 2, "matchAny": [["await"], ["before", "save"], ["pending", "success"]]}],
+      "killMode": "none"
+    },
+    {
+      "caseId": "overwrite-audit-log",
+      "kind": "defect",
+      "taskClass": "balanced",
+      "task": "Append an event to the durable audit log without removing prior events.",
+      "baseFiles": {"audit.py": "def record(path, event):\n    with open(path, \"a\") as handle:\n        handle.write(event + \"\\n\")\n"},
+      "patchFiles": {"audit.py": "def record(path, event):\n    with open(path, \"w\") as handle:\n        handle.write(event + \"\\n\")\n"},
+      "expectedFindings": [{"defectId": "overwrite-audit-log", "class": "data_loss", "file": "audit.py", "startLine": 2, "endLine": 2, "matchAny": [["overwrite"], ["truncate"], ["append", "write mode"]]}],
+      "killMode": "none"
+    },
+    {
+      "caseId": "unsafe-tls-default",
+      "kind": "defect",
+      "taskClass": "balanced",
+      "task": "Make the HTTP helper configurable while keeping certificate verification enabled by default.",
+      "baseFiles": {"client.py": "def fetch(session, url, verify_tls=True):\n    return session.get(url, verify=verify_tls)\n"},
+      "patchFiles": {"client.py": "def fetch(session, url, verify_tls=False):\n    options = {\"verify\": verify_tls}\n    return session.get(url, **options)\n"},
+      "expectedFindings": [{"defectId": "unsafe-tls-default", "class": "unsafe_default", "file": "client.py", "startLine": 1, "endLine": 1, "matchAny": [["verify_tls=False"], ["certificate", "default"], ["TLS", "disabled"]]}],
+      "killMode": "none"
+    },
+    {
+      "caseId": "missing-transaction-rollback",
+      "kind": "defect",
+      "taskClass": "difficult",
+      "task": "Move two related database writes into a helper while preserving all-or-nothing behavior on failure.",
+      "baseFiles": {"transfer.py": "def transfer(db, debit, credit):\n    with db.transaction():\n        db.write(debit)\n        db.write(credit)\n"},
+      "patchFiles": {"transfer.py": "def transfer(db, debit, credit):\n    db.write(debit)\n    db.write(credit)\n"},
+      "expectedFindings": [{"defectId": "missing-transaction-rollback", "class": "missing_error_path", "file": "transfer.py", "startLine": 2, "endLine": 3, "matchAny": [["transaction"], ["partial", "write"], ["rollback"]]}],
+      "killMode": "none"
+    },
+    {
+      "caseId": "path-traversal-download",
+      "kind": "defect",
+      "taskClass": "difficult",
+      "task": "Resolve a requested download name beneath the configured download directory and reject escape attempts.",
+      "baseFiles": {"download.py": "from pathlib import Path\n\ndef resolve_download(root, name):\n    root = Path(root).resolve()\n    candidate = (root / name).resolve()\n    if root not in candidate.parents:\n        raise ValueError(\"outside download root\")\n    return candidate\n"},
+      "patchFiles": {"download.py": "from pathlib import Path\n\ndef resolve_download(root, name):\n    return Path(root) / name\n"},
+      "expectedFindings": [{"defectId": "path-traversal-download", "class": "injection", "file": "download.py", "startLine": 4, "endLine": 4, "matchAny": [["traversal"], ["escape", "root"], ["..", "outside"]]}],
+      "killMode": "none"
+    },
+    {
+      "caseId": "lexicographic-score-sort",
+      "kind": "defect",
+      "taskClass": "balanced",
+      "task": "Sort string-encoded numeric scores from smallest numeric value to largest.",
+      "baseFiles": {"scores.js": "export function sortScores(values) {\n  return [...values].sort((left, right) => Number(left) - Number(right));\n}\n"},
+      "patchFiles": {"scores.js": "export function sortScores(values) {\n  return [...values].sort();\n}\n"},
+      "expectedFindings": [{"defectId": "lexicographic-score-sort", "class": "spec_deviation", "file": "scores.js", "startLine": 2, "endLine": 2, "matchAny": [["lexicographic"], ["numeric", "comparator"], ["10", "before 2"]]}],
+      "killMode": "none"
+    },
+    {
+      "caseId": "timeout-unit-drift",
+      "kind": "defect",
+      "taskClass": "difficult",
+      "task": "Pass the caller's timeout, expressed in seconds, to a client API that expects milliseconds.",
+      "baseFiles": {"timeout.js": "export function request(client, seconds) {\n  return client.send({ timeoutMs: seconds * 1000 });\n}\n"},
+      "patchFiles": {"timeout.js": "export function request(client, seconds) {\n  return client.send({ timeoutMs: seconds });\n}\n"},
+      "expectedFindings": [{"defectId": "timeout-unit-drift", "class": "spec_deviation", "file": "timeout.js", "startLine": 2, "endLine": 2, "matchAny": [["milliseconds", "seconds"], ["1000"], ["unit", "timeout"]]}],
+      "killMode": "none"
+    },
+    {
+      "caseId": "clean-context-manager",
+      "kind": "clean",
+      "taskClass": "simple",
+      "task": "Refactor file reading to make closure explicit while preserving behavior.",
+      "baseFiles": {"reader.py": "def read_text(path):\n    handle = open(path)\n    try:\n        return handle.read()\n    finally:\n        handle.close()\n"},
+      "patchFiles": {"reader.py": "def read_text(path):\n    with open(path) as handle:\n        return handle.read()\n"},
+      "expectedFindings": [],
+      "killMode": "none"
+    },
+    {
+      "caseId": "clean-parameterized-query",
+      "kind": "clean",
+      "taskClass": "balanced",
+      "task": "Use the database driver's parameter binding for the email lookup.",
+      "baseFiles": {"users.py": "def find_user(db, email):\n    return db.execute(\"SELECT * FROM users WHERE email = ?\", (email,)).fetchone()\n"},
+      "patchFiles": {"users.py": "def find_user(db, email):\n    query = \"SELECT * FROM users WHERE email = ?\"\n    parameters = (email,)\n    return db.execute(query, parameters).fetchone()\n"},
+      "expectedFindings": [],
+      "killMode": "none"
+    },
+    {
+      "caseId": "clean-exclusive-range",
+      "kind": "clean",
+      "taskClass": "simple",
+      "task": "Return every integer from zero up to but excluding the supplied limit.",
+      "baseFiles": {"range_helper.py": "def indexes(limit):\n    return list(range(0, limit))\n"},
+      "patchFiles": {"range_helper.py": "def indexes(limit):\n    values = []\n    for value in range(limit):\n        values.append(value)\n    return values\n"},
+      "expectedFindings": [],
+      "killMode": "none"
+    },
+    {
+      "caseId": "clean-atomic-replace",
+      "kind": "clean",
+      "taskClass": "difficult",
+      "task": "Write the settings atomically so readers never observe a partially written file.",
+      "baseFiles": {"settings.py": "import os\n\ndef save(path, text):\n    temporary = path + \".tmp\"\n    with open(temporary, \"w\") as handle:\n        handle.write(text)\n        handle.flush()\n        os.fsync(handle.fileno())\n    os.replace(temporary, path)\n"},
+      "patchFiles": {"settings.py": "import os\nimport tempfile\n\ndef save(path, text):\n    directory = os.path.dirname(path) or \".\"\n    fd, temporary = tempfile.mkstemp(dir=directory)\n    with os.fdopen(fd, \"w\") as handle:\n        handle.write(text)\n        handle.flush()\n        os.fsync(handle.fileno())\n    os.replace(temporary, path)\n"},
+      "expectedFindings": [],
+      "killMode": "none"
+    },
+    {
+      "caseId": "clean-zero-cache",
+      "kind": "clean",
+      "taskClass": "balanced",
+      "task": "Cache numeric results, including the valid value zero.",
+      "baseFiles": {"cache.js": "export function cached(map, key, compute) {\n  if (map.has(key)) return map.get(key);\n  const value = compute();\n  map.set(key, value);\n  return value;\n}\n"},
+      "patchFiles": {"cache.js": "export function cached(map, key, compute) {\n  const prior = map.get(key);\n  if (prior !== undefined || map.has(key)) return prior;\n  const value = compute();\n  map.set(key, value);\n  return value;\n}\n"},
+      "expectedFindings": [],
+      "killMode": "none"
+    },
+    {
+      "caseId": "clean-url-encoding",
+      "kind": "clean",
+      "taskClass": "balanced",
+      "task": "Build the search URL with standards-compliant query encoding.",
+      "baseFiles": {"search.py": "from urllib.parse import urlencode\n\ndef search_url(term):\n    return \"/search?\" + urlencode({\"q\": term})\n"},
+      "patchFiles": {"search.py": "from urllib.parse import urlencode\n\ndef search_url(term):\n    parameters = {\"q\": term}\n    encoded = urlencode(parameters)\n    return f\"/search?{encoded}\"\n"},
+      "expectedFindings": [],
+      "killMode": "none"
+    },
+    {
+      "caseId": "clean-stable-sort",
+      "kind": "clean",
+      "taskClass": "simple",
+      "task": "Sort records by priority while preserving input order among equal priorities.",
+      "baseFiles": {"priority.py": "def order(records):\n    return sorted(records, key=lambda item: item[\"priority\"])\n"},
+      "patchFiles": {"priority.py": "from operator import itemgetter\n\ndef order(records):\n    return sorted(records, key=itemgetter(\"priority\"))\n"},
+      "expectedFindings": [],
+      "killMode": "none"
+    },
+    {
+      "caseId": "kill-abort",
+      "kind": "kill_path",
+      "taskClass": "control",
+      "task": "Harness control: abort an in-flight review and require a sealed infrastructure refusal.",
+      "baseFiles": {"fixture.py": "VALUE = 1\n"},
+      "patchFiles": {"fixture.py": "VALUE = 2\n"},
+      "expectedFindings": [],
+      "killMode": "abort"
+    },
+    {
+      "caseId": "kill-malformed-output",
+      "kind": "kill_path",
+      "taskClass": "control",
+      "task": "Harness control: feed malformed reviewer output and require the normalizer to refuse it.",
+      "baseFiles": {"fixture.py": "VALUE = 1\n"},
+      "patchFiles": {"fixture.py": "VALUE = 2\n"},
+      "expectedFindings": [],
+      "killMode": "malformed_output"
+    },
+    {
+      "caseId": "kill-identity-substitution",
+      "kind": "kill_path",
+      "taskClass": "control",
+      "task": "Harness control: substitute the reported model identity and require an exact-match refusal.",
+      "baseFiles": {"fixture.py": "VALUE = 1\n"},
+      "patchFiles": {"fixture.py": "VALUE = 2\n"},
+      "expectedFindings": [],
+      "killMode": "identity_substitution"
+    },
+    {
+      "caseId": "kill-transport-interrupt",
+      "kind": "kill_path",
+      "taskClass": "control",
+      "task": "Harness control: interrupt transport during streaming and require an infrastructure refusal with no fallback.",
+      "baseFiles": {"fixture.py": "VALUE = 1\n"},
+      "patchFiles": {"fixture.py": "VALUE = 2\n"},
+      "expectedFindings": [],
+      "killMode": "transport_interrupt"
+    }
+  ]
+}

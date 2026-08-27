@@ -106,8 +106,12 @@ These receipts are stamped `expert_ai_proxy`. They can support a provisional jud
 they never increment the human-label count or unlock formal cross-screen ranking.
 
 Human labels, unblinded queue bindings, and raw judge receipts are local `0600`/`0700` operator
-state and are never tracked. Agreement and stable observed identity are derived from those records;
-calibration still never changes routing or model defaults automatically.
+state and are never tracked. The active campaign ID is the default local generation, so stale
+labels from an earlier campaign cannot be loaded accidentally; `--generation <safe-name>` is
+available for deliberately separate repetitions. Agreement and stable observed identity are
+derived from those records. Two judge labels over the same actual model identity do not count as
+two screens. Calibration may authorize a route only after the operator separately opts into
+automatic routing; it never changes the saved model defaults.
 
 One command starts exactly one arm and stops it at the profile's registered wall budget. Provider
 credentials remain in the Studio process; the evaluator reads none. Each tier has three distinct,
@@ -126,8 +130,11 @@ identity, and a route with mixed actual identities cannot calibrate. The raw cal
 `uncalibrated`: standing is derived from constrained verdict and finding-presence agreement, never
 declared by the file. Qwen trials are explicitly exploratory while the configured Alibaba tenant
 endpoint has operator-declared lineage, so they cannot silently clear the independent promotion
-floor. At least five trials per complete pairing across distinct cases are required before Camus
-may present a task-class recommendation, and even then the user decides.
+floor. At least ten trials per complete pairing spanning every registered case, with every quality
+floor green and exact requested/observed identities, are required before opt-in automatic task-class
+routing can activate. The content-addressed `route1:` decision binds the exact campaign hash,
+unique source run IDs, current qualification fingerprints, and human-calibration evidence digest.
+Missing or drifted evidence preserves the user's saved pairing.
 
 `--summary` reads local sealed reports without launching a model. It includes only the active
 campaign hash, groups results within one judge screen, shows case coverage and quality-first

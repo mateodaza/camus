@@ -1,16 +1,17 @@
 {
   "schemaVersion": 2,
-  "id": "studio-routing-tiers-2026-08-26-v5",
+  "id": "studio-routing-tiers-2026-08-26-v6",
   "treatmentProtocol": "visible-deterministic-gate-v1",
   "standing": "exploratory_only",
-  "purpose": "Measure complete maker/reviewer pairings across representative simple, balanced, and difficult words tasks. This is internal evidence: it never removes explicit user choice, silently changes defaults, or enables automatic routing.",
+  "purpose": "Measure complete maker/reviewer pairings across representative simple, balanced, and difficult words tasks. Explicit user choice remains available; automatic routing is opt-in and can activate only from calibrated evidence whose requested and observed identities, qualification fingerprints, and exact task class still match.",
   "controls": {
     "iterationPolicy": "single_pass",
     "toolPolicy": "none",
     "publish": false,
     "ground": false,
     "minimumExplorationTrialsPerArm": 3,
-    "minimumRoutingTrialsPerArm": 5,
+    "minimumRoutingTrialsPerArm": 10,
+    "routingMode": "opt_in",
     "optimizationOrder": ["quality_floor_pass_rate", "median_duration_ms", "median_total_tokens"],
     "qualityFloorAudit": "independent_clean",
     "qualityFloor": [
@@ -19,7 +20,7 @@
       "the independent review is clean: no findings, every contract criterion met, and every claim supported or not applicable",
       "no human content answer or override was used"
     ],
-    "promotionRule": "No automatic routing or default change. A task-class recommendation requires at least five trials per complete pairing across distinct registered cases, a passing quality floor, and calibrated judge evidence; the user still chooses."
+    "promotionRule": "Automatic routing is opt-in, never a silent default change. A task-class route requires at least ten trials per complete pairing spanning every registered case, a passing quality floor on every trial, exact requested/observed maker and reviewer identities on every source run, calibrated human-grounded judge evidence, and unchanged exact qualification fingerprints. Missing, substituted, or stale evidence preserves the user's selected pairing."
   },
   "calibration": {
     "status": "human_labels_required",

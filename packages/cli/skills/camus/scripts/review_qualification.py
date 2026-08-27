@@ -16,16 +16,17 @@ import stat
 import time
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 QUALIFICATION_RE = re.compile(r"^qual1:[0-9a-f]{64}$")
+ADMISSION_RE = re.compile(r"^admit1:[0-9a-f]{64}$")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 ORG_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
 TRANSPORTS = ("loopback", "direct_https", "ssh_tunnel")
 SEP = "\x1f"
 RECORD_FIELDS = (
-    "schema_version", "qualification", "backend", "reviewer_model",
-    "training_org", "transport", "connection", "expires_at",
+    "schema_version", "qualification", "admission_id", "backend", "profile_backend", "reviewer_model",
+    "training_org", "transport", "connection", "credential_revision", "expires_at",
 )
 RECORD_KEYS = frozenset(RECORD_FIELDS + ("hmac",))
 
@@ -84,11 +85,16 @@ def credential_revision(auth, key_env, env):
     return hmac.new(machine_salt(env), message, hashlib.sha256).hexdigest()[:16]
 
 
-def _validate_identity(qualification, backend, model, training_org, transport, connection):
+def _validate_identity(qualification, admission_id, backend, profile_backend, model, training_org,
+                       transport, connection, credential):
     if not isinstance(qualification, str) or not QUALIFICATION_RE.fullmatch(qualification):
         raise ValueError("qualification must be an exact qual1: fingerprint")
+    if not isinstance(admission_id, str) or not ADMISSION_RE.fullmatch(admission_id):
+        raise ValueError("qualification record admission id is invalid")
     if backend != "http_openai_compat":
         raise ValueError("qualification record names an unsupported reviewer backend")
+    if not isinstance(profile_backend, str) or not NAME_RE.fullmatch(profile_backend):
+        raise ValueError("qualification record profile backend is invalid")
     if not isinstance(model, str) or not TOKEN_RE.fullmatch(model):
         raise ValueError("qualification record reviewer model is invalid")
     if not isinstance(training_org, str) or not ORG_RE.fullmatch(training_org):
@@ -97,6 +103,8 @@ def _validate_identity(qualification, backend, model, training_org, transport, c
         raise ValueError("qualification record transport is invalid")
     if not isinstance(connection, str) or not NAME_RE.fullmatch(connection):
         raise ValueError("qualification record connection is invalid")
+    if not isinstance(credential, str) or not re.fullmatch(r"(?:none|[0-9a-f]{16})", credential):
+        raise ValueError("qualification record credential revision is invalid")
 
 
 def _record_hmac(record, env):
@@ -104,20 +112,26 @@ def _record_hmac(record, env):
     return hmac.new(machine_salt(env), _join_fields(values), hashlib.sha256).hexdigest()
 
 
-def build_record(qualification, backend, model, training_org, transport, connection,
-                 expires_at, env):
+def build_record(qualification, admission_id, backend, profile_backend, model, training_org, transport,
+                 connection, credential, expires_at, env):
     """Build a qualification-authority record for trusted qualifier/benchmark code."""
-    _validate_identity(qualification, backend, model, training_org, transport, connection)
+    _validate_identity(
+        qualification, admission_id, backend, profile_backend, model, training_org,
+        transport, connection, credential,
+    )
     if isinstance(expires_at, bool) or not isinstance(expires_at, int) or expires_at <= 0:
         raise ValueError("qualification record expiry is invalid")
     record = {
         "schema_version": SCHEMA_VERSION,
         "qualification": qualification,
+        "admission_id": admission_id,
         "backend": backend,
+        "profile_backend": profile_backend,
         "reviewer_model": model,
         "training_org": training_org,
         "transport": transport,
         "connection": connection,
+        "credential_revision": credential,
         "expires_at": expires_at,
     }
     record["hmac"] = _record_hmac(record, env)
@@ -133,8 +147,8 @@ def record_path(qualification, env):
     )
 
 
-def accepted_training_org(qualification, backend, model, transport, connection, env,
-                          now=None):
+def accepted_training_org(qualification, admission_id, backend, profile_backend, model, transport,
+                          connection, auth, key_env, env, now=None):
     """Return record-bound training org or refuse; never accept an ambient replacement."""
     path = record_path(qualification, env)
     try:
@@ -147,16 +161,20 @@ def accepted_training_org(qualification, backend, model, transport, connection, 
     if isinstance(record.get("schema_version"), bool) or record.get("schema_version") != SCHEMA_VERSION:
         raise ValueError("accepted qualification record has an unsupported schema version")
     _validate_identity(
-        record.get("qualification"), record.get("backend"),
+        record.get("qualification"), record.get("admission_id"), record.get("backend"),
+        record.get("profile_backend"),
         record.get("reviewer_model"), record.get("training_org"),
-        record.get("transport"), record.get("connection"),
+        record.get("transport"), record.get("connection"), record.get("credential_revision"),
     )
     expected = {
         "qualification": qualification,
+        "admission_id": admission_id,
         "backend": backend,
+        "profile_backend": profile_backend,
         "reviewer_model": model,
         "transport": transport,
         "connection": connection,
+        "credential_revision": credential_revision(auth, key_env, env),
     }
     drift = [key for key, value in expected.items() if record.get(key) != value]
     if drift:

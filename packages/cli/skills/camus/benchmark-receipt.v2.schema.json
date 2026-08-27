@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://camus.sh/schemas/benchmark-receipt.v2.schema.json",
+  "title": "Camus reviewer benchmark attempt receipt v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "receiptId", "campaignId", "corpusVersion", "campaignDigest", "executionDigest", "promptEnvelopeVersion", "armId", "caseId", "caseKind", "repeat", "normalizerRan", "expectedDefects", "detectedDefects", "blockingFindingCount", "identityMatch", "killPathPassed", "killControl", "toolUsing", "toolCallCorrect", "pseudoToolCallCount", "contextSufficient", "mutationEntered", "containmentConclusive", "containmentBreach", "wallMs", "latencyClass", "usage", "decoding", "rerunOf"],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "receiptId": { "type": "string", "pattern": "^bench1:[0-9a-f]{64}$" },
+    "campaignId": { "type": "string", "minLength": 1 },
+    "corpusVersion": { "type": "string", "minLength": 1 },
+    "campaignDigest": { "type": "string", "pattern": "^campaign1:[0-9a-f]{64}$" },
+    "executionDigest": { "type": "string", "pattern": "^execution1:[0-9a-f]{64}$" },
+    "promptEnvelopeVersion": { "type": "string", "minLength": 1 },
+    "armId": { "type": "string", "minLength": 1 },
+    "caseId": { "type": "string", "minLength": 1 },
+    "caseKind": { "enum": ["defect", "clean", "kill_path"] },
+    "repeat": { "type": "integer", "minimum": 1 },
+    "normalizerRan": { "type": "boolean" },
+    "expectedDefects": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "detectedDefects": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 500 } },
+    "blockingFindingCount": { "type": "integer", "minimum": 0 },
+    "identityMatch": { "type": "boolean" },
+    "killPathPassed": { "type": ["boolean", "null"] },
+    "killControl": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "probe", "expected", "observed", "providerCallsMade"],
+          "properties": {
+            "mode": { "enum": ["abort", "malformed_output", "identity_substitution", "transport_interrupt"] },
+            "probe": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "expected": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "observed": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "providerCallsMade": { "const": 0 }
+          },
+          "oneOf": [
+            { "properties": { "mode": { "const": "abort" }, "probe": { "const": "review_watch.start+abort" }, "expected": { "const": "aborted_and_process_group_dead" } } },
+            { "properties": { "mode": { "const": "malformed_output" }, "probe": { "const": "adapter.normalize_codex" }, "expected": { "const": "malformed_output_refused_as_infrastructure" } } },
+            { "properties": { "mode": { "const": "identity_substitution" }, "probe": { "enum": ["http_openai_compat_review.response_identity_error", "review_request.consistent_value"] }, "expected": { "const": "substituted_model_identity_refused" } } },
+            { "properties": { "mode": { "const": "transport_interrupt" }, "probe": { "const": "review_watch.start+await+adapter.normalize_codex" }, "expected": { "const": "interrupted_transport_refused_without_verdict" } } }
+          ]
+        }
+      ]
+    },
+    "toolUsing": { "type": "boolean" },
+    "toolCallCorrect": { "type": ["boolean", "null"] },
+    "pseudoToolCallCount": { "type": "integer", "minimum": 0 },
+    "contextSufficient": { "type": ["boolean", "null"] },
+    "mutationEntered": { "type": "boolean" },
+    "containmentConclusive": { "type": ["boolean", "null"] },
+    "containmentBreach": { "type": ["boolean", "null"] },
+    "wallMs": { "type": "integer", "minimum": 0 },
+    "latencyClass": { "enum": ["cold", "resident", "na"] },
+    "usage": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["inputTokens", "cachedInputTokens", "outputTokens", "totalTokens", "costUsd", "costSource"],
+          "properties": {
+            "inputTokens": { "type": ["integer", "null"], "minimum": 0 },
+            "cachedInputTokens": { "type": ["integer", "null"], "minimum": 0 },
+            "outputTokens": { "type": ["integer", "null"], "minimum": 0 },
+            "totalTokens": { "type": ["integer", "null"], "minimum": 0 },
+            "costUsd": { "type": ["number", "null"], "minimum": 0 },
+            "costSource": { "enum": ["provider_receipt", "unavailable"] }
+          }
+        }
+      ]
+    },
+    "decoding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["temperature", "seed", "pinned"],
+      "properties": {
+        "temperature": { "type": ["number", "null"] },
+        "seed": { "type": ["integer", "string", "null"], "maxLength": 100 },
+        "pinned": { "type": "boolean" }
+      }
+    },
+    "rerunOf": { "type": ["string", "null"], "pattern": "^bench1:[0-9a-f]{64}$" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "caseKind": { "const": "kill_path" } } },
+      "then": { "properties": { "killPathPassed": { "type": "boolean" }, "killControl": { "type": "object" } } },
+      "else": { "properties": { "killPathPassed": { "const": null }, "killControl": { "const": null } } }
+    }
+  ]
+}

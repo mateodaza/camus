@@ -7,7 +7,7 @@ without you watching: Claude writes the code, Codex (a competing model) reviews
 every change, and your repo's own type-check and tests have the final word. Nothing in
 the loop, Claude included, can approve itself. The pairing is the point.
 
-The preferred 0.4.6 path is a native host driver: `camus start` creates a feature from
+The preferred 0.4.7 path is a native host driver: `camus start` creates a feature from
 JSON without a model turn, and `camus run` gives one kernel-owned worktree to a durable
 Claude Code background session, invokes the independent reviewer directly, and lets code
 perform every mechanical transition. The three Claude Code workflows remain available for
@@ -16,7 +16,7 @@ compatibility: `/camus-plan` turns a raw request into a quality-gated task list,
 v2; v1 remains archived at [mateodaza/nightcrawler](https://github.com/mateodaza/nightcrawler).
 Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMUS-SPEC.md).
 
-> **0.4.6 is released.** The Hybrid Kernel can now evaluate a Studio-configured Grok, Qwen,
+> **0.4.7 is released.** The Hybrid Kernel can evaluate a Studio-configured Grok, Qwen,
 > or other OpenAI-compatible reviewer on the exact code candidate before Codex performs the final
 > gate. External verdict, identity, latency, available usage, and agreement become local A/B
 > evidence under a signed `trial1:` identity; they cannot authorize a commit. Claude background
@@ -25,12 +25,13 @@ Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMU
 > A/B assignment of model pairings. Arms must clear deterministic verification plus independent
 > clean review before latency or token pressure can influence routing. This release adds the
 > versioned reviewer contract and exact-match dispatcher needed to evaluate more reviewer types.
-> This release adds the external-model shadow route on top of the controlled Studio connection
-> workflow and provider-free benchmark gate;
+> This release adds the formal, resumable Slice G campaign, human-owned exact admission registry,
+> and evidence-gated opt-in task-class router on top of that shadow route. The registry ships empty
+> and no route is active;
 > the legacy workflows remain available for compatibility.
-> [Read the release evidence.](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.6.md)
+> [Read the release evidence.](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.7.md)
 
-> **Reviewer boundary in 0.4.6:** production routing remains exactly Claude → Codex.
+> **Reviewer boundary in 0.4.7:** production routing remains exactly Claude → Codex.
 > `qwen_code`, `grok_cli`, and `http_openai_compat` are recognized candidates but fail closed as
 > `reviewer_benchmark_disabled` until Slice G evidence earns admission. The HTTP candidate is
 > available to the benchmark harness with schema-constrained streaming, bounded custody,
@@ -38,14 +39,14 @@ Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMU
 > implemented candidate is not a supported reviewer yet.
 > See [`docs/SLICE-F-STATUS.md`](https://github.com/mateodaza/camus/blob/main/docs/SLICE-F-STATUS.md).
 
-> **External-model trials in 0.4.6:** `camus models` lists local reviewer profiles without exposing
+> **External-model trials in 0.4.7:** `camus models` lists local reviewer profiles without exposing
 > endpoints or secret values. `camus run --shadow-reviewer-backend <profile>
 > --shadow-reviewer-model <id>` runs the selected model before Codex on each candidate. Trial
 > infrastructure failure is visible and has no provider fallback; Codex closure and deterministic
 > verification remain mandatory. Experiment arms may pin the three `shadowReviewer*` fields, but
 > those experiments are `explore`-only and never promote a reviewer.
 
-> **Responsible control plane in 0.4.6:** every governed review now records separate input,
+> **Responsible control plane in 0.4.7:** every governed review records separate input,
 > action-authorization, and output-screen evidence against a checked-in versioned register.
 > Missing or version-skewed evidence fails closed; provider refusal, Camus policy refusal,
 > reviewer rejection, infrastructure failure, and human escalation stay distinct. Control
@@ -394,7 +395,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.4.6
+npm i -g camus-cli@0.4.7
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)
@@ -434,8 +435,40 @@ camus run <featId> \
 
 The profile comes from `~/.camus/studio/models.json`; only the credential environment-variable
 name lives there. Direct HTTPS, literal loopback, and fixed managed-SSH connections are supported.
-The resulting `trial1:` receipt is non-gating by construction and the production dispatcher still
-returns `reviewer_benchmark_disabled` for `http_openai_compat`.
+The resulting `trial1:` receipt is non-gating by construction. The released 0.4.7 dispatcher
+requires one exact, unexpired checked-in human admission for `http_openai_compat` and ships with an
+empty registry, so every external reviewer remains benchmark-disabled outside explicit trials.
+
+After an external reviewer earns that admission, compatibility-workflow callers must pass its
+exact non-secret route snapshot: `reviewerBackend: "http_openai_compat"`, `reviewerModel`,
+`reviewerProfileBackend`, `reviewerTrainingOrg`, `reviewerTransport`, `reviewerConnection`, and the
+exact `reviewerQualification` fingerprint. `camus-feat` persists and forwards all seven fields.
+The dispatcher independently adds the matching `admit1:` authority; a verdict without it fails
+closed. Base URLs, SSH details, and credential values remain in the private host profile/env and
+must never be copied into workflow args.
+
+The preferred native driver uses the same authority. After the reviewed registry entry ships,
+activate its current private credential revision without making a provider call, then pass only
+the entry's exact public route values:
+
+```bash
+camus benchmark admission-activate --admission-id admit1:REPLACE_WITH_64_HEX
+
+camus run <featId> \
+  --reviewer-backend http_openai_compat \
+  --reviewer-profile-backend xai \
+  --reviewer-model grok-4.6 \
+  --reviewer-effort medium \
+  --reviewer-training-org xai \
+  --reviewer-transport direct_https \
+  --reviewer-connection xai-primary \
+  --reviewer-qualification qual1:REPLACE_WITH_64_HEX
+```
+
+The model, effort, organization, transport, connection, and qualification values must come from
+the checked-in admission; they are not free-form overrides. The native kernel resolves the
+endpoint, credential variable, and optional SSH tunnel from the matching private Studio profile,
+then requires the executor's receipt to return the same `admit1:` authority before sealing.
 
 An A/B config names a task domain and complete pairings; requested model and effort values are
 recorded, never silently substituted:
@@ -445,7 +478,7 @@ recorded, never silently substituted:
   "id": "coding-feature-v1",
   "taskClass": "bounded_feature",
   "mode": "route",
-  "minimumTrials": 5,
+  "minimumTrials": 10,
   "qualityFloor": 0.8,
   "arms": [
     {
@@ -454,10 +487,7 @@ recorded, never silently substituted:
       "makerEffort": "high",
       "reviewerBackend": "codex",
       "reviewerModel": "gpt-5.6-sol",
-      "reviewerEffort": "high",
-      "shadowReviewerBackend": "xai",
-      "shadowReviewerModel": "grok-4.6",
-      "shadowReviewerEffort": "medium"
+      "reviewerEffort": "high"
     },
     {
       "id": "sonnet-sol",
@@ -465,10 +495,7 @@ recorded, never silently substituted:
       "makerEffort": "medium",
       "reviewerBackend": "codex",
       "reviewerModel": "gpt-5.6-sol",
-      "reviewerEffort": "high",
-      "shadowReviewerBackend": "dashscope_qwen",
-      "shadowReviewerModel": "qwen3.8-2.4t-a95b",
-      "shadowReviewerEffort": "medium"
+      "reviewerEffort": "high"
     }
   ]
 }
@@ -478,8 +505,13 @@ Use `camus run <featId> --experiment experiment.json`. Shadow experiments must u
 never name a routing leader; they report comparison coverage, agreement, latency, and usage for the
 formal admission campaign. For ordinary admitted pairings, the safer default mode is `explore`, which
 keeps assignments balanced after the minimum instead of changing routing. `route` is explicit and
-requires at least five trials per arm before quality-gated exploitation. Even then, promotion is
-local evidence for that declared task class, never a universal model leaderboard.
+requires at least ten trials per arm, every routing trial green, and exact requested and observed
+maker/reviewer identities before latency or token pressure may choose an arm. Studio additionally binds
+the exact requested and observed identities, current qualification fingerprints, source-run ids,
+and human-calibration digest into each `route1:` decision. Route mode keeps the admitted Codex
+reviewer gate unless an external reviewer has an exact checked-in Slice G admission; with the
+shipped empty registry, external reviewers remain shadow evidence. Even then, promotion is local evidence for that
+declared task class, never a universal model leaderboard.
 
 Read the evidence with the same frozen config:
 
@@ -501,6 +533,8 @@ one exact generation and task class. Interpret it as follows:
 - `coverage_incomplete`: the config matches, but at least one configured arm is below
   `minimumTrials`; zero-trial arms are included and `routingEligible` is false.
 - `no_arm_clears_quality_floor`: coverage is complete, but quality blocks promotion.
+- `routing_evidence_not_eligible`: coverage exists, but at least one otherwise eligible arm has a
+  failed quality-floor trial or missing/drifted observed identity; no route is named.
 - `exploratory_leader`: the configured quality-first leader is visible for learning, while
   `routingConfigured` and `routingEligible` remain false.
 - `routing_leader`: route mode, complete coverage, and the quality floor all hold;

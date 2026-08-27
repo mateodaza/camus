@@ -28,7 +28,10 @@ function seat(value, field) {
 export function validateModelEvalCampaign(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('model evaluation campaign must be an object');
   if (value.schemaVersion !== 2) throw new Error('model evaluation campaign schemaVersion must be 2');
-  nonempty(value.id, 'id');
+  const campaignId = nonempty(value.id, 'id');
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(campaignId)) {
+    throw new Error('id must use 1-64 safe name characters');
+  }
   if (value.treatmentProtocol !== 'visible-deterministic-gate-v1') {
     throw new Error('treatmentProtocol must bind the visible deterministic gate prompt contract');
   }
@@ -42,9 +45,10 @@ export function validateModelEvalCampaign(value) {
   if (!Number.isInteger(controls.minimumExplorationTrialsPerArm) || controls.minimumExplorationTrialsPerArm < 1) {
     throw new Error('minimumExplorationTrialsPerArm must be a positive integer');
   }
-  if (!Number.isInteger(controls.minimumRoutingTrialsPerArm) || controls.minimumRoutingTrialsPerArm < 5) {
-    throw new Error('minimumRoutingTrialsPerArm must be at least 5');
+  if (!Number.isInteger(controls.minimumRoutingTrialsPerArm) || controls.minimumRoutingTrialsPerArm < 10) {
+    throw new Error('minimumRoutingTrialsPerArm must be at least 10');
   }
+  if (controls.routingMode !== 'opt_in') throw new Error('controls.routingMode must be opt_in');
   if (!Array.isArray(controls.optimizationOrder) || controls.optimizationOrder[0] !== 'quality_floor_pass_rate') {
     throw new Error('quality_floor_pass_rate must be the first optimization criterion');
   }
