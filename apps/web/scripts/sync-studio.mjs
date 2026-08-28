@@ -4,15 +4,13 @@
 // about trailing slashes (Vercel canonicalizes /studio/ -> /studio), and
 // absolute paths are correct under both directions.
 import { rmSync, cpSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { rewriteStudioAssets, isStudioPublicAsset } from './studio-assets.mjs';
 
 rmSync('public/studio', { recursive: true, force: true });
-cpSync('../loop-studio/public', 'public/studio', { recursive: true });
+cpSync('../loop-studio/public', 'public/studio', { recursive: true, filter: isStudioPublicAsset });
 
 const page = 'public/studio/index.html';
-const html = readFileSync(page, 'utf8')
-  .replace('href="./fonts.css"', 'href="/studio/fonts.css"')
-  .replace('href="./style.css"', 'href="/studio/style.css"')
-  .replace('src="./app.js"', 'src="/studio/app.js"');
+const html = rewriteStudioAssets(readFileSync(page, 'utf8'));
 if (!html.includes('/studio/style.css') || !html.includes('/studio/fonts.css')) {
   throw new Error('sync-studio: asset rewrite did not match — check index.html');
 }

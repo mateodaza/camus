@@ -3,7 +3,8 @@
 Camus adds independent review, deterministic verification, bounded recovery, and an
 honest receipt around AI-made work. Choose the smallest surface that fits the job:
 
-- **Code:** use the public CLI's native driver; Claude Code workflows remain compatible.
+- **Code, choose both models:** use experimental `camus build` or Studio Any-model Build.
+- **Code, native proof gate:** use `camus start` + `camus run`; legacy workflows remain compatible.
 - **Written or research work:** run Loop Studio locally in the browser.
 - **Agent-supervised work:** let another agent operate Camus, but not implement beside it.
 
@@ -11,6 +12,19 @@ Camus is public-alpha software. Use it only on repositories and test commands yo
 never as root. Camus does not push code or open a pull request for you.
 
 ## Path A: code
+
+### Independent maker and reviewer (experimental, 0.4.8)
+
+Install `camus-cli@0.4.8`. `camus models` lists the same maker and reviewer catalog
+as Studio; configure and qualify external roles in Studio Settings first. Select
+both independently with `camus build --maker <backend>:<model> --reviewer <backend>:<model>`
+and supply `--task`, `--contract`, and optionally your trusted `--verify` command.
+In the browser choose **Build → Any-model candidate**. Both dropdowns apply.
+Reversed and same-model choices are allowed, but this path always requires human
+acceptance and never auto-lands. Missing verification means untested; it has no
+automatic resume. See the [coding-seat guide](docs/INDEPENDENT-CODE-SEATS.md).
+
+### Native proof gate
 
 The direct code gate currently uses Claude Code as the maker and Codex CLI as the
 independent reviewer. You can configure the Claude model, Codex model, review effort,
@@ -22,7 +36,7 @@ standing.
 Requirements: Node 18+, Claude Code signed in, Codex CLI signed in, Python 3, and Git.
 
 ```bash
-npm install -g camus-cli@0.4.7
+npm install -g camus-cli@0.4.8
 codex login
 camus install
 camus check
@@ -115,7 +129,7 @@ To compare a Studio-configured Grok, Qwen, or another OpenAI-compatible reviewer
 candidate without changing the trusted gate:
 
 ```bash
-camus models
+camus models --reviewers-only
 camus run <featId> \
   --shadow-reviewer-backend <profile> \
   --shadow-reviewer-model <model-id>
@@ -176,9 +190,9 @@ Open <http://localhost:1913>, then:
 4. Start the run and intervene only when Studio presents a real question or material fault.
 5. Finish on the trust card and evidence pack, not on a model’s prose claim.
 
-Studio’s **Build** lane uses the direct code gate, so it retains the Claude-maker plus
-Codex-reviewer role assignment. An eligible parked candidate can resume through
-verification only; Plan, Implement, and Review do not rerun.
+Studio's **Any-model candidate** mode selects both coding roles independently.
+**Legacy proof gate** retains Claude maker plus Codex reviewer and can resume an
+eligible parked candidate through verification only, without repeating earlier phases.
 
 ## Path C: another agent supervises Camus
 
@@ -235,7 +249,7 @@ camus eval
 
 ## Handoff
 
-For code, require:
+For native proof-gated code, require:
 
 - the intended terminal state;
 - a clean isolated worktree and named commit;
@@ -244,6 +258,10 @@ For code, require:
 
 Then the human or an authorized agent handles GitHub, release, or deployment. Camus keeps
 those external mutations outside the gate.
+
+For Any-model Build, hand back the uncommitted candidate path, advisory review,
+verification result (or explicit absence), and receipt. A clean advisory review
+is still a human checkpoint, not `done` or an admitted gate.
 
 For a concrete .NET example, see
 [`docs/CARLOS-CAMUS-QUICKSTART.md`](docs/CARLOS-CAMUS-QUICKSTART.md). For every option and

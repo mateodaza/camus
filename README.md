@@ -2,14 +2,14 @@
 
 **Makes it work. Knows when to stop.**
 
-Source preview (not yet released): [`camus build`](docs/INDEPENDENT-CODE-SEATS.md)
+New in 0.4.8: [`camus build`](docs/INDEPENDENT-CODE-SEATS.md)
 and Studio's **Any-model candidate** let you select maker and reviewer
 independently, including reversed and configured open-model pairings. Results
 are experimental, non-gating candidates requiring human acceptance. The native
 Claude/Codex proof gate described below remains unchanged.
 
-No agent grades its own work. Camus runs a coding task from plan to verified commit
-without you watching: Claude writes the code, Codex (a competing model) reviews
+The native proof gate runs a coding task from plan to verified commit:
+Claude writes the code, Codex (a competing model) reviews
 every change, and your repo's own type-check and tests have the final word. Nothing in
 the loop, Claude included, can approve itself. The pairing is the point.
 
@@ -36,11 +36,12 @@ plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep �
 
 ## Try it
 
-You need [Claude Code](https://code.claude.com) and the [Codex CLI](https://github.com/openai/codex)
-(`codex login`) — the cross-vendor pairing is the product, so both halves are required.
+The native proof gate needs [Claude Code](https://code.claude.com) and the
+[Codex CLI](https://github.com/openai/codex) (`codex login`). Experimental
+`camus build` needs only the backends you choose, Node 18.17+, and Git.
 
 ```bash
-npm i -g camus-cli@0.4.7
+npm i -g camus-cli@0.4.8
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 ```
@@ -64,7 +65,26 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.4.7
+### Public alpha: 0.4.8
+
+Choose both coding roles independently in the CLI or Studio: Luna → Claude,
+Claude → Qwen, Grok → Qwen, or any other available, role-qualified pairing.
+`camus build --maker <backend>:<model> --reviewer <backend>:<model>` and Studio
+**Build → Any-model candidate** share their catalog, adapters and candidate engine.
+Same-model pairings are allowed but never called independent. These candidates
+always require human acceptance; the legacy native gate is unchanged.
+
+Studio's new blinded calibration workspace replaces repeated terminal labeling
+with private autosaved drafts, explicit immutable labels, separate human/proxy
+authority, safe navigation and measured timing. It does not run judges or grant
+admission. Native recovery also preserves operator-assisted provenance, deduplicates
+Claude usage and allows an explicitly recorded one-round advisory skip.
+
+This release has hermetic and synthetic browser coverage, not a live-provider
+coding-combination campaign. No new reviewer admission or automatic route is claimed.
+See the [0.4.8 release notes](docs/RELEASE-0.4.8.md).
+
+### Existing admission infrastructure
 
 Camus 0.4.7 ships the experimental infrastructure needed to decide whether an external reviewer
 has earned production trust—without granting that trust. A public 25-case corpus, resumable
@@ -188,7 +208,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.4.7
+npm i -g camus-cli@0.4.8
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```

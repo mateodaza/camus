@@ -2,7 +2,7 @@
 
 **A coding loop that proves every change.**
 
-**Unreleased source preview:** `camus build` uses the same independent maker and
+**New in 0.4.8:** `camus build` uses the same independent maker and
 reviewer selection as Studio's Any-model Build. Run `camus build --help` and
 `camus models` to see the command and this machine's catalog. Reversed, same-model,
 and qualified OpenAI-compatible combinations produce an isolated candidate with
@@ -15,7 +15,7 @@ without you watching: Claude writes the code, Codex (a competing model) reviews
 every change, and your repo's own type-check and tests have the final word. Nothing in
 the loop, Claude included, can approve itself. The pairing is the point.
 
-The preferred 0.4.7 path is a native host driver: `camus start` creates a feature from
+For native proof-gated work, `camus start` creates a feature from
 JSON without a model turn, and `camus run` gives one kernel-owned worktree to a durable
 Claude Code background session, invokes the independent reviewer directly, and lets code
 perform every mechanical transition. The three Claude Code workflows remain available for
@@ -24,7 +24,11 @@ compatibility: `/camus-plan` turns a raw request into a quality-gated task list,
 v2; v1 remains archived at [mateodaza/nightcrawler](https://github.com/mateodaza/nightcrawler).
 Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMUS-SPEC.md).
 
-> **0.4.7 is released.** The Hybrid Kernel can evaluate a Studio-configured Grok, Qwen,
+> **0.4.8:** independent coding seats and the blinded calibration workspace are now
+> available. Reversed and same-model code pairings are experimental advisory candidates,
+> not automatic gates. See the [0.4.8 release notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.8.md).
+>
+> **Existing native infrastructure (introduced in 0.4.7):** The Hybrid Kernel can evaluate a Studio-configured Grok, Qwen,
 > or other OpenAI-compatible reviewer on the exact code candidate before Codex performs the final
 > gate. External verdict, identity, latency, available usage, and agreement become local A/B
 > evidence under a signed `trial1:` identity; they cannot authorize a commit. Claude background
@@ -69,7 +73,12 @@ plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep �
        oneshot posture: one review, one repair, no re-review — verify still decides
 ```
 
-## Requirements
+## Native proof-gate requirements
+
+Experimental `camus build` instead requires Node 18.17+, Git and the selected
+backends' authentication. It does not require Claude, Codex or Python when neither
+selected seat uses those CLIs. Configure and qualify external roles in Studio first.
+The requirements below apply to `camus run` and the compatibility workflows.
 
 - **Claude Code** v2.1.154+ with dynamic workflows, on a subscription plan.
   Camus runs interactively, so usage counts against your plan limits rather than
@@ -403,7 +412,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.4.7
+npm i -g camus-cli@0.4.8
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)
@@ -434,7 +443,7 @@ camus eval                     # local quality / speed / usage evidence
 List configured external reviewer profiles and run one safely behind Codex:
 
 ```bash
-camus models
+camus models --reviewers-only
 camus run <featId> \
   --shadow-reviewer-backend xai \
   --shadow-reviewer-model grok-4.6 \

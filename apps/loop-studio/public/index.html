@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Camus Loop Studio</title>
-  <meta name="description" content="Watch the Camus loop work: Claude drafts, Codex reviews adversarially, deterministic checks decide. Research and analysis on any topic, plus a Build lane that points the camus gate at code. Orchestration and receipts stay on your machine." />
+  <meta name="description" content="Choose maker and reviewer for research and experimental coding candidates, or use the native Claude/Codex proof gate. Verification and honest human handoffs stay explicit. Orchestration and receipts stay on your machine." />
   <meta property="og:title" content="Camus Loop Studio" />
   <meta property="og:description" content="Makes it work. Knows when to stop. The Camus loop on words and code, watchable in a browser. Orchestration and receipts stay on your machine." />
   <meta property="og:url" content="https://www.camus.sh/studio" />
@@ -29,7 +29,7 @@
         <span id="pill-claude-auth" class="pill hidden">claude: checking…</span>
         <span id="pill-codex-auth" class="pill hidden">codex: checking…</span>
       </div>
-      <p class="scope">The camus loop, watchable: research and analysis on any topic, and a Build lane that runs the gate on your own code. Marketing is the tuned vertical, grounded in Myosin's Hivemind.</p>
+      <p class="scope">The camus loop, watchable: research and analysis, independently selected maker/reviewer coding candidates, or the native proof gate on your own code. Marketing is the tuned vertical, grounded in Myosin's Hivemind.</p>
       <div class="tools">
         <button id="open-setup" class="ghost">setup</button>
         <button id="open-settings" class="ghost">settings</button>
@@ -51,13 +51,13 @@
         <!-- Model choices are PICKERS over the machine's real options (the
              server's catalog), never free text: a model nobody can run is not
              a decision anyone made. Options are filled when the panel opens. -->
-        <label>maker (words lanes; Build pins Claude)
+        <label>maker (words + Any-model Build; legacy gate uses Claude)
           <select id="set-maker"></select>
         </label>
-        <label>reviewer (words lanes; Build pins Codex)
+        <label>reviewer (words + Any-model Build; legacy gate uses Codex)
           <select id="set-reviewer"></select>
         </label>
-        <label>reviewer effort (words lanes; Build pins this every round)
+        <label>reviewer effort (supported seats; legacy gate pins this every round)
           <select id="set-effort">
             <option>low</option><option>medium</option><option>high</option><option>xhigh</option>
           </select>

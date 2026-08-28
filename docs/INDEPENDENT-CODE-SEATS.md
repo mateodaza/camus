@@ -1,4 +1,4 @@
-# Independent coding seats — experimental, unreleased
+# Independent coding seats — experimental in 0.4.8
 
 `camus build` and Studio's **Build → Any-model candidate** use the same model
 catalog, connection definitions, adapters, and host-mediated coding engine.
@@ -8,10 +8,11 @@ Qwen, or Kimi. HTTPS, loopback, and existing managed SSH connections are reused.
 Model availability is machine/account-specific; Camus does not invent IDs or
 silently substitute a different provider.
 
-This is new source work, not part of published 0.4.7. From a checkout containing
-it, replace `camus` below with `node packages/cli/bin/camus.js`. After its release,
-the npm package includes the shared runtime; a running Studio server or checkout
-is not needed to execute the CLI command.
+Install `camus-cli@0.4.8` or newer. The npm package includes the shared runtime;
+a running Studio server or checkout is not needed to execute the CLI command.
+Studio itself still runs from a Camus checkout: update that checkout and restart
+`apps/loop-studio/server.mjs` to use the matching UI and server. For source testing,
+replace `camus` below with `node packages/cli/bin/camus.js`.
 
 ## Choose and run
 

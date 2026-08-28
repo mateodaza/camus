@@ -324,7 +324,7 @@ receipt        0b8960d2e40d`}
             <Reveal>
               <div className="term">
                 <pre>
-{`$ npm i -g camus-cli@0.4.7
+{`$ npm i -g camus-cli@0.4.8
 $ camus install
 $ camus check
 

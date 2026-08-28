@@ -1,30 +1,35 @@
 # Camus quickstart for CodenameWukong
 
-## Next release: choose both coding models
+## 0.4.8: choose both coding models
 
-The new, **unreleased** `camus build` path lets you choose both coding seats,
-including Codex as maker and Claude as reviewer, or qualified Grok/Qwen/other
-OpenAI-compatible combinations. Studio **Build → Any-model candidate** uses the
-same engine. See [Independent coding seats](INDEPENDENT-CODE-SEATS.md) for the
-commands and limits. This is experimental advisory review with explicit human
-acceptance, not external gate admission. Published **0.4.7 does not contain it**;
-the instructions below describe that released version's native gate.
+**Both maker and reviewer are selectable independently** in `camus build` and
+Studio **Build → Any-model candidate**. Choose from the same configured, role-qualified
+catalog: Codex as maker and Claude as reviewer, qualified Grok/Qwen/other compatible
+models in either role, or even the same model in both roles. Same-model/origin feedback
+is never presented as independent review.
 
-Camus 0.4.7 uses a durable native driver for code work and supports configurable maker and
-reviewer seats in Loop Studio for written and research work, including reversed Claude/Codex
-pairings and qualified OpenAI-compatible backends over HTTPS, loopback, or managed SSH. The
-direct code workflow—and Studio's Build lane—keep the trusted gate's Claude Code maker plus Codex
-CLI reviewer pairing. The native driver can now run Grok, Qwen, and generic HTTP reviewers in
-explicit shadow mode on the exact code candidate before Codex closes it. They produce trial/A-B
-evidence, not production authority. Another agent may supervise the code workflow, but should
-not implement alongside Camus.
+This new route produces an isolated candidate with experimental advisory review and
+explicit human acceptance. It never auto-commits or merges. The legacy `camus run`
+and Studio **Legacy proof gate** still use Claude Code maker plus Codex reviewer;
+external reviewers there remain shadows unless they earn separate gate admission.
+See [Independent coding seats](INDEPENDENT-CODE-SEATS.md) for exact limits.
 
 ## 1. Install once
 
-Requirements: Node 18+, Claude Code signed in, Codex CLI signed in, and .NET 10.
+Requirements for Any-model Build: Node 18.17+, Git, and credentials for your chosen
+backends. Sign in to Claude Code/Codex only if you select those seats. The native
+proof gate also requires both CLIs and Python 3. CodenameWukong verification needs
+its .NET 10 toolchain; automatic any-model verification currently requires POSIX.
 
 ```bash
-npm install -g camus-cli@0.4.7
+npm install -g camus-cli@0.4.8
+camus build --help
+camus models
+```
+
+For the native proof gate, additionally:
+
+```bash
 codex login
 camus install
 camus check
@@ -39,8 +44,8 @@ camus auto-setup
 
 ### Configurable seats in Loop Studio
 
-Loop Studio lets you choose the maker and reviewer independently for written and research
-work. It supports Claude and Codex in either seat, plus explicitly declared
+Loop Studio lets you choose the maker and reviewer independently for written/research
+work and Any-model Build. It supports Claude and Codex in either seat, plus explicitly declared
 OpenAI-compatible backends. The receipt records the providers and models that actually ran;
 a same-vendor pairing remains usable but is labeled advisory rather than independent.
 
@@ -55,11 +60,11 @@ Open <http://localhost:1913> and use **Settings** to select both seats, their mo
 reviewer effort, and the round cap. A fresh checkout uses pragmatic public defaults
 (Sonnet maker, `gpt-5.4-mini` reviewer at low effort, two rounds); Settings saves Carlos's
 standing choices under `~/.camus/studio/models.json` and does not rewrite the tracked
-defaults. Studio's **Build** lane still uses the direct trusted code gate—Claude Code makes
-the change and Codex CLI reviews it—although their models and reviewer effort are
-configurable. Reversing the provider roles and independently gating with a qualified
-Grok/Qwen/open-weight seat still apply to Studio's written and research lanes. Build in 0.4.7 may
-evaluate one of those seats as a shadow, but Codex remains its gate. A declared connection grants no
+defaults. Choose **Build → Any-model candidate** for independent role selection,
+or **Legacy proof gate** for Claude maker/Codex reviewer with native recovery.
+Update an existing Studio checkout with `git pull --ff-only` from its clean `main`,
+then restart its server: upgrading npm alone does not update that separate checkout.
+A declared connection grants no
 trust: Carlos must explicitly qualify the exact model, role, endpoint, credential reference,
 transport, and reported identity before Studio enables that seat. Tunnel death fails closed and
 never falls back to direct traffic.
@@ -95,7 +100,31 @@ claude --permission-mode auto
 
 ## 3. Choose the smallest workflow
 
-The preferred 0.4.7 path is model-free initialization followed by the durable native driver.
+### Any-model candidate: select both roles
+
+Use exact IDs offered by `camus models`. For example, if both are available:
+
+```bash
+camus build --repo . \
+  --task 'Implement the bounded game feature from the agreed issue.' \
+  --contract 'The named gameplay tests pass and existing movement behavior is unchanged.' \
+  --maker codex:gpt-5.6-luna --maker-effort low \
+  --reviewer claude:sonnet \
+  --verify "$CAMUS_VERIFY_CMD"
+```
+
+Change **either** `--maker` or `--reviewer` to another offered `backend:model`.
+For long contracts use `--task-file` and `--contract-file`. Studio exposes the same
+choices in its two launch dropdowns. `--verify` executes your trusted command locally;
+without it the result is untested. Windows users must omit it and verify manually.
+Exit `2` means human acceptance is required, not CI success. Inspect the preserved
+worktree and receipt; there is no automatic landing or resume in this experimental path.
+Live coding reliability across these provider combinations has not yet been established.
+
+### Native proof gate: durable automatic workflow
+
+For the existing Claude-maker/Codex-reviewer workflow, use model-free initialization
+followed by the durable native driver.
 Write the real feature contract to `feature.json`:
 
 ```json
@@ -119,13 +148,13 @@ camus watch                # optional live board from another terminal
 camus eval                 # local quality, speed, and observed-usage evidence
 ```
 
-### Test Grok, Qwen, or another configured model on the real feature
+### Optional native shadow: test another reviewer behind Codex
 
 Configure the endpoint in Studio Settings first; credentials stay in their named environment
 variables. Then verify what this shell can use:
 
 ```bash
-camus models
+camus models --reviewers-only
 ```
 
 Choose any listed profile/model for one run:
@@ -145,7 +174,7 @@ still decide whether it ships.
 
 To distribute real tasks across all four currently configured models, copy
 [`CARLOS-OPEN-MODEL-EXPERIMENT.example.json`](CARLOS-OPEN-MODEL-EXPERIMENT.example.json), update
-profile/model ids to match `camus models`, and run:
+profile/model ids to match `camus models --reviewers-only`, and run:
 
 ```bash
 camus run <featId> --experiment /path/to/carlos-open-model-experiment.json
@@ -181,9 +210,9 @@ The operating sequence is:
 1. **Ground in the source of truth.** Read the live repository, pinned spec or issue, and
    current baseline. Define required behavior, deterministic tests, exclusions, and the
    handoff condition.
-2. **Choose the route.** Prefer `camus start` + `camus run` for code. Use the legacy workflows
-   only when an interactive Claude Code conversation adds value, or Studio when visible controls,
-   configurable words seats, stop/resume, and receipt inspection are useful.
+2. **Choose the route.** Use `camus build` or Studio Any-model Build when independent role
+   selection is required; its handoff is an advisory candidate, not a landed commit. Use
+   `camus start` + `camus run` for the native proof gate and durable automatic recovery.
 3. **Start Camus, then stay outside the implementation.** Camus owns planning,
    implementation, review rounds, fixes, worktrees, verification, and receipts. The outer
    agent must not quietly implement missing work beside it.
@@ -227,18 +256,18 @@ camus retro
   inspect its findings and claimed resolutions.
 - `needs_human` / `needs_decision`: Camus needs an owner decision, not more autonomous
   churn.
-- `infra_error`: repair the environment and resume with the same run; do not finish the
-  implementation manually.
+- `infra_error`: the run is not clean. Native runs can use their bound recovery path;
+  Any-model Build preserves the candidate for inspection but has no automatic resume.
 - `verify_failed`: the candidate is not shippable.
 
-In 0.4.7, terminals reached after an accepted review receipt report that receipt's final reviewer
+Native terminals reached after an accepted review receipt report that receipt's final reviewer
 backend, model (or explicit `not_recorded`), effort, and round. Preserve those fields at
 handoff; never substitute the maker model when a reviewer model was not recorded.
 
 Camus never pushes or opens a PR. Carlos or his agent reviews the resulting commit and
 handles GitHub.
 
-## Current CodenameWukong state
+## Prior completed dogfood (August 7, 2026)
 
 [CodenameWukong PR #2](https://github.com/CarlosQ96/CodenameWukong/pull/2) merged on
 August 7, 2026 (merge commit `7842a6b`). It carries the complete WP1–WP10 Enemies output

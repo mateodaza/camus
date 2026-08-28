@@ -8,7 +8,7 @@
     "start": "next start",
     "sync-studio": "node scripts/sync-studio.mjs",
     "predev": "npm run sync-studio",
-    "prebuild": "npm run sync-studio"
+    "prebuild": "node scripts/studio-assets.test.mjs && npm run sync-studio"
   },
   "dependencies": {
     "next": "^15.3.0",

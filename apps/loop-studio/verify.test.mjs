@@ -380,17 +380,18 @@ Community-led growth compounds where paid cannot. Retention differs by cohort or
   const { readFileSync } = await import('node:fs');
   const html = readFileSync(new URL('./public/index.html', import.meta.url), 'utf8');
   assert.ok(
-    html.includes('reviewer effort (words lanes; Build pins this every round)'),
-    'the reviewer-effort Settings label states BOTH its words-lane scope and that Build pins the effort every round',
+    html.includes('reviewer effort (supported seats; legacy gate pins this every round)'),
+    'effort applies to supported seats and remains pinned every round in the legacy gate',
   );
   assert.equal(
     html.includes('reviewer effort (words lanes)'), false,
     'the bare "(words lanes)" scope — which implied Build ignores effort — must not return',
   );
   assert.ok(
-    html.includes('maker (words lanes; Build pins Claude)') && html.includes('reviewer (words lanes; Build pins Codex)'),
-    'the maker and reviewer Settings labels likewise name their Build-pinning behavior, so no scope label understates Build',
+    html.includes('maker (words + Any-model Build; legacy gate uses Claude)') && html.includes('reviewer (words + Any-model Build; legacy gate uses Codex)'),
+    'both roles apply to Any-model Build; only the legacy gate has fixed provider roles',
   );
+  assert.ok(!html.includes('Build pins Claude') && !html.includes('Build pins Codex'), 'Build must not appear to have fixed roles across both execution modes');
 }
 
 // --- unit: Build gate phase strip (pure policy) -----------------------------
