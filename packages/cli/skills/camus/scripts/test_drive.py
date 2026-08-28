@@ -160,6 +160,63 @@ def test_shadow_custody_refuses_missing_or_foreign_worktree_before_provider_call
         assert log.records() == []
 
 
+def test_explicit_shadow_skip_is_durable_single_round_and_never_skips_codex():
+    with tempfile.TemporaryDirectory() as root:
+        log = D.EventLog("feat-a", base=root)
+        candidate = "candidate1:" + "a" * 64
+        node = {"taskId": "task-a", "worktree": root,
+                "nativeControllerAuthorization": {"action": "fix_recheck", "reviewRound": 2,
+                                                  "shadowSkipReason": "bounded correctness repair"},
+                "directReview": {"candidateFingerprint": candidate}}
+        run = {"state": {"kernel": {"traceId": "trace:a"}}, "nodes": [node]}
+        pairing = {"reviewerBackend": "codex", "shadowReviewerBackend": "xai",
+                   "shadowReviewerModel": "grok-4.6", "shadowReviewerEffort": "medium"}
+        gate_result = {"clean": False, "blocking": [{"priority": 1, "title": "still broken"}]}
+        with mock.patch.object(K, "_validated_run", return_value=run), \
+                mock.patch.object(K, "_validated_worktree", return_value=(root, "head")), \
+                mock.patch.object(K, "_candidate_fingerprint", return_value=candidate), \
+                mock.patch.object(K, "review_task", return_value=gate_result) as gate, \
+                mock.patch.object(D.model_trials, "run_review", return_value={"ran": True, "clean": True}) as provider:
+            for _ in range(2):
+                result = D._review_with_shadow(log, run, node, pairing, root, "task", 3, "feat-a", root)
+                assert result == gate_result
+            provider.assert_not_called()
+            assert gate.call_count == 2
+            skipped = [row for row in log.records() if row["type"] == "shadow.skipped"]
+            assert len(skipped) == 1 and skipped[0]["data"]["ran"] is False
+            comparison = log.latest("shadow.compared", "task-a:shadow-comparison:3:" + candidate)["data"]
+            assert comparison["shadowSkipped"] is True
+            assert comparison["verdictAgreement"] is None and comparison["shadowComparable"] is False
+            assert not any(row["type"] == "shadow.reviewed" for row in log.records())
+            # A later round is not covered by this one-round authorization.
+            D._run_shadow_review(log, run, node, pairing, root, "task", 4)
+            assert provider.call_count == 1
+            # Existing actual evidence wins even if a skip authorization matches.
+            node["nativeControllerAuthorization"]["reviewRound"] = 3
+            previous = D._run_shadow_review(log, run, node, pairing, root, "task", 4)
+            assert previous["ran"] is True and provider.call_count == 1
+
+
+def test_shadow_skip_requires_explicit_bound_handoff_before_any_model_call():
+    with tempfile.TemporaryDirectory() as root:
+        run = {"state": {"stage": "kernel_task", "status": "running",
+                         "kernel": {"phase": "task_open"}}, "args": {}, "nodes": []}
+        options = SimpleNamespace(base=root, repo=root, experiment=None,
+                                  ledger=os.path.join(root, "episodes.jsonl"), claude_binary="claude",
+                                  human_action="fix_recheck", skip_shadow_review="avoid advisory delay")
+        with mock.patch.object(K, "_validated_run", return_value=run), \
+                mock.patch.object(K, "_resolve_repo", return_value=root), \
+                mock.patch.object(D, "run_agent") as agent, \
+                mock.patch.object(D.model_trials, "run_review") as provider:
+            try:
+                D._drive_feature("feat-a", options)
+                assert False, "a live/potentially pending shadow cannot be skipped by a new flag"
+            except D.DriverError as exc:
+                assert "persisted controller authorization" in str(exc)
+            agent.assert_not_called()
+            provider.assert_not_called()
+
+
 def test_controller_decision_keys_deduplicate_replay_but_allow_corrected_evidence():
     task_id = "task-a"
     human = D._decision_event_key(task_id, "decision", 1, {"action": "human"})
@@ -226,6 +283,22 @@ def test_run_agent_records_content_free_receipt_and_reuses_completion():
         assert second["sessionId"] == first["sessionId"]
 
 
+def test_recovery_does_not_silently_migrate_sealed_usage_after_parser_fix():
+    receipt = {"cwd": "/fixture", "sessionId": "fixture-id",
+               "transcriptSha256": "sha256:" + "1" * 64,
+               "usage": {"outputTokens": 153988}}
+    enriched = {"transcriptPath": "/fixture/transcript.jsonl",
+                "transcriptSha256": receipt["transcriptSha256"],
+                "usage": {"outputTokens": 57733}, "lastAssistantText": "done"}
+    with mock.patch.object(D.background_agent, "transcript_path", return_value=enriched["transcriptPath"]), \
+            mock.patch.object(D.background_agent, "transcript_receipt", return_value=enriched):
+        recovered = D._recover_completed(receipt)
+        assert recovered["usage"] == receipt["usage"]
+        assert recovered["lastAssistantText"] == "done"
+        without_usage = {key: value for key, value in receipt.items() if key != "usage"}
+        assert D._recover_completed(without_usage)["usage"] == enriched["usage"]
+
+
 def test_invalid_controller_output_fails_to_human():
     with tempfile.TemporaryDirectory() as root:
         log = D.EventLog("feat-a", base=root)
@@ -238,6 +311,16 @@ def test_invalid_controller_output_fails_to_human():
                 timeout=10, max_rounds=3,
             )
         assert decision["action"] == "human"
+
+
+def test_fix_prompt_preserves_original_contract_and_independent_findings():
+    contract = "Require exact generation/revision bindings. No real labels or provider calls."
+    payload = {"loopArgs": {"task": contract}}
+    finding = {"priority": 1, "title": "stale client may omit revision"}
+    prompt = D._maker_prompt(payload, findings=[finding])
+    assert contract in prompt and finding["title"] in prompt
+    assert "do not broaden scope or weaken its tests" in prompt
+    assert "Do not commit, merge, push, publish" in prompt
 
 
 def test_controller_handoff_persists_and_resumes_only_with_bound_explicit_authority():
@@ -276,7 +359,16 @@ def test_controller_handoff_persists_and_resumes_only_with_bound_explicit_author
             assert False, "final-round recheck must require a higher explicit round cap"
         except D.DriverError as exc:
             assert "higher --round-cap" in str(exc)
-        authorization = D._resume_controller_handoff(paused, "fix_recheck", 4)
+        for action, reason in (("fix_verify", "skip"), ("fix_recheck", ""),
+                               ("fix_recheck", "a\nb"), ("fix_recheck", "x" * 301)):
+            try:
+                D._resume_controller_handoff(paused, action, 4, skip_shadow_reason=reason)
+                assert False, "invalid skip authorization must not mutate the handoff"
+            except D.DriverError:
+                assert json.load(open(state_path, encoding="utf-8"))["status"] == "needs_human"
+        authorization = D._resume_controller_handoff(
+            paused, "fix_recheck", 4, skip_shadow_reason="bounded correctness repair",
+        )
         resumed = json.load(open(state_path, encoding="utf-8"))
         assert authorization["action"] == "fix_recheck"
         assert resumed["status"] == "running"
@@ -287,6 +379,7 @@ def test_controller_handoff_persists_and_resumes_only_with_bound_explicit_author
         recovered = D._pending_controller_authorization({"state": resumed})
         assert recovered["action"] == "fix_recheck"
         assert recovered["authorizedRoundCap"] == 4
+        assert recovered["shadowSkipReason"] == "bounded correctness repair"
 
         # Once a fresh review advances the binding, the authorization is consumed rather than
         # replayed against a different candidate/review.

@@ -433,6 +433,25 @@ camus run <featId> \
   --shadow-reviewer-effort medium
 ```
 
+At a native controller handoff, an operator can skip the next advisory review while
+authorizing a bounded repair and fresh Codex review. For a handoff after round 2:
+
+```bash
+camus run <featId> --human-action fix_recheck --round-cap 3 \
+  --skip-shadow-review "Finish the correctness repair before more advisory comparisons"
+```
+
+The reason is saved atomically with the bound operator decision and survives resume.
+Only that next round is skipped; existing shadow receipts and the frozen pairing are
+preserved. A skip is recorded as non-comparable, not as a review or a clean result.
+Codex and deterministic verification remain mandatory. This is not a way to interrupt
+an active/pending shadow request or skip an authoritative external reviewer.
+
+New Claude receipts count cumulative usage once per message ID, including multipart
+transcripts. Replaying an older sealed receipt preserves its original accounting;
+parser improvements do not silently migrate history. These counts are usage telemetry,
+not a provider invoice.
+
 The profile comes from `~/.camus/studio/models.json`; only the credential environment-variable
 name lives there. Direct HTTPS, literal loopback, and fixed managed-SSH connections are supported.
 The resulting `trial1:` receipt is non-gating by construction. The released 0.4.7 dispatcher

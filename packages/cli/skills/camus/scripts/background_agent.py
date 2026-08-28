@@ -91,11 +91,10 @@ def transcript_path(cwd, session_id, projects_dir=None):
 
 
 def _int(value):
-    try:
-        value = int(value)
-        return value if value >= 0 else 0
-    except (TypeError, ValueError):
+    """Return a valid token count, without coercing malformed transcript data."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return 0
+    return value
 
 
 def _text_blocks(content):
@@ -168,12 +167,14 @@ def transcript_receipt(path, requested_model=None, requested_effort=None):
         }
     digest = hashlib.sha256()
     models = []
-    usage = {
-        "inputTokens": 0,
-        "cacheCreationInputTokens": 0,
-        "cacheReadInputTokens": 0,
-        "outputTokens": 0,
-    }
+    usage_fields = (
+        ("input_tokens", "inputTokens"),
+        ("cache_creation_input_tokens", "cacheCreationInputTokens"),
+        ("cache_read_input_tokens", "cacheReadInputTokens"),
+        ("output_tokens", "outputTokens"),
+    )
+    usage_by_message = {}
+    missing_message_id = 0
     tool_calls = 0
     last_text = None
     last_semantic_row = None
@@ -201,10 +202,18 @@ def transcript_receipt(path, requested_model=None, requested_effort=None):
                 if isinstance(model, str) and model and model not in models:
                     models.append(model)
                 raw_usage = message.get("usage") if isinstance(message.get("usage"), dict) else {}
-                usage["inputTokens"] += _int(raw_usage.get("input_tokens"))
-                usage["cacheCreationInputTokens"] += _int(raw_usage.get("cache_creation_input_tokens"))
-                usage["cacheReadInputTokens"] += _int(raw_usage.get("cache_read_input_tokens"))
-                usage["outputTokens"] += _int(raw_usage.get("output_tokens"))
+                message_id = message.get("id")
+                if isinstance(message_id, str) and message_id:
+                    usage_key = ("message", message_id)
+                else:
+                    # Missing/invalid IDs must not make unrelated assistant rows share a bucket.
+                    usage_key = ("row", missing_message_id)
+                    missing_message_id += 1
+                bucket = usage_by_message.setdefault(usage_key, {})
+                for raw_name, receipt_name in usage_fields:
+                    value = _int(raw_usage.get(raw_name))
+                    if value > bucket.get(receipt_name, 0):
+                        bucket[receipt_name] = value
                 content = message.get("content")
                 if isinstance(content, list):
                     tool_calls += sum(
@@ -222,6 +231,10 @@ def transcript_receipt(path, requested_model=None, requested_effort=None):
             "terminalTurnAt": None,
         }
     terminal = None if parse_error else _terminal_turn_evidence(last_semantic_row)
+    usage = {
+        receipt_name: sum(bucket.get(receipt_name, 0) for bucket in usage_by_message.values())
+        for _, receipt_name in usage_fields
+    }
     return {
         "transcriptPath": path,
         "transcriptSha256": "sha256:" + digest.hexdigest(),

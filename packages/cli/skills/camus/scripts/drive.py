@@ -285,6 +285,11 @@ def _recover_completed(receipt):
         # the provider appended harmless bookkeeping rows after the turn completed.
         enriched["transcriptSha256"] = stored_hash
     recovered = {**receipt, **enriched}
+    # Enrichment is not a migration of already sealed accounting. A newer parser
+    # may fix usage aggregation, but replay must not silently rewrite prior receipts
+    # or their budget evidence. New completed calls use the corrected parser.
+    if isinstance(receipt.get("usage"), dict):
+        recovered["usage"] = dict(receipt["usage"])
     terminal_duration = enriched.get("terminalTurnDurationMs")
     if isinstance(terminal_duration, int) and terminal_duration >= 0:
         # A prior driver may have sealed the supervisor disappearance as `stale` before the
@@ -349,6 +354,8 @@ def _maker_prompt(payload, findings=None):
             "Fix the independently reviewed candidate in this worktree. Preserve working behavior, "
             "run the repository's relevant deterministic checks, and address these exact blocking "
             "findings:\n" + json.dumps(findings, ensure_ascii=False, indent=2)[:12000]
+            + "\n\nOriginal task contract (still binding; do not broaden scope or weaken its tests):\n"
+            + task
         )
     return """You are the maker in a Camus run. Work only in the current linked worktree.
 Implement the task completely, inspect the existing architecture before editing, and run the
@@ -545,10 +552,21 @@ def _persist_controller_handoff(run, task_id, decision, verify_failure=False):
     kernel._atomic_write(run["statePath"], state)
 
 
-def _resume_controller_handoff(run, action, round_cap):
+def _shadow_skip_reason(value):
+    if not isinstance(value, str) or not value.strip() or len(value) > 300 \
+            or re.search(r"[\x00-\x1f\x7f]", value):
+        raise DriverError("shadow skip requires a non-empty, single-line reason of at most 300 characters")
+    return value.strip()
+
+
+def _resume_controller_handoff(run, action, round_cap, skip_shadow_reason=None):
     """Consume one explicit operator decision, bound to the paused review and candidate."""
     if action not in HUMAN_RESUME_ACTIONS:
         raise DriverError("human action must be fix_recheck|fix_verify|retry_verify")
+    if skip_shadow_reason is not None:
+        skip_shadow_reason = _shadow_skip_reason(skip_shadow_reason)
+        if action != "fix_recheck":
+            raise DriverError("skipping a shadow requires fix_recheck; the authoritative review cannot be skipped")
     state = run["state"]
     if state.get("status") != "needs_human" or state.get("stage") != "native_controller":
         raise DriverError("--human-action is valid only for a native controller handoff")
@@ -587,6 +605,10 @@ def _resume_controller_handoff(run, action, round_cap):
         "authorizedRoundCap": round_cap,
         "authorizedAt": int(time.time()),
     }
+    if skip_shadow_reason is not None:
+        # Atomic with the bound operator decision: replay must not buy an advisory
+        # call merely because the process stopped before writing its event log.
+        authorization["shadowSkipReason"] = skip_shadow_reason
     node["nativeControllerAuthorization"] = authorization
     node["status"] = "running"
     state["status"] = "running"
@@ -614,6 +636,10 @@ def _pending_controller_authorization(run):
         return None
     if authorization.get("action") not in HUMAN_RESUME_ACTIONS:
         raise DriverError("persisted native controller authorization has an invalid action")
+    if "shadowSkipReason" in authorization:
+        _shadow_skip_reason(authorization["shadowSkipReason"])
+        if authorization["action"] != "fix_recheck":
+            raise DriverError("persisted shadow skip lacks an independent re-review authorization")
     if authorization.get("kernelPhase") != kernel_state.get("phase"):
         return None
     review_round = authorization.get("reviewRound")
@@ -772,6 +798,26 @@ def _run_shadow_review(log, run, node, pairing, repo, task, round_no):
     prior = log.latest("shadow.reviewed", key)
     if isinstance(prior, dict) and isinstance(prior.get("data"), dict):
         return prior["data"]
+    authorization = node.get("nativeControllerAuthorization") or {}
+    if "shadowSkipReason" in authorization:
+        reason = _shadow_skip_reason(authorization["shadowSkipReason"])
+        authorized_round = authorization.get("reviewRound")
+        if authorization.get("action") != "fix_recheck" \
+                or isinstance(authorized_round, bool) or not isinstance(authorized_round, int):
+            raise DriverError("shadow skip lacks a bound repair/re-review authorization")
+        if round_no == authorized_round + 1:
+            data = {
+                "ran": False, "skipped": True, "standing": "experimental_shadow",
+                **shadow, "errorCode": "shadow_review_skipped", "reason": reason,
+                "finalGate": "codex", "candidateFingerprint": candidate,
+                "round": round_no, "durationMs": 0,
+            }
+            log.append("shadow.skipped", trace_id=kernel._kernel(run["state"])["traceId"],
+                       task_id=node["taskId"], key=key, data=data)
+            print("  shadow %s:%s → skipped by operator (%s); Codex still gates" % (
+                shadow["backend"], shadow["model"], reason,
+            ), flush=True)
+            return data
     started = time.monotonic()
     try:
         result = model_trials.run_review(
@@ -821,6 +867,8 @@ def _record_shadow_comparison(log, trace_id, task_id, shadow, codex_review,
     compared = {
         "standing": "experimental_shadow",
         "shadowRan": shadow.get("ran") is True,
+        "shadowSkipped": shadow.get("skipped") is True,
+        "shadowSkipReason": shadow.get("reason") if shadow.get("skipped") is True else None,
         "shadowComparable": comparable,
         "sameCandidate": same_candidate,
         "shadowClean": shadow.get("clean") if comparable else None,
@@ -1073,6 +1121,11 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
     completed_this_call = 0
     human_authorization = None
     requested_human_action = getattr(options, "human_action", None)
+    requested_shadow_skip = getattr(options, "skip_shadow_review", None)
+    if requested_shadow_skip is not None:
+        requested_shadow_skip = _shadow_skip_reason(requested_shadow_skip)
+        if requested_human_action != "fix_recheck":
+            raise DriverError("--skip-shadow-review requires --human-action fix_recheck at a controller handoff")
     while True:
         run = kernel._validated_run(feat_id, base)
         repo = kernel._resolve_repo(run, options.repo)
@@ -1103,8 +1156,13 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                     "allowedActions": handoff.get("allowedActions") or [],
                 }
             effective_round_cap = options.round_cap or run["args"].get("roundCap") or 3
+            if requested_shadow_skip is not None:
+                assigned = log.latest("pairing.assigned", active) or {}
+                if _shadow_config((assigned.get("data") or {}).get("pairing") or {}) is None:
+                    raise DriverError("this task has no frozen Codex-gated shadow pairing to skip")
             human_authorization = _resume_controller_handoff(
                 run, requested_human_action, effective_round_cap,
+                skip_shadow_reason=requested_shadow_skip,
             )
             log.append(
                 "human.decision", trace_id=current.get("traceId") or feat_id, task_id=active,
@@ -1113,10 +1171,16 @@ def _drive_feature(feat_id, options, client=None, ledger=None):
                 ), data=human_authorization,
             )
             requested_human_action = None
+            requested_shadow_skip = None
             run = kernel._validated_run(feat_id, base)
             current = kernel._kernel(run["state"])
         else:
             pending_authorization = _pending_controller_authorization(run)
+            if requested_shadow_skip is not None:
+                if pending_authorization is None \
+                        or pending_authorization.get("shadowSkipReason") != requested_shadow_skip:
+                    raise DriverError("shadow skip disagrees with the persisted controller authorization")
+                requested_shadow_skip = None
             if requested_human_action is not None:
                 if pending_authorization is None \
                         or pending_authorization.get("action") != requested_human_action:
@@ -1599,6 +1663,8 @@ def _parser():
                      help="exact declared model id for the shadow reviewer")
     run.add_argument("--shadow-reviewer-effort", choices=("low", "medium", "high", "xhigh"),
                      default="medium")
+    run.add_argument("--skip-shadow-review", metavar="REASON", default=None,
+                     help="skip only the next advisory round at --human-action fix_recheck; Codex still gates")
     run.add_argument("--controller-model", default="sonnet")
     run.add_argument("--round-cap", type=int, default=None)
     run.add_argument(

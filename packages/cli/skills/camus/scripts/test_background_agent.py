@@ -46,6 +46,64 @@ def test_transcript_receipt_binds_hash_identity_usage_and_last_text():
         assert receipt["lastAssistantText"] == "done"
 
 
+def test_transcript_receipt_deduplicates_cumulative_usage_by_message_id():
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "session.jsonl")
+        _write_jsonl(path, [
+            {"type": "assistant", "message": {
+                "id": "msg-1", "model": "claude-opus-4-8",
+                "usage": {"input_tokens": 2, "output_tokens": 3},
+                "content": [{"type": "tool_use", "name": "Read"}]}},
+            {"type": "assistant", "message": {
+                "id": "msg-1", "model": "claude-opus-4-8",
+                "usage": {"input_tokens": 7, "output_tokens": 11},
+                "content": [{"type": "text", "text": "part one"}]}},
+            {"type": "assistant", "message": {
+                "id": "msg-1", "model": "claude-opus-4-8",
+                "usage": {"input_tokens": 5, "output_tokens": 9},
+                "content": [{"type": "text", "text": "part two"}]}},
+            {"type": "assistant", "message": {
+                "id": "msg-2", "model": "claude-opus-4-8",
+                "usage": {"input_tokens": 13, "output_tokens": 17},
+                "content": [{"type": "text", "text": "done"}]}},
+        ])
+        receipt = B.transcript_receipt(path)
+        assert receipt["usage"] == {
+            "inputTokens": 20, "cacheCreationInputTokens": 0,
+            "cacheReadInputTokens": 0, "outputTokens": 28,
+        }
+        assert receipt["toolCalls"] == 1
+        assert receipt["lastAssistantText"] == "done"
+
+
+def test_transcript_receipt_keeps_missing_ids_independent_and_ignores_bad_usage():
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "session.jsonl")
+        _write_jsonl(path, [
+            {"type": "assistant", "message": {
+                "usage": {"input_tokens": 2, "output_tokens": 3}}},
+            {"type": "assistant", "message": {
+                "usage": {"input_tokens": 5, "output_tokens": 7}}},
+            {"type": "assistant", "message": {
+                "id": "msg-bad", "usage": {
+                    "input_tokens": -4, "output_tokens": "9",
+                    "cache_creation_input_tokens": True,
+                    "cache_read_input_tokens": float("nan"),
+                }}},
+            {"type": "assistant", "message": {
+                "id": "msg-good", "usage": {
+                    "input_tokens": 11, "output_tokens": 13,
+                    "cache_creation_input_tokens": 17,
+                    "cache_read_input_tokens": 19,
+                }}},
+        ])
+        receipt = B.transcript_receipt(path)
+        assert receipt["usage"] == {
+            "inputTokens": 18, "cacheCreationInputTokens": 17,
+            "cacheReadInputTokens": 19, "outputTokens": 23,
+        }
+
+
 def test_terminal_marker_survives_allowlisted_metadata_suffix_and_prefix_is_bound():
     with tempfile.TemporaryDirectory() as root:
         path = os.path.join(root, "session.jsonl")
