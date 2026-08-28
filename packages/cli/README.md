@@ -2,6 +2,14 @@
 
 **A coding loop that proves every change.**
 
+**Unreleased source preview:** `camus build` uses the same independent maker and
+reviewer selection as Studio's Any-model Build. Run `camus build --help` and
+`camus models` to see the command and this machine's catalog. Reversed, same-model,
+and qualified OpenAI-compatible combinations produce an isolated candidate with
+advisory review and a human checkpoint; they cannot automatically commit, merge,
+publish, or gain gate admission. `camus run` retains the native gate below.
+See the [coding-seat guide](https://github.com/mateodaza/camus/blob/main/docs/INDEPENDENT-CODE-SEATS.md).
+
 No agent grades its own work. Camus runs a coding task from plan to verified commit
 without you watching: Claude writes the code, Codex (a competing model) reviews
 every change, and your repo's own type-check and tests have the final word. Nothing in

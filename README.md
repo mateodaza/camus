@@ -2,6 +2,12 @@
 
 **Makes it work. Knows when to stop.**
 
+Source preview (not yet released): [`camus build`](docs/INDEPENDENT-CODE-SEATS.md)
+and Studio's **Any-model candidate** let you select maker and reviewer
+independently, including reversed and configured open-model pairings. Results
+are experimental, non-gating candidates requiring human acceptance. The native
+Claude/Codex proof gate described below remains unchanged.
+
 No agent grades its own work. Camus runs a coding task from plan to verified commit
 without you watching: Claude writes the code, Codex (a competing model) reviews
 every change, and your repo's own type-check and tests have the final word. Nothing in

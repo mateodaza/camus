@@ -39,10 +39,28 @@ function py(script, args) {
   process.exit(r.status === null ? 1 : r.status);
 }
 
+function codeBuild(args) {
+  const source = path.resolve(ROOT, '../../apps/loop-studio/code-build.mjs');
+  const bundled = path.join(ROOT, 'runtime/apps/loop-studio/code-build.mjs');
+  const entry = fs.existsSync(source) ? source : bundled;
+  if (!fs.existsSync(entry)) {
+    console.error('camus build: this package is missing its shared model runtime. Reinstall the release; no model was called.');
+    process.exit(1);
+  }
+  const r = spawnSync(process.execPath, [entry, ...args], { stdio: 'inherit' });
+  if (r.error) console.error('camus build: ' + r.error.message);
+  process.exit(r.status === null ? 1 : r.status);
+}
+
 const HELP = `camus ${pkg.version} · a coding loop that proves every change
 
 usage: npx camus-cli <command>
 
+  build [...]  any-model coding candidate: choose BOTH --maker backend:model and
+               --reviewer backend:model, including reversed/same-provider pairs.
+               Shared Studio catalog and connections; isolated worktree, advisory
+               review, human acceptance required. No automatic merge/publication.
+               build --help · build --models · --task "..." --contract "..."
   install      copy skill + workflows into ~/.claude (frozen copy, not symlink)
   check        preflight: installed gate in sync with package? (run before any auto/feat run)
   auto-setup   opt-in: install the narrow scoped auto-mode profile (zero-click runs)
@@ -111,8 +129,8 @@ usage: npx camus-cli <command>
                                                   checked-in reviewed registry change still required
                        admission-activate --admission-id <admit1:...>
                                                   network-free local activation after that reviewed entry ships
-  models [--json]    list Studio-configured Grok/Qwen/open-weight reviewer profiles; shows only
-                       credential presence, never endpoints or secret values
+  models [--json]    list the shared Studio maker AND reviewer catalog and availability;
+                       --reviewers-only preserves the legacy external-review profile list
   trial-review [...] run one explicitly non-gating external-model review of a Camus worktree:
                        --backend <profile> --model <id> --worktree <path> --task "<contract>"
                        emits trial1 evidence; Codex remains the final gate
@@ -141,6 +159,9 @@ upgrading (the gate is a FROZEN copy — updating npm alone is not enough):
 `;
 
 switch (cmd) {
+  case 'build':
+    codeBuild(rest);
+    break;
   case 'install':
     sh([]);
     break;
@@ -191,7 +212,8 @@ switch (cmd) {
       : rest[0] === 'admission-activate' ? ['activate', ...rest.slice(1)] : rest);
     break;
   case 'models':
-    py('model_trials.py', ['list', ...rest]);
+    if (rest.includes('--reviewers-only')) py('model_trials.py', ['list', ...rest.filter((arg) => arg !== '--reviewers-only')]);
+    else codeBuild(['--models', ...rest]);
     break;
   case 'trial-review':
     py('model_trials.py', ['review', ...rest]);

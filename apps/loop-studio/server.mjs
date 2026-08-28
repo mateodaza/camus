@@ -19,6 +19,9 @@ import { createReadStream, existsSync } from 'node:fs';
 import { join, dirname, extname, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runLoop } from './lib/engine.mjs';
+import { runIndependentCodeLoop } from './lib/independent-code-lane.mjs';
+import { prepareCodeReceiptsDir } from './lib/code-seats.mjs';
+import { prepareCodeSeats } from './lib/code-seat-launch.mjs';
 import { runCodeLoop, runVerificationRecovery, resolveRecoveryTarget, recoveryTarget, reconstructInterruptedParked, readGateStatus, gateStateFromStatus, validateBuildTarget, gateInstalled, gatherContinuationEvidence } from './lib/code-lane.mjs';
 import { deriveContinuation, continuationPresentation } from './lib/continuation.mjs';
 import { runMockCodeLoop } from './lib/adapters/mock.mjs';
@@ -269,6 +272,7 @@ async function startRun({
   verifyCmd = null,
   idSalt = null,
   recovery = null,
+  codeMode = 'gate',
   modelsSnapshot = null,
   frozenBackends = null,
   pairingView = null,
@@ -315,11 +319,11 @@ async function startRun({
   const publishRequested = publish === true;
   const controlPlane = createStudioControlPlane({
     id, goal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd,
-    models, recovery, publishRequested,
+    models, recovery, publishRequested, codeMode,
   });
-  const run = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, pairingView, frozenKnowledge, toolPolicy, publish: publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationChecks, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, experimentContext, modelRouting, controlPlane };
+  const run = { id, goal, displayGoal, acceptanceContract, lane, codeMode, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, pairingView, frozenKnowledge, toolPolicy, publish: publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationChecks, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, experimentContext, modelRouting, controlPlane };
   // The run exists on disk from second zero — a crash must not orphan it.
-  const runMetadata = () => ({ id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: run.idSalt, engine: ENGINE, models, pairingView, publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, experimentContext, modelRouting, startedAt: run.startedAt });
+  const runMetadata = () => ({ id, goal, displayGoal, acceptanceContract, lane, codeMode, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: run.idSalt, engine: ENGINE, models, pairingView, publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationChecks, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, experimentContext, modelRouting, startedAt: run.startedAt });
   await writeFile(join(dir, 'run.json'), JSON.stringify(runMetadata(), null, 2))
     .catch((err) => console.error(`[receipts] failed to write run.json for ${id}: ${err.message}`));
   const state = { run, events: [], subscribers: new Set(), answer: null, abort: new AbortController(), writeChain: Promise.resolve() };
@@ -435,7 +439,7 @@ async function startRun({
     })
     : null;
 
-  emit('run', { run: { id, goal: displayGoal ?? goal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, pairingView, modelRouting, recoveryOf: recovery?.sourceRunId ?? null, recovery: recovery ? { sourceRunId: recovery.sourceRunId ?? null, sourceReceiptId: recovery.sourceReceiptId ?? null, parkedSha: recovery.parkedSha ?? null, shaProvenance: recovery.shaProvenance ?? null } : null, engine: ENGINE, roundCap: iterationPolicy === 'single_pass' ? 1 : models.loop.roundCap, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, experimentContext } });
+  emit('run', { run: { id, goal: displayGoal ?? goal, acceptanceContract, lane, codeMode, depth, ground, targetPath, verifyCmd, publishRequested, pairingView, modelRouting, recoveryOf: recovery?.sourceRunId ?? null, recovery: recovery ? { sourceRunId: recovery.sourceRunId ?? null, sourceReceiptId: recovery.sourceReceiptId ?? null, parkedSha: recovery.parkedSha ?? null, shaProvenance: recovery.shaProvenance ?? null } : null, engine: ENGINE, roundCap: iterationPolicy === 'single_pass' ? 1 : models.loop.roundCap, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, experimentContext } });
   if (!gitOk) emit('log', { line: '⚠ git unavailable; codex reviews will run outside a git repo (different conditions than camus)' });
 
   // A recovery runs the host verifier and NOTHING else — including under the mock
@@ -443,7 +447,7 @@ async function startRun({
   // parked commit. That is the one place rehearsal must not substitute.
   const runner = recovery
     ? runVerificationRecovery
-    : lane === 'build' ? (ENGINE === 'mock' ? runMockCodeLoop : runCodeLoop) : runLoop;
+    : lane === 'build' ? (codeMode === 'independent' ? runIndependentCodeLoop : ENGINE === 'mock' ? runMockCodeLoop : runCodeLoop) : runLoop;
   runner(run, {
     emit,
     waitForAnswer,
@@ -469,7 +473,9 @@ async function startRun({
     // and tells the truth about its own completeness.
     const evidence = deriveEvidence(state.events);
     let { degraded: receiptsDegraded, note: receiptsNote } =
-      receiptCompleteness({ lane, evidence, writeFailed: run.receiptsDegraded, status: run.status });
+      codeMode === 'independent' && lane === 'build'
+        ? { degraded: run.receiptsDegraded, note: 'Experimental code receipt. No admitted gate evidence pack or automatic acceptance is claimed.' }
+        : receiptCompleteness({ lane, evidence, writeFailed: run.receiptsDegraded, status: run.status });
     // The dimensions rode the terminal status event (computed in emit); the
     // receipt seals the same object. Fall back to a fresh derivation only if a
     // run somehow ended without a status event. The headline is NEVER sealed.
@@ -488,7 +494,7 @@ async function startRun({
     let evidencePack = null;
     let evidencePackError = null;
     try {
-      evidencePack = buildEvidencePack({
+      evidencePack = codeMode === 'independent' && lane === 'build' ? null : buildEvidencePack({
         goal,
         acceptanceContract,
         lane,
@@ -1680,6 +1686,12 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: 'publish must be true or false; external publication is never inferred' });
       }
       const lane = body.lane === 'build' ? 'build' : LANES[body.lane] ? body.lane : 'freeform';
+      const codeMode = body.codeMode ?? 'gate';
+      if (!['gate', 'independent'].includes(codeMode) || (body.codeMode !== undefined && lane !== 'build')) {
+        return json(res, 400, { error: 'codeMode must be gate or independent, and applies only to Build.' });
+      }
+      const independentBuild = lane === 'build' && codeMode === 'independent';
+      if (independentBuild && ENGINE === 'mock') return json(res, 400, { error: 'Any-model Build needs the live engine and a real isolated Git candidate; rehearsal does not execute it.' });
       const evaluationProfile = body.evaluationProfile == null ? null : String(body.evaluationProfile).trim();
       if (evaluationProfile !== null && !EVALUATION_PROFILES.has(evaluationProfile)) {
         return json(res, 400, { error: 'evaluationProfile must be simple, balanced, or difficult' });
@@ -1711,6 +1723,7 @@ const server = http.createServer(async (req, res) => {
       if (!['selected', 'automatic'].includes(routingMode)) {
         return json(res, 400, { error: 'modelRouting must be selected or automatic' });
       }
+      if (lane === 'build' && routingMode === 'automatic') return json(res, 400, { error: 'Build pairings are selected explicitly; code routing has not been calibrated.' });
       if (routingMode === 'automatic' && body.pairing !== undefined) {
         return json(res, 400, { error: 'choose either an explicit pairing or automatic model routing, not both' });
       }
@@ -1770,7 +1783,7 @@ const server = http.createServer(async (req, res) => {
           }
         }
       }
-      if (body.pairing !== undefined) {
+      if (body.pairing !== undefined && !independentBuild) {
         if (lane === 'build') return json(res, 400, { error: 'the Build lane runs the camus gate with its own model decisions; per-run pairing applies to the words lanes' });
         const p = body.pairing;
         const seatOf = (raw, seatName) => {
@@ -1841,19 +1854,32 @@ const server = http.createServer(async (req, res) => {
           // The gate's pairing is fixed; the words-lane seat selection must
           // never leak into it. Snapshot the gate-compatible decision NOW so a
           // settings write during target validation cannot swap it either.
-          const gate = gateModels();
-          if (!gate.ok) return json(res, 400, { error: gate.error });
-          modelsSnapshot = gate.models;
-          if (!gateInstalled()) {
+          const gate = independentBuild ? null : gateModels();
+          if (gate && !gate.ok) return json(res, 400, { error: gate.error });
+          if (gate) modelsSnapshot = gate.models;
+          if (!independentBuild && !gateInstalled()) {
             return json(res, 400, { error: 'The camus gate is missing or too old for Studio custody. Fix: npm i -g camus-cli && camus install (from this repo: bash packages/cli/install.sh), then check Setup.' });
           }
           const v = await validateBuildTarget(body.targetPath);
           if (!v.ok) return json(res, 400, { error: v.error });
-          targetPath = v.path;
+          targetPath = independentBuild ? v.toplevel : v.path;
           if (activeBuilds.size > 0) {
             return json(res, 409, { error: 'A build run is already going; the studio runs one gate at a time.' });
           }
           targetToplevel = v.toplevel;
+          if (independentBuild) {
+            try {
+              // Validate before startRun creates metadata. A symlinked runs
+              // directory must not put Camus internals into the target repo.
+              await prepareCodeReceiptsDir(RUNS_DIR, targetPath);
+              const prepared = await prepareCodeSeats({ pairing: body.pairing ?? null });
+              modelsSnapshot = prepared.models;
+              frozenBackends = prepared.frozenBackends;
+              pairingView = prepared.pairingView;
+            } catch (error) {
+              return json(res, 400, { error: String(error.message || error).slice(0, 600) });
+            }
+          }
         }
       }
       // Slice C launch gate (RFC §9.2/§9.4, docs:2627-2629): a configurable
@@ -1927,9 +1953,12 @@ const server = http.createServer(async (req, res) => {
       const admission = acquireAdmission(1);
       if (!admission.ok) return json(res, 429, { error: `${admission.used} runs are already active or starting — the studio caps concurrent runs at ${MAX_ACTIVE_RUNS}.` });
       try {
+        // Qualification can await an endpoint. Recheck after that await before
+        // reserving a repository, not only during initial target validation.
+        if (targetToplevel && activeBuilds.size > 0) return json(res, 409, { error: 'A build run is already going; wait for its terminal receipt.' });
         if (targetToplevel) activeBuilds.add(targetToplevel);
         const id = await startRun({
-          goal, acceptanceContract, lane,
+          goal, acceptanceContract, lane, codeMode,
           depth,
           ground, targetPath, targetToplevel, modelsSnapshot, frozenBackends, pairingView, verifyCmd,
           publish: body.publish === true,
@@ -2243,6 +2272,7 @@ const server = http.createServer(async (req, res) => {
         // re-enters Plan and Implement every time, which is precisely why a run that
         // already parked a candidate takes the recovery path below instead.
         if (meta.lane !== 'build') return json(res, 400, { error: 'only build runs and incomplete comparisons can resume' });
+        if (meta.codeMode === 'independent') return json(res, 409, { error: 'This experimental candidate requires inspection and explicit human acceptance. It cannot resume through the legacy gate or silently rerun models. Its worktree and receipt are preserved.' });
         if (!meta.idSalt) return json(res, 400, { error: 'this run predates resumable receipts. Start a fresh build run instead.' });
         // A run that started before verifyCmd existed — or one whose auto-detected
         // verification turned out to be wrong for this host — must be able to

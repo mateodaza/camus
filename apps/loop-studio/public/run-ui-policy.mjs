@@ -1,7 +1,8 @@
 // Pure launch/run-view policy shared by the browser and deterministic tests.
 
-export function enginePillText({ engine, lane, models = {} }) {
+export function enginePillText({ engine, lane, models = {}, codeMode = 'gate' }) {
   if (engine === 'mock') return 'engine: rehearsal (mock)';
+  if (lane === 'build' && codeMode === 'independent') return 'engine: live · any-model candidate · advisory review';
   if (lane === 'build') {
     return `engine: live · build gate: ${models.maker} + ${models.reviewer} (effort ${models.effort} · pinned every round)`;
   }

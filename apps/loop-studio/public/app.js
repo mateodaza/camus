@@ -160,6 +160,7 @@ function reflectEnginePill() {
   $('pill-engine').textContent = enginePillText({
     engine: state.serverEngine,
     lane: state.lane,
+    codeMode: $('build-mode')?.value,
     models: state.serverModels,
   });
 }
@@ -172,9 +173,14 @@ function reflectDocumentActions(lane) {
 
 function reflectLaneControls() {
   const build = state.lane === 'build';
-  $('step-pairing-label').innerHTML = `<span class="step-n">3</span> ${build ? 'Review the Build gate, then run' : 'Choose maker and auditor, then run'}`;
+  const independent = build && $('build-mode').value === 'independent';
+  $('step-pairing-label').innerHTML = `<span class="step-n">3</span> ${build && !independent ? 'Review the Build gate, then run' : 'Choose maker and auditor, then run'}`;
   $('build-gate-note').classList.toggle('hidden', !build);
-  if (build && state.serverModels) {
+  $('pairing').classList.toggle('hidden', build && !independent);
+  $('pairing-note').classList.toggle('hidden', build && !independent);
+  if (independent) {
+    $('build-gate-note').textContent = 'Both selected seats will run. Experimental code feedback is advisory, even for a clean review. Inspect the candidate and test result before accepting it; same-model and same-provider choices do not count as independent review.';
+  } else if (build && state.serverModels) {
     $('build-gate-note').textContent = `Build gate: Claude ${state.serverModels.maker} implements → Codex ${state.serverModels.reviewer} reviews at the saved effort${state.serverModels.effort ? ` (${state.serverModels.effort})` : ''} every round — the value pinned in Settings, not adapted per round; the receipt records what actually ran. Change the saved models and effort in Settings.`;
   }
 }
@@ -1080,8 +1086,6 @@ $('lanes').addEventListener('click', (e) => {
   $('ground-field').classList.toggle('hidden', state.lane === 'build');
   $('publish-field').classList.toggle('hidden', state.lane === 'build');
   if (state.lane === 'build') $('publish-artifact').checked = false;
-  $('pairing').classList.toggle('hidden', state.lane === 'build');
-  $('pairing-note').classList.toggle('hidden', state.lane === 'build');
   $('model-routing-control').classList.toggle('hidden', state.lane === 'build');
   $('model-routing-class-wrap').classList.toggle('hidden', state.lane === 'build');
   $('model-routing-note').classList.toggle('hidden', state.lane === 'build');
@@ -1090,6 +1094,8 @@ $('lanes').addEventListener('click', (e) => {
   reflectLaneControls();
   void reflectAutomaticRouting();
 });
+
+$('build-mode').addEventListener('change', () => { reflectLaneControls(); reflectEnginePill(); });
 
 $('rungoal').addEventListener('click', toggleRunGoal);
 $('rungoal').addEventListener('keydown', (e) => {
@@ -1225,13 +1231,15 @@ $('start').addEventListener('click', async () => {
     // server refuses an override.
     const pairMaker = seatOf($('pair-maker'));
     const pairReviewer = seatOf($('pair-reviewer'));
-    const pairing = !state.automaticModelRouting && pairingDirty && state.lane !== 'build' && pairMaker && pairReviewer
+    const independentBuild = state.lane === 'build' && $('build-mode').value === 'independent';
+    const pairing = ((independentBuild) || (!state.automaticModelRouting && pairingDirty && state.lane !== 'build')) && pairMaker && pairReviewer
       ? { maker: pairMaker, reviewer: pairReviewer }
       : undefined;
     const res = await fetch(`${API}/api/runs`, {
       method: 'POST',
       headers: postHeaders(),
       body: JSON.stringify({ goal, acceptanceContract, lane: state.lane, depth: state.depth, ground: state.lane !== 'build' && $('ground').checked, publish: state.lane !== 'build' && $('publish-artifact').checked, targetPath: state.lane === 'build' ? $('target-path').value : undefined,
+        codeMode: state.lane === 'build' ? $('build-mode').value : undefined,
         // Only the Build lane verifies a repository, so the command only rides
         // that lane's request; empty means "detect the stack".
         verifyCmd: state.lane === 'build' && $('verify-cmd').value.trim() ? $('verify-cmd').value.trim() : undefined,

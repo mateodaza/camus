@@ -34,7 +34,7 @@ export class ControlPlaneError extends Error {
 
 const safeId = (value) => String(value ?? 'none').replace(/[^A-Za-z0-9._:/-]/g, '_').slice(0, 300);
 
-function launchAction({ id, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, models }) {
+function launchAction({ id, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, models, codeMode }) {
   // Only the digest is stored, but it covers the complete frozen dispatch
   // decision: effort, round cap, aliases, qualification, recovery provenance,
   // verifier, and target. Adding a field upstream changes the action instead of
@@ -49,6 +49,7 @@ function launchAction({ id, lane, depth, ground, targetPath, targetToplevel, ver
     verifyCmd: verifyCmd ?? null,
     recovery: recovery ?? null,
     models: models ?? null,
+    codeMode: codeMode ?? 'gate',
   });
   const dispatchHash = createHash('sha256').update(dispatchMaterial, 'utf8').digest('hex');
   return {
@@ -201,6 +202,7 @@ export function createStudioControlPlane({
   models,
   recovery = null,
   publishRequested = false,
+  codeMode = 'gate',
   now = () => Date.now(),
 } = {}) {
   const recorder = createControlRecorder({ now });
@@ -216,7 +218,7 @@ export function createStudioControlPlane({
   const evaluate = (input) => publish('control_route', recorder.evaluate(input));
   const authorize = (action, decision, reason) => publish('control_human', recorder.authorize(action, decision, reason));
 
-  const launch = launchAction({ id, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, models });
+  const launch = launchAction({ id, lane, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, models, codeMode });
   // Verification-only recovery does not re-plan or ask a model to interpret the
   // historical goal. Legacy runs may therefore carry a terse (but non-empty)
   // goal; the preserved acceptance contract remains mandatory and the exact
@@ -233,7 +235,7 @@ export function createStudioControlPlane({
     cause: contractOk ? null : 'policy_refused',
     details: { lane },
   });
-  const noSeats = Boolean(recovery) || lane === 'build';
+  const noSeats = Boolean(recovery) || (lane === 'build' && codeMode !== 'independent');
   const seatsOk = noSeats
     || (admittedSnapshotSeat(models?.maker, 'maker') && admittedSnapshotSeat(models?.reviewer, 'reviewer'));
   record({

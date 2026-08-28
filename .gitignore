@@ -27,3 +27,6 @@ pytest-cache-files-*/
 
 # generated: the studio UI is synced into the landing's export at build time
 apps/web/public/studio/
+
+# Generated npm any-model runtime (public source modules only).
+packages/cli/runtime/

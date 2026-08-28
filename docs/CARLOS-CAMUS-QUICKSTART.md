@@ -1,5 +1,15 @@
 # Camus quickstart for CodenameWukong
 
+## Next release: choose both coding models
+
+The new, **unreleased** `camus build` path lets you choose both coding seats,
+including Codex as maker and Claude as reviewer, or qualified Grok/Qwen/other
+OpenAI-compatible combinations. Studio **Build → Any-model candidate** uses the
+same engine. See [Independent coding seats](INDEPENDENT-CODE-SEATS.md) for the
+commands and limits. This is experimental advisory review with explicit human
+acceptance, not external gate admission. Published **0.4.7 does not contain it**;
+the instructions below describe that released version's native gate.
+
 Camus 0.4.7 uses a durable native driver for code work and supports configurable maker and
 reviewer seats in Loop Studio for written and research work, including reversed Claude/Codex
 pairings and qualified OpenAI-compatible backends over HTTPS, loopback, or managed SSH. The

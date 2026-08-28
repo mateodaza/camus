@@ -369,24 +369,24 @@ export function scrubbedEnv(env = process.env, onStrip = null) {
 // The session line claims only what the sandbox actually enforces: read-only
 // blocks WRITES; codex's own tool surface (shell, user-configured MCP) can
 // still run, which is why the environment is scrubbed above.
-export async function runCodexMaker({ prompt, stage = 'make', model, cwd, signal, onTick, onSession }) {
+export async function runCodexMaker({ prompt, stage = 'make', model, effort = 'medium', cwd, signal, onTick, onSession }) {
   const fail = (error) => ({ ok: false, error, text: null, costUsd: 0 });
   if (!model) return fail('codex maker needs an explicit model — the account default is not a decision');
+  if (!['low', 'medium', 'high', 'xhigh'].includes(effort)) return fail('codex maker effort must be low, medium, high, or xhigh');
   const dir = resolve(cwd);
   await mkdir(dir, { recursive: true });
   const lastFile = join(dir, `.codex-maker-${stage}.md`);
 
-  // The maker seat has no effort decision in the record; the codex CLI still
-  // gets an explicit value so the account default stays unreachable. `medium`
-  // is a recorded constant of this seat, named in the session line below.
-  const args = ['exec', '--json', '-s', 'read-only', ...hardenedCodexArgs(), '-m', model, '-c', 'model_reasoning_effort=medium'];
+  // Legacy words calls keep medium; independent code seats can pin the maker's
+  // effort explicitly, without falling through to account configuration.
+  const args = ['exec', '--json', '-s', 'read-only', ...hardenedCodexArgs(), '-m', model, '-c', `model_reasoning_effort=${effort}`];
   if (process.env.CAMUS_CODEX_TIER) args.push('-c', `service_tier=${process.env.CAMUS_CODEX_TIER}`);
   for (const id of (process.env.CAMUS_CODEX_DISABLE_MCP || '').split(',').filter(Boolean)) {
     args.push('-c', `mcp_servers.${id.trim()}.enabled=false`);
   }
   args.push('-o', lastFile, prompt);
   const childEnv = scrubbedEnv(process.env, (key, why) => onSession?.(`env ${key}: ${why}`));
-  onSession?.('hardened seat: shell/exec, web search, browser, apps and plugins disabled by flag; no user config or MCP; ephemeral session; environment scrubbed; any unexpected tool event fails the call. Effort pinned medium as a seat constant.');
+  onSession?.(`hardened seat: shell/exec, web search, browser, apps and plugins disabled by flag; no user config or MCP; ephemeral session; environment scrubbed; any unexpected tool event fails the call. Effort pinned ${effort}.`);
 
   const MAKER_TIMEOUTS = { plan: 120_000, ground: 300_000, make: 540_000, fix: 420_000 };
   let stderrTail = '';

@@ -171,20 +171,25 @@
         </button>
         <button class="lane" data-lane="build" id="lane-build">
           <strong>Build: code</strong>
-          <span>Runs the camus gate on a git repo here: isolated worktree, cross-model review, your tests decide. In beta, newer than the words lanes.</span>
+          <span>Code in an isolated worktree. Choose both models, inspect their review and your tests, then accept the candidate.</span>
         </button>
       </div>
 
       <div id="target-wrap" class="hidden">
+        <label class="lbl" for="build-mode">Build execution</label>
+        <select id="build-mode" class="path-input">
+          <option value="independent">Any-model candidate — experimental, human acceptance</option>
+          <option value="gate">Legacy proof gate — saved Claude maker + Codex reviewer</option>
+        </select>
         <label class="lbl" for="target-path">Target repository</label>
         <input id="target-path" class="path-input" placeholder="~/path/to/a/git/repo" autocomplete="off" />
-        <div class="hint">The gate runs in that repo: isolated worktree, cross-model review, your tests as the verdict. Build pins the saved Claude and Codex model names and the saved review effort, and reviews at that effort every round; the actual value lands in the receipt. Stop is safe: receipts survive and Resume continues.</div>
+        <div class="hint">Any-model Build uses the two seats below, including reversed and same-provider pairings. The repository must be clean. Changes stay in a separate worktree; review is advisory and nothing is automatically committed, merged or published. Stop preserves the candidate and receipt; experimental resume is not yet available.</div>
         <!-- Filled from the doctor's auth preflight when a CLI is proven signed out;
              a warning, not a gate — the probes can be stale in either direction. -->
         <div id="preflight-note" class="hint preflight hidden"></div>
         <label class="lbl" for="verify-cmd">Verify command (optional)</label>
         <input id="verify-cmd" class="path-input" placeholder="e.g. dotnet test Tests/App.Tests/App.Tests.csproj -f net10.0" autocomplete="off" />
-        <div class="hint">Leave empty to let Camus detect the stack. Supply one when auto-detection cannot run here: a solution whose mobile heads need workloads this machine lacks, or a monorepo task runner. It is recorded with the run and reused on Resume and on a verification retry. No <code>$</code>, backticks, quotes, backslashes or newlines: put anything that complex in a script and call the script.</div>
+        <div class="hint">Any-model mode: empty means untested. Supply your test command to verify the candidate. It executes locally with credential environment variables removed, not in an OS sandbox; use trusted projects. The legacy gate can detect the stack. No <code>$</code>, backticks, quotes, backslashes or newlines: put complex commands in a script.</div>
       </div>
 
       <!-- Depth moved into Settings: it is a run preference, not a briefing
