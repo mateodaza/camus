@@ -3,6 +3,7 @@ import { join, resolve, basename } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { acquireCodeRun, readCodeCheckpoint, saveCodeCheckpoint, appendCodeEvent, codeStopRequested, digest, codeCredentialRevision, CODE_RUN_VERSION } from './code-run-state.mjs';
 import { redactCodeText, diagnosticSecrets } from './code-diagnostics.mjs';
+import { codeMakerContext, discoveryProgress, DISCOVERY_STALL_STEPS } from './code-context.mjs';
 
 const TRANSIENT = /\b(?:429|502|503|504|ECONNRESET|ETIMEDOUT|rate.limit|temporarily unavailable)\b/i;
 const TERMINAL = new Set(['complete', 'refused']);
@@ -257,15 +258,12 @@ export async function runProductiveCodeLoop(options, h) {
       record.result.protocol = { version: 'code-seats/v2', steps: record.usage.steps, actions: record.usage.actions };
       record.result.source = record.source;
       if (record.phase === 'make') {
-        if (!record.pendingCall?.response && record.usage.steps >= limits.maxSteps) return question('protocol step cap reached; extend the budget to continue', 'budget');
-        let history = record.history;
-        let prompt = h.protocolPrompt({ task, history, limits, feedback: record.feedback, questionAnswer: record.answer });
-        if (Buffer.byteLength(prompt) > limits.maxContextBytes) {
-          history = [{ capsule: true, currentCandidate: record.candidate.fingerprint, files: record.reads.map(([path, content]) => ({ path, sha256: h.sha256(content) })), created: record.created,
-            note: 'Earlier observations remain in the private journal; re-read safe files for current contents. Contract and unresolved feedback follow unchanged.' }, ...record.history.slice(-1)];
-          prompt = h.protocolPrompt({ task, history, limits, feedback: record.feedback, questionAnswer: record.answer });
-          if (Buffer.byteLength(prompt) > limits.maxContextBytes) throw new Error('Complete required maker context exceeds limit; host did not truncate it');
+        if (!record.pendingCall?.response && discoveryProgress(record.history).noNewSteps >= DISCOVERY_STALL_STEPS) {
+          return finish('stopped', 'Repeated discovery produced no new evidence after a bounded recovery warning; candidate preserved. Increasing the call cap alone is not justified.', 'refused');
         }
+        if (!record.pendingCall?.response && record.usage.steps >= limits.maxSteps) return question('protocol step cap reached; extend the budget to continue', 'budget');
+        const { prompt, context } = codeMakerContext(record, h);
+        record.context = context;
         emit('stage', { stage: record.feedback ? 'fix' : 'make', actor: 'maker' });
         const response = await call('maker', prompt);
         if (abort.signal.aborted) return finish('stopped', 'code seats stopped during maker turn');
@@ -293,6 +291,7 @@ export async function runProductiveCodeLoop(options, h) {
           record.phase = 'verify'; record.verificationReady = false;
         } else {
           if (!message.actions.length) throw new Error('maker sent neither actions nor done');
+          record.actionSummary = message.summary ?? null;
           record.actions = message.actions; record.actionIndex = 0; record.observations = []; record.phase = 'apply';
         }
         await log('maker_decision');
@@ -316,7 +315,7 @@ export async function runProductiveCodeLoop(options, h) {
           await h.ensureCreatedVisible(state); await snapshot(); record.actionIndex++; record.pendingAction = null;
           await log('action_completed');
         }
-        record.history.push({ step: record.usage.steps, actions: record.observations });
+        record.history.push({ step: record.usage.steps, actions: record.observations, summary: record.actionSummary ?? null });
         // Durable history is bounded independently of the per-call context.
         if (Buffer.byteLength(JSON.stringify(record.history)) > 4 * 1024 * 1024) return question('Journal context budget exhausted; candidate preserved.', 'budget');
         record.phase = 'make'; await log('observations_saved');

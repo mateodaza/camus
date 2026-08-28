@@ -34,7 +34,7 @@ try {
   const entries = (await command('tar', ['-tzf', tarball])).stdout.trim().split('\n').filter(Boolean);
   assert(entries.includes('package/runtime/apps/loop-studio/code-build.mjs'), 'tarball includes the shared build entry');
   assert(entries.includes('package/runtime/apps/loop-studio/lib/code-seats.mjs'), 'tarball includes the shared code-seat engine');
-  for (const name of ['code-loop', 'code-run-state', 'code-session', 'code-setup', 'code-diagnostics']) assert(entries.includes(`package/runtime/apps/loop-studio/lib/${name}.mjs`), `tarball includes ${name}`);
+  for (const name of ['code-loop', 'code-context', 'code-run-state', 'code-session', 'code-setup', 'code-diagnostics', 'code-verify-child']) assert(entries.includes(`package/runtime/apps/loop-studio/lib/${name}.mjs`), `tarball includes ${name}`);
   assert(entries.includes('package/runtime/apps/loop-studio/lib/adapters/registry.mjs'), 'tarball includes the shared adapter registry');
   assert(entries.includes('package/runtime/apps/loop-studio/checks/models.json'), 'tarball includes the public model catalog');
   for (const entry of entries) {

@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { runCodeSeats } from './code-seats.mjs';
 import { createCodeVerifier } from './code-seat-verify.mjs';
 import { verificationDiagnostics } from './code-diagnostics.mjs';
+import { codeMakerContext, discoveryProgress } from './code-context.mjs';
 import { readCodeCheckpoint, saveCodeCheckpoint, codeRunStatus, requestCodeStop, digest } from './code-run-state.mjs';
 
 const message = (actions = [], extra = {}) => ({ ok: true, text: JSON.stringify({ actions, done: !actions.length, ...extra }), usage: { input_tokens: 10, output_tokens: 5 } });
@@ -176,6 +177,67 @@ test('new file reads, bounded discovery and context rollover preserve contract a
   await writeFile(join(f.options.repoPath, 'README.md'), 'A'.repeat(1200)); git(f.options.repoPath, 'add', '.'); git(f.options.repoPath, 'commit', '-qm', 'large context');
   const result = await f.run({ limits: { maxContextBytes: 5200 } });
   assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+});
+
+test('rollover after listing retains distinct source bodies and maker intent instead of restarting discovery', async (t) => {
+  let turn = 0;
+  const paths = ['one.txt', 'two.txt', 'three.txt', 'four.txt'];
+  const f = await fixture(t, ({ prompt }) => {
+    turn++;
+    if (turn <= 2) return message(paths.map(path => ({ type: 'read', path })));
+    if (turn === 3) return message([{ type: 'list' }], { summary: 'Ready to implement using gathered source.' });
+    if (turn === 4) {
+      assert.match(prompt, /capsule/);
+      for (const path of paths) assert.match(prompt, new RegExp(`SOURCE_BODY_${path}`), `lost source ${path} after a listing`);
+      assert.match(prompt, /Ready to implement using gathered source/);
+      return message([write('correct')]);
+    }
+    return message();
+  });
+  for (const path of paths) await writeFile(join(f.options.repoPath, path), `SOURCE_BODY_${path}\n${'x'.repeat(1200)}`);
+  git(f.options.repoPath, 'add', '.'); git(f.options.repoPath, 'commit', '-qm', 'source context fixture');
+  const result = await f.run({ limits: { maxContextBytes: 10000 } });
+  assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+  assert.equal(result.usage.calls, 6);
+});
+
+test('repeated discovery with no new evidence stops before spending the whole call budget', async (t) => {
+  let sawWarning = false;
+  const f = await fixture(t, ({ prompt }) => {
+    sawWarning ||= /discovery steps without new evidence/.test(prompt);
+    return message([{ type: 'read', path: 'README.md' }]);
+  });
+  const result = await f.run({ limits: { maxCalls: 20, maxSteps: 18 } });
+  assert.equal(result.status, 'stopped'); assert.match(result.error, /discovery.*no new evidence/);
+  assert.equal(result.usage.calls, 7); assert.equal(sawWarning, true);
+  assert.equal(result.usage.repairs, 0); assert.equal(result.review, null);
+});
+
+test('bounded source selection names omissions and never truncates a requested body or the contract', () => {
+  const old = { type: 'read', path: 'old.txt', content: 'old'.repeat(1000), sha256: digest('old'.repeat(1000)) };
+  const current = { type: 'read', path: 'current.txt', content: 'CURRENT_BODY'.repeat(40), sha256: digest('CURRENT_BODY'.repeat(40)) };
+  const state = { task: 'unchanged acceptance contract', limits: { maxContextBytes: 2400 },
+    feedback: { openFinding: 'Must remain visible' }, candidate: { fingerprint: 'candidate' }, created: [],
+    history: [{ step: 1, actions: [old] }, { step: 2, actions: [current] }],
+    reads: [[old.path, old.content], [current.path, current.content]], actionSummary: 'Untrusted maker intent' };
+  const h = { sha256: digest, protocolPrompt: ({ task, history, feedback }) => JSON.stringify({ task, history, feedback }) };
+  const projected = codeMakerContext(state, h), value = JSON.parse(projected.prompt);
+  assert.ok(Buffer.byteLength(projected.prompt) <= 2400);
+  assert.deepEqual(value.history[0].omittedSourceBodies, ['old.txt']);
+  assert.equal(value.history[1].currentSources[0].content, current.content);
+  assert.equal(value.history[1].currentSources[0].sha256, current.sha256);
+  assert.equal(value.task, state.task); assert.deepEqual(value.feedback, state.feedback);
+  assert.equal(value.history[0].makerIntent.untrusted, true);
+  assert.throws(() => codeMakerContext({ ...state, limits: { maxContextBytes: 600 } }, h), /required maker context exceeds/);
+});
+
+test('new evidence or a host mutation resets only the discovery-stagnation observation', () => {
+  const read = { type: 'read', path: 'a.txt', sha256: 'same' };
+  const repeated = Array.from({ length: 4 }, () => ({ actions: [read] }));
+  assert.equal(discoveryProgress(repeated).noNewSteps, 3);
+  assert.equal(discoveryProgress([...repeated, { actions: [{ ...read, sha256: 'changed' }] }]).noNewSteps, 0);
+  assert.equal(discoveryProgress([...repeated, { actions: [{ type: 'write', path: 'a.txt' }] }]).noNewSteps, 0);
+  assert.equal(discoveryProgress([...repeated, { actions: [{ type: 'list', files: ['new.txt'], total: 1 }] }]).noNewSteps, 0);
 });
 
 test('missing toolchain is environment evidence, and non-repeatable verification needs explicit replay', async (t) => {

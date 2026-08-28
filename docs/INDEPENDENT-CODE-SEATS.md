@@ -73,7 +73,12 @@ findings return to the same maker. The maker can repair, give an evidence-bound
 rebuttal/recheck reason, ask one bound question, or stop. Changed code loses its old
 verification/review binding and needs fresh closure. No extra controller model runs.
 Context rollover retains the original contract, open feedback, current file hashes
-and recent observations; safe files, including run-created files, remain readable.
+and distinct current source bodies where they fit, plus recent observations and
+explicitly non-authoritative maker intent. Omitted bodies are named, not represented
+as covered; latest requested reads are never clipped. Safe files, including run-created
+files, remain readable. Three unchanged discovery steps produce a warning in the
+next maker turn; six stop the run with its work preserved. This is a bounded
+no-new-evidence safeguard, not a claim that duration or token output proves progress.
 Oversized required evidence is refused, never represented as covered.
 Infrastructure failures and interrupted runs clear the terminal diff/fingerprint
 rather than present an older snapshot as current; inspect the retained worktree.
@@ -176,6 +181,8 @@ uncertain retries, current-candidate binding, context rollover, budgets, concurr
 ownership, bound answers, server restart, both directions of CLI/Studio continuation,
 and actual execution/resume from an extracted npm package. Synthetic browser testing
 also exercises launch, budget stop, reattachment and same-candidate continuation.
-A provider-backed
-campaign across these coding combinations has **not** been run; no optimal-pairing
-or production-gate claim follows from these tests.
+A [first live Luna maker attempt](DOGFOOD-PRODUCTIVE-LOOP-1.md) stopped before
+verification/review after repeated discovery, with no feature diff. The resulting
+context fix has offline coverage but has not yet passed a fresh live run. A campaign
+across these coding combinations has **not** been run; no optimal-pairing or
+production-gate claim follows from these tests or that unsuccessful attempt.

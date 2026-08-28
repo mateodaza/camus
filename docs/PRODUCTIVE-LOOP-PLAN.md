@@ -1,9 +1,11 @@
 # Productive Loop — service contract and next implementation plan
 
 Date: 2026-08-28. Baseline: 0.4.8, commit `745f51d`.
-Status: A–C implemented on `codex/productive-loop`, unreleased. Deterministic,
-cross-surface, package and synthetic-browser validation precedes D. No provider-backed
-dogfood or new model admission has been performed for this change.
+Status: A–C implemented on `codex/productive-loop`, unreleased. The first live
+dogfood on frozen commit `e8df8dd` failed productively: safe budget stop, but no
+feature code. It exposed a context-rollover/discovery loop missed by synthetic
+coverage. See [the attempt and bounded follow-up](DOGFOOD-PRODUCTIVE-LOOP-1.md).
+No model admission or release-readiness claim follows from this attempt.
 
 Implementation evidence (2026-08-28):
 
