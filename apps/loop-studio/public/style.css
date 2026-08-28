@@ -38,6 +38,27 @@ a { color: inherit; }
 :focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
 ::selection { background: #FAD4CF; color: var(--ink); }
 .hidden { display: none !important; }
+.calibration { max-width: 1240px; margin: 0 auto; padding: 32px 24px 56px; }
+.cal-head { display:flex; justify-content:space-between; gap:20px; align-items:start; margin-bottom:20px; }
+.cal-head h1 { font: 500 34px/1.1 var(--serif); margin-top:8px; }
+.cal-card { border:1px solid var(--rule); padding:18px; margin-bottom:16px; }
+.cal-grid { display:grid; grid-template-columns:180px minmax(0,1fr) 270px; gap:18px; align-items:start; }
+.cal-sidebar,.cal-label,.cal-artifact { border:1px solid var(--rule); padding:16px; min-width:0; }
+.cal-nav { display:grid; grid-template-columns:repeat(4,1fr); gap:5px; margin:16px 0; }
+.cal-nav-item { border:1px solid var(--rule); padding:5px; font:12px var(--mono); }
+.cal-nav-item.labeled { background:var(--ink); color:var(--paper); }
+.cal-meta { font:12px var(--mono); color:var(--muted); margin-bottom:16px; }
+.cal-contract { background:var(--code); border-left:3px solid var(--ink); padding:12px; margin-bottom:22px; white-space:pre-wrap; }
+.cal-artifact h2 { font:500 24px var(--serif); margin-bottom:8px; }
+.cal-deliverable { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.7; }
+.cal-label { display:flex; flex-direction:column; gap:10px; }
+.cal-label label { font:11px var(--mono); text-transform:uppercase; letter-spacing:.08em; color:var(--faint); }
+.cal-label input,.cal-label select { display:block; width:100%; margin-top:5px; padding:8px; border:1px solid var(--code-line); background:var(--paper); font:14px var(--sans); }
+.cal-label fieldset { border:1px solid var(--rule); padding:9px; display:grid; gap:6px; }
+.cal-label fieldset label { text-transform:none; letter-spacing:0; font:14px var(--sans); color:var(--ink); }
+.cal-label fieldset input { display:inline; width:auto; }
+.cal-save-state.bad { color:var(--red); }
+@media (max-width:900px) { .cal-grid { grid-template-columns:1fr; } .cal-sidebar { order:2; } .cal-label { order:3; } }
 .mono { font-family: var(--mono); font-size: 13px; }
 .muted { color: var(--muted); }
 

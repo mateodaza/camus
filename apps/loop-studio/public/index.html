@@ -33,6 +33,7 @@
       <div class="tools">
         <button id="open-setup" class="ghost">setup</button>
         <button id="open-settings" class="ghost">settings</button>
+        <button id="open-calibration" class="ghost">calibration</button>
         <!-- Jump, not a tab. Real Launch|Runs navigation introduces routing,
              responsive and accessibility work that deserves its own testing. -->
         <button id="jump-recents" class="ghost" aria-controls="recents">recent runs ↓</button>
@@ -245,6 +246,34 @@
     </footer>
   </main>
 
+  <main id="calibration" class="calibration hidden" aria-label="Blinded calibration workspace">
+    <header class="cal-head"><div><div class="lbl">BLINDED CALIBRATION</div><h1>Judge the artifact, not its maker.</h1><p id="cal-subtitle" class="hint">Private workspace · no model calls</p></div><button id="close-calibration" class="ghost">back to Studio</button></header>
+    <section id="cal-status" class="cal-card" aria-live="polite"></section>
+    <section id="cal-empty" class="cal-card hidden"></section>
+    <section id="cal-workspace" class="cal-grid hidden">
+      <aside class="cal-sidebar">
+        <div id="cal-progress"></div><div id="cal-nav" class="cal-nav"></div>
+        <div><button id="cal-prev" class="ghost">previous artifact</button><button id="cal-next" class="ghost">next artifact</button></div>
+        <button id="cal-next-unlabeled" class="ghost">next unlabeled</button>
+        <div id="cal-active-time" class="hint"></div><div id="cal-eta" class="hint"></div>
+        <div class="hint">Keyboard: ← / → navigate (when focus is outside fields).</div>
+      </aside>
+      <article class="cal-artifact"><div id="cal-meta" class="cal-meta"></div><div class="cal-contract"><div class="lbl">GOAL</div><div id="cal-goal"></div></div><div class="cal-contract"><div class="lbl">PINNED ACCEPTANCE CONTRACT</div><div id="cal-contract-text"></div><div id="cal-facts" class="hint"></div></div><h2>Deliverable</h2><div id="cal-deliverable" class="cal-deliverable"></div></article>
+      <aside class="cal-label">
+        <div class="lbl">YOUR LABEL</div><p class="hint">A draft is private scratch. Only the explicit commit button writes an immutable label.</p>
+        <label>Authority<select id="cal-authority"><option value="">Choose authority</option><option value="human">Human</option><option value="expert_ai_proxy">Expert AI proxy</option></select></label>
+        <label>Owner<input id="cal-owner" autocomplete="name" placeholder="Your name" /></label>
+        <label id="cal-delegated-wrap" class="hidden">Human delegator<input id="cal-delegated" autocomplete="name" /></label>
+        <fieldset><legend>Verdict</legend><label><input type="radio" name="cal-verdict" value="APPROVED"> APPROVED</label><label><input type="radio" name="cal-verdict" value="REVISE"> REVISE</label></fieldset>
+        <fieldset><legend>Finding presence</legend><label><input type="radio" name="cal-presence" value="clean"> clean</label><label><input type="radio" name="cal-presence" value="findings"> findings</label></fieldset>
+        <p class="hint">APPROVED + clean: the contract is met, no findings. APPROVED + findings: only non-blocking findings remain. REVISE + findings: changes are required. Your judgment, not a model's suggestion.</p>
+        <div id="cal-save-state" class="hint" aria-live="polite"></div><div id="cal-committed" class="hint" aria-live="polite"></div>
+        <button id="cal-commit" class="primary" disabled>Commit immutable label</button>
+      </aside>
+    </section>
+    <section id="cal-disagreements" class="cal-card hidden"></section>
+  </main>
+
   <!-- ============ Run view ============ -->
   <main id="runview" class="runview hidden">
     <header class="runbar">
@@ -289,5 +318,6 @@
   <!-- Module: app.js imports the pure banner policy (banner.mjs) — one file
        owns the done-banner rules, shared verbatim with verify.test.mjs. -->
   <script type="module" src="./app.js"></script>
+  <script type="module" src="./calibration.mjs"></script>
 </body>
 </html>

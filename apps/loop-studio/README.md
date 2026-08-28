@@ -279,3 +279,16 @@ The hosted web app never receives your credentials — it is glass. The local se
 3. Keep a `npm run rehearse` (`MOCK_SPEED=2`) window ready as the fallback — same UI, scripted beats: 3 findings → fix → a question for the room → fix → clean review → dead-link red gate → fix → green.
 4. Fill both the goal and **“What must be true for you to trust the result?”**; narrate the latter as the contract the second model judges.
 5. End on the sealed evidence card, then download the full pack. Finished runs replay from Recent runs, so yesterday's green is always one click away.
+
+## Blinded calibration workspace
+
+Choose **calibration** in Studio to prepare or reopen the active campaign generation. The browser
+shows one anonymous artifact at a time: goal, pinned acceptance contract, and deliverable. It never
+shows maker identity, source runs, judge results, or receipts before the human labeling phase closes.
+Draft fields autosave privately and survive refresh; nothing becomes evidence until you choose an
+authority, owner, verdict, and finding presence and press **Commit immutable label**. Human labels use
+your name. Expert-AI proxy labels are separate and require both a proxy owner and a human delegator.
+
+After all labels are committed and the server unlocks disagreements, the read-only comparison is
+available. To run paid judges later, use the explicit CLI command shown by the operator guide; the
+workspace itself never calls a model or changes routing.

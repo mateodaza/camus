@@ -13,6 +13,7 @@ import { studioAtomicWrite, STUDIO_DIR_MODE, STUDIO_FILE_MODE } from './grandfat
 const HASH = /^sha256:[a-f0-9]{64}$/;
 const VERDICTS = new Set(['APPROVED', 'REVISE']);
 const FINDING_PRESENCE = new Set(['clean', 'findings']);
+const JUDGE_ATTEMPT_STATUSES = new Set(['started', 'infra_failed']);
 
 const hashText = (value) => `sha256:${createHash('sha256').update(String(value), 'utf8').digest('hex')}`;
 const canonicalIso = (value) => {
@@ -127,7 +128,7 @@ export function selectCalibrationArtifacts(campaign, configHash, reports, count 
 }
 
 function humanOwner(value) {
-  const raw = required(value, 'human label owner').replace(/^human:/i, '').trim();
+  const raw = required(required(value, 'human label owner').replace(/^human:/i, '').trim(), 'human label owner');
   if (/\b(ai|agent|bot|model|claude|codex|gpt|camus)\b/i.test(raw)) {
     throw new Error('the human label owner must identify a person, not an AI, agent, model, or Camus');
   }
@@ -135,7 +136,7 @@ function humanOwner(value) {
 }
 
 function proxyOwner(value) {
-  const raw = required(value, 'expert AI proxy').replace(/^expert_ai_proxy:/i, '').trim();
+  const raw = required(required(value, 'expert AI proxy').replace(/^expert_ai_proxy:/i, '').trim(), 'expert AI proxy');
   return `expert_ai_proxy:${raw}`;
 }
 
@@ -214,11 +215,18 @@ export function validateCalibrationQueue(queue, campaign, configHash) {
     required(run.sourceRunId, 'judge sourceRunId');
     if (!canonicalIso(run.recordedAt)) throw new Error('calibration judge run recordedAt must be canonical ISO');
   }
+  const activeAttemptKeys = new Set();
   for (const attempt of queue.attempts) {
-    if (!ids.has(attempt.artifactId) || !judgeIds.has(attempt.judgeId) || attempt.status !== 'infra_failed') throw new Error('calibration judge attempt binding is invalid');
+    if (!ids.has(attempt.artifactId) || !judgeIds.has(attempt.judgeId) || !JUDGE_ATTEMPT_STATUSES.has(attempt.status)) throw new Error('calibration judge attempt binding is invalid');
     required(attempt.sourceRunId, 'judge attempt sourceRunId');
     required(attempt.error, 'judge attempt error');
     if (!canonicalIso(attempt.recordedAt)) throw new Error('calibration judge attempt recordedAt must be canonical ISO');
+    if (attempt.status === 'started') {
+      const key = `${attempt.artifactId}\u0000${attempt.judgeId}`;
+      if (activeAttemptKeys.has(key)) throw new Error('calibration judge execution is already in progress for this artifact and judge');
+      if (runKeys.has(key)) throw new Error('calibration judge cannot retain an active attempt after completion');
+      activeAttemptKeys.add(key);
+    }
   }
   validateJudgeCalibration(calibrationValueFromQueue(queue), campaign);
   return queue;
@@ -279,8 +287,14 @@ export function resolveCalibrationArtifact(queue, selector) {
   return matches[0];
 }
 
+// A judge execution freezes labels as soon as its durable reservation exists. A
+// failed attempt remains evidence and keeps labels frozen, while the reservation
+// API below still permits a deliberate retry after an explicit infra failure.
+export function isCalibrationFrozen(queue) {
+  return (queue?.judgeRuns?.length ?? 0) > 0 || (queue?.attempts?.length ?? 0) > 0;
+}
+
 export function labelCalibrationArtifact(queue, selector, { verdict, findingPresence, human = null, proxy = null, delegatedBy = null, labeledAt = new Date().toISOString() }) {
-  if (queue.judgeRuns.length) throw new Error('human labels are frozen after the first judge run');
   const artifact = resolveCalibrationArtifact(queue, selector);
   const normalizedVerdict = String(verdict ?? '').toUpperCase();
   const normalizedPresence = String(findingPresence ?? '').toLowerCase();
@@ -298,12 +312,47 @@ export function labelCalibrationArtifact(queue, selector, { verdict, findingPres
       labeledAt,
     };
   if (artifact.humanLabel) {
-    const same = artifact.humanLabel.verdict === next.verdict && artifact.humanLabel.findingPresence === next.findingPresence && artifact.humanLabel.labeledBy === next.labeledBy;
-    if (same) return queue;
+    const same = artifact.humanLabel.authority === next.authority
+      && artifact.humanLabel.verdict === next.verdict
+      && artifact.humanLabel.findingPresence === next.findingPresence
+      && artifact.humanLabel.labeledBy === next.labeledBy
+      && (artifact.humanLabel.delegatedBy ?? null) === (next.delegatedBy ?? null);
+    if (same) return { queue, artifact, idempotent: true };
+    if (isCalibrationFrozen(queue)) throw new Error('human labels are frozen after judge execution begins');
     throw new Error('this artifact already has a different immutable human label');
   }
+  if (isCalibrationFrozen(queue)) throw new Error('human labels are frozen after judge execution begins');
   artifact.humanLabel = next;
-  return queue;
+  return { queue, artifact, idempotent: false };
+}
+
+// Reserve exactly one paid judge cell while the caller holds the shared workspace
+// lock. A prior explicit infra failure stays in the durable history but does not
+// block a deliberate retry; an unresolved started marker fails closed because a
+// crash leaves the paid-call outcome unknown.
+export function reserveCalibrationJudgeCell(queue, campaign, selector, judgeId, { sourceRunId, recordedAt = new Date().toISOString() }) {
+  if (queue.artifacts.some((artifact) => !artifact.humanLabel)) throw new Error('every artifact needs a human label before any judge runs');
+  const artifact = resolveCalibrationArtifact(queue, selector);
+  if (!campaign.calibration.judges.some((judge) => judge.id === judgeId)) throw new Error(`unknown calibration judge ${judgeId}`);
+  if (queue.judgeRuns.some((run) => run.artifactId === artifact.id && run.judgeId === judgeId)) {
+    return { queue, artifact, reserved: false, reason: 'completed' };
+  }
+  const runId = required(sourceRunId, 'judge sourceRunId');
+  if (queue.judgeRuns.some((run) => run.sourceRunId === runId) || queue.attempts.some((attempt) => attempt.sourceRunId === runId)) {
+    throw new Error('judge sourceRunId is already reserved');
+  }
+  if (queue.attempts.some((attempt) => attempt.artifactId === artifact.id && attempt.judgeId === judgeId && attempt.status === 'started')) {
+    throw new Error('judge execution is already in progress or has an unresolved crash marker; inspect and recover it before retrying');
+  }
+  queue.attempts.push({
+    artifactId: artifact.id,
+    judgeId,
+    sourceRunId: runId,
+    status: 'started',
+    error: 'judge execution started; result is pending durable completion',
+    recordedAt,
+  });
+  return { queue, artifact, reserved: true, reason: 'started' };
 }
 
 export function recordCalibrationJudgeRun(queue, campaign, selector, judgeId, result, { sourceRunId, recordedAt = new Date().toISOString() }) {
@@ -312,13 +361,19 @@ export function recordCalibrationJudgeRun(queue, campaign, selector, judgeId, re
   if (!campaign.calibration.judges.some((judge) => judge.id === judgeId)) throw new Error(`unknown calibration judge ${judgeId}`);
   const existing = queue.judgeRuns.find((run) => run.artifactId === artifact.id && run.judgeId === judgeId);
   if (existing) return queue;
+  const runId = required(sourceRunId, 'judge sourceRunId');
+  const active = queue.attempts.find((attempt) => attempt.artifactId === artifact.id && attempt.judgeId === judgeId && attempt.status === 'started');
+  if (active && active.sourceRunId !== runId) throw new Error('judge completion does not match the active durable reservation');
+  if (queue.judgeRuns.some((run) => run.sourceRunId === runId) || queue.attempts.some((attempt) => attempt.sourceRunId === runId && attempt !== active)) {
+    throw new Error('judge sourceRunId is already reserved for another execution');
+  }
   if (!result?.ran || !VERDICTS.has(result.verdict) || !required(result.reviewerIdentity, 'judge actual identity')) throw new Error('only a completed normalized judge result can enter calibration');
   const findingPresence = (result.findings ?? []).length ? 'findings' : 'clean';
   if (result.verdict === 'REVISE' && findingPresence !== 'findings') throw new Error('a revising judge result must contain findings');
   queue.judgeRuns.push({
     artifactId: artifact.id,
     judgeId,
-    sourceRunId: required(sourceRunId, 'judge sourceRunId'),
+    sourceRunId: runId,
     actualIdentity: result.reviewerIdentity,
     verdict: result.verdict,
     findingPresence,
@@ -327,12 +382,35 @@ export function recordCalibrationJudgeRun(queue, campaign, selector, judgeId, re
     durationMs: result.durationMs ?? null,
     recordedAt,
   });
+  // Retire only this exact successful reservation. Prior failed attempts retain
+  // their evidence, and a different in-flight reservation is never erased.
+  queue.attempts = queue.attempts.filter((attempt) => !(
+    attempt.artifactId === artifact.id
+    && attempt.judgeId === judgeId
+    && attempt.sourceRunId === runId
+    && attempt.status === 'started'
+  ));
   return queue;
 }
 
 export function recordCalibrationJudgeFailure(queue, selector, judgeId, error, { sourceRunId, recordedAt = new Date().toISOString() }) {
   const artifact = resolveCalibrationArtifact(queue, selector);
-  queue.attempts.push({ artifactId: artifact.id, judgeId, sourceRunId, status: 'infra_failed', error: String(error).slice(0, 500), recordedAt });
+  const runId = required(sourceRunId, 'judge sourceRunId');
+  const prior = queue.attempts.find((attempt) => (
+    attempt.artifactId === artifact.id
+    && attempt.judgeId === judgeId
+    && attempt.sourceRunId === runId
+    && attempt.status === 'started'
+  ));
+  const sourceCollision = queue.attempts.find((attempt) => attempt.sourceRunId === runId);
+  if (sourceCollision && sourceCollision !== prior) throw new Error('judge failure does not match the active durable reservation');
+  if (prior) {
+    prior.status = 'infra_failed';
+    prior.error = String(error).slice(0, 500) || 'judge failed';
+    prior.recordedAt = recordedAt;
+    return queue;
+  }
+  queue.attempts.push({ artifactId: artifact.id, judgeId, sourceRunId: runId, status: 'infra_failed', error: String(error).slice(0, 500) || 'judge failed', recordedAt });
   return queue;
 }
 
@@ -355,7 +433,7 @@ export function calibrationQueueSummary(queue, campaign) {
     humanLabels,
     proxyLabels,
     pendingHumanLabels: queue.artifacts.length - labels,
-    labelsFrozen: queue.judgeRuns.length > 0,
+    labelsFrozen: isCalibrationFrozen(queue),
     judgeRuns: queue.judgeRuns.length,
     infraFailures: queue.attempts.filter((attempt) => attempt.status === 'infra_failed').length,
     judges,

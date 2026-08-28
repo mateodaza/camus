@@ -8,11 +8,14 @@ import { loadModelEvalCampaign, modelEvalCampaignHash } from './model-eval-campa
 import { judgeCalibrationPaths, loadJudgeCalibration, summarizeJudgeCalibration } from './judge-calibration.mjs';
 import {
   calibrationValueFromQueue,
+  isCalibrationFrozen,
   labelCalibrationArtifact,
   loadCalibrationQueue,
   persistCalibrationQueue,
   prepareCalibrationQueue,
   recordCalibrationJudgeRun,
+  recordCalibrationJudgeFailure,
+  reserveCalibrationJudgeCell,
   selectCalibrationArtifacts,
 } from './model-eval-calibration.mjs';
 
@@ -114,6 +117,15 @@ try {
   assert.throws(() => labelCalibrationArtifact(queue, 1, {
     verdict: 'APPROVED', findingPresence: 'clean', human: 'AI agent',
   }), /must identify a person/);
+  assert.throws(() => labelCalibrationArtifact(structuredClone(queue), 1, {
+    verdict: 'APPROVED', findingPresence: 'clean', human: 'human:',
+  }), /human label owner must be a non-empty string/);
+  assert.throws(() => labelCalibrationArtifact(structuredClone(queue), 1, {
+    verdict: 'APPROVED', findingPresence: 'clean', proxy: 'expert_ai_proxy:', delegatedBy: 'Mateo',
+  }), /expert AI proxy must be a non-empty string/);
+  assert.throws(() => labelCalibrationArtifact(structuredClone(queue), 1, {
+    verdict: 'APPROVED', findingPresence: 'clean', proxy: 'codex', delegatedBy: 'human:',
+  }), /human label owner must be a non-empty string/);
   assert.throws(() => labelCalibrationArtifact(queue, 1, {
     verdict: 'REVISE', findingPresence: 'clean', human: 'Mateo',
   }), /REVISE human label must record/);
@@ -129,6 +141,16 @@ try {
     authority: 'expert_ai_proxy', verdict: 'APPROVED', findingPresence: 'clean',
     labeledBy: 'expert_ai_proxy:codex', delegatedBy: 'human:Mateo', labeledAt: '2026-08-26T12:00:00.000Z',
   });
+  const canonicalRetry = structuredClone(queue);
+  const firstLabel = labelCalibrationArtifact(canonicalRetry, 1, {
+    verdict: 'approved', findingPresence: 'CLEAN', human: 'Mateo', labeledAt: '2026-08-26T12:00:00.000Z',
+  });
+  const exactRetry = labelCalibrationArtifact(canonicalRetry, 1, {
+    verdict: 'APPROVED', findingPresence: 'clean', human: 'human:Mateo', labeledAt: '2026-08-26T12:01:00.000Z',
+  });
+  assert.equal(firstLabel.idempotent, false);
+  assert.equal(exactRetry.idempotent, true, 'canonical normalized/prefixed retry is semantic no-op');
+  assert.equal(canonicalRetry.artifacts[0].humanLabel.labeledAt, '2026-08-26T12:00:00.000Z');
 
   for (const artifact of queue.artifacts) {
     const revise = artifact.ordinal % 2 === 0;
@@ -141,6 +163,36 @@ try {
   }
   persistCalibrationQueue(queue, campaign, configHash, paths);
   assert.equal(loadJudgeCalibration(campaign, paths.value).summary.humanLabeledArtifacts, 12);
+
+  const attemptQueue = structuredClone(queue);
+  const judgeForAttempt = campaign.calibration.judges[0];
+  const firstReservation = reserveCalibrationJudgeCell(attemptQueue, campaign, attemptQueue.artifacts[0].id, judgeForAttempt.id, {
+    sourceRunId: 'started-attempt', recordedAt: '2026-08-26T12:30:00.000Z',
+  });
+  assert.equal(firstReservation.reserved, true);
+  assert.equal(isCalibrationFrozen(attemptQueue), true, 'a durable started attempt freezes labels before adapter completion');
+  assert.throws(() => reserveCalibrationJudgeCell(attemptQueue, campaign, attemptQueue.artifacts[0].id, judgeForAttempt.id, {
+    sourceRunId: 'second-started-attempt', recordedAt: '2026-08-26T12:31:00.000Z',
+  }), /already in progress|unresolved crash/i);
+  assert.throws(() => recordCalibrationJudgeRun(attemptQueue, campaign, attemptQueue.artifacts[0].id, judgeForAttempt.id, {
+    ran: true, verdict: 'APPROVED', findings: [], reviewerIdentity: 'openai:synthetic',
+  }, { sourceRunId: 'wrong-reservation', recordedAt: '2026-08-26T12:31:30.000Z' }), /does not match.*reservation/i, 'a stale completion cannot retire another caller\'s start');
+  assert.throws(() => recordCalibrationJudgeFailure(attemptQueue, attemptQueue.artifacts[1].id, judgeForAttempt.id, 'wrong cell', {
+    sourceRunId: 'started-attempt', recordedAt: '2026-08-26T12:31:45.000Z',
+  }), /does not match.*reservation/i, 'a stale failure cannot mutate another caller\'s start');
+  recordCalibrationJudgeFailure(attemptQueue, attemptQueue.artifacts[0].id, judgeForAttempt.id, 'synthetic aborted adapter', {
+    sourceRunId: 'started-attempt', recordedAt: '2026-08-26T12:32:00.000Z',
+  });
+  assert.equal(attemptQueue.attempts[0].status, 'infra_failed', 'failure promotes the exact start marker without dropping evidence');
+  const retryReservation = reserveCalibrationJudgeCell(attemptQueue, campaign, attemptQueue.artifacts[0].id, judgeForAttempt.id, {
+    sourceRunId: 'explicit-retry-after-failure', recordedAt: '2026-08-26T12:33:00.000Z',
+  });
+  assert.equal(retryReservation.reserved, true, 'an explicit retry after recorded infra failure can reserve a fresh cell');
+  const frozenUnlabeled = structuredClone(attemptQueue);
+  frozenUnlabeled.artifacts.at(-1).humanLabel = null;
+  assert.throws(() => labelCalibrationArtifact(frozenUnlabeled, frozenUnlabeled.artifacts.at(-1).id, {
+    verdict: 'APPROVED', findingPresence: 'clean', human: 'Mateo',
+  }), /frozen/i);
 
   const screenSeats = new Set(campaign.independence.judgeScreens.map((screen) => `${screen.reviewer.backend}:${screen.reviewer.model}`));
   const activeJudges = campaign.calibration.judges.filter((judge) => screenSeats.has(`${judge.backend}:${judge.model}`));

@@ -50,6 +50,21 @@ import { findEvaluationCase, loadModelEvalCampaign, modelEvalCampaignHash } from
 import { loadEvaluationReports, summarizeEvaluationReports } from './lib/model-eval-summary.mjs';
 import { loadJudgeCalibration } from './lib/judge-calibration.mjs';
 import { classifyTaskClass, deriveAutomaticRoute } from './lib/model-routing.mjs';
+import {
+  activeGenerationId,
+  assertGenerationMatches,
+  blindedArtifactView,
+  commitCalibrationLabel,
+  disagreementView,
+  loadWorkspaceSidecar,
+  prepareWorkspace,
+  resolveWorkspaceArtifact,
+  resolveWorkspacePaths,
+  saveWorkspaceDraft,
+  WorkspaceError,
+  workspaceStatusView,
+} from './lib/calibration-workspace.mjs';
+import { loadCalibrationQueue, resolveCalibrationArtifact } from './lib/model-eval-calibration.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dirname, 'public');
@@ -1320,6 +1335,33 @@ function corsHeaders(req) {
   };
 }
 
+// The private calibration workspace is stricter than the rest of the API: every
+// endpoint — GET included — must carry the per-session token, because a bare
+// cross-origin GET drive-by (no Origin, no token) must never read a blinded
+// artifact, a draft, or disagreement data. Host/Origin are already enforced by
+// authorize() upstream; this adds the token on top for GET and POST alike.
+function calibrationTokenOk(req) {
+  return req.headers['x-studio-token'] === SESSION_TOKEN;
+}
+function sendWorkspaceError(res, err) {
+  if (err instanceof WorkspaceError) return json(res, err.httpCode, { error: err.message });
+  // Never forward a raw error (it can contain absolute paths / receipts).
+  return json(res, 500, { error: 'calibration workspace error' });
+}
+// Re-read the active-generation queue for a read-only endpoint, mapping the
+// unprepared/stale cases to bounded, path-free errors.
+function loadWorkspaceQueueOrError(paths) {
+  if (!existsSync(paths.queue)) throw new WorkspaceError(404, 'the calibration workspace is not prepared for the active generation');
+  try {
+    return loadCalibrationQueue(MODEL_EVAL_CAMPAIGN, MODEL_EVAL_CAMPAIGN_HASH, paths);
+  } catch (error) {
+    if (/stale for the active campaign generation/.test(error.message)) {
+      throw new WorkspaceError(409, 'the calibration queue is stale for the active campaign; reload');
+    }
+    throw new WorkspaceError(500, 'the calibration queue could not be read');
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname;
@@ -1618,6 +1660,131 @@ const server = http.createServer(async (req, res) => {
         advisoryAcceptanceChars: ADVISORY_ACCEPTANCE_CHARS,
         lanes: Object.fromEntries(Object.entries(LANES).map(([k, v]) => [k, v.label])),
       });
+    }
+
+    // ---- Blinded calibration workspace (private; token required on GET+POST) --
+    // Nothing here calls a model, runs judges, publishes, grants admission, alters
+    // routing, or scans arbitrary paths. It operates ONLY on the active generation.
+    if (path.startsWith('/api/calibration/')) {
+      if (!calibrationTokenOk(req)) {
+        return json(res, 401, { error: 'missing or wrong session token; reload the page' });
+      }
+      const generation = activeGenerationId(MODEL_EVAL_CAMPAIGN);
+      const paths = resolveWorkspacePaths(MODEL_EVAL_CAMPAIGN);
+      try {
+        if (path === '/api/calibration/prepare' && req.method === 'POST') {
+          const body = await readBody(req);
+          // Prepare is a mutation: it must name the active generation and bind to
+          // the current revision ('0' for a create, the queue revision for reuse),
+          // so a stale/cross-generation client cannot create or clobber a queue.
+          assertGenerationMatches(MODEL_EVAL_CAMPAIGN, body.generation);
+          const result = await prepareWorkspace(MODEL_EVAL_CAMPAIGN, MODEL_EVAL_CAMPAIGN_HASH, RUNS_DIR, paths, { expectedRevision: body.revision });
+          const sidecar = loadWorkspaceSidecar(paths, MODEL_EVAL_CAMPAIGN, MODEL_EVAL_CAMPAIGN_HASH, generation);
+          return json(res, result.created ? 201 : 200, {
+            prepared: true,
+            created: result.created,
+            ...workspaceStatusView(result.queue, MODEL_EVAL_CAMPAIGN, sidecar, generation),
+          });
+        }
+
+        if (path === '/api/calibration/workspace' && req.method === 'GET') {
+          // Bootstrap is read-only and token protected like the prepared view.
+          // The browser must discover these bindings, not guess host environment
+          // settings or call prepare with an implicit/default generation.
+          if (!existsSync(paths.queue)) {
+            return json(res, 200, {
+              prepared: false,
+              generation,
+              campaignId: MODEL_EVAL_CAMPAIGN.id,
+              queueRevision: 0,
+              draftSidecarRevision: 0,
+              totalArtifacts: 0,
+              labeled: 0,
+              labelsFrozen: false,
+              disagreementsAvailable: false,
+            });
+          }
+          const queue = loadWorkspaceQueueOrError(paths);
+          const sidecar = loadWorkspaceSidecar(paths, MODEL_EVAL_CAMPAIGN, MODEL_EVAL_CAMPAIGN_HASH, generation);
+          return json(res, 200, { prepared: true, ...workspaceStatusView(queue, MODEL_EVAL_CAMPAIGN, sidecar, generation) });
+        }
+
+        if (path === '/api/calibration/artifact' && req.method === 'GET') {
+          const queue = loadWorkspaceQueueOrError(paths);
+          const selector = url.searchParams.get('selector');
+          if (selector == null || selector === '') throw new WorkspaceError(400, 'an artifact selector is required');
+          // Allowlisted resolver: a browser selector is only a public ordinal or
+          // content id, never a private sourceRunId (which would defeat blinding).
+          const artifact = resolveWorkspaceArtifact(queue, selector);
+          const sidecar = loadWorkspaceSidecar(paths, MODEL_EVAL_CAMPAIGN, MODEL_EVAL_CAMPAIGN_HASH, generation);
+          return json(res, 200, blindedArtifactView(queue, artifact, sidecar, generation));
+        }
+
+        if (path === '/api/calibration/draft' && req.method === 'POST') {
+          const body = await readBody(req);
+          assertGenerationMatches(MODEL_EVAL_CAMPAIGN, body.generation);
+          const patch = {};
+          for (const key of ['verdict', 'findingPresence', 'authority', 'owner', 'delegatedBy']) {
+            if (Object.hasOwn(body, key)) patch[key] = body[key];
+          }
+          const { sidecar, artifact } = await saveWorkspaceDraft(MODEL_EVAL_CAMPAIGN, MODEL_EVAL_CAMPAIGN_HASH, paths, {
+            selector: body.artifactSelector,
+            patch,
+            expectedRevision: body.revision,
+            navigate: body.navigateTo,
+            activeMs: body.activeMs,
+          });
+          const queue = loadWorkspaceQueueOrError(paths);
+          const view = artifact
+            ? blindedArtifactView(queue, resolveCalibrationArtifact(queue, artifact.id), sidecar, generation)
+            : null;
+          return json(res, 200, {
+            saved: true,
+            draft: view?.draft ?? null,
+            navigation: { currentArtifactId: sidecar.navigation.currentArtifactId },
+            draftRevision: view?.draftRevision ?? null,
+            draftSidecarRevision: sidecar.revision,
+          });
+        }
+
+        if (path === '/api/calibration/label' && req.method === 'POST') {
+          const body = await readBody(req);
+          assertGenerationMatches(MODEL_EVAL_CAMPAIGN, body.generation);
+          const result = await commitCalibrationLabel(MODEL_EVAL_CAMPAIGN, MODEL_EVAL_CAMPAIGN_HASH, paths, {
+            selector: body.artifactSelector,
+            authority: body.authority,
+            owner: body.owner,
+            delegatedBy: body.delegatedBy,
+            verdict: body.verdict,
+            findingPresence: body.findingPresence,
+            expectedRevision: body.revision,
+            expectedDraftRevision: body.draftRevision,
+            // A browser NEW label must bind to the queue revision; an idempotent
+            // retry is exempt (it short-circuits before the revision check).
+            requireExpectedRevision: true,
+            requireExpectedDraftRevision: true,
+          });
+          const sidecar = loadWorkspaceSidecar(paths, MODEL_EVAL_CAMPAIGN, MODEL_EVAL_CAMPAIGN_HASH, generation);
+          const fresh = resolveCalibrationArtifact(result.queue, result.artifact.id);
+          return json(res, 200, {
+            committed: true,
+            idempotent: result.idempotent,
+            artifact: blindedArtifactView(result.queue, fresh, sidecar, generation),
+            queueRevision: result.revision,
+            status: workspaceStatusView(result.queue, MODEL_EVAL_CAMPAIGN, sidecar, generation),
+          });
+        }
+
+        if (path === '/api/calibration/disagreements' && req.method === 'GET') {
+          const queue = loadWorkspaceQueueOrError(paths);
+          const view = disagreementView(queue, MODEL_EVAL_CAMPAIGN, generation);
+          return json(res, view.available ? 200 : 409, view);
+        }
+
+        return json(res, 404, { error: 'not found' });
+      } catch (err) {
+        return sendWorkspaceError(res, err);
+      }
     }
 
     if (path === '/api/comparisons' && req.method === 'POST') {

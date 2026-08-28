@@ -7,6 +7,7 @@
 
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -15,14 +16,15 @@ import { loadEvaluationReports } from './lib/model-eval-summary.mjs';
 import { judgeCalibrationPaths, loadJudgeCalibration } from './lib/judge-calibration.mjs';
 import {
   calibrationQueueSummary,
-  labelCalibrationArtifact,
   loadCalibrationQueue,
   persistCalibrationQueue,
   prepareCalibrationQueue,
+  reserveCalibrationJudgeCell,
   recordCalibrationJudgeFailure,
   recordCalibrationJudgeRun,
   resolveCalibrationArtifact,
 } from './lib/model-eval-calibration.mjs';
+import { commitCalibrationLabel, withCalibrationLock } from './lib/calibration-workspace.mjs';
 import { reviewPrompt } from './lib/prompts.mjs';
 import { extractThresholdLines } from './lib/verify.mjs';
 import { runCodexReview } from './lib/adapters/codex.mjs';
@@ -94,13 +96,17 @@ if (commands !== 1) die('choose exactly one command');
 if (args.prepare) {
   const { reports, unreadableReports } = loadEvaluationReports(args.runs);
   if (unreadableReports) die(`${unreadableReports} report(s) are unreadable; repair them before selecting calibration evidence`);
-  const result = prepareCalibrationQueue(campaign, configHash, reports, { paths });
+  // Acquire the SHARED workspace lock before inspecting or creating the queue, so
+  // a concurrent HTTP prepare cannot create the queue between prepareCalibrationQueue's
+  // existence check and its persist and have this CLI overwrite it with a stale
+  // unlabeled queue (which could drop a label committed in that interval).
+  const result = await withCalibrationLock(paths, () => prepareCalibrationQueue(campaign, configHash, reports, { paths }));
   if (!args.json) console.log(`${result.created ? 'Prepared' : 'Reused'} ${result.queue.artifacts.length} blinded artifacts at ${paths.artifactsDir}`);
   printStatus(result.queue, args.json, paths);
   process.exit(0);
 }
 
-const queue = loadCalibrationQueue(campaign, configHash, paths);
+let queue = loadCalibrationQueue(campaign, configHash, paths);
 
 if (args.status) {
   printStatus(queue, args.json, paths);
@@ -120,17 +126,23 @@ if (args.label) {
   if (!args.artifact || !args.verdict || !args.findingPresence || (Boolean(args.human) === Boolean(args.proxy)) || (args.proxy && !args.delegatedBy)) {
     die('--label requires artifact, verdict, finding presence, and exactly one of --human or --proxy; proxy labels also require --delegated-by');
   }
-  labelCalibrationArtifact(queue, args.artifact, {
-    verdict: args.verdict,
-    findingPresence: args.findingPresence,
-    human: args.human,
-    proxy: args.proxy,
-    delegatedBy: args.delegatedBy,
-  });
-  persistCalibrationQueue(queue, campaign, configHash, paths);
-  const artifact = resolveCalibrationArtifact(queue, args.artifact);
-  console.log(`Recorded immutable ${artifact.humanLabel.authority} label for artifact ${artifact.ordinal}: ${artifact.humanLabel.verdict}/${artifact.humanLabel.findingPresence} by ${artifact.humanLabel.labeledBy}`);
-  printStatus(queue, args.json, paths);
+  // Route through the shared workspace transaction so a terminal label and a
+  // browser tab take the SAME cross-process lock and re-read under it. The queue
+  // loaded above is only for the pre-flight; the transaction re-reads from disk.
+  let committed;
+  try {
+    committed = await commitCalibrationLabel(campaign, configHash, paths, {
+      selector: args.artifact,
+      authority: args.human ? 'human' : 'expert_ai_proxy',
+      owner: args.human ?? args.proxy,
+      delegatedBy: args.delegatedBy,
+      verdict: args.verdict,
+      findingPresence: args.findingPresence,
+    });
+  } catch (error) { die(error.message); }
+  const artifact = resolveCalibrationArtifact(committed.queue, args.artifact);
+  console.log(`${committed.idempotent ? 'Confirmed existing' : 'Recorded immutable'} ${artifact.humanLabel.authority} label for artifact ${artifact.ordinal}: ${artifact.humanLabel.verdict}/${artifact.humanLabel.findingPresence} by ${artifact.humanLabel.labeledBy}`);
+  printStatus(committed.queue, args.json, paths);
   process.exit(0);
 }
 
@@ -165,7 +177,29 @@ try {
       fatalError = 'calibration judge run stopped by operator';
       break;
     }
-    const sourceRunId = `cal-${judge.id}-${artifact.id.slice(7, 15)}-${Date.now()}`;
+    const sourceRunId = `cal-${judge.id}-${artifact.id.slice(7, 15)}-${randomUUID()}`;
+    // Reserve the exact paid {artifact, judge} cell before any adapter call. This
+    // re-reads under the same cross-process lock used by browser/CLI mutations so
+    // a second CLI cannot buy the same judge decision while this adapter is live.
+    let reservation;
+    try {
+      reservation = await withCalibrationLock(paths, () => {
+        const fresh = loadCalibrationQueue(campaign, configHash, paths);
+        const result = reserveCalibrationJudgeCell(fresh, campaign, artifact.id, judge.id, { sourceRunId });
+        if (result.reserved) persistCalibrationQueue(fresh, campaign, configHash, paths);
+        return result;
+      });
+    } catch (error) {
+      fatalError = `${judge.id} cannot reserve artifact ${artifact.ordinal}: ${error.message}`;
+      break;
+    }
+    if (!reservation.reserved) {
+      // A concurrent caller already recorded this exact cell. Do not invoke an
+      // adapter; continue an --all request and keep the latest durable queue.
+      queue = reservation.queue;
+      console.error(`model-calibrate: ${judge.id} already recorded artifact ${artifact.ordinal}; no model call was made`);
+      continue;
+    }
     const receiptDir = join(paths.receiptsDir, sourceRunId);
     mkdirSync(receiptDir, { recursive: true, mode: 0o700 });
     chmodSync(receiptDir, 0o700);
@@ -203,14 +237,28 @@ try {
       onSession: () => {},
     });
     try { chmodSync(join(receiptDir, 'last.json'), 0o600); } catch { /* infra result below owns the diagnosis */ }
+    // The model call above is long; a concurrent CLI or browser tab may have
+    // mutated the queue meanwhile. Re-read and merge the paid result under the
+    // SAME shared lock so the last writer never drops another writer's run.
     if (!result.ran) {
-      recordCalibrationJudgeFailure(queue, artifact.id, judge.id, result.error || 'judge failed', { sourceRunId });
-      persistCalibrationQueue(queue, campaign, configHash, paths);
+      queue = await withCalibrationLock(paths, () => {
+        const fresh = loadCalibrationQueue(campaign, configHash, paths);
+        // Promote only this exact durable start marker to a terminal failure;
+        // earlier failed attempts remain evidence and do not block a later retry.
+        recordCalibrationJudgeFailure(fresh, artifact.id, judge.id, result.error || 'judge failed', { sourceRunId });
+        persistCalibrationQueue(fresh, campaign, configHash, paths);
+        return fresh;
+      });
       fatalError = `${judge.id} failed on artifact ${artifact.ordinal}: ${result.error || 'unknown infra failure'}; stopped before buying another call`;
       break;
     }
-    recordCalibrationJudgeRun(queue, campaign, artifact.id, judge.id, result, { sourceRunId });
-    persistCalibrationQueue(queue, campaign, configHash, paths);
+    queue = await withCalibrationLock(paths, () => {
+      const fresh = loadCalibrationQueue(campaign, configHash, paths);
+      // The canonical recorder retires only this exact started reservation.
+      recordCalibrationJudgeRun(fresh, campaign, artifact.id, judge.id, result, { sourceRunId });
+      persistCalibrationQueue(fresh, campaign, configHash, paths);
+      return fresh;
+    });
     console.error(`model-calibrate: recorded ${result.verdict}/${result.findings?.length ? 'findings' : 'clean'} · actual ${result.reviewerIdentity}`);
   }
 } finally {
