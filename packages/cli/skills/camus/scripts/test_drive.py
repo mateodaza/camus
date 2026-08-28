@@ -84,7 +84,8 @@ def test_shadow_review_is_durable_deduplicated_and_never_becomes_the_gate():
             "blocking": [], "nonblocking": [], "receiptSha256": "a" * 64,
             "finalGate": "codex",
         }
-        with mock.patch.object(K, "_candidate_fingerprint", return_value="candidate1:" + "b" * 64), \
+        with mock.patch.object(K, "_validated_worktree", return_value=(node["worktree"], "head")), \
+                mock.patch.object(K, "_candidate_fingerprint", return_value="candidate1:" + "b" * 64), \
                 mock.patch.object(D.model_trials, "run_review", return_value=result) as called:
             first = D._run_shadow_review(log, run, node, pairing, root, "task", 1)
             second = D._run_shadow_review(log, run, node, pairing, root, "task", 1)
@@ -104,6 +105,59 @@ def test_shadow_review_is_durable_deduplicated_and_never_becomes_the_gate():
         )
         assert changed["shadowRan"] is True and changed["shadowComparable"] is False
         assert changed["verdictAgreement"] is None and changed["shadowClean"] is None
+
+
+def test_shadow_handoff_refreshes_real_native_pre_open_snapshot():
+    with tempfile.TemporaryDirectory() as root:
+        repo = _repo(root)
+        home = os.path.join(root, "camus")
+        spec = os.path.join(root, "spec.json")
+        with open(spec, "w", encoding="utf-8") as fh:
+            json.dump({"feat": "Shadow custody fixture", "tasks": ["bounded fixture"],
+                       "targetPath": repo, "verifyCmd": "true"}, fh)
+        created = D.start_feature(spec, base=home)
+        feat_id = created["featId"]
+        K.prepare(feat_id, repo=repo, base=home)
+        stale_run = K._validated_run(feat_id, home)
+        stale_node = stale_run["nodes"][0]
+        assert "worktree" not in stale_node
+        task_id = stale_node["taskId"]
+        K.dispatch_task(feat_id, task_id, repo=repo, base=home)
+        opened = K.open_task(feat_id, task_id, repo=repo, base=home)
+        pairing = {"reviewerBackend": "codex", "shadowReviewerBackend": "xai",
+                   "shadowReviewerModel": "grok-4.6", "shadowReviewerEffort": "medium"}
+        log = D.EventLog(feat_id, base=home)
+        with mock.patch.object(D.model_trials, "run_review", return_value={
+                "ran": False, "standing": "experimental_shadow", "finalGate": "codex",
+        }) as shadow, mock.patch.object(K, "review_task", return_value={"clean": True}) as gate:
+            for _ in range(2):
+                result = D._review_with_shadow(log, stale_run, stale_node, pairing, repo,
+                                              "bounded fixture", 1, feat_id, home)
+                assert result == {"clean": True}
+        assert shadow.call_count == 1, "replay must adopt the same shadow result"
+        assert shadow.call_args.args[2] == opened["worktree"]
+        assert gate.call_count == 2, "Codex remains the authoritative, replayable gate"
+        assert "worktree" not in stale_node, "the regression must retain the stale input"
+
+
+def test_shadow_custody_refuses_missing_or_foreign_worktree_before_provider_call():
+    with tempfile.TemporaryDirectory() as root:
+        repo = _repo(root)
+        foreign = _repo(os.path.join(root, "foreign"))
+        log = D.EventLog("feat-a", base=root)
+        run = {"state": {"kernel": {"traceId": "trace:a"}}}
+        pairing = {"reviewerBackend": "codex", "shadowReviewerBackend": "xai",
+                   "shadowReviewerModel": "grok-4.6", "shadowReviewerEffort": "medium"}
+        with mock.patch.object(D.model_trials, "run_review") as shadow:
+            for worktree in (None, foreign):
+                node = {"taskId": "task-a", "branch": "main", "worktree": worktree}
+                try:
+                    D._run_shadow_review(log, run, node, pairing, repo, "task", 1)
+                    assert False, "invalid custody must refuse before exporting the candidate"
+                except K.Refusal:
+                    pass
+        shadow.assert_not_called()
+        assert log.records() == []
 
 
 def test_controller_decision_keys_deduplicate_replay_but_allow_corrected_evidence():

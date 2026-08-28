@@ -766,7 +766,8 @@ def _run_shadow_review(log, run, node, pairing, repo, task, round_no):
     shadow = _shadow_config(pairing)
     if shadow is None:
         return None
-    candidate = kernel._candidate_fingerprint(node["worktree"])
+    worktree, _ = kernel._validated_worktree(repo, node, node.get("worktree"))
+    candidate = kernel._candidate_fingerprint(worktree)
     key = _shadow_event_key(node["taskId"], shadow, round_no, candidate)
     prior = log.latest("shadow.reviewed", key)
     if isinstance(prior, dict) and isinstance(prior.get("data"), dict):
@@ -774,7 +775,7 @@ def _run_shadow_review(log, run, node, pairing, repo, task, round_no):
     started = time.monotonic()
     try:
         result = model_trials.run_review(
-            shadow["backend"], shadow["model"], node["worktree"], task,
+            shadow["backend"], shadow["model"], worktree, task,
             round_no=round_no, effort=shadow["effort"], repo=repo,
             nonce="%s:%s:shadow" % (kernel._kernel(run["state"])["traceId"], node["taskId"]),
         )
@@ -842,6 +843,14 @@ def _record_shadow_comparison(log, trace_id, task_id, shadow, codex_review,
 
 
 def _review_with_shadow(log, run, node, pairing, repo, task, round_no, feat_id, base):
+    if _shadow_config(pairing) is not None:
+        # open_task persists custody after the driver's dispatch snapshot was read.
+        # Resolve the current binding before exporting any candidate to a shadow.
+        task_id = node["taskId"]
+        run = kernel._validated_run(feat_id, base)
+        node = next((item for item in run["nodes"] if item["taskId"] == task_id), None)
+        if node is None:
+            raise DriverError("shadow review task is absent from the current run")
     shadow = _run_shadow_review(log, run, node, pairing, repo, task, round_no)
     review = kernel.review_task(
         feat_id, node["taskId"], repo=repo, base=base,
