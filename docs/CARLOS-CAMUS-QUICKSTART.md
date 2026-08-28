@@ -1,5 +1,13 @@
 # Camus quickstart for CodenameWukong
 
+Development note (not yet released): the next Productive Loop update adds shared
+CLI/Studio stop, status, bound answers and same-candidate resume, plus bounded
+test/review repair and CLI-only setup. See [the updated coding guide](INDEPENDENT-CODE-SEATS.md).
+The `0.4.8` installation and limitations below remain the published baseline.
+Before the next game-project handoff, confirm Carlos's actual OS/.NET toolchain;
+automatic independent verification is still POSIX-only. No new live-pairing claim
+or code freeze is being made by this development update.
+
 ## 0.4.8: choose both coding models
 
 **Both maker and reviewer are selectable independently** in `camus build` and

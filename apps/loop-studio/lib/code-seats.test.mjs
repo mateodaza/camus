@@ -83,7 +83,7 @@ await test('reversed Claude maker / Codex reviewer changes only an isolated cand
   let result;
   try {
     result = await runCodeSeats({ repoPath: repo, task: 'change answer', seats: requested, adapters, onEvent: (e) => events.push(e) });
-    assert.equal(result.status, 'needs_decision');
+    assert.equal(result.status, 'needs_decision', result.error);
     assert.equal(result.advisory, true);
     assert.equal(result.independence.independent, true);
     assert.equal(result.candidate.branch.startsWith('codex/code-seats-'), true);
@@ -134,6 +134,7 @@ for (const [name, action, setup] of [
       const result = await runCodeSeats({ repoPath: repo, task: 'inspect', seats: requested, adapters });
       assert.equal(result.status, 'infra_error');
       assert.match(result.error, /refused|unsafe|limited/i);
+      if (action.type === 'write') await assert.rejects(readFile(join(result.candidate.worktree, action.path)), /ENOENT/);
     } finally { await remove(repo); }
   });
 }

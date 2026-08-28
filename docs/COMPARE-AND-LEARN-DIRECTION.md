@@ -5,6 +5,12 @@ layer. It operationalizes steps 6–9 of
 [DIRECTION-0.3-TRUST-LAYER.md](DIRECTION-0.3-TRUST-LAYER.md): shadow audits,
 pairing, reverse pairing, and evidence-gated routing.
 
+**Active next-work plan (2026-08-28):**
+[Productive Loop](PRODUCTIVE-LOOP-PLAN.md) makes completion, recovery, and
+necessary-only human interruptions the next acceptance gate. Finish that user
+journey before expanding providers, automatic routing, or orchestration features.
+Longer work is acceptable when complexity and useful progress justify it.
+
 The strategic line:
 
 > Vendor agents decide how to do the work. Camus determines which approach

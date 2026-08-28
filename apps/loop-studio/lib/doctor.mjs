@@ -510,8 +510,8 @@ export async function runDoctor({ deep = false, engine = 'live' } = {}) {
 
   const gate = gateInstalled();
   add(
-    'gate', 'Camus gate (Build lane)', gate,
-    gate ? 'installed in ~/.claude with standalone custody support' : 'missing or too old. Build requires the identity-bound custody gate; the words lanes run without it.',
+    'gate', 'Camus gate (Legacy proof gate only)', gate,
+    gate ? 'installed in ~/.claude with standalone custody support' : 'missing or too old. Only Legacy proof gate mode requires it; Any-model Build and words lanes do not.',
     gate ? null : 'npm install -g camus-cli && camus install   # or, from this repo: bash packages/cli/install.sh',
     { optional: true },
   );

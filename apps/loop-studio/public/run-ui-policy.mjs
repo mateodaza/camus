@@ -192,3 +192,23 @@ export function verifySummary({ pass, warnings = 0, skipped = 0 } = {}) {
     label: 'DETERMINISTIC GATE: INCONCLUSIVE. Verification could not run, so the code is neither proven nor disproven. The candidate stays parked and nothing was rejected.',
   };
 }
+// Coding candidates are intentionally outside the admitted-gate vocabulary.
+export function independentBuildPill({ status, phase, owned = false, interrupted = false } = {}) {
+  const token = owned ? 'running' : interrupted ? 'stopped' : String(status ?? 'unknown');
+  return {
+    label: phase === 'complete' ? 'Awaiting acceptance' : token.replace(/_/g, ' '),
+    className: `status ${token}`, derived: false, claim: false,
+    title: 'Experimental coding checkpoint status. Advisory review is not an admitted-gate verdict; nothing is automatically landed.',
+  };
+}
+
+export function independentBuildBanner(continuation, status) {
+  if (continuation?.phase === 'complete') return 'CANDIDATE READY FOR HUMAN ACCEPTANCE. Advisory review only; nothing was landed.';
+  if (continuation?.question?.kind === 'budget') return 'BUDGET REACHED. The candidate is preserved. Extend only the limit you authorize.';
+  if (continuation?.question?.kind === 'judgment') return 'ONE DECISION NEEDED. Answer the bound question to continue this candidate.';
+  return `CANDIDATE PRESERVED. ${continuation?.reason ?? status}. No automatic restart or landing.`;
+}
+
+export function downloadableReceipt(report) {
+  return report.codeMode === 'independent' ? report : report.lane === 'comparison' ? report.experiment : report.evidencePack;
+}

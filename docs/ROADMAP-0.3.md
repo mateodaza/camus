@@ -1,5 +1,11 @@
 # Camus 0.3 — Roadmap
 
+> **Active next-work plan, 2026-08-28:**
+> [Productive Loop — service contract and implementation plan](PRODUCTIVE-LOOP-PLAN.md).
+> Freeze feature expansion; finish productive repair, durable continuation, and
+> the CLI/Studio user journey before the next bounded real dogfood. The historical
+> milestones below are not evidence that the new any-model workflow is complete.
+
 > **Emphasis rerouted 2026-07-12 — see [DIRECTION-0.3-TRUST-LAYER.md](DIRECTION-0.3-TRUST-LAYER.md).**
 > The headline of 0.3 is executor/auditor independence with sealed, portable evidence —
 > Camus surrenders choreography, keeps custody. Every trust item below survives;

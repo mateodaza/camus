@@ -61,6 +61,8 @@ usage: npx camus-cli <command>
                Shared Studio catalog and connections; isolated worktree, advisory
                review, human acceptance required. No automatic merge/publication.
                build --help · build --models · --task "..." --contract "..."
+               build --setup file.json · --qualify backend:model --role maker|reviewer
+               build --status ID · --stop ID · --resume ID [budget extensions]
   install      copy skill + workflows into ~/.claude (frozen copy, not symlink)
   check        preflight: installed gate in sync with package? (run before any auto/feat run)
   auto-setup   opt-in: install the narrow scoped auto-mode profile (zero-click runs)

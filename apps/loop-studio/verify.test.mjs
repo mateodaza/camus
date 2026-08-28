@@ -30,7 +30,7 @@ if (!process.env.STUDIO_MODELS_FILE) {
 
 import assert from 'node:assert/strict';
 import { runVerify, findUnsourcedStats, findComplianceHits, extractUrls, extractThresholdLines } from './lib/verify.mjs';
-import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateReportJson, replayRecoveryKind, terminalFailureBanner } from './public/run-ui-policy.mjs';
+import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateReportJson, replayRecoveryKind, terminalFailureBanner, independentBuildBanner, independentBuildPill, downloadableReceipt } from './public/run-ui-policy.mjs';
 
 // The internal routing campaign is executable configuration, not an informal
 // checklist. Its validator pins the cost/safety controls and refuses a smoke
@@ -364,6 +364,16 @@ Community-led growth compounds where paid cannot. Retention differs by cohort or
   assert.match(terminalFailureBanner('verify_failed', 'build'), /Nothing was merged, published, or released/, 'the red Build banner states the actual local-only boundary');
   assert.ok(!/shipped by human override/i.test(terminalFailureBanner('verify_failed', 'build')), 'the browser never invents an override');
   assert.match(terminalFailureBanner('verify_failed', 'research_memo'), /not published/i, 'a red words run does not claim publication');
+  const budget = independentBuildBanner({ question: { kind: 'budget' } }, 'needs_decision');
+  assert.match(budget, /BUDGET REACHED/); assert.doesNotMatch(budget, /verification could not|Give it a verification command/);
+  assert.match(independentBuildBanner({ phase: 'complete' }, 'needs_decision'), /HUMAN ACCEPTANCE/);
+  const candidatePill = independentBuildPill({ phase: 'complete', status: 'needs_decision' });
+  assert.equal(candidatePill.label, 'Awaiting acceptance'); assert.equal(candidatePill.derived, false);
+  assert.match(candidatePill.title, /not an admitted-gate verdict/);
+  assert.equal(independentBuildPill({ status: 'running', interrupted: true }).label, 'stopped');
+  assert.equal(independentBuildPill({ status: 'needs_decision', owned: true }).label, 'running');
+  const advisory = { codeMode: 'independent', evidencePack: null, candidate: { fingerprint: 'fixture' } };
+  assert.equal(downloadableReceipt(advisory), advisory, 'the usable advisory receipt is downloadable without inventing an admitted pack');
   const longGateReport = { note: 'x'.repeat(5000), blocking: [{ title: 'tail sentinel' }] };
   const renderedGateReport = gateReportJson(longGateReport);
   assert.ok(renderedGateReport.length > 5000, 'the run view keeps the complete gate report instead of clipping at 4,000 characters');

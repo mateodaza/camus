@@ -1,14 +1,18 @@
 import { runCodeSeats } from './code-seats.mjs';
 import { createCodeVerifier } from './code-seat-verify.mjs';
+import { codeContinuation } from './code-session.mjs';
 
-export async function runIndependentCodeLoop(run, { emit, adapters, signal, receiptsDir }) {
+export async function runIndependentCodeLoop(run, { emit, adapters, signal, receiptsDir, frozenBackends, authorizeCode }) {
   try {
     emit('log', { line: 'Experimental any-model Build: isolated candidate, advisory review, explicit human acceptance. No automatic commit, merge, or publication.' });
     const result = await runCodeSeats({
       repoPath: run.targetPath,
       task: `${run.goal}\n\nAcceptance contract (binding):\n${run.acceptanceContract}`,
-      seats: run.models, adapters, signal, receiptsDir,
-      verify: createCodeVerifier(run.verifyCmd, { receiptsDir }),
+      seats: run.models, adapters, signal, receiptsDir, backendSnapshot: frozenBackends,
+      verify: createCodeVerifier(run.verifyCmd, { receiptsDir, repeatable: run.verifyRepeatable === true }),
+      limits: run.codeLimits, resume: run.resumeCode === true, answer: run.codeAnswer,
+      retryUncertain: run.retryUncertain === true, retryVerification: run.retryVerification === true,
+      authorize: authorizeCode,
       onEvent: (event) => {
         if (event.stage) emit('stage', { name: event.stage, status: event.status ?? 'active' });
         else if (event.line) emit('session', { actor: event.actor ?? 'host', line: event.line });
@@ -18,6 +22,7 @@ export async function runIndependentCodeLoop(run, { emit, adapters, signal, rece
     // Deliberately not gate_report/review: those events feed the admitted-gate
     // evidence-pack schema. Experimental transport feedback cannot enter it.
     emit('code_result', { result });
+    emit('code_state', { continuation: await codeContinuation(receiptsDir) });
     const markdown = [
       '# Experimental Build candidate',
       'Human acceptance required. This is not an admitted code gate.',

@@ -35,7 +35,7 @@ export async function prepareCodeSeats({ pairing = null, live = true } = {}, dep
       throw new Error(`Choose ${role} as an explicit backend and model.`);
     }
     const entry = admittedSeat(catalog[role], selected.backend, selected.model);
-    if (!entry) throw new Error(`${role} ${selected.backend}:${selected.model} is unavailable or not qualified for this seat. Configure and qualify it in Studio; no substitution was made.`);
+    if (!entry) throw new Error(`${role} ${selected.backend}:${selected.model} is unavailable or not qualified for this seat. Configure and qualify it in Studio or with camus build --setup / --qualify; no substitution was made.`);
     const backend = definitions[entry.backend];
     if (!backend || !backend.seats?.includes(role)) throw new Error(`The selected ${role} backend cannot execute this seat.`);
     const requestedEffort = selected.effort;
@@ -77,4 +77,20 @@ export function codeModelChoices(catalog = admissionCatalog()) {
     effort: entry.effort === true,
   });
   return { maker: catalog.maker.map(safe), reviewer: catalog.reviewer.map(safe), gating: false };
+}
+
+// Resolve locally first. The engine checks the saved candidate/contract before
+// invoking authorization, so a drifted resume cannot even contact a provider.
+export async function prepareCodeExecution(pairing = null) {
+  const prepared = await prepareCodeSeats({ pairing, live: false });
+  return { ...prepared, adapters: resolveSeatAdapters(prepared.models, prepared.frozenBackends),
+    authorize: async () => {
+      for (const role of ['maker', 'reviewer']) {
+        const entry = prepared.frozenBackends[role];
+        if (entry.kind !== 'openai_compat') continue;
+        const q = await seatQualification({ entry, model: prepared.models[role].model, seatType: role === 'maker' ? 'words_maker' : 'words_reviewer' });
+        if (!q.qualified || q.fingerprint !== prepared.models[role].qualification?.fingerprint) throw new Error(`${role} qualification changed or is unavailable; qualify the exact tuple again.`);
+      }
+    },
+  };
 }

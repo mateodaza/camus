@@ -7,7 +7,7 @@ import { effectiveStanding, runStory, standingPill, standingExplanation, recover
 import { groupRuns, armFacts, comparisonNote, shortHash } from './grouping.mjs';
 import { gatePhaseStrip, gateRoundFact } from './gate-phase-policy.mjs';
 import { verifySummary } from './run-ui-policy.mjs';
-import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateReportJson, lineageTrust, offersBuildRecovery, recoveryAction, replayRecoveryKind, terminalBannerClass, terminalFailureBanner } from './run-ui-policy.mjs';
+import { buildGateTerminalStage, documentActionsForLane, enginePillText, gateReportJson, lineageTrust, offersBuildRecovery, recoveryAction, replayRecoveryKind, terminalBannerClass, terminalFailureBanner, independentBuildBanner, independentBuildPill, downloadableReceipt } from './run-ui-policy.mjs';
 
 // CAMUS_CONTROL: studio.qualification.explicit_consent
 
@@ -174,6 +174,7 @@ function reflectDocumentActions(lane) {
 function reflectLaneControls() {
   const build = state.lane === 'build';
   const independent = build && $('build-mode').value === 'independent';
+  $('code-policy').classList.toggle('hidden', !independent);
   $('step-pairing-label').innerHTML = `<span class="step-n">3</span> ${build && !independent ? 'Review the Build gate, then run' : 'Choose maker and auditor, then run'}`;
   $('build-gate-note').classList.toggle('hidden', !build);
   $('pairing').classList.toggle('hidden', build && !independent);
@@ -265,8 +266,8 @@ async function boot() {
     }
     const buildLane = $('lane-build');
     if (buildLane && s.gate && !s.gate.installed) {
-      buildLane.classList.add('disabled');
-      buildLane.title = 'The camus gate is not installed. Setup has the fix.';
+      buildLane.classList.remove('disabled');
+      buildLane.title = 'Any-model candidates do not require the legacy gate. Install the gate only to use Legacy proof gate mode.';
     }
     if (s.engine !== 'mock') {
       // Live engine: quietly check the machine and surface the setup panel
@@ -304,6 +305,7 @@ async function boot() {
 // because that run will fail at the maker or the review — a warning, not a
 // gate: the probes can be stale in either direction, so Run stays enabled.
 function renderAuthPreflight(report) {
+  state.authPreflight = report;
   const checkOf = (id) => report?.checks?.find((c) => c.id === id) ?? null;
   const probeName = { claude: 'claude auth status', codex: 'codex login status' };
   const signedOut = [];
@@ -326,7 +328,7 @@ function renderAuthPreflight(report) {
   if (!note) return;
   if (signedOut.length) {
     note.classList.remove('hidden');
-    note.textContent = `Preflight: ${signedOut.join(' and ')} ${signedOut.length > 1 ? 'are' : 'is'} not signed in. A live gate run will fail at ${signedOut.includes('claude') ? 'the maker' : 'the review'}. Sign in first (fixes in Setup).`;
+    note.textContent = `Preflight: ${signedOut.join(' and ')} ${signedOut.length > 1 ? 'are' : 'is'} not signed in. Sign in if you select those CLI seats; hosted-only pairs do not require them. See Setup for fixes.`;
   } else {
     note.classList.add('hidden');
     note.textContent = '';
@@ -424,13 +426,13 @@ async function loadRecents() {
     // rather than silently reading like a verdict.
     const recentRow = (r) => {
       const b = el('button', 'recent');
-      const presentation = standingPill(r.status, r.headline);
+      const presentation = r.codeMode === 'independent' ? independentBuildPill(r) : standingPill(r.status, r.headline);
       const pill = el('span', `pill ${presentation.className}`, presentation.label);
-      pill.title = presentation.derived
+      pill.title = presentation.title ?? (presentation.derived
         ? `Standing derived from the sealed receipt. The loop reported “${r.status.replace(/_/g, ' ')}”.`
         : presentation.claim
           ? 'Reported by the loop; no derived standing on this receipt.'
-          : 'Current operational state; no terminal standing exists yet.';
+          : 'Current operational state; no terminal standing exists yet.');
       b.appendChild(pill);
       b.appendChild(el('span', 'g', r.goal));
       b.appendChild(el('span', 'mono muted', new Date(r.startedAt).toLocaleTimeString()));
@@ -1240,6 +1242,8 @@ $('start').addEventListener('click', async () => {
       headers: postHeaders(),
       body: JSON.stringify({ goal, acceptanceContract, lane: state.lane, depth: state.depth, ground: state.lane !== 'build' && $('ground').checked, publish: state.lane !== 'build' && $('publish-artifact').checked, targetPath: state.lane === 'build' ? $('target-path').value : undefined,
         codeMode: state.lane === 'build' ? $('build-mode').value : undefined,
+        codeLimits: independentBuild ? Object.fromEntries(['maxCalls', 'maxSteps', 'maxActions', 'maxRepairs', 'maxRetries', 'maxTokens', 'timeoutMs', 'callTimeoutMs', 'idleTimeoutMs'].map((key) => [key, Number($(`code-${key}`).value)])) : undefined,
+        verifyRepeatable: independentBuild ? $('code-verify-repeatable').checked : undefined,
         // Only the Build lane verifies a repository, so the command only rides
         // that lane's request; empty means "detect the stack".
         verifyCmd: state.lane === 'build' && $('verify-cmd').value.trim() ? $('verify-cmd').value.trim() : undefined,
@@ -1275,6 +1279,7 @@ function attach(id, goal) {
   state.replaying = false;
   state.replayPendingQuestion = null;
   state.continuation = null;   // the server's answer belongs to the stream that sent it
+  state.runCodeMode = null;
   // Gate progress belongs to the stream too. It is merged across events, so without this a new
   // run's first frames rendered the PREVIOUS run's phase until the gate stamped its own
   // (live run 20260806-164809-hiju).
@@ -1366,6 +1371,7 @@ function comparisonRecoveryControl() {
 }
 
 function buildRecoveryControl(status, continuation = state.continuation ?? null) {
+  if (continuation?.mode === 'code_checkpoint' || state.runCodeMode === 'independent') return buildCodeRecoveryControl(continuation);
   const sub = el('span', 'sub');
   // The server's continuation classification wins when it exists: the same answer the resume route
   // will act on, so the button can never promise a phase the server refuses (run 20260807-080214-p27e).
@@ -1417,6 +1423,50 @@ function buildRecoveryControl(status, continuation = state.continuation ?? null)
   return sub;
 }
 
+function buildCodeRecoveryControl(continuation) {
+  const box = el('span', 'sub');
+  box.appendChild(el('strong', null, continuation?.presentation?.title ?? 'Read the authenticated checkpoint before continuing.'));
+  box.appendChild(el('span', 'sub', continuation?.presentation?.detail ?? 'Historical candidates remain inspection-only.'));
+  if (continuation?.candidate?.worktree) box.appendChild(el('span', 'sub', `Candidate: ${continuation.candidate.worktree}`));
+  const usage = continuation?.usage;
+  if (usage) box.appendChild(el('span', 'sub', `${usage.calls} model calls · ${usage.repairs} repairs · ${Math.round(usage.activeMs / 1000)}s active · ${usage.observedTokens} reported tokens · ${usage.unmeasuredCalls} calls with unknown usage. Last checkpoint: ${new Date(continuation.updatedAt).toLocaleString()}.`));
+  if (!continuation?.canResume) return box;
+  let answer = null;
+  if (continuation.question?.kind === 'judgment') {
+    const label = el('label', 'sub', continuation.question.text);
+    answer = el('textarea', 'path-input'); answer.maxLength = 4000; answer.placeholder = 'Answer this exact question'; label.appendChild(answer); box.appendChild(label);
+  }
+  const extensions = el('details'); extensions.appendChild(el('summary', null, 'Extend a budget (optional; totals never reset)'));
+  const fields = {};
+  for (const key of ['maxCalls', 'maxSteps', 'maxActions', 'maxRepairs', 'maxRetries', 'maxTokens', 'timeoutMs']) {
+    const label = el('label', 'sub', key); const input = el('input', 'path-input'); input.type = 'number'; input.min = 0; input.placeholder = `unchanged: ${continuation.limits[key]}`;
+    fields[key] = input; label.appendChild(input); extensions.appendChild(label);
+  }
+  box.appendChild(extensions);
+  const retryKind = continuation.question?.kind;
+  let consent;
+  if (['uncertain_call', 'authority'].includes(retryKind)) {
+    const label = el('label', 'sub'); consent = el('input'); consent.type = 'checkbox'; label.appendChild(consent);
+    label.appendChild(document.createTextNode(retryKind === 'uncertain_call' ? ' Authorize one uncertain-call retry; duplicate provider billing is possible.' : ' Authorize one additional execution of the frozen verifier.'));
+    box.appendChild(label);
+  }
+  const resume = el('button', 'resume-btn', answer ? 'Send answer and continue' : 'Continue same candidate');
+  resume.onclick = async () => {
+    if (answer && !answer.value.trim()) { answer.focus(); return; }
+    if (consent && !consent.checked) { consent.focus(); return; }
+    resume.disabled = true;
+    try {
+      const body = { codeLimits: Object.fromEntries(Object.entries(fields).filter(([, input]) => input.value !== '').map(([key, input]) => [key, Number(input.value)])) };
+      if (answer) body.answer = { id: continuation.question.id, text: answer.value.trim() };
+      if (consent) body[retryKind === 'uncertain_call' ? 'retryUncertain' : 'retryVerification'] = true;
+      const res = await fetch(`${API}/api/runs/${state.runId}/resume`, { method: 'POST', headers: postHeaders(), body: JSON.stringify(body) });
+      const data = await res.json(); if (!res.ok) throw new Error(data.error || res.statusText);
+      attach(data.id, $('rungoal').dataset.goal || $('rungoal').textContent);
+    } catch (error) { resume.disabled = false; resume.textContent = `Could not continue: ${String(error.message).slice(0, 130)}`; }
+  };
+  box.appendChild(resume); return box;
+}
+
 $('session-toggle').addEventListener('click', () => {
   if (state.recoveryOf) return;          // nothing to reveal; the label says why
   const box = $('session');
@@ -1464,16 +1514,16 @@ $('download-report').addEventListener('click', async () => {
     const res = await fetch(`${API}/api/runs/${state.runId}/report`);
     if (!res.ok) throw new Error((await res.json()).error || res.statusText);
     const report = await res.json();
-    const payload = report.lane === 'comparison' ? report.experiment : report.evidencePack;
+    const payload = downloadableReceipt(report);
     if (!payload) throw new Error(report.evidencePackError || 'this run has no sealed evidence artifact');
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = report.lane === 'comparison' ? `comparison-${state.runId}.json` : `run-${state.runId}-evidence-pack.json`;
+    link.download = report.codeMode === 'independent' ? `run-${state.runId}-advisory.json` : report.lane === 'comparison' ? `comparison-${state.runId}.json` : `run-${state.runId}-evidence-pack.json`;
     link.click();
   } catch (err) {
     $('download-report').textContent = 'no report yet';
-    setTimeout(() => ($('download-report').textContent = state.runLane === 'comparison' ? 'Experiment' : 'Evidence pack'), 1500);
+    setTimeout(() => ($('download-report').textContent = state.runCodeMode === 'independent' ? 'Advisory receipt' : state.runLane === 'comparison' ? 'Experiment' : 'Evidence pack'), 1500);
   }
 });
 
@@ -1607,6 +1657,14 @@ async function renderEvidenceReceipt(standing) {
   }
   if (!report || state.runId !== runId) return;
   state.currentReport = report;
+  if (report.codeMode === 'independent') {
+    $('download-report').textContent = 'Advisory receipt';
+    const card = el('div', 'trust-card'); card.id = 'evidence-pack-card';
+    card.appendChild(el('div', 'trust-title', 'EXPERIMENTAL ADVISORY RECEIPT'));
+    card.appendChild(el('div', null, 'No admitted-gate evidence pack is expected. The private checkpoint binds the candidate, selected seats, verification, review and usage. Human acceptance is still required.'));
+    if (report.checkpointWriteFailed || report.receiptsDegraded) card.appendChild(el('div', 'trust-error', 'Receipt storage is degraded; inspect the saved checkpoint before continuing.'));
+    feed(card); return;
+  }
   // SEALED LINEAGE ONLY. Everything recovery-specific below (and the pill/banner
   // re-render) reads the pack's session_log, never report.recoveryOf — that twin is
   // editable without changing receipt_id. Disagreement is surfaced, not smoothed.
@@ -1792,7 +1850,9 @@ function buildStages(lane) {
   const nav = $('stages');
   nav.innerHTML = '';
   state.stageEls.clear();
-  const defs = STAGE_DEFS[lane] ?? (lane === 'audit_replay' ? STAGE_DEFS.audit : STAGE_DEFS.words);
+  const defs = lane === 'build' && state.runCodeMode === 'independent'
+    ? [['make', 'Make'], ['fix', 'Repair if needed'], ['verify', 'Verify'], ['review', 'Advisory review']]
+    : STAGE_DEFS[lane] ?? (lane === 'audit_replay' ? STAGE_DEFS.audit : STAGE_DEFS.words);
   for (const [key, label] of defs) {
     const s = el('div', 'stage');
     s.appendChild(el('span', 'dot'));
@@ -1878,7 +1938,9 @@ function setStatus(status, headline, dimensions = null) {
   // A recovery's derived standing stays `unverified` (no audit in THIS receipt), but
   // the pill is operational text, not a standing claim — so it reports what happened
   // and points at where the review evidence lives.
-  const presentation = recoveryPill(dimensions, state.sealedLineage) ?? standingPill(status, headline);
+  const presentation = state.runCodeMode === 'independent'
+    ? independentBuildPill({ ...state.continuation, status })
+    : recoveryPill(dimensions, state.sealedLineage) ?? standingPill(status, headline);
   p.className = `pill ${presentation.className}`;
   p.textContent = presentation.label;
   p.title = presentation.title ?? (presentation.derived
@@ -1937,6 +1999,8 @@ function handle(ev) {
       }
       if (ev.at) { state.runStartAt = ev.at; startTimer(ev.at); }
       state.runLane = ev.run?.lane;
+      state.runCodeMode = ev.run?.codeMode ?? null;
+      if (state.runCodeMode === 'independent') $('download-report').textContent = 'Advisory receipt';
       reflectDocumentActions(state.runLane);
       state.runTargetPath = ev.run?.targetPath ?? null;
       // Legacy runs predate this field; undefined means "none was in force", which
@@ -1968,7 +2032,7 @@ function handle(ev) {
       }
       buildStages(state.recoveryOf ? 'verify_recovery' : ev.run?.lane);
       if (!['build', 'comparison'].includes(ev.run?.lane) && ev.run && !ev.run.ground) state.stageEls.get('ground')?.remove();
-      if (ev.run?.lane === 'build') $('doc').innerHTML = '<div class="doc-empty">The gate works inside the target repo. The session below is the live view; its report lands here.</div>';
+      if (ev.run?.lane === 'build') $('doc').textContent = state.runCodeMode === 'independent' ? 'The selected pair works on an isolated candidate. Its checkpoint and advisory report appear here; nothing is landed.' : 'The gate works inside the target repo. The session below is the live view; its report lands here.';
       if (ev.run?.lane === 'comparison') {
         $('doc').innerHTML = '<div class="doc-empty">Each arm keeps its own artifact and receipt. Open an arm card as it finishes. Camus will not name a winner until the separate blinded-comparison step exists.</div>';
         $('download-report').textContent = 'Experiment';
@@ -1976,8 +2040,19 @@ function handle(ev) {
       break;
 
     case 'stage':
+      if (state.runCodeMode === 'independent') for (const [key] of state.stageEls) setStage(key, key === ev.name ? 'active' : 'idle');
       setStage(ev.name, ev.status, ev);
       break;
+
+    case 'code_state': {
+      state.continuation = ev.continuation;
+      const old = document.getElementById('code-checkpoint-progress');
+      const progress = el('div', 'banner meh'); progress.id = 'code-checkpoint-progress';
+      const c = ev.continuation;
+      progress.textContent = c?.owned ? `Worker active · ${c.phase} · ${c.usage?.calls ?? 0} calls used · last checkpoint ${new Date(c.updatedAt).toLocaleTimeString()}` : 'Worker stopped. Candidate and usage preserved; see the continuation or acceptance handoff below.';
+      if (old) old.replaceWith(progress); else feed(progress);
+      break;
+    }
 
     // The gate's live state. Studio used to show "Igniting…" for ten minutes
     // while the gate classified, planned, built a worktree, wrote files and
@@ -2310,6 +2385,10 @@ function handle(ev) {
         cls = comparison.cls;
         label = comparison.label;
       }
+      if (state.runCodeMode === 'independent') {
+        cls = 'meh';
+        label = independentBuildBanner(state.continuation, ev.status);
+      }
       // EVERY real done* event enters the headline policy (banner.mjs) — the
       // trust protocol's one derivation, riding the event at serve time. That
       // includes events with NO dimensions/headline (legacy receipts): missing
@@ -2328,7 +2407,7 @@ function handle(ev) {
       b.id = 'terminal-banner';
       b.dataset.status = ev.status;
       b.dataset.headline = ev.headline ?? '';
-      if (offersBuildRecovery(ev.status, state.runLane)) {
+      if (state.runCodeMode === 'independent' || offersBuildRecovery(ev.status, state.runLane)) {
         b.appendChild(buildRecoveryControl(ev.status));
       }
       if (ev.artifactUrl) {
@@ -2351,7 +2430,7 @@ function handle(ev) {
       // The four raw dimensions rode this terminal event. The one-word headline
       // (Recent runs) is derived from them at render, never stored — so it can
       // never drift from the evidence.
-      if (ev.dimensions) {
+      if (ev.dimensions && state.runCodeMode !== 'independent') {
         const nice = (s) => String(s).replace(/_/g, ' ');
         const d = ev.dimensions;
         feed(el('div', 'dims', `sealed dimensions · execution ${nice(d.execution)} · verification ${nice(d.verification)} · audit ${nice(d.audit)} · publication ${nice(d.publication)}`));

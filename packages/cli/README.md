@@ -2,6 +2,11 @@
 
 **A coding loop that proves every change.**
 
+Unreleased: the [Productive Loop](https://github.com/mateodaza/camus/blob/main/docs/PRODUCTIVE-LOOP-PLAN.md)
+adds bounded repair, shared CLI/Studio recovery and CLI-only connection setup.
+Use this checkout's `camus build --help` for `--setup`, `--qualify`, `--status`,
+`--stop`, `--resume`, bound answers and budgets. These are not in published 0.4.8.
+
 **New in 0.4.8:** `camus build` uses the same independent maker and
 reviewer selection as Studio's Any-model Build. Run `camus build --help` and
 `camus models` to see the command and this machine's catalog. Reversed, same-model,
@@ -77,7 +82,8 @@ plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep �
 
 Experimental `camus build` instead requires Node 18.17+, Git and the selected
 backends' authentication. It does not require Claude, Codex or Python when neither
-selected seat uses those CLIs. Configure and qualify external roles in Studio first.
+selected seat uses those CLIs. Configure and qualify external roles in Studio;
+the unreleased CLI setup path provides the same underlying controls without a server.
 The requirements below apply to `camus run` and the compatibility workflows.
 
 - **Claude Code** v2.1.154+ with dynamic workflows, on a subscription plan.

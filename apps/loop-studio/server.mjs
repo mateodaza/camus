@@ -20,8 +20,10 @@ import { join, dirname, extname, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runLoop } from './lib/engine.mjs';
 import { runIndependentCodeLoop } from './lib/independent-code-lane.mjs';
-import { prepareCodeReceiptsDir } from './lib/code-seats.mjs';
-import { prepareCodeSeats } from './lib/code-seat-launch.mjs';
+import { prepareCodeReceiptsDir, codeLimits as validateCodeLimits } from './lib/code-seats.mjs';
+import { prepareCodeExecution } from './lib/code-seat-launch.mjs';
+import { codeRunsRoot, readCodeRunMetadata, codeContinuation } from './lib/code-session.mjs';
+import { readCodeCheckpoint, requestCodeStop } from './lib/code-run-state.mjs';
 import { runCodeLoop, runVerificationRecovery, resolveRecoveryTarget, recoveryTarget, reconstructInterruptedParked, readGateStatus, gateStateFromStatus, validateBuildTarget, gateInstalled, gatherContinuationEvidence } from './lib/code-lane.mjs';
 import { deriveContinuation, continuationPresentation } from './lib/continuation.mjs';
 import { runMockCodeLoop } from './lib/adapters/mock.mjs';
@@ -70,7 +72,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dirname, 'public');
 // Receipts live here. Tests and embeddings override it so a run never writes
 // into the product's real runs/ directory (STUDIO_RUNS_DIR).
-const RUNS_DIR = process.env.STUDIO_RUNS_DIR || join(__dirname, 'runs');
+const RUNS_DIR = codeRunsRoot();
 const PORT = Number(process.env.PORT || 1913); // Camus, b. 1913
 const ENGINE = process.env.ENGINE === 'mock' ? 'mock' : 'live';
 const MODEL_EVAL_CAMPAIGN = loadModelEvalCampaign();
@@ -307,11 +309,18 @@ async function startRun({
   questionBroker = null,
   onComplete = null,
   reservationParentId = null,
+  existingCodeId = null,
+  codeLimits = undefined,
+  verifyRepeatable = false,
+  codeAnswer = null,
+  retryUncertain = false,
+  retryVerification = false,
+  authorizeCode = null,
 }) {
-  const id = newId();
+  const id = existingCodeId || newId();
   const dir = join(RUNS_DIR, id);
   const scratchDir = join(dir, 'scratch');
-  await mkdir(scratchDir, { recursive: true });
+  await mkdir(scratchDir, { recursive: true, mode: 0o700 });
   // codex runs with cwd inside a git repo (same conditions camus reviews
   // under). A missing/failing git must not crash the server — degrade loudly.
   const gitOk = await new Promise((resolve) => {
@@ -337,11 +346,12 @@ async function startRun({
     models, recovery, publishRequested, codeMode,
   });
   const run = { id, goal, displayGoal, acceptanceContract, lane, codeMode, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, pairingView, frozenKnowledge, toolPolicy, publish: publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationChecks, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, experimentContext, modelRouting, controlPlane };
+  Object.assign(run, { codeLimits, verifyRepeatable, resumeCode: Boolean(existingCodeId), codeAnswer, retryUncertain, retryVerification });
   // The run exists on disk from second zero — a crash must not orphan it.
   const runMetadata = () => ({ id, goal, displayGoal, acceptanceContract, lane, codeMode, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: run.idSalt, engine: ENGINE, models, pairingView, publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationChecks, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, experimentContext, modelRouting, startedAt: run.startedAt });
-  await writeFile(join(dir, 'run.json'), JSON.stringify(runMetadata(), null, 2))
+  if (!existingCodeId) await writeFile(join(dir, 'run.json'), JSON.stringify({ ...runMetadata(), codeLimits, verifyRepeatable }, null, 2), { mode: 0o600 })
     .catch((err) => console.error(`[receipts] failed to write run.json for ${id}: ${err.message}`));
-  const state = { run, events: [], subscribers: new Set(), answer: null, abort: new AbortController(), writeChain: Promise.resolve() };
+  const state = { run, events: [], subscribers: new Set(), answer: null, abort: new AbortController(), writeChain: Promise.resolve(), workerFinished: false };
   runs.set(id, state);
   // A comparison parent reserves its child slots before any async retrieval or
   // directory setup. Replace one reservation with this live child atomically
@@ -454,7 +464,7 @@ async function startRun({
     })
     : null;
 
-  emit('run', { run: { id, goal: displayGoal ?? goal, acceptanceContract, lane, codeMode, depth, ground, targetPath, verifyCmd, publishRequested, pairingView, modelRouting, recoveryOf: recovery?.sourceRunId ?? null, recovery: recovery ? { sourceRunId: recovery.sourceRunId ?? null, sourceReceiptId: recovery.sourceReceiptId ?? null, parkedSha: recovery.parkedSha ?? null, shaProvenance: recovery.shaProvenance ?? null } : null, engine: ENGINE, roundCap: iterationPolicy === 'single_pass' ? 1 : models.loop.roundCap, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, experimentContext } });
+  emit('run', { run: { id, goal: displayGoal ?? goal, acceptanceContract, lane, codeMode, depth, ground, targetPath, verifyCmd, codeLimits, verifyRepeatable, publishRequested, pairingView, modelRouting, recoveryOf: recovery?.sourceRunId ?? null, recovery: recovery ? { sourceRunId: recovery.sourceRunId ?? null, sourceReceiptId: recovery.sourceReceiptId ?? null, parkedSha: recovery.parkedSha ?? null, shaProvenance: recovery.shaProvenance ?? null } : null, engine: ENGINE, roundCap: iterationPolicy === 'single_pass' ? 1 : models.loop.roundCap, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, experimentContext } });
   if (!gitOk) emit('log', { line: '⚠ git unavailable; codex reviews will run outside a git repo (different conditions than camus)' });
 
   // A recovery runs the host verifier and NOTHING else — including under the mock
@@ -471,6 +481,7 @@ async function startRun({
     signal: state.abort.signal,
     scratchDir,
     receiptsDir: dir,
+    frozenBackends, authorizeCode,
     persistKnowledgeSnapshot: async (snapshot) => {
       run.frozenKnowledge = snapshot;
       try {
@@ -538,20 +549,55 @@ async function startRun({
     const reportObject = { id, goal, displayGoal, acceptanceContract, lane, depth, ground, targetPath, verifyCmd, publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, idSalt: run.idSalt, engine: ENGINE, ...result, models: run.models, simulated: ENGINE === 'mock', experimentContext, modelRouting, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, draft: undefined, deliverable: run.lastMarkdown, evidence, evidencePack, evidencePackError, controlPlane: controlPlane.receipt(), controlRoute: terminalControlRoute, receiptsDegraded, receiptsNote, statuses, startedAt: run.startedAt, endedAt };
     const report = JSON.stringify(reportObject, null, 2);
     try {
-      await writeFile(join(dir, 'report.json'), report);
+      if (codeMode === 'independent') await writeFile(join(dir, `report-${endedAt}.json`), report, { mode: 0o600 });
+      if (!result?.stateUnchanged) await writeFile(join(dir, 'report.json'), report);
     } catch (err) {
       // One retry, then say it plainly — a sealed-looking run with no report
       // would otherwise vanish from Recent runs with no explanation.
       await new Promise((r) => setTimeout(r, 500));
-      await writeFile(join(dir, 'report.json'), report).catch((err2) => persistFail('report.json', err2));
+      if (!result?.stateUnchanged) await writeFile(join(dir, 'report.json'), report).catch((err2) => persistFail('report.json', err2));
     }
     try { await onComplete?.(reportObject); }
     catch (err) { console.error(`[comparison] completion hook failed for ${id}: ${err.message}`); }
+    state.workerFinished = true;
     for (const res of state.subscribers) res.end();
     state.subscribers.clear();
   });
 
   return id;
+}
+
+const startingCodeResumes = new Set();
+async function resumeIndependentCode(id, body) {
+  if (startingCodeResumes.has(id) || (runs.has(id) && runs.get(id).workerFinished === false)) throw new Error('That coding worker is still running or sealing its receipt.');
+  if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).some((key) => !['codeLimits', 'answer', 'retryUncertain', 'retryVerification'].includes(key))) throw new Error('Resume accepts only budget extensions, a bound answer, and explicit retry authorization. The pair, contract and verifier are frozen.');
+  for (const key of ['retryUncertain', 'retryVerification']) if (body[key] !== undefined && typeof body[key] !== 'boolean') throw new Error(`${key} must be a boolean.`);
+  validateCodeLimits(body.codeLimits);
+  startingCodeResumes.add(id);
+  let admission, target;
+  try {
+    const dir = join(RUNS_DIR, id);
+    const meta = await readCodeRunMetadata(dir);
+    const checkpoint = await readCodeCheckpoint(dir);
+    const continuation = await codeContinuation(dir);
+    if (!continuation.canResume) throw new Error(continuation.presentation.detail);
+    if (activeBuilds.size) throw new Error('A build worker is already active.');
+    admission = acquireAdmission(1);
+    if (!admission.ok) throw new Error('Studio is at its active run limit.');
+    target = meta.targetPath; activeBuilds.add(target);
+    const prepared = await prepareCodeExecution(checkpoint.seats);
+    return await startRun({
+      existingCodeId: id, goal: meta.goal ?? meta.task, acceptanceContract: meta.acceptanceContract,
+      lane: 'build', codeMode: 'independent', depth: 'quick', ground: false,
+      targetPath: target, targetToplevel: target, verifyCmd: meta.verifyCmd,
+      verifyRepeatable: meta.verifyRepeatable === true, codeLimits: body.codeLimits,
+      codeAnswer: body.answer, retryUncertain: body.retryUncertain === true, retryVerification: body.retryVerification === true,
+      modelsSnapshot: prepared.models, frozenBackends: prepared.frozenBackends,
+      pairingView: prepared.pairingView, authorizeCode: prepared.authorize,
+    });
+  } catch (error) { if (target) activeBuilds.delete(target); throw error; }
+  finally { startingCodeResumes.delete(id); admission?.release?.(); }
 }
 
 // Re-audit one already-sealed research artifact. This is a new receipt over the
@@ -1858,6 +1904,10 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: 'codeMode must be gate or independent, and applies only to Build.' });
       }
       const independentBuild = lane === 'build' && codeMode === 'independent';
+      let codeLimits;
+      try { codeLimits = independentBuild ? validateCodeLimits(body.codeLimits) : undefined; }
+      catch (error) { return json(res, 400, { error: String(error.message || error).slice(0, 300) }); }
+      if (body.verifyRepeatable !== undefined && typeof body.verifyRepeatable !== 'boolean') return json(res, 400, { error: 'verifyRepeatable must be a boolean' });
       if (independentBuild && ENGINE === 'mock') return json(res, 400, { error: 'Any-model Build needs the live engine and a real isolated Git candidate; rehearsal does not execute it.' });
       const evaluationProfile = body.evaluationProfile == null ? null : String(body.evaluationProfile).trim();
       if (evaluationProfile !== null && !EVALUATION_PROFILES.has(evaluationProfile)) {
@@ -1915,6 +1965,7 @@ const server = http.createServer(async (req, res) => {
       // awaits, or the run banner could describe a newer pairing than the one
       // whose backend objects and fingerprints are actually running.
       let pairingView = null;
+      let authorizeCode = null;
       let modelRouting = null;
       if (routingMode === 'automatic') {
         let decision;
@@ -2039,10 +2090,11 @@ const server = http.createServer(async (req, res) => {
               // Validate before startRun creates metadata. A symlinked runs
               // directory must not put Camus internals into the target repo.
               await prepareCodeReceiptsDir(RUNS_DIR, targetPath);
-              const prepared = await prepareCodeSeats({ pairing: body.pairing ?? null });
+              const prepared = await prepareCodeExecution(body.pairing ?? null);
               modelsSnapshot = prepared.models;
               frozenBackends = prepared.frozenBackends;
               pairingView = prepared.pairingView;
+              authorizeCode = prepared.authorize;
             } catch (error) {
               return json(res, 400, { error: String(error.message || error).slice(0, 600) });
             }
@@ -2125,7 +2177,7 @@ const server = http.createServer(async (req, res) => {
         if (targetToplevel && activeBuilds.size > 0) return json(res, 409, { error: 'A build run is already going; wait for its terminal receipt.' });
         if (targetToplevel) activeBuilds.add(targetToplevel);
         const id = await startRun({
-          goal, acceptanceContract, lane, codeMode,
+          goal, acceptanceContract, lane, codeMode, codeLimits, authorizeCode, verifyRepeatable: body.verifyRepeatable === true,
           depth,
           ground, targetPath, targetToplevel, modelsSnapshot, frozenBackends, pairingView, verifyCmd,
           publish: body.publish === true,
@@ -2175,14 +2227,27 @@ const server = http.createServer(async (req, res) => {
           }
         }
       }
+      for (const item of list) {
+        try {
+          await readCodeRunMetadata(join(RUNS_DIR, item.id));
+          item.codeMode = 'independent'; item.headline = null;
+          const c = await codeContinuation(join(RUNS_DIR, item.id));
+          if (c.status) { item.status = c.interrupted ? 'incomplete' : c.status; item.live = c.owned; item.phase = c.phase; item.lastActivityAt = c.updatedAt; item.codeMode = 'independent'; }
+        } catch { /* native / historical list semantics */ }
+      }
       list.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
       return json(res, 200, { runs: list.slice(0, 30) });
     }
 
-    const m = path.match(/^\/api\/runs\/([\w-]+)\/(events|answer|stop|report|resume|audit)$/);
+    const m = path.match(/^\/api\/runs\/([\w-]+)\/(events|answer|stop|report|resume|audit|state)$/);
     if (m) {
       const [, id, action] = m;
       const state = runs.get(id);
+
+      if (action === 'state' && req.method === 'GET') {
+        try { await readCodeRunMetadata(join(RUNS_DIR, id)); return json(res, 200, await codeContinuation(join(RUNS_DIR, id))); }
+        catch { return json(res, 404, { error: 'No independent coding run with that ID.' }); }
+      }
 
       if (action === 'audit' && req.method === 'POST') {
         if (state && ['running', 'needs_human'].includes(state.run.status)) return json(res, 409, { error: 'the source run is still going; its artifact is not sealed yet' });
@@ -2222,6 +2287,39 @@ const server = http.createServer(async (req, res) => {
 
       if (action === 'events' && req.method === 'GET') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+        // An independent run may be owned by the CLI or a previous server. Read
+        // its authenticated state, never replay an old "running" as live work.
+        let codeMeta;
+        try { codeMeta = await readCodeRunMetadata(join(RUNS_DIR, id)); } catch { /* native / legacy */ }
+        if (codeMeta && (!state || state.workerFinished)) {
+          const send = (ev) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
+          let polling = false, closed = false, interval;
+          req.on('close', () => { closed = true; clearInterval(interval); });
+          send({ type: 'replay_start', live: false, continuation: await codeContinuation(join(RUNS_DIR, id)) });
+          send({ type: 'run', run: { id, goal: codeMeta.goal ?? codeMeta.task, acceptanceContract: codeMeta.acceptanceContract, lane: 'build', codeMode: 'independent', targetPath: codeMeta.targetPath, verifyCmd: codeMeta.verifyCmd, engine: 'live', pairingView: codeMeta.pairingView } });
+          try {
+            const report = JSON.parse(await readFile(join(RUNS_DIR, id, 'report.json'), 'utf8'));
+            if (report.deliverable) send({ type: 'revision', rev: 1, markdown: report.deliverable });
+          } catch { /* a worker may not have a report yet */ }
+          const refresh = async () => {
+            if (polling || closed) return;
+            polling = true;
+            try {
+              const continuation = await codeContinuation(join(RUNS_DIR, id));
+              if (closed) return;
+              send({ type: 'code_state', continuation });
+              if (continuation.owned) send({ type: 'stage', name: continuation.phase, status: 'active' });
+              else {
+                clearInterval(interval);
+                send({ type: 'status', status: continuation.interrupted ? 'stopped' : continuation.status ?? 'incomplete' });
+                res.end(); closed = true;
+              }
+            } finally { polling = false; }
+          };
+          await refresh();
+          if (!closed) interval = setInterval(() => { refresh().catch(() => { clearInterval(interval); res.end(); }); }, 1000);
+          return;
+        }
         if (state) {
           for (const ev of state.events) res.write(`data: ${JSON.stringify(withHeadline(ev))}\n\n`);
           if (['running', 'needs_human'].includes(state.run.status) || state.answer) {
@@ -2294,6 +2392,13 @@ const server = http.createServer(async (req, res) => {
       }
 
       if (action === 'answer' && req.method === 'POST') {
+        let codeMeta;
+        try { codeMeta = await readCodeRunMetadata(join(RUNS_DIR, id)); } catch { /* native question */ }
+        if (codeMeta) {
+          const body = await readBody(req);
+          try { return json(res, 201, { id: await resumeIndependentCode(id, { answer: { id: body.questionId, text: body.answer } }) }); }
+          catch (error) { return json(res, 409, { error: String(error.message || error).slice(0, 600) }); }
+        }
         let answerState = state;
         let queued = null;
         if (state && !state.answer && state.run.experimentContext?.parentRunId) {
@@ -2323,6 +2428,12 @@ const server = http.createServer(async (req, res) => {
       }
 
       if (action === 'stop' && req.method === 'POST') {
+        try {
+          await readCodeRunMetadata(join(RUNS_DIR, id));
+          const result = await requestCodeStop(join(RUNS_DIR, id));
+          state?.abort.abort();
+          return json(res, 200, result);
+        } catch { /* legacy run or native process-owned cancellation */ }
         if (!state) return json(res, 404, { error: 'unknown run' });
         state.abort.abort();
         if (state.run.experimentContext?.parentRunId) {
@@ -2439,7 +2550,10 @@ const server = http.createServer(async (req, res) => {
         // re-enters Plan and Implement every time, which is precisely why a run that
         // already parked a candidate takes the recovery path below instead.
         if (meta.lane !== 'build') return json(res, 400, { error: 'only build runs and incomplete comparisons can resume' });
-        if (meta.codeMode === 'independent') return json(res, 409, { error: 'This experimental candidate requires inspection and explicit human acceptance. It cannot resume through the legacy gate or silently rerun models. Its worktree and receipt are preserved.' });
+        if (meta.codeMode === 'independent') {
+          try { return json(res, 201, { id: await resumeIndependentCode(id, body) }); }
+          catch (error) { return json(res, 409, { error: error.code === 'ENOENT' ? 'This historical run has no authenticated checkpoint; inspection only. It cannot resume through the legacy gate.' : String(error.message || error).slice(0, 600) }); }
+        }
         if (!meta.idSalt) return json(res, 400, { error: 'this run predates resumable receipts. Start a fresh build run instead.' });
         // A run that started before verifyCmd existed — or one whose auto-detected
         // verification turned out to be wrong for this host — must be able to
@@ -2602,7 +2716,12 @@ const server = http.createServer(async (req, res) => {
 
       if (action === 'report' && req.method === 'GET') {
         try {
-          return json(res, 200, JSON.parse(await readFile(join(RUNS_DIR, id, 'report.json'), 'utf8')));
+          const report = JSON.parse(await readFile(join(RUNS_DIR, id, 'report.json'), 'utf8'));
+          if (report.codeMode === 'independent') {
+            const c = await codeContinuation(join(RUNS_DIR, id));
+            if (c.owned || state?.workerFinished === false || (report.checkpointRevision && c.revision !== report.checkpointRevision)) return json(res, 409, { error: 'The current checkpoint has no finalized report yet; the previous report is not current.' });
+          }
+          return json(res, 200, report);
         } catch (err) {
           // Missing = still pending; unreadable/corrupt = data loss. Say which.
           return err.code === 'ENOENT'
@@ -2657,7 +2776,7 @@ for (const result of startupSweep) {
 server.listen(PORT, BIND, () => {
   const hm = hivemind.hivemindStatus();
   const p = actualPort();
-  console.log(`\n  Camus Loop Studio\n  http://localhost:${p}\n  bind: ${BIND} · engine: ${ENGINE}${ENGINE === 'mock' ? ' (rehearsal)' : ''} · hivemind: ${hm.connected ? 'connected' : 'stub'} · hosted origins: ${REMOTE_ORIGINS.join(', ')} · receipts: ./runs/\n`);
+  console.log(`\n  Camus Loop Studio\n  http://localhost:${p}\n  bind: ${BIND} · engine: ${ENGINE}${ENGINE === 'mock' ? ' (rehearsal)' : ''} · hivemind: ${hm.connected ? 'connected' : 'stub'} · hosted origins: ${REMOTE_ORIGINS.join(', ')} · receipts: ${RUNS_DIR}\n`);
   if (process.platform === 'darwin' && process.env.OPEN !== '0' && !process.env.CI) {
     spawn('open', [`http://localhost:${PORT}`], { stdio: 'ignore' }).on('error', () => {});
   }

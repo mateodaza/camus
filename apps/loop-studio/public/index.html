@@ -184,13 +184,34 @@
         </select>
         <label class="lbl" for="target-path">Target repository</label>
         <input id="target-path" class="path-input" placeholder="~/path/to/a/git/repo" autocomplete="off" />
-        <div class="hint">Any-model Build uses the two seats below, including reversed and same-provider pairings. The repository must be clean. Changes stay in a separate worktree; review is advisory and nothing is automatically committed, merged or published. Stop preserves the candidate and receipt; experimental resume is not yet available.</div>
+        <div class="hint">Any-model Build uses both selected seats. Start from a clean repository. Changes stay in a separate worktree; review is advisory and nothing is automatically committed, merged or published. Stop and resume preserve the same candidate, contract and budget usage.</div>
         <!-- Filled from the doctor's auth preflight when a CLI is proven signed out;
              a warning, not a gate — the probes can be stale in either direction. -->
         <div id="preflight-note" class="hint preflight hidden"></div>
         <label class="lbl" for="verify-cmd">Verify command (optional)</label>
         <input id="verify-cmd" class="path-input" placeholder="e.g. dotnet test Tests/App.Tests/App.Tests.csproj -f net10.0" autocomplete="off" />
         <div class="hint">Any-model mode: empty means untested. Supply your test command to verify the candidate. It executes locally with credential environment variables removed, not in an OS sandbox; use trusted projects. The legacy gate can detect the stack. No <code>$</code>, backticks, quotes, backslashes or newlines: put complex commands in a script.</div>
+        <details id="code-policy">
+          <summary>Any-model recovery and budget</summary>
+          <label class="toggle"><input id="code-verify-repeatable" type="checkbox" /><span>This check is safe to repeat after fixes or interruption</span></label>
+          <div class="hint">Without this authorization, an additional verification pauses for permission. No changed contract or model is allowed on resume. These are global run limits, not per-round allowances.</div>
+          <div class="row">
+            <label>Model calls <input class="path-input" id="code-maxCalls" type="number" min="1" value="32" /></label>
+            <label>Maker steps <input class="path-input" id="code-maxSteps" type="number" min="1" value="12" /></label>
+            <label>File actions <input class="path-input" id="code-maxActions" type="number" min="1" value="32" /></label>
+          </div>
+          <div class="row">
+            <label>Repairs <input class="path-input" id="code-maxRepairs" type="number" min="0" value="2" /></label>
+            <label>Retries <input class="path-input" id="code-maxRetries" type="number" min="0" value="1" /></label>
+            <label>Token budget (0 = off) <input class="path-input" id="code-maxTokens" type="number" min="0" value="0" /></label>
+          </div>
+          <div class="row">
+            <label>Active time (ms) <input class="path-input" id="code-timeoutMs" type="number" min="1" value="1200000" /></label>
+            <label>Per-call timeout (ms) <input class="path-input" id="code-callTimeoutMs" type="number" min="1" value="600000" /></label>
+            <label>Inactivity (ms, 0 = off) <input class="path-input" id="code-idleTimeoutMs" type="number" min="0" value="0" /></label>
+          </div>
+          <div class="hint">Token limits reserve capacity before a call; they are not provider-enforced billing caps. Unreported usage remains unknown. Inactivity detection is off by default: a quiet model may still be working.</div>
+        </details>
       </div>
 
       <!-- Depth moved into Settings: it is a run preference, not a briefing
@@ -242,7 +263,7 @@
     <section id="recents" class="recents" tabindex="-1" aria-label="Recent runs"></section>
 
     <footer class="foot">
-      One model drafts. Another — by default from a different vendor — reviews it adversarially. Deterministic checks decide, so every run leaves receipts in <code>./runs/</code>.
+      One model makes the work. Another reviews it. Verification and review stay separate; experimental code still needs human acceptance. Private receipts default to <code>~/.camus/studio/runs/</code>.
     </footer>
   </main>
 

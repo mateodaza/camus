@@ -2,6 +2,10 @@
 
 **Makes it work. Knows when to stop.**
 
+Unreleased development: [Productive Loop](docs/PRODUCTIVE-LOOP-PLAN.md) adds bounded
+repair, private checkpoints and shared CLI/Studio continuation. These controls
+are not part of the published 0.4.8 package; live dogfood is the next validation step.
+
 New in 0.4.8: [`camus build`](docs/INDEPENDENT-CODE-SEATS.md)
 and Studio's **Any-model candidate** let you select maker and reviewer
 independently, including reversed and configured open-model pairings. Results

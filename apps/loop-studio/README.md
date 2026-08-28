@@ -1,5 +1,15 @@
 # Camus Loop Studio
 
+Unreleased Productive Loop work adds repair feedback, checkpointed continuation,
+budget/answer controls and the same private run IDs as the CLI. See
+[the coding guide](../../docs/INDEPENDENT-CODE-SEATS.md). This does not grant external
+code-gate admission or automatic acceptance. Published 0.4.8 lacks these recovery controls.
+
+New private receipts default to `~/.camus/studio/runs/<id>`, shared with the CLI;
+`STUDIO_RUNS_DIR` overrides the root. Historical `./runs` files are not moved or
+deleted: point that variable at the old directory to inspect them. Historical
+independent runs without authenticated checkpoints cannot be resumed.
+
 A local web UI for operating Camus across written work and code, with the complete
 acceptance contract visible and every human handoff attached to the run:
 

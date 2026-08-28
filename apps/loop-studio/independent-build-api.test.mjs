@@ -24,7 +24,7 @@ try {
   await writeFile(cache, JSON.stringify({ models: [{ slug: 'gpt-5.6-luna', visibility: 'list' }] }));
   const loader = join(dir, 'provider-loader.mjs');
   const target = pathToFileURL(join(studio, 'lib/code-seats.mjs')).href;
-  const fake = `export { prepareCodeReceiptsDir } from ${JSON.stringify(target + '?real')};
+  const fake = `export { prepareCodeReceiptsDir, codeLimits } from ${JSON.stringify(target + '?real')};
   export async function runCodeSeats(args) {
     return {status:'needs_decision', candidate:{worktree:args.repoPath,head:'fixture',fingerprint:'fixture'},
       selected:{maker:args.seats.maker,reviewer:args.seats.reviewer},
