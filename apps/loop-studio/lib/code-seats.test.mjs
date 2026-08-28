@@ -164,6 +164,9 @@ await test('ignored new files and later ignore-rule mutations are refused before
   try {
     const result = await runCodeSeats({ repoPath: repo2, task: 'x', seats: next.seats, adapters: next.adapters });
     assert.equal(result.status, 'infra_error'); assert.match(result.error, /became git-ignored/);
+    assert.equal(result.candidate.fingerprint, null, 'a refusal after mutation cannot advertise an older candidate binding');
+    assert.equal(result.candidate.diff, null);
+    assert.equal(result.candidate.snapshotStatus, 'unverified_terminal');
   } finally { await remove(repo2); }
 });
 
@@ -282,7 +285,8 @@ await test('an empty or malformed reviewer verdict is infrastructure evidence, n
     result = await runCodeSeats({ repoPath: repo, task: 'x', seats: pair.seats, adapters: pair.adapters });
     assert.equal(result.status, 'infra_error');
     assert.match(result.error, /reviewer failed/);
-    assert.match(result.candidate.diff, /new.txt/);
+    assert.equal(await readFile(join(result.candidate.worktree, 'new.txt'), 'utf8'), 'a', 'failed review preserves the actual candidate');
+    assert.equal(result.candidate.fingerprint, null, 'failed review does not certify a terminal binding');
   } finally { await remove(repo, result); }
 });
 

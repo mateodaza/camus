@@ -59,12 +59,13 @@ run refuses a `STUDIO_RUNS_DIR` inside the target repository (including through 
 symlink). When building Camus itself from Studio, point that setting to a private
 directory outside the checkout. Model-created ignored files are refused too;
 they cannot disappear from the reviewed candidate fingerprint.
-The
-host retains bounded action history, refuses oversized context without silently
+The host retains bounded action history, refuses oversized context without silently
 dropping coverage, and rechecks the candidate fingerprint after verification and
 review. The loop stops on protocol errors, provider errors, cancellation, or its
 step/time limits. There is no autonomous fix/review retry campaign or automatic
 resume in this experimental path; the candidate is preserved for inspection.
+Infrastructure failures and interrupted runs clear the terminal diff/fingerprint
+rather than present an older snapshot as current; inspect the retained worktree.
 
 `--verify` is an explicit local execution authorization. Environment credentials
 are removed and a private HOME is used, but this is **not an OS sandbox**: tests

@@ -369,6 +369,12 @@ export async function runCodeSeats({
   const finish = async (status, error = null) => {
     result.status = status;
     result.error = error ? boundedText(error, 1_000) : null;
+    // A refused host action, partial I/O, or interruption can occur after the
+    // last snapshot. Preserve the worktree, but do not advertise its older diff
+    // or fingerprint as a complete binding of the terminal candidate.
+    if (result.candidate && ['infra_error', 'stopped'].includes(status)) {
+      result.candidate = { ...result.candidate, diff: null, fingerprint: null, snapshotStatus: 'unverified_terminal' };
+    }
     clearTimeout(timeout);
     signal?.removeEventListener('abort', abort);
     event(onEvent, 'terminal', { stage: 'code_seats', status, line: result.error ?? status });
