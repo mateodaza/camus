@@ -869,6 +869,132 @@ def test_metrics_expose_unfinished_launched_session_without_inventing_usage():
         assert metrics["outputTokens"] == 53357
 
 
+def _episode_context(root, task_id="task-a"):
+    """One completed-native fixture with receipt-derived Claude maker evidence."""
+    log = D.EventLog("feat-a", base=root)
+    node = {
+        "taskId": task_id,
+        "directReview": {"clean": True, "backend": "codex", "model": "gpt-5.6-sol", "effort": "high"},
+    }
+    run = {
+        "state": {"featId": "feat-a", "kernel": {"traceId": "trace:a"}},
+        "nodes": [node], "specs": ["bounded task"], "args": {"taskClass": "bounded_feature"},
+    }
+    pairing = {
+        "makerModel": "claude-opus-4-8", "makerEffort": "high",
+        "reviewerBackend": "codex", "reviewerModel": "gpt-5.6-sol", "reviewerEffort": "high",
+    }
+    experiment = {"id": "operator-repair", "armId": "claude-sol", "taskClass": "bounded_feature", "configHash": "sha256:cfg"}
+    log.append("task.started", trace_id="trace:a", task_id=task_id, key=task_id)
+    log.append("agent.completed", trace_id="trace:a", task_id=task_id, key=task_id + ":maker:1", data={
+        "durationMs": 100, "usage": {"outputTokens": 10}, "modelsObserved": ["claude-opus-4-8"],
+    })
+    return log, run, node, pairing, experiment
+
+
+def _operator_repair_marker(log, task_id):
+    assert log.append("operator.repair", trace_id="trace:a", task_id=task_id, key=task_id + ":operator-repair", data={
+        "reason": "operator-assisted durable calibration repair; no maker replay",
+        "candidateFingerprint": "candidate1:" + "a" * 64,
+        "contributors": [
+            {"role": "implementation", "model": "gpt-5.6-terra"},
+            {"role": "tests", "model": "gpt-5.6-luna"},
+            {"role": "supervisor", "model": "not_recorded"},
+        ],
+        "tests": ["python3 packages/cli/skills/camus/scripts/test_drive.py"],
+        "usageMeasured": False,
+    })
+
+
+def test_unassisted_completed_episode_keeps_autonomous_provenance_and_complete_timing():
+    with tempfile.TemporaryDirectory() as root:
+        log, run, node, pairing, experiment = _episode_context(root)
+        ledger = D.evals.Ledger(os.path.join(root, "episodes.jsonl"))
+        D._record_episode(ledger, log, run, node, pairing, experiment, {
+            "verification": {"pass": True}, "provenStatus": "sealed", "commit": "a" * 40,
+        })
+        row = ledger.records()[0]
+        assert row["outcome"]["humanIntervention"] is False
+        assert "operatorAssisted" not in row["outcome"]
+        assert "operatorAssistance" not in row["pairing"]
+        assert row["economics"]["measurementCoverage"] == "background_models_plus_end_to_end_wall; reviewer_tokens_unavailable"
+        assert D.evals._floor_pass(row) is True
+
+
+def test_operator_repair_completed_episode_is_assisted_not_autonomous_or_timing_complete():
+    with tempfile.TemporaryDirectory() as root:
+        log, run, node, pairing, experiment = _episode_context(root)
+        _operator_repair_marker(log, node["taskId"])
+        ledger = D.evals.Ledger(os.path.join(root, "episodes.jsonl"))
+        D._record_episode(ledger, log, run, node, pairing, experiment, {
+            "verification": {"pass": True}, "provenStatus": "sealed", "commit": "a" * 40,
+        })
+        row = ledger.records()[0]
+        assert row["outcome"]["humanIntervention"] is True
+        assert row["outcome"]["operatorAssisted"] is True
+        assert row["outcome"]["operatorAssistanceKind"] == "operator_repair"
+        assert row["pairing"]["makerObserved"] == ["claude-opus-4-8"]
+        assert row["pairing"]["operatorAssistance"]["contributors"][0] == {
+            "role": "implementation", "model": "gpt-5.6-terra",
+        }
+        assert row["pairing"]["operatorAssistance"]["usageMeasured"] is False
+        assert row["economics"]["measurementCoverage"] == "incomplete_operator_repair_helper_usage_unmeasured"
+        assert D.evals._floor_pass(row) is False, "assisted work cannot clear the autonomous routing floor"
+        stats = D.evals.arm_stats([row], "operator-repair", "claude-sol")
+        assert stats["medianModelWallMs"] is None, "unmeasured helper work is excluded from timing medians"
+
+
+def test_operator_repair_incomplete_episode_is_assisted_and_excluded_from_timing():
+    with tempfile.TemporaryDirectory() as root:
+        log, run, node, pairing, experiment = _episode_context(root)
+        _operator_repair_marker(log, node["taskId"])
+        log.append("task.incomplete", trace_id="trace:a", task_id=node["taskId"], key=node["taskId"])
+        ledger = D.evals.Ledger(os.path.join(root, "episodes.jsonl"))
+        D._record_incomplete_episode(
+            ledger, log, run, node, pairing, experiment, {"action": "stop", "reason": "operator stopped"},
+        )
+        row = ledger.records()[0]
+        assert row["outcome"]["humanIntervention"] is True
+        assert row["outcome"]["operatorAssisted"] is True
+        assert row["economics"]["measurementCoverage"] == "incomplete_operator_repair_helper_usage_unmeasured"
+        assert D.evals._floor_pass(row) is False
+        assert D.evals.arm_stats([row], "operator-repair", "claude-sol")["medianModelWallMs"] is None
+
+
+def test_operator_repair_marker_is_scoped_to_its_task_only():
+    with tempfile.TemporaryDirectory() as root:
+        log, run, node, pairing, experiment = _episode_context(root, task_id="task-a")
+        _operator_repair_marker(log, "task-b")
+        ledger = D.evals.Ledger(os.path.join(root, "episodes.jsonl"))
+        D._record_episode(ledger, log, run, node, pairing, experiment, {
+            "verification": {"pass": True}, "provenStatus": "sealed", "commit": "a" * 40,
+        })
+        row = ledger.records()[0]
+        assert row["outcome"]["humanIntervention"] is False
+        assert "operatorAssistance" not in row["pairing"]
+        assert row["economics"]["measurementCoverage"] == "background_models_plus_end_to_end_wall; reviewer_tokens_unavailable"
+
+
+def test_malformed_operator_marker_fails_closed_without_copying_arbitrary_metadata():
+    with tempfile.TemporaryDirectory() as root:
+        log, run, node, pairing, experiment = _episode_context(root)
+        log.append("operator.repair", trace_id="trace:a", task_id=node["taskId"],
+                   key="invalid-marker", data={"unexpected": "private-canary-do-not-copy"})
+        ledger = D.evals.Ledger(os.path.join(root, "episodes.jsonl"))
+        D._record_episode(ledger, log, run, node, pairing, experiment, {
+            "verification": {"pass": True}, "provenStatus": "sealed", "commit": "a" * 40,
+        })
+        row = ledger.records()[0]
+        assert row["outcome"]["operatorAssisted"] is True
+        assert row["outcome"]["humanIntervention"] is True
+        assert row["pairing"]["operatorAssistance"] == {
+            "recorded": True, "metadata": "invalid_or_unsupported",
+        }
+        assert "private-canary" not in json.dumps(row)
+        assert D.evals._floor_pass(row) is False
+        assert D.evals.arm_stats([row], "operator-repair", "claude-sol")["medianModelWallMs"] is None
+
+
 def test_metrics_do_not_double_count_one_background_turn_wrapped_twice():
     receipt = {
         "source": "claude_background_session",

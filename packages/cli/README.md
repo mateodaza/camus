@@ -452,6 +452,13 @@ transcripts. Replaying an older sealed receipt preserves its original accounting
 parser improvements do not silently migrate history. These counts are usage telemetry,
 not a provider invoice.
 
+When an operator records an `operator.repair` trace event for manual or helper-agent
+edits, that task's episodes are marked operator-assisted, not autonomous successes.
+Declared helpers remain separate from the maker identity observed in sealed receipts;
+unmeasured helper usage makes timing coverage incomplete. Such episodes cannot satisfy
+the autonomous routing quality floor. This intervention flag is not a human calibration
+label and grants no admission standing.
+
 The profile comes from `~/.camus/studio/models.json`; only the credential environment-variable
 name lives there. Direct HTTPS, literal loopback, and fixed managed-SSH connections are supported.
 The resulting `trial1:` receipt is non-gating by construction. The released 0.4.7 dispatcher

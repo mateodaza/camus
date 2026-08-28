@@ -39,6 +39,10 @@ EXTERNAL_REVIEW_ROUTE_FIELDS = (
     "reviewerProfileBackend", "reviewerTrainingOrg", "reviewerTransport",
     "reviewerConnection", "reviewerQualification",
 )
+OPERATOR_REPAIR_ROLES = {"implementation", "tests", "supervisor"}
+OPERATOR_REPAIR_TEXT = re.compile(r"[A-Za-z0-9_./:;=, -]{1,240}")
+OPERATOR_REPAIR_MODEL = re.compile(r"[A-Za-z0-9_.-]{1,120}")
+OPERATOR_REPAIR_FINGERPRINT = re.compile(r"candidate[0-9]+:[0-9a-f]{64}")
 
 
 class DriverError(Exception):
@@ -915,7 +919,56 @@ def _review_with_shadow(log, run, node, pairing, repo, task, round_no, feat_id, 
     return review
 
 
-def _task_metrics(run, node, log, ended_at=None):
+def _operator_repair_for_task(log, task_id):
+    """Return bounded declared assistance for one task, never inferred model usage.
+
+    ``operator.repair`` is an append-only provenance event written by the operator
+    when a candidate is changed outside the recorded background maker sessions.
+    Its metadata is deliberately allowlisted before it enters an eval episode: no
+    prompts, diffs, credentials, or arbitrary event payloads are copied forward.
+    A malformed task-scoped marker still fails closed as operator-assisted.
+    """
+    row = next((item for item in reversed(log.records())
+                if item.get("type") == "operator.repair" and item.get("taskId") == task_id), None)
+    if not isinstance(row, dict):
+        return None
+    data = row.get("data") if isinstance(row.get("data"), dict) else None
+    if not data:
+        return {"recorded": True, "metadata": "invalid_or_unsupported"}
+    reason = data.get("reason")
+    fingerprint = data.get("candidateFingerprint")
+    contributors = data.get("contributors")
+    tests = data.get("tests")
+    if not (isinstance(reason, str) and OPERATOR_REPAIR_TEXT.fullmatch(reason)
+            and isinstance(fingerprint, str) and OPERATOR_REPAIR_FINGERPRINT.fullmatch(fingerprint)
+            and isinstance(contributors, list) and 1 <= len(contributors) <= 8
+            and isinstance(tests, list) and len(tests) <= 16
+            and data.get("usageMeasured") is False):
+        return {"recorded": True, "metadata": "invalid_or_unsupported"}
+    declared = []
+    for contributor in contributors:
+        if not isinstance(contributor, dict) or set(contributor) != {"role", "model"}:
+            return {"recorded": True, "metadata": "invalid_or_unsupported"}
+        role, model = contributor.get("role"), contributor.get("model")
+        if role not in OPERATOR_REPAIR_ROLES or not isinstance(model, str) \
+                or not OPERATOR_REPAIR_MODEL.fullmatch(model):
+            return {"recorded": True, "metadata": "invalid_or_unsupported"}
+        declared.append({"role": role, "model": model})
+    if not all(isinstance(command, str) and OPERATOR_REPAIR_TEXT.fullmatch(command) for command in tests):
+        return {"recorded": True, "metadata": "invalid_or_unsupported"}
+    return {
+        "recorded": True,
+        "reason": reason,
+        "candidateFingerprint": fingerprint,
+        "contributors": declared,
+        "tests": list(tests),
+        # This event declares that helper usage was NOT measured. Do not replace it
+        # with a guessed duration/token count or let it look like background coverage.
+        "usageMeasured": False,
+    }
+
+
+def _task_metrics(run, node, log, ended_at=None, operator_assisted=False):
     direct = node.get("directMakerUsage") if isinstance(node, dict) else None
     stored_receipts = direct.get("receipts") if isinstance(direct, dict) \
         and isinstance(direct.get("receipts"), list) else []
@@ -972,6 +1025,8 @@ def _task_metrics(run, node, log, ended_at=None):
         "shadowOutputTokens": sum(int(item.get("completion_tokens") or item.get("output_tokens") or 0)
                                   for item in shadow_usage),
         "measurementCoverage": (
+            "incomplete_operator_repair_helper_usage_unmeasured"
+            if operator_assisted else
             "incomplete_background_models_missing_terminal_receipts"
             if incomplete_sessions else
             "background_models_plus_end_to_end_wall; reviewer_tokens_unavailable"
@@ -979,7 +1034,7 @@ def _task_metrics(run, node, log, ended_at=None):
     }, transcript_hashes
 
 
-def _pairing_evidence(pairing, node, log):
+def _pairing_evidence(pairing, node, log, operator_assistance=None):
     direct = node.get("directMakerUsage") if isinstance(node.get("directMakerUsage"), dict) else {}
     observed_makers = []
     for receipt in direct.get("receipts") if isinstance(direct.get("receipts"), list) else []:
@@ -1003,7 +1058,7 @@ def _pairing_evidence(pairing, node, log):
                        and row.get("taskId") == node.get("taskId")), None)
     shadow = shadow_row.get("data") if isinstance(shadow_row, dict) \
         and isinstance(shadow_row.get("data"), dict) else None
-    return {
+    evidence = {
         **pairing,
         "makerObserved": observed_makers,
         "reviewerObserved": {
@@ -1018,10 +1073,16 @@ def _pairing_evidence(pairing, node, log):
             "ran": shadow.get("ran") is True,
         } if shadow else None,
     }
+    # Declared helpers are intentionally NOT merged into makerObserved: the latter
+    # remains receipt-derived evidence of the requested Claude maker identity.
+    if operator_assistance is not None:
+        evidence["operatorAssistance"] = operator_assistance
+    return evidence
 
 
 def _record_episode(ledger, log, run, node, pairing, experiment, seal):
-    metrics, transcripts = _task_metrics(run, node, log)
+    operator_assistance = _operator_repair_for_task(log, node["taskId"])
+    metrics, transcripts = _task_metrics(run, node, log, operator_assisted=operator_assistance is not None)
     final_review = node.get("directReview") if isinstance(node.get("directReview"), dict) else {}
     verification = seal.get("verification") if isinstance(seal, dict) else {}
     comparison_row = next((row for row in reversed(log.records())
@@ -1029,27 +1090,31 @@ def _record_episode(ledger, log, run, node, pairing, experiment, seal):
                            and row.get("taskId") == node.get("taskId")), None)
     comparison = comparison_row.get("data") if isinstance(comparison_row, dict) \
         and isinstance(comparison_row.get("data"), dict) else None
+    outcome = {
+        "verificationPass": verification.get("pass") is True,
+        "independentReview": "clean" if final_review.get("clean") is True else "findings",
+        "humanIntervention": operator_assistance is not None,
+        "provenStatus": seal.get("provenStatus"),
+        "shadowReview": (
+            "clean" if comparison and comparison.get("shadowComparable") is True
+            and comparison.get("shadowClean") is True
+            else "findings" if comparison and comparison.get("shadowComparable") is True
+            else "candidate_changed" if comparison and comparison.get("shadowRan") is True
+            else "unavailable" if comparison else "not_configured"
+        ),
+        "shadowCodexVerdictAgreement": comparison.get("verdictAgreement") if comparison else None,
+        "shadowStanding": comparison.get("standing") if comparison else None,
+    }
+    if operator_assistance is not None:
+        outcome["operatorAssisted"] = True
+        outcome["operatorAssistanceKind"] = "operator_repair"
     episode = evals.make_episode(
         trace_id=kernel._kernel(run["state"]).get("traceId"),
         feat_id=run["state"]["featId"], task_id=node["taskId"],
         task_hash=kernel._task_hash(run["specs"][run["nodes"].index(node)]),
         task_class=(experiment or {}).get("taskClass") or run["args"].get("taskClass") or "unknown",
-        pairing=_pairing_evidence(pairing, node, log),
-        outcome={
-            "verificationPass": verification.get("pass") is True,
-            "independentReview": "clean" if final_review.get("clean") is True else "findings",
-            "humanIntervention": False,
-            "provenStatus": seal.get("provenStatus"),
-            "shadowReview": (
-                "clean" if comparison and comparison.get("shadowComparable") is True
-                and comparison.get("shadowClean") is True
-                else "findings" if comparison and comparison.get("shadowComparable") is True
-                else "candidate_changed" if comparison and comparison.get("shadowRan") is True
-                else "unavailable" if comparison else "not_configured"
-            ),
-            "shadowCodexVerdictAgreement": comparison.get("verdictAgreement") if comparison else None,
-            "shadowStanding": comparison.get("standing") if comparison else None,
-        },
+        pairing=_pairing_evidence(pairing, node, log, operator_assistance),
+        outcome=outcome,
         economics=metrics,
         artifact={"commit": seal.get("commit"), "transcriptHashes": transcripts},
         experiment=experiment,
@@ -1060,26 +1125,33 @@ def _record_episode(ledger, log, run, node, pairing, experiment, seal):
 def _record_incomplete_episode(ledger, log, run, node, pairing, experiment, terminal, review=None):
     terminal_event = log.latest("task.incomplete", node.get("taskId"))
     ended_at = terminal_event.get("at") if isinstance(terminal_event, dict) else None
-    metrics, transcripts = _task_metrics(run, node, log, ended_at=ended_at)
+    operator_assistance = _operator_repair_for_task(log, node["taskId"])
+    metrics, transcripts = _task_metrics(
+        run, node, log, ended_at=ended_at, operator_assisted=operator_assistance is not None,
+    )
     sequence = terminal_event.get("seq", 0) if isinstance(terminal_event, dict) else 0
     action = terminal.get("action") or "stop"
+    outcome = {
+        "verificationPass": False,
+        "independentReview": (
+            "clean" if isinstance(review, dict) and review.get("clean") is True
+            else "findings" if isinstance(review, dict) else "unavailable"
+        ),
+        "humanIntervention": action in ("human", "needs_input") or operator_assistance is not None,
+        "provenStatus": None,
+        "terminalAction": action,
+        "reason": str(terminal.get("reason") or "")[:500],
+    }
+    if operator_assistance is not None:
+        outcome["operatorAssisted"] = True
+        outcome["operatorAssistanceKind"] = "operator_repair"
     episode = evals.make_episode(
         trace_id=kernel._kernel(run["state"]).get("traceId"),
         feat_id=run["state"]["featId"], task_id=node["taskId"],
         task_hash=kernel._task_hash(run["specs"][run["nodes"].index(node)]),
         task_class=(experiment or {}).get("taskClass") or run["args"].get("taskClass") or "unknown",
-        pairing=_pairing_evidence(pairing, node, log),
-        outcome={
-            "verificationPass": False,
-            "independentReview": (
-                "clean" if isinstance(review, dict) and review.get("clean") is True
-                else "findings" if isinstance(review, dict) else "unavailable"
-            ),
-            "humanIntervention": action in ("human", "needs_input"),
-            "provenStatus": None,
-            "terminalAction": action,
-            "reason": str(terminal.get("reason") or "")[:500],
-        },
+        pairing=_pairing_evidence(pairing, node, log, operator_assistance),
+        outcome=outcome,
         economics=metrics,
         artifact={"commit": None, "transcriptHashes": transcripts,
                   "terminalEventSeq": sequence},
