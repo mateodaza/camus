@@ -15,6 +15,9 @@ Qwen Code or Grok Build execution smoke before Camus attempts a generalized A/B
 platform. Fixture inspection, planning, status, and crash sealing are spend-free;
 each live cell needs fresh literal consent and can make no routing or admission
 claim. See [independent coding seats](docs/INDEPENDENT-CODE-SEATS.md#bounded-native-smoke-evidence-experimental).
+Current evidence-backed model/harness guidance, including the first live Qwen
+raw-versus-native result and the remaining Grok release gate, lives in the
+[recommended model and harness setup](docs/RECOMMENDED-MODEL-SETUP.md).
 
 The native proof gate runs a coding task from plan to verified commit:
 Claude writes the code, Codex (a competing model) reviews
