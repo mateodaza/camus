@@ -95,9 +95,11 @@ enough to reject Qwen Code for larger work.
   correct. Manual inspection cannot rewrite formal custody evidence.
 - No provider-backed Grok Build code-eval receipt exists yet.
 - A provider-free 2026-08-29 plan correctly refused the August Grok maker
-  qualification as stale under the current adapter/identity contract. Fresh
-  maker qualification is required before a Grok campaign can freeze; no xAI
-  call or campaign reservation occurred during that check.
+  qualification as stale under the current adapter/identity contract. A later
+  bounded maker-only requalification succeeded against direct xAI, and campaign
+  `grok46-native-smoke-20260829-v2` then froze successfully under native
+  isolation v2 with zero campaign provider calls. Its one live cell remains
+  pending separate authorization.
 - One sample never grants model admission or automatic routing.
 
 ## Camus defects found and fixed by this dogfood
@@ -167,12 +169,11 @@ Choose the cheapest path that can meet the task contract:
 
 ## Next evidence sequence
 
-1. **Grok Build live smoke before release.** The refreshed campaign is valid
-   against the current route-aware contract and native isolation v2, and the
-   reviewed Grok Build 1.0.5 artifact is ready. Requalify the stale Grok maker
-   tuple under a separately bounded authorization, freeze the provider-free
-   plan, then run one simple cell with direct xAI, no fallback, no repair/retry,
-   and Luna review only after another fresh spend authorization.
+1. **Grok Build live smoke before release.** The reviewed Grok Build 1.0.5
+   artifact, fresh maker qualification, route-aware campaign, native isolation
+   v2 execution snapshot, and provider-free plan are ready. Run its one simple
+   cell with direct xAI, no fallback, no repair/retry, and Luna review only after
+   another fresh spend authorization.
 2. **Do not blindly repeat Qwen simple.** Its result already answers the simple
    task question and exposed the retry-policy defect.
 3. **Add a balanced fixture in Code Harness Eval v1b.** Use the same model,
