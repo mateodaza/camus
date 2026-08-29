@@ -40,7 +40,7 @@ manual starting point; it does **not** mean Camus has proven it is the winner.
 | Balanced work | Operator-selected qualified maker; begin with Qwen3.8 Max raw or the existing Claude incumbent | `file_actions` | Independent Luna/Sol seat appropriate to stakes | **No winner.** Collect matched raw/native and cross-model evidence before routing. |
 | Difficult or repository-wide work | Existing Claude Opus 4.8 maker + GPT-5.6 Sol high reviewer is the conservative incumbent | Existing qualified path | Sol high | **Incumbent only.** No controlled current-vendor campaign proves optimality. |
 | Qwen Code native | Qwen3.8 Max | `qwen_native` | Luna medium | **Exploratory.** Do not prefer for simple tasks. Test next on balanced/difficult work where harness context may amortize its overhead. |
-| Grok Build native | Grok 4.6 through direct xAI | `grok_native` | Luna medium | **Pending first live smoke.** Not recommended or routed yet. |
+| Grok Build native | Grok 4.6 through direct xAI | `grok_native` | Luna medium | **Integration repair pending fresh smoke.** The first live cell exposed Camus defects before a candidate attempt, so it is not a Grok quality result and is not routed. |
 
 Kimi and Gemini remain second-round candidates by operator decision. Grok and
 Qwen are current priorities; that priority does not waive qualification,
@@ -93,13 +93,23 @@ enough to reject Qwen Code for larger work.
   first maker response. It is missing evidence, not a quality loss.
 - The native Qwen receipt remains failed even though its preserved candidate was
   correct. Manual inspection cannot rewrite formal custody evidence.
-- No provider-backed Grok Build code-eval receipt exists yet.
-- A provider-free 2026-08-29 plan correctly refused the August Grok maker
-  qualification as stale under the current adapter/identity contract. A later
-  bounded maker-only requalification succeeded against direct xAI, and campaign
-  `grok46-native-smoke-20260829-v2` then froze successfully under native
-  isolation v2 with zero campaign provider calls. Its one live cell remains
-  pending separate authorization.
+- Grok campaign `grok46-native-smoke-20260829-v2` produced receipt
+  `codebench1:ba6c32e732ace7c20ac59fa1bdae6640c130cd3e7e5547e7f172a0f1640287cf`
+  with formal standing **failed**. The candidate remained unchanged and Luna
+  was not called, so this is integration evidence rather than a quality loss.
+- The Grok cell made one real xAI request. Grok's isolated session reported
+  4,571 total tokens and 88,060,000 USD ticks ($0.008806). A second harness
+  request was refused locally by Camus and did not reach xAI. The sealed Camus
+  receipt conservatively records two maker responses, zero observed tokens,
+  and a 32,768-token unknown-usage reservation; private forensic evidence does
+  not rewrite that receipt.
+- The cell exposed two deterministic defects: Camus rejected xAI reasoning
+  usage because `total_tokens` separately includes `reasoning_tokens`, then
+  treated documented Grok Build stream events/intermediate text as an invalid
+  final protocol. Commit `afd5061` fixes both and keeps malformed totals,
+  unknown stream types, prohibited tools, model substitution, and fallbacks
+  fail-closed. A new campaign generation and fresh spend authorization are
+  required before another live cell.
 - One sample never grants model admission or automatic routing.
 
 ## Camus defects found and fixed by this dogfood
@@ -111,6 +121,7 @@ enough to reject Qwen Code for larger work.
 | `2df3793` | Code reviewer prompts could invent prose-eval coverage ledgers. | Code review schemas require all unrelated assessment ledgers to be empty. |
 | `806d10d` | The code-eval contract rejected valid slash-qualified model IDs. | Campaign, execution, and observed identity accept bounded provider-qualified IDs such as `qwen/qwen3.8-max`. |
 | `b8f13e7` | Qwen Code retried a locally refused fourth request despite a zero-retry campaign. | Native isolation v2 writes a private, drift-refusing Qwen system policy with `maxRetries: 0`; the real pinned binary made exactly one request against a synthetic 429 provider. |
+| `afd5061` | xAI reasoning usage was rejected as incomplete, and Grok Build's documented event/text boundaries were parsed as one strict final frame. | The gateway accepts only the two documented reasoning-total shapes; Grok's pinned stream vocabulary, bounded reasoning/errors, intermediate response boundaries, and chunked final decision are now validated explicitly. |
 
 The Qwen native failure itself is not erased by these fixes. A future campaign
 uses a new generation and must receive fresh authorization.
@@ -169,11 +180,10 @@ Choose the cheapest path that can meet the task contract:
 
 ## Next evidence sequence
 
-1. **Grok Build live smoke before release.** The reviewed Grok Build 1.0.5
-   artifact, fresh maker qualification, route-aware campaign, native isolation
-   v2 execution snapshot, and provider-free plan are ready. Run its one simple
-   cell with direct xAI, no fallback, no repair/retry, and Luna review only after
-   another fresh spend authorization.
+1. **Repeat Grok Build once after the integration repair.** The first live cell
+   is sealed and cannot be replayed or upgraded. Create a fresh generation and
+   run the same simple fixture with direct xAI, no fallback, no repair/retry,
+   and Luna review only after another fresh spend authorization.
 2. **Do not blindly repeat Qwen simple.** Its result already answers the simple
    task question and exposed the retry-policy defect.
 3. **Add a balanced fixture in Code Harness Eval v1b.** Use the same model,
@@ -192,7 +202,8 @@ Choose the cheapest path that can meet the task contract:
 
 The branch should not release immediately. First:
 
-- finish one bounded Grok Build provider-backed smoke and preserve its outcome;
+- finish one fresh bounded Grok Build provider-backed smoke after `afd5061` and
+  preserve its outcome;
 - fix only deterministic Camus defects the smoke exposes—do not tune away a
   legitimate model/harness loss;
 - rerun the full Studio and root/CLI suites, `git diff --check`, and the npm
