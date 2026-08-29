@@ -252,6 +252,26 @@ await test('a context window below the envelope fails the context probe', async 
   assert.ok(res.missing.includes('contextWindow'));
 });
 
+await test('a context provider error remains a bounded diagnostic instead of collapsing to usage absent', async () => {
+  freshEnv();
+  process.env.CAP_TEST_KEY = SECRET;
+  let calls = 0;
+  const result = await deepQualifyModel({
+    entry: envEntry('http://127.0.0.1:1/v1'), model: 'served-alias', seatType: 'words_maker', contextProbeTokens: 64,
+    fetchImpl: async () => new Response('', { status: 404 }),
+    streamImpl: async () => {
+      calls++;
+      if (calls === 1) return { text: 'live', responseModel: 'served-alias', reportedModels: ['served-alias'],
+        deltaCount: 1, usage: { prompt_tokens: 1, completion_tokens: 1 } };
+      const error = new Error('bounded provider stream failure'); error.code = 'provider_stream'; throw error;
+    },
+  });
+  assert.equal(result.qualified, false);
+  assert.deepEqual(result.contextFailure, { code: 'provider_stream', message: 'bounded provider stream failure' });
+  assert.equal(result.receipt.probeResults.contextFailureCode, 'provider_stream');
+  assert.equal(result.receipt.probeResults.contextMeasurementSource, 'absent');
+});
+
 await test('a silently LEFT-truncated window (only the tail marker survives) fails the context probe', async () => {
   freshEnv();
   process.env.CAP_TEST_KEY = SECRET;
@@ -378,7 +398,7 @@ await test('every maker/reviewer qualification stream carries the small output c
     );
     assert.equal(
       result.receipt.components.find((component) => component.name === 'adapterContractVersion').value,
-      'oai-compat-runner-2;expectedReported=exact-requested-model-only',
+      'oai-compat-runner-3;expectedReported=exact-requested-model-only',
       'old unbounded receipts and changed identity-alias policies cannot survive the runner contract change',
     );
   }

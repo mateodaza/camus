@@ -385,6 +385,12 @@ export function writeReceipt(input, { capabilities = {}, probeResults = {}, prob
     probeResults: {
       // each probe's RESULT, not just pass/fail (§9.2 payload, §6.1)
       contextDemonstratedAt: probeResults.contextDemonstratedAt ?? null,
+      contextMeasurementSource: ['provider_usage', 'absent'].includes(probeResults.contextMeasurementSource)
+        ? probeResults.contextMeasurementSource
+        : null,
+      contextFailureCode: typeof probeResults.contextFailureCode === 'string'
+        ? probeResults.contextFailureCode.replace(/[^A-Za-z0-9._:-]/g, '_').slice(0, 80)
+        : null,
       normalizerVerdict: probeResults.normalizerVerdict ?? null,
       toolTranscriptDigest: probeResults.toolTranscriptDigest ?? null,
       // Informational only (§9.3): what model discovery said when the probes

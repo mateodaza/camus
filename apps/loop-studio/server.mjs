@@ -1501,6 +1501,7 @@ const server = http.createServer(async (req, res) => {
           discoveryStatus: result.discoveryStatus ?? 'discovery_unavailable',
           identity: result.identity ?? null,
           capabilities: result.capabilities ?? null,
+          contextFailure: result.contextFailure ?? null,
           admission: status?.admission ?? null,
           // Path only. Raw provider diagnostics remain a bounded, redacted local
           // file the operator chooses to open; they are never streamed to the page.

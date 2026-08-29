@@ -63,7 +63,7 @@ export function isSupportedTransport(entry) {
 // openai-compat adapter + this runner that ran the probe. Bump when the probe
 // wiring or the adapter contract changes so old receipts read as a visible
 // adapter mismatch rather than silently matching under new behavior.
-export const ADAPTER_CONTRACT_VERSION = 'oai-compat-runner-2';
+export const ADAPTER_CONTRACT_VERSION = 'oai-compat-runner-3';
 
 // The version stamp carried by the ACTUAL review schema qualification exercises
 // (checks/review.schema.json). Read at load so a schema change that bumps the
@@ -731,6 +731,7 @@ async function deepQualifyModelInternal({
   let ctx = null;
   let measured = { tokens: null, source: 'absent' };
   let roundTripped = false;
+  let contextFailure = null;
   // Skip the real context calls entirely when streaming was not demonstrated:
   // with no live stream the loop cannot pass, so the window fails closed below
   // without spending on probes that cannot succeed.
@@ -755,7 +756,17 @@ async function deepQualifyModelInternal({
     measured = measuredPromptTokens(ctx.usage);
     // An errored request cannot be resized into success, and an endpoint that
     // reports no usage leaves the window unmeasured — both fail closed below.
-    if (!ctx.ok || measured.tokens == null) break;
+    if (!ctx.ok) {
+      contextFailure = {
+        code: String(ctx.error?.code ?? 'provider_error').replace(/[^A-Za-z0-9._:-]/g, '_').slice(0, 80),
+        message: String(ctx.error?.message ?? 'context provider request failed').slice(0, 300),
+      };
+      break;
+    }
+    if (measured.tokens == null) {
+      contextFailure = { code: 'usage_missing', message: 'provider response omitted measurable prompt-token usage' };
+      break;
+    }
     // Envelope reached: the endpoint's own usage cleared the target. Stop —
     // growing further would only push the request needlessly past the envelope.
     if (measured.tokens >= targetTokens) break;
@@ -817,7 +828,10 @@ async function deepQualifyModelInternal({
     // the target) fails the probe — recorded, not fatal.
     capabilities.contextWindow = { status: CAP_STATES.FAILED, configured: null, source: null, demonstratedAt: null };
     probeResults.contextMeasurementSource = measured.source;
-    progress('contextWindow', 'failed', measured.tokens == null ? 'provider usage was absent' : `${measured.tokens} provider-reported prompt tokens`);
+    probeResults.contextFailureCode = contextFailure?.code ?? (measured.tokens == null ? 'usage_missing' : 'envelope_not_demonstrated');
+    progress('contextWindow', 'failed', contextFailure
+      ? `${contextFailure.code}: ${contextFailure.message}`
+      : measured.tokens == null ? 'usage_missing: provider usage was absent' : `${measured.tokens} provider-reported prompt tokens`);
   }
 
   // ---- durable receipt from the ACTUAL results -----------------------------
@@ -850,6 +864,7 @@ async function deepQualifyModelInternal({
     missing: outcome.missing,
     anchors,
     discoveryStatus,
+    contextFailure,
     req,
   };
 }

@@ -99,6 +99,36 @@ try {
   assert.deepEqual(result.openRouterRouteEvidence, { attempt: 1, strategy: 'direct', selectedProvider: 'Alibaba', requested: 'qwen/qwen3.5' });
 
   globalThis.fetch = async () => ({ ok: true, body: new ReadableStream({ start(controller) {
+    const frames = [
+      { model: 'qwen/qwen3.5', choices: [{ delta: { content: 'partial' } }] },
+      { model: 'qwen/qwen3.5', choices: [], error: { code: 'provider_error', message: 'untrusted provider detail' },
+        openrouter_metadata: { requested: 'qwen/qwen3.5', strategy: 'direct', attempt: 1,
+          endpoints: { available: [{ provider: 'Alibaba', selected: true }] } } },
+    ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n';
+    controller.enqueue(new TextEncoder().encode(frames)); controller.close();
+  } }) });
+  await assert.rejects(
+    streamChatCompletion({ entry: openRouterEntry, model: 'qwen/qwen3.5', prompt: 'test', timeoutMs: 100 }),
+    (error) => error.code === 'provider_stream' && /provider_error/.test(error.message)
+      && !/untrusted provider detail/.test(error.message),
+    'an HTTP-200 streaming error is explicit and its untrusted message stays private',
+  );
+
+  globalThis.fetch = async () => ({ ok: true, body: new ReadableStream({ start(controller) {
+    const frame = [
+      { model: 'qwen/qwen3.5', choices: [{ delta: { content: 'complete' } }] },
+      { model: 'qwen/qwen3.5', choices: [], openrouter_metadata: { requested: 'qwen/qwen3.5', strategy: 'direct', attempt: 1,
+        endpoints: { available: [{ provider: 'Alibaba', selected: true }] } } },
+    ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n';
+    controller.enqueue(new TextEncoder().encode(frame)); controller.close();
+  } }) });
+  await assert.rejects(
+    streamChatCompletion({ entry: openRouterEntry, model: 'qwen/qwen3.5', prompt: 'test', timeoutMs: 100 }),
+    (error) => error.code === 'usage_missing',
+    'a successful-looking OpenRouter stream without final usage evidence fails closed',
+  );
+
+  globalThis.fetch = async () => ({ ok: true, body: new ReadableStream({ start(controller) {
     controller.enqueue(new TextEncoder().encode('data: {"model":"qwen/qwen3.5","choices":[{"delta":{"content":"cached"}}]}\n\ndata: [DONE]\n\n'));
     controller.close();
   } }) });

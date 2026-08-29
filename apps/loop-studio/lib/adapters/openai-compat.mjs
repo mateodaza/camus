@@ -125,8 +125,8 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
         // `max_completion_tokens` caps reasoning + answer. The first live Qwen
         // screen proved the distinction (8,570 reported completion tokens under
         // a 4,096 max_tokens request). Use the provider's documented total cap.
-        // Qualification probes omit either field so context testing keeps its
-        // separate contract.
+        // Qualification and production callers both supply a bounded ceiling;
+        // the context probe changes input size, never this output allowance.
         ...(Number.isInteger(maxTokens) && maxTokens > 0
           ? entry.provider === 'dashscope'
             ? { max_completion_tokens: maxTokens }
@@ -165,6 +165,7 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
     let finishReason = null;
     let openRouterMetadata = null;
     let openRouterMetadataSeen = false;
+    let providerStreamError = null;
     // The number of NON-EMPTY content deltas actually observed on the wire. This
     // is the only honest evidence that SSE deltas arrived and fed the idle
     // watchdog — an empty body or a [DONE]-only response returns cleanly yet
@@ -198,6 +199,18 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
         openRouterMetadataSeen = true;
         openRouterMetadata = ev.openrouter_metadata;
       }
+      // Some OpenAI-compatible gateways report a provider failure as an SSE
+      // event after the HTTP 200 and after earlier content/model frames. Treat
+      // that terminal as failure; ignoring it can turn an interrupted response
+      // into apparently successful text with mysteriously absent usage.
+      if (ev.error !== undefined) {
+        if (providerStreamError) throw new Error('Provider returned duplicate streaming error terminals.');
+        const rawCode = ev.error && typeof ev.error === 'object'
+          ? (ev.error.code ?? ev.error.type ?? 'unknown')
+          : 'unknown';
+        const code = String(rawCode).replace(/[^A-Za-z0-9._:-]/g, '_').slice(0, 80) || 'unknown';
+        providerStreamError = code;
+      }
       const reportedFinish = ev.choices?.[0]?.finish_reason;
       if (typeof reportedFinish === 'string' && reportedFinish) finishReason = reportedFinish;
       const delta = ev.choices?.[0]?.delta?.content;
@@ -215,12 +228,25 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
       for (const line of lines) handleLine(line);
     }
     handleLine(buf);
+    if (providerStreamError) {
+      const err = new Error(`Provider returned a streaming error terminal (${providerStreamError}).`);
+      err.code = 'provider_stream';
+      throw err;
+    }
     // Provider output is untrusted too: a gateway can answer HTTP 200 while
     // echoing its Authorization header in a malformed verdict or draft. Scrub
     // only after the complete stream is assembled so a credential split across
     // SSE deltas is still removed, and do it before any consumer can normalize,
     // log, or persist the text.
     const routerEvidence = verifyOpenRouterMetadata(requestEntry, openRouterMetadata);
+    // OpenRouter's current public contract always includes usage in the final
+    // streaming chunk. A missing object is therefore incomplete evidence, not a
+    // zero/unknown-cost success that production or qualification may consume.
+    if (requestEntry.provider === 'openrouter' && (!usage || typeof usage !== 'object')) {
+      const err = new Error('OpenRouter response omitted its required final usage evidence.');
+      err.code = 'usage_missing';
+      throw err;
+    }
     return { text: redactSecret(text, apiKey), usage, responseModel, reportedModels, deltaCount, finishReason,
       ...(routerEvidence ? { openRouterRouteEvidence: routerEvidence } : {}) };
   } catch (err) {
