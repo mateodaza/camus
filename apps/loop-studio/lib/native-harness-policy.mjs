@@ -26,6 +26,16 @@ const quote = value => JSON.stringify(String(value));
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const within = (parent, child) => child === parent || child.startsWith(parent + sep);
 
+export function normalizeNativeHarnessVersion(executor, output) {
+  if (!isHarnessNativeExecutor(executor)) throw new Error('Unknown native harness executor.');
+  const text = String(output ?? '').trim();
+  if (!versions[executor].test(text)) throw new Error(`${labels[executor]} did not report required version ${requiredVersions[executor]}.`);
+  // Vendor banners differ (Grok includes its build hash). The reviewed artifact
+  // digest binds that exact binary; session evidence stores the canonical
+  // semantic version so readiness and execution compare the same value.
+  return requiredVersions[executor];
+}
+
 export function isHarnessNativeExecutor(value) { return HARNESS_NATIVE_EXECUTORS.includes(value); }
 
 function readiness(executor, status, detail) {
@@ -63,8 +73,10 @@ export async function nativeHarnessReadiness(executor, {
   let result;
   try { result = await runVersion(harness); }
   catch { return readiness(executor, 'wrong_version', `${labels[executor]} could not prove version ${requiredVersions[executor]}.`); }
-  const output = String(result?.stdout ?? '').trim();
-  if (result?.code !== 0 || !versions[executor].test(output)) {
+  try {
+    if (result?.code !== 0) throw new Error('non-zero version exit');
+    normalizeNativeHarnessVersion(executor, result?.stdout);
+  } catch {
     return readiness(executor, 'wrong_version', `${labels[executor]} did not report required version ${requiredVersions[executor]}.`);
   }
   return readiness(executor, 'ready', `${labels[executor]} ${requiredVersions[executor]} matches the reviewed artifact.`);
@@ -173,9 +185,9 @@ export async function nativeHarnessPolicy({ executor, worktree, scratch, harness
 export async function assertNativeHarnessVersion({ executor, policy, env, signal }) {
   const result = await runNativeProcess({ command: '/usr/bin/sandbox-exec', args: ['-p', policy.profile, policy.harness, '--version'],
     cwd: policy.cwd, env, timeoutMs: 10_000, signal, maxBytes: 64 * 1024 });
-  const text = String(result.stdout ?? '').trim();
-  if (result.code !== 0 || !versions[executor].test(text)) throw new Error(`${executor === QWEN_NATIVE_EXECUTOR ? 'Qwen Code 0.22.3' : 'Grok Build 1.0.5'} is required; no model was called.`);
-  return text.slice(0, 160);
+  if (result.code !== 0) throw new Error(`${executor === QWEN_NATIVE_EXECUTOR ? 'Qwen Code 0.22.3' : 'Grok Build 1.0.5'} is required; no model was called.`);
+  try { return normalizeNativeHarnessVersion(executor, result.stdout); }
+  catch { throw new Error(`${executor === QWEN_NATIVE_EXECUTOR ? 'Qwen Code 0.22.3' : 'Grok Build 1.0.5'} is required; no model was called.`); }
 }
 
 export async function preflightNativeHarness({ policy, env, gateway, sourcePath, receiptsDir, signal }) {

@@ -16,6 +16,8 @@ general experiment platform.
 The approved v1a cut contains only:
 
 - one exact `native_smoke` cell per invocation;
+- a provider-free `fixture` inspection that emits the exact tracked fixture
+  bindings needed to author that cell;
 - a frozen model, connection/qualification, harness artifact and version,
   reviewer, verifier, fixture, and budget binding;
 - provider-free `plan` and `status`;
@@ -659,6 +661,16 @@ Requirements:
 
 The proposed entry point is `camus code-eval`. Naming may change during the
 spend-free patch, but the semantics below are normative.
+
+### 12.0 `fixture`
+
+```bash
+camus code-eval fixture --json
+```
+
+`fixture` runs the tracked base-red/reference-green readiness check and emits
+only its public, content-addressed campaign bindings. It reads no model or
+connection configuration and makes zero provider calls.
 
 ### 12.1 `plan`
 

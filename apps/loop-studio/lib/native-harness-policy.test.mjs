@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startNativeGateway } from './native-gateway.mjs';
 import { assertNativeHarnessArtifact, nativeHarnessPolicy, nativeHarnessEnvironment, nativeHarnessReadiness, preflightNativeHarness,
-  QWEN_NATIVE_EXECUTOR, GROK_NATIVE_EXECUTOR } from './native-harness-policy.mjs';
+  normalizeNativeHarnessVersion, QWEN_NATIVE_EXECUTOR, GROK_NATIVE_EXECUTOR } from './native-harness-policy.mjs';
 
 test('native harness readiness is spend-free, bounded and path-private', async () => {
   const common = { platform: 'darwin', arch: 'arm64', nodeMajor: 22,
@@ -37,6 +37,12 @@ test('native harness readiness is spend-free, bounded and path-private', async (
     resolveHarness: async () => { resolved = true; throw new Error('must not run'); } });
   assert.equal(unsupported.status, 'unsupported'); assert.equal(resolved, false);
   assert.equal(unsupported.remedy, null);
+});
+
+test('reviewed Qwen and Grok banners normalize to the frozen semantic version', () => {
+  assert.equal(normalizeNativeHarnessVersion(QWEN_NATIVE_EXECUTOR, '0.22.3\n'), '0.22.3');
+  assert.equal(normalizeNativeHarnessVersion(GROK_NATIVE_EXECUTOR, 'grok 1.0.5 (5115b46bc909)\n'), '1.0.5');
+  assert.throws(() => normalizeNativeHarnessVersion(GROK_NATIVE_EXECUTOR, 'grok 1.0.4'), /required version/);
 });
 
 test('Qwen artifact pin refuses node_modules before readiness executes it', async t => {

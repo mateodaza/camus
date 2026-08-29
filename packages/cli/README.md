@@ -6,6 +6,10 @@
 adds bounded repair, shared CLI/Studio recovery, CLI connection setup, and explicit
 native Codex/Qwen Code/Grok Build maker executors. Run `camus build --help` for
 `--setup`, `--qualify`, `--status`, `--stop`, `--resume`, bound answers and budgets.
+The next release also includes the deliberately narrow `camus code-eval` v1a
+native-smoke evidence path; it requires fresh consent for one Qwen Code or Grok
+Build cell and has no ranking, routing, admission, Git-landing, or publication
+authority. See the [coding-seat guide](https://github.com/mateodaza/camus/blob/main/docs/INDEPENDENT-CODE-SEATS.md#bounded-native-smoke-evidence-experimental).
 
 **New in 0.4.8:** `camus build` uses the same independent maker and
 reviewer selection as Studio's Any-model Build. Run `camus build --help` and

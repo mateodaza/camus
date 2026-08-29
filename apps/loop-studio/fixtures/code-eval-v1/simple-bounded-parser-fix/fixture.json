@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "fixtureProtocol": "code-eval-fixture/v1a",
+  "caseId": "simple-bounded-parser-fix",
+  "caseVersion": 1,
+  "taskClass": "simple",
+  "safeForExternalModels": true,
+  "task": "Fix the bounded integer parser so both declared bounds are inclusive. Preserve strict integer parsing: values above the maximum, decimal strings, and strings with trailing characters must still be rejected.",
+  "acceptanceContract": "The existing Node test suite passes without adding dependencies, network access, generated artifacts, or weakening any assertion. Change only the parser behavior needed to accept the inclusive upper bound.",
+  "baseFiles": [
+    {
+      "path": "package.json",
+      "sha256": "98759c7ac81b41e3d914fe2a64386e3908649d701b6c60ec9514f0a4b6fd704b",
+      "content": "{\n  \"name\": \"camus-code-eval-simple-bounded-parser-fix\",\n  \"private\": true,\n  \"type\": \"module\"\n}\n"
+    },
+    {
+      "path": "src/bounded-parser.mjs",
+      "sha256": "d50448a9f444b5e5af796111de21f1b03f188d5006ebe1151f87dfb1f1ab2241",
+      "content": "export function parseBoundedInteger(value, { min, max }) {\n  if (typeof value !== 'string' || !/^-?\\d+$/.test(value)) return null;\n  const parsed = Number(value);\n  if (!Number.isSafeInteger(parsed) || parsed < min || parsed >= max) return null;\n  return parsed;\n}\n"
+    },
+    {
+      "path": "test/bounded-parser.test.mjs",
+      "sha256": "d610296b913c5cdcdb5db8c0d73f06439e04180b00e445a649b40901dfd3ceff",
+      "content": "import assert from 'node:assert/strict';\nimport { test } from 'node:test';\nimport { parseBoundedInteger } from '../src/bounded-parser.mjs';\n\ntest('accepts the inclusive upper bound', () => {\n  assert.equal(parseBoundedInteger('5', { min: 1, max: 5 }), 5);\n});\n\ntest('keeps the remaining integer boundaries strict', () => {\n  assert.equal(parseBoundedInteger('1', { min: 1, max: 5 }), 1);\n  assert.equal(parseBoundedInteger('6', { min: 1, max: 5 }), null);\n  assert.equal(parseBoundedInteger('2.5', { min: 1, max: 5 }), null);\n  assert.equal(parseBoundedInteger('2px', { min: 1, max: 5 }), null);\n});\n"
+    }
+  ],
+  "referenceFiles": [
+    {
+      "path": "src/bounded-parser.mjs",
+      "sha256": "813fff1b4ebeb957cff1a94519e411fa8ea5cab5f6e2824aaa8686d62ac531b4",
+      "content": "export function parseBoundedInteger(value, { min, max }) {\n  if (typeof value !== 'string' || !/^-?\\d+$/.test(value)) return null;\n  const parsed = Number(value);\n  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) return null;\n  return parsed;\n}\n"
+    }
+  ],
+  "verifier": {
+    "runtime": "node",
+    "argv": [
+      "--test",
+      "test/bounded-parser.test.mjs"
+    ],
+    "timeoutMs": 15000,
+    "outputLimitBytes": 65536,
+    "networkPolicy": "deny",
+    "expectedBase": "red",
+    "expectedReference": "green",
+    "targetedBaseFailure": "accepts the inclusive upper bound"
+  }
+}

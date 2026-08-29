@@ -52,6 +52,19 @@ function codeBuild(args) {
   process.exit(r.status === null ? 1 : r.status);
 }
 
+function codeEval(args) {
+  const source = path.resolve(ROOT, '../../apps/loop-studio/code-eval.mjs');
+  const bundled = path.join(ROOT, 'runtime/apps/loop-studio/code-eval.mjs');
+  const entry = fs.existsSync(source) ? source : bundled;
+  if (!fs.existsSync(entry)) {
+    console.error('camus code-eval: this package is missing its shared evaluation runtime. Reinstall the release; no model was called.');
+    process.exit(1);
+  }
+  const r = spawnSync(process.execPath, [entry, ...args], { stdio: 'inherit' });
+  if (r.error) console.error('camus code-eval: ' + r.error.message);
+  process.exit(r.status === null ? 1 : r.status);
+}
+
 const HELP = `camus ${pkg.version} · a coding loop that proves every change
 
 usage: npx camus-cli <command>
@@ -63,6 +76,10 @@ usage: npx camus-cli <command>
                build --help · build --models · --task "..." --contract "..."
                build --setup file.json · --qualify backend:model --role maker|reviewer
                build --status ID · --stop ID · --resume ID [budget extensions]
+  code-eval [...] one-cell Qwen Code/Grok Build execution smoke with frozen
+               identity, fixture, verifier and budget evidence. plan/status/recover
+               are provider-free; run requires --allow-provider-calls --max-cells 1.
+               No ranking, routing, admission, Git landing, or publication authority.
   install      copy skill + workflows into ~/.claude (frozen copy, not symlink)
   check        preflight: installed gate in sync with package? (run before any auto/feat run)
   auto-setup   opt-in: install the narrow scoped auto-mode profile (zero-click runs)
@@ -163,6 +180,9 @@ upgrading (the gate is a FROZEN copy — updating npm alone is not enough):
 switch (cmd) {
   case 'build':
     codeBuild(rest);
+    break;
+  case 'code-eval':
+    codeEval(rest);
     break;
   case 'install':
     sh([]);

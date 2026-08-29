@@ -10,6 +10,12 @@ behind a one-model gateway and qualified macOS sandbox. Maker model/backend,
 harness, and reviewer remain independent choices. Every Any-model candidate is
 non-gating and requires human acceptance.
 
+The unreleased `camus code-eval` v1a path adds one tightly bounded, append-only
+Qwen Code or Grok Build execution smoke before Camus attempts a generalized A/B
+platform. Fixture inspection, planning, status, and crash sealing are spend-free;
+each live cell needs fresh literal consent and can make no routing or admission
+claim. See [independent coding seats](docs/INDEPENDENT-CODE-SEATS.md#bounded-native-smoke-evidence-experimental).
+
 The native proof gate runs a coding task from plan to verified commit:
 Claude writes the code, Codex (a competing model) reviews
 every change, and your repo's own type-check and tests have the final word. Nothing in

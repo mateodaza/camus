@@ -19,6 +19,8 @@ try {
 }
 const pending = [
   'apps/loop-studio/code-build.mjs',
+  'apps/loop-studio/code-eval.mjs',
+  'apps/loop-studio/fixtures/code-eval-v1/simple-bounded-parser-fix/fixture.json',
   'apps/loop-studio/package.json',
   'apps/loop-studio/checks/models.json',
   'apps/loop-studio/checks/registry.json',

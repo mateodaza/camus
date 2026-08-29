@@ -219,6 +219,127 @@ terminal and use only the selected model through the production gateway/supervis
 It is boundary evidence, not a model-quality or speed benchmark. Provider-backed
 combination dogfood remains required before making any performance claim.
 
+### Bounded native smoke evidence (experimental)
+
+`camus code-eval` is the first deliberately small evidence path toward that
+provider-backed dogfood. It runs exactly one Qwen Code or Grok Build cell on one
+tracked synthetic parser fixture through the production Build engine. It cannot
+compare models, name a winner, change routing or admission, touch another
+repository, land Git changes, or publish anything. There is no Studio UI for this
+operator-only smoke yet.
+
+First obtain the public fixture bindings and this machine's private model catalog.
+Both commands are provider-free; keep the catalog output private because it may
+describe local operator configuration:
+
+```sh
+camus code-eval fixture --json
+camus models --json > /private/path/models.json
+```
+
+Create one private campaign JSON. Replace every `REPLACE_*` value with the exact
+seat fields shown by `camus models --json`; never put a credential value or endpoint
+URL in this file. `trainingOrg` must differ between maker and reviewer. For a Grok
+Build smoke, change only the exact maker seat and set `executor` to `grok_native`.
+Use a separate campaign and evidence directory for each harness:
+
+```json
+{
+  "schemaVersion": 1,
+  "treatmentProtocol": "code-harness-eval-v1a",
+  "campaignId": "qwen-simple-native-smoke-v1",
+  "campaignMode": "native_smoke",
+  "standing": "exploratory_only",
+  "case": {
+    "caseId": "simple-bounded-parser-fix",
+    "caseVersion": 1,
+    "taskClass": "simple",
+    "fixtureId": "fixture1:b9c45077a39e7a30e929af24d9e5ab2cd4732a68bb6245f8b542bc37715f1de6",
+    "fixtureTreeDigest": "sha256:a7a9ccf83120085de66cdbd3a7219e1487689748ed42e766ee19c49c541ead73",
+    "baseCommitDigest": "sha256:a7a9ccf83120085de66cdbd3a7219e1487689748ed42e766ee19c49c541ead73",
+    "taskSha256": "sha256:7c4b6a4807e17aac95425e064b03c2e1bb141b0d242d466f608366dbcc25f65f",
+    "acceptanceContractSha256": "sha256:21d8ef9f26dc0f20393f7b08e0a73ce3f3364b42ca258208b5664aa2f23b2c43",
+    "verifier": {
+      "kind": "host_command",
+      "commandSha256": "sha256:946ebe664e9f72585f131decddbdb5d2036039bb16d6ccd6cce79dfcfc575f16",
+      "timeoutMs": 15000,
+      "expectedBase": "red",
+      "expectedReference": "green"
+    }
+  },
+  "treatment": {
+    "maker": {
+      "backend": "REPLACE_MAKER_BACKEND",
+      "provider": "REPLACE_MAKER_PROVIDER",
+      "model": "REPLACE_EXACT_MAKER_MODEL",
+      "effort": null,
+      "trainingOrg": "REPLACE_MAKER_TRAINING_ORG",
+      "transport": "direct_https",
+      "connection": "REPLACE_MAKER_CONNECTION"
+    },
+    "reviewer": {
+      "backend": "REPLACE_REVIEWER_BACKEND",
+      "model": "REPLACE_EXACT_REVIEWER_MODEL",
+      "effort": "medium",
+      "trainingOrg": "REPLACE_REVIEWER_TRAINING_ORG"
+    },
+    "executor": "qwen_native"
+  },
+  "controls": {
+    "maximumCells": 1,
+    "maximumProviderCallsPerCell": 3,
+    "maximumMakerCallsPerCell": 2,
+    "maximumReviewerCallsPerCell": 1,
+    "maximumSteps": 4,
+    "maximumActions": 8,
+    "maximumRepairs": 0,
+    "maximumRetries": 0,
+    "maximumTokensReserved": 32768,
+    "wallTimeoutMs": 600000,
+    "callTimeoutMs": 300000,
+    "publish": false,
+    "commit": false,
+    "merge": false,
+    "push": false,
+    "automaticRouting": false
+  }
+}
+```
+
+Freeze and inspect the exact execution generation before considering spend:
+
+```sh
+camus code-eval plan --campaign /private/path/qwen-campaign.json \
+  --state /private/path/qwen-evidence/state.json \
+  --ledger /private/path/qwen-evidence/receipts.jsonl --json
+
+camus code-eval status --campaign /private/path/qwen-campaign.json \
+  --state /private/path/qwen-evidence/state.json \
+  --ledger /private/path/qwen-evidence/receipts.jsonl --json
+```
+
+Only `run` may call providers, and it needs fresh literal consent for this one
+invocation. Its frozen call and token ceilings are conservative controls, not a
+dollar quote. An interrupted or uncertain attempt is never replayed:
+
+```sh
+camus code-eval run --allow-provider-calls --max-cells 1 \
+  --campaign /private/path/qwen-campaign.json \
+  --state /private/path/qwen-evidence/state.json \
+  --ledger /private/path/qwen-evidence/receipts.jsonl --json
+
+camus code-eval recover --action seal-infra \
+  --campaign /private/path/qwen-campaign.json \
+  --state /private/path/qwen-evidence/state.json \
+  --ledger /private/path/qwen-evidence/receipts.jsonl --json
+```
+
+A terminal `execution_observed` means only that this exact native smoke produced
+an identity-bound, independently reviewed, mechanically green candidate. One cell
+does not establish superiority, production readiness, admission, or a route. See
+[Code Harness Evaluation v1](CODE-HARNESS-EVAL-V1.md) for the later controlled A/B
+contract that remains intentionally unimplemented.
+
 `--verify` is an explicit local execution authorization. Environment credentials
 are removed and a private HOME is used, but this is **not an OS sandbox**: tests
 execute candidate code with your local user permissions. Use trusted projects.

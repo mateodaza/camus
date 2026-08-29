@@ -33,13 +33,19 @@ try {
 
   const entries = (await command('tar', ['-tzf', tarball])).stdout.trim().split('\n').filter(Boolean);
   assert(entries.includes('package/runtime/apps/loop-studio/code-build.mjs'), 'tarball includes the shared build entry');
+  assert(entries.includes('package/runtime/apps/loop-studio/code-eval.mjs'), 'tarball includes the bounded code-eval entry');
   assert(entries.includes('package/runtime/apps/loop-studio/lib/code-seats.mjs'), 'tarball includes the shared code-seat engine');
   for (const name of ['code-loop', 'code-context', 'code-run-state', 'code-session', 'code-setup', 'code-diagnostics', 'code-verify-child', 'code-native-policy', 'code-native-child', 'native-process', 'native-gateway', 'native-harness-policy', 'codex-rpc', 'adapters/codex-native', 'adapters/native-harness', 'adapters/qwen-native', 'adapters/grok-native']) assert(entries.includes(`package/runtime/apps/loop-studio/lib/${name}.mjs`), `tarball includes ${name}`);
   assert(entries.includes('package/runtime/apps/loop-studio/lib/adapters/registry.mjs'), 'tarball includes the shared adapter registry');
+  for (const name of ['code-eval-contract', 'code-eval-fixture', 'code-eval-ledger', 'code-eval-runner']) {
+    assert(entries.includes(`package/runtime/apps/loop-studio/lib/${name}.mjs`), `tarball includes ${name}`);
+  }
   assert(entries.includes('package/runtime/apps/loop-studio/checks/models.json'), 'tarball includes the public model catalog');
+  const publicEvalFixture = 'package/runtime/apps/loop-studio/fixtures/code-eval-v1/simple-bounded-parser-fix/fixture.json';
+  assert(entries.includes(publicEvalFixture), 'tarball includes the one content-bound public code-eval fixture');
   for (const entry of entries) {
     assert(!/(?:^|\/)\.env(?:\.|\/|$)/i.test(entry), `private env file leaked into tarball: ${entry}`);
-    assert(!/(?:^|\/)(?:runs|receipts|fixtures)(?:\/|$)/i.test(entry), `runtime artifact leaked into tarball: ${entry}`);
+    assert(entry === publicEvalFixture || !/(?:^|\/)(?:runs|receipts|fixtures)(?:\/|$)/i.test(entry), `runtime artifact leaked into tarball: ${entry}`);
     assert(!/\.test\.(?:mjs|js|json)$/i.test(entry), `test source leaked into tarball: ${entry}`);
     assert(!/(?:^|\/)(?:\.camus|\.claude|\.codex)(?:\/|$)/i.test(entry), `private config leaked into tarball: ${entry}`);
   }
@@ -69,6 +75,18 @@ try {
   const help = await command(process.execPath, [bin, 'build', '--help'], { cwd: installed, env });
   assert.match(help.stdout, /independent maker\/reviewer coding \(experimental\)/);
   assert.match(help.stdout, /--maker-executor file_actions\|codex_native\|qwen_native\|grok_native/);
+  const evalHelp = await command(process.execPath, [bin, 'code-eval', '--help'], { cwd: installed, env });
+  assert.match(evalHelp.stdout, /one bounded native-harness execution smoke/);
+  assert.match(evalHelp.stdout, /--allow-provider-calls --max-cells 1/);
+  const fixtureReadiness = JSON.parse((await command(process.execPath, [bin, 'code-eval', 'fixture', '--json'], { cwd: installed, env })).stdout);
+  assert.equal(fixtureReadiness.ready, true);
+  assert.equal(fixtureReadiness.providerCallsMade, 0);
+  assert.equal(fixtureReadiness.base, 'red');
+  assert.equal(fixtureReadiness.reference, 'green');
+  const runnerUrl = pathToFileURL(join(installed, 'runtime/apps/loop-studio/lib/code-eval-runner.mjs')).href;
+  const runtimeIdentity = await import(runnerUrl).then(module => module.codeEvalRuntimeIdentity());
+  assert.equal(runtimeIdentity.packageVersion, JSON.parse(await (await import('node:fs/promises')).readFile(join(installed, 'package.json'), 'utf8')).version,
+    'execution provenance names the installed Camus CLI version');
   const listed = await command(process.execPath, [bin, 'models', '--json'], { cwd: installed, env });
   const catalog = JSON.parse(listed.stdout);
   for (const role of ['maker', 'reviewer']) {
