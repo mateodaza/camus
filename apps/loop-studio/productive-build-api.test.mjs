@@ -20,9 +20,15 @@ try {
   await writeFile(config, JSON.stringify({ maker: { backend: 'claude', model: 'sonnet' }, reviewer: { backend: 'codex', model: 'gpt-5.6-luna', effort: 'low' }, loop: { roundCap: 2 } }));
   await writeFile(cache, JSON.stringify({ models: [{ slug: 'gpt-5.6-luna', visibility: 'list' }] }));
   const target = pathToFileURL(join(studio, 'lib/adapters/registry.mjs')).href, loader = join(dir, 'providers.mjs');
-  const source = `import { appendFile } from 'node:fs/promises';
+  const source = `import { appendFile, writeFile } from 'node:fs/promises';
     export function resolveSeatAdapters(models, backends) { return {
       makerBackend: backends.maker, reviewerBackend: backends.reviewer,
+      ...(models.maker.codeExecutor==='codex_native'?{nativeMaker:async({worktree,onNativeSession})=>{
+        await appendFile(${JSON.stringify(callsPath)},JSON.stringify({role:'nativeMaker',model:models.maker.model})+'\\n');
+        onNativeSession({version:'fixture',threadId:'fixture-session'});
+        await writeFile(worktree+'/answer.txt','correct');
+        return {ok:true,definitiveTurnEnd:true,usage:{total_tokens:10},text:JSON.stringify({actions:[],done:true,summary:'Ready.'})};
+      }}:{}),
       maker: async ({prompt, signal}) => {
         await appendFile(${JSON.stringify(callsPath)}, JSON.stringify({role:'maker',model:models.maker.model})+'\\n');
         if(prompt.includes('WAIT_FOR_STOP')) { await new Promise(r=>signal.aborted?r():signal.addEventListener('abort',r,{once:true})); return {ok:false,error:'interrupted'}; }
@@ -100,6 +106,24 @@ try {
   assert.equal(execFileSync('git', ['-C', repo, 'status', '--porcelain'], { encoding: 'utf8' }), '');
   const calls = (await readFile(callsPath, 'utf8')).trim().split('\n').map(JSON.parse);
   assert.equal(calls.length, 11, 'reattachment/restart/status do not buy model calls');
+  const nativePair = { maker: { backend: 'codex', model: 'gpt-5.6-luna', codeExecutor: 'codex_native' }, reviewer: { backend: 'claude', model: 'sonnet' } };
+  const nativeBody = { goal: task, acceptanceContract: contract, lane: 'build', codeMode: 'independent', targetPath: repo, pairing: nativePair };
+  assert.equal((await post('runs', nativeBody)).status, 400, 'native needs positive budget before metadata/execution');
+  assert.equal((await post('runs', { ...nativeBody, codeLimits: { maxTokens: 100000 }, pairing: { ...nativePair, maker: { ...nativePair.maker, backend: 'claude', model: 'sonnet' } } })).status, 400);
+  assert.equal((await post('runs', { ...nativeBody, lane: 'freeform', codeMode: undefined })).status, 400, 'words lanes must not silently discard native selection');
+  const nativeResponse = await post('runs', { ...nativeBody, codeLimits: { maxTokens: 100000, maxCalls: 1 } });
+  assert.equal(nativeResponse.status, 201, await nativeResponse.clone().text());
+  const nativeCreated = await nativeResponse.json();
+  const nativeParked = await waitStopped(nativeCreated.id, 1); assert.equal(nativeParked.question.kind, 'budget');
+  const nativeDone = JSON.parse((await cli(['--resume', nativeCreated.id, '--max-calls', '5', '--json'])).stdout);
+  assert.equal(nativeDone.completion, 'candidate_ready_for_acceptance', nativeDone.error);
+  assert.equal(nativeDone.models.maker.codeExecutor, 'codex_native');
+  assert.equal(nativeDone.candidate.worktree, nativeParked.candidate.worktree);
+  const nativeCli = JSON.parse((await cli(['--task', task, '--contract', contract, '--repo', repo, '--maker', 'codex:gpt-5.6-luna', '--reviewer', 'claude:sonnet', '--maker-executor', 'codex_native', '--max-tokens', '100000', '--json'])).stdout);
+  assert.equal(nativeCli.completion, 'candidate_ready_for_acceptance', nativeCli.error);
+  const finalCalls = (await readFile(callsPath, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(finalCalls.filter(c => c.role === 'nativeMaker').length, 2, 'selected native executor used once per candidate, not replayed during resume');
+  assert.equal(execFileSync('git', ['-C', repo, 'status', '--porcelain'], { encoding: 'utf8' }), '');
   console.log('Productive CLI/Studio: same-ID cross-surface continuation, restart, bound answers, ownership, stop, exact selected pair and offline status passed.');
   if (process.env.CAMUS_TEST_BROWSER === '1') {
     console.log(`Browser fixture: ${base} | repo: ${repo} | pid: ${process.pid}`);

@@ -4,7 +4,8 @@
   "version": "0.0.0",
   "packageManager": "pnpm@9.15.0",
   "scripts": {
-    "test": "pnpm --filter camus-cli test",
+    "test": "node --test scripts/probe-native-harness.test.mjs && pnpm --filter camus-cli test",
+    "test:native-harness-probe": "node --test scripts/probe-native-harness.test.mjs",
     "web:dev": "pnpm --filter web dev",
     "web:build": "pnpm --filter web build",
     "cli:pack": "pnpm --filter camus-cli exec npm pack --dry-run",

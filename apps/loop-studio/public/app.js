@@ -613,6 +613,22 @@ function fillSeatPicker(sel, entries, current) {
   sel.value = offered ? wanted : (firstEnabled?.value ?? '');
   return offered;
 }
+const EXECUTOR_LABELS = { file_actions: 'Camus file actions (default)', codex_native: 'Native Codex tools',
+  qwen_native: 'Qwen Code tools', grok_native: 'Grok Build tools' };
+function reflectCodeExecutors() {
+  const select = $('code-maker-executor');
+  const maker = seatOf($('pair-maker'));
+  const entry = (state.codeChoices?.maker ?? []).find(item => item.backend === maker?.backend && item.model === maker?.model);
+  const offered = entry?.codeExecutors ?? ['file_actions'];
+  const current = offered.includes(select.value) ? select.value : 'file_actions';
+  select.innerHTML = '';
+  for (const executor of offered) {
+    const option = document.createElement('option'); option.value = executor;
+    option.textContent = `${EXECUTOR_LABELS[executor] ?? executor}${executor === 'file_actions' ? '' : ' (experimental)'}`;
+    select.appendChild(option);
+  }
+  select.value = current;
+}
 const seatOf = (sel) => {
   try {
     const [backend, model] = JSON.parse(sel.value);
@@ -985,6 +1001,7 @@ async function refreshPairing() {
     if (!res.ok) throw new Error(`config returned ${res.status}`);
     const c = await res.json();
     state.seats = c.seats ?? { maker: [], reviewer: [] };
+    state.codeChoices = c.codeChoices ?? { maker: [], reviewer: [] };
     const makerOffered = fillSeatPicker($('pair-maker'), state.seats.maker, { backend: c.maker.backend, model: c.maker.model });
     const reviewerOffered = fillSeatPicker($('pair-reviewer'), state.seats.reviewer, { backend: c.reviewer.backend, model: c.reviewer.model });
     // When the standing decision is not offerable, the picker shows a real
@@ -993,6 +1010,7 @@ async function refreshPairing() {
     // it, so the server executed the hidden stale record while the form
     // showed something else (audit P1, 2026-08-04).
     pairingDirty = !makerOffered || !reviewerOffered;
+    reflectCodeExecutors();
     let prefix = '';
     if (pairingDirty) {
       const missing = [
@@ -1008,7 +1026,7 @@ async function refreshPairing() {
   }
 }
 for (const id of ['pair-maker', 'pair-reviewer']) {
-  $(id).addEventListener('change', () => { pairingDirty = true; void reflectPairingNote(); });
+  $(id).addEventListener('change', () => { pairingDirty = true; if (id === 'pair-maker') reflectCodeExecutors(); void reflectPairingNote(); });
 }
 $('pairing-change').addEventListener('click', openSettings);
 $('model-routing-auto').addEventListener('change', async () => {
@@ -1229,11 +1247,18 @@ $('start').addEventListener('click', async () => {
     // the standing record — the user changed a picker, or the record was not
     // offerable and the picker substituted a real option. Untouched, offerable
     // pickers send nothing, leaving the record and its provenance in charge.
-    // Build never sends one — the gate owns its own model decisions and the
-    // server refuses an override.
+    // Independent Build always sends the displayed pair. The legacy gate
+    // retains its own decisions and refuses an override.
     const pairMaker = seatOf($('pair-maker'));
     const pairReviewer = seatOf($('pair-reviewer'));
     const independentBuild = state.lane === 'build' && $('build-mode').value === 'independent';
+    if (independentBuild && $('code-maker-executor').value !== 'file_actions') {
+      const executor = $('code-maker-executor').value;
+      const offered = (state.codeChoices?.maker ?? []).find(item => item.backend === pairMaker?.backend && item.model === pairMaker?.model)?.codeExecutors ?? [];
+      if (!offered.includes(executor)) throw new Error('That native executor is not offered for the selected maker. Your model was not changed.');
+      if (Number($('code-maxTokens').value) <= 0) throw new Error('Native execution needs an explicit positive token budget.');
+      pairMaker.codeExecutor = executor;
+    }
     const pairing = ((independentBuild) || (!state.automaticModelRouting && pairingDirty && state.lane !== 'build')) && pairMaker && pairReviewer
       ? { maker: pairMaker, reviewer: pairReviewer }
       : undefined;

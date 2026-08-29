@@ -12,6 +12,10 @@ import { runClaude, runClaudeReview } from './claude.mjs';
 import { runCodexReview, runCodexMaker } from './codex.mjs';
 import { openAiCompatMaker, openAiCompatReviewer } from './openai-compat.mjs';
 import { storedSeatQualification } from '../capability-probes.mjs';
+import { validateCodeExecutor, NATIVE_EXECUTOR, QWEN_NATIVE_EXECUTOR, GROK_NATIVE_EXECUTOR } from '../code-native-policy.mjs';
+import { runNativeCodex } from './codex-native.mjs';
+import { runNativeQwen } from './qwen-native.mjs';
+import { runNativeGrok } from './grok-native.mjs';
 
 function makerFor(backend) {
   if (backend.kind === 'claude_cli') return runClaude;
@@ -23,6 +27,13 @@ function reviewerFor(backend) {
   if (backend.kind === 'claude_cli') return runClaudeReview;
   if (backend.kind === 'codex_cli') return runCodexReview;
   return openAiCompatReviewer(backend);
+}
+
+export function nativeMakerFor(executor) {
+  if (executor === NATIVE_EXECUTOR) return runNativeCodex;
+  if (executor === QWEN_NATIVE_EXECUTOR) return runNativeQwen;
+  if (executor === GROK_NATIVE_EXECUTOR) return runNativeGrok;
+  return undefined;
 }
 
 const QUAL1_RE = /^qual1:[0-9a-f]{64}$/;
@@ -72,9 +83,13 @@ export function resolveSeatAdapters(models, frozenBackends = null) {
   if (!reviewerBackend.seats.includes('reviewer')) throw new Error(`backend "${reviewerName}" does not offer the reviewer seat`);
   requireAcceptedAdmission(models?.maker, makerBackend, 'words_maker');
   requireAcceptedAdmission(models?.reviewer, reviewerBackend, 'words_reviewer');
+  validateCodeExecutor(models?.maker, makerBackend, 'maker');
+  validateCodeExecutor(models?.reviewer, reviewerBackend, 'reviewer');
+  const nativeMaker = nativeMakerFor(models?.maker?.codeExecutor);
   return {
     maker: makerFor(makerBackend),
     reviewer: reviewerFor(reviewerBackend),
+    ...(nativeMaker ? { nativeMaker } : {}),
     makerBackend: { name: makerBackend.name, kind: makerBackend.kind, provider: makerBackend.provider },
     reviewerBackend: { name: reviewerBackend.name, kind: reviewerBackend.kind, provider: reviewerBackend.provider },
   };

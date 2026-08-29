@@ -14,6 +14,7 @@ import { codeRunDirectory, readCodeRunMetadata } from './lib/code-session.mjs';
 import { configureCodeBackend, qualifyCodeSeat } from './lib/code-setup.mjs';
 import { redactCodeText, diagnosticSecrets } from './lib/code-diagnostics.mjs';
 import { getSharedTunnelManager } from './lib/ssh-tunnel.mjs';
+import { NATIVE_EXECUTORS, isNativeExecutor } from './lib/code-native-policy.mjs';
 
 export const HELP = `camus build — independent maker/reviewer coding (experimental)
 
@@ -21,6 +22,7 @@ export const HELP = `camus build — independent maker/reviewer coding (experime
   camus build --task "..." --contract "..." [--repo /path/to/repo]
       --maker <backend>:<model> --reviewer <backend>:<model>
       [--maker-effort low|medium|high|xhigh] [--reviewer-effort ...]
+      [--maker-executor file_actions|codex_native|qwen_native|grok_native]
       [--verify "npm test" --verify-repeatable] [--json]
       [--max-calls 32] [--max-steps 12] [--max-actions 32]
       [--max-repairs 2] [--max-retries 1] [--max-tokens 1000000]
@@ -52,12 +54,19 @@ authorizes repeated checks, including crash recovery. Without it, a second check
 needs --retry-verification. --retry-uncertain can cause duplicate provider billing.
 Provider calls may cost. Inactivity detection is off by default; silence alone
 does not prove a long-running model is stuck.
+Native execution is opt-in and maker-only. Codex Native uses the built-in Codex
+backend and existing ChatGPT CLI login. Qwen Code/Grok Build use a qualified
+OpenAI-compatible maker through a host-owned one-model credential gateway; the
+real provider key never enters the harness. They currently require macOS and the
+pinned CLI version. Every native executor requires a positive token budget.
+Tools cannot read Git/Camus private state or use arbitrary network. Completed
+turns can resume; uncertain native writes cannot auto-replay.
 Legacy camus run and /camus-feat retain their existing Claude/Codex gate.
 `;
 
 export function parseCodeBuildArgs(argv) {
   const flags = new Set(['help', 'models', 'json', 'replace', 'allow-provider-calls', 'verify-repeatable', 'retry-uncertain', 'retry-verification']);
-  const valued = new Set(['task', 'task-file', 'contract', 'contract-file', 'repo', 'maker', 'reviewer', 'maker-effort', 'reviewer-effort', 'verify',
+  const valued = new Set(['task', 'task-file', 'contract', 'contract-file', 'repo', 'maker', 'reviewer', 'maker-effort', 'reviewer-effort', 'maker-executor', 'verify',
     'status', 'stop', 'resume', 'answer', 'question', 'setup', 'qualify', 'role', ...Object.keys(LIMIT_FLAGS)]);
   const options = {};
   for (let i = 0; i < argv.length; i++) {
@@ -75,7 +84,12 @@ export function parseCodeBuildArgs(argv) {
   for (const key of ['task', 'contract']) if (options[key] && options[`${key}-file`]) throw new Error(`Choose --${key} OR --${key}-file.`);
   if (['models', 'setup', 'qualify', 'status', 'stop', 'resume'].filter((key) => options[key]).length > 1) throw new Error('Choose one build operation.');
   if (Boolean(options.answer) !== Boolean(options.question) || (options.answer || options['retry-uncertain'] || options['retry-verification']) && !options.resume) throw new Error('Answers/retry authorization require --resume; an answer also requires --question.');
-  if (options.resume && ['task', 'task-file', 'contract', 'contract-file', 'repo', 'maker', 'reviewer', 'maker-effort', 'reviewer-effort', 'verify', 'verify-repeatable'].some((key) => options[key])) throw new Error('Resume cannot change the frozen contract, repository, pair or verifier.');
+  if (options.resume && ['task', 'task-file', 'contract', 'contract-file', 'repo', 'maker', 'reviewer', 'maker-effort', 'reviewer-effort', 'maker-executor', 'verify', 'verify-repeatable'].some((key) => options[key])) throw new Error('Resume cannot change the frozen contract, repository, pair, executor or verifier.');
+  if (options['maker-executor']) {
+    if (!['file_actions', ...NATIVE_EXECUTORS].includes(options['maker-executor'])) throw new Error(`--maker-executor must be file_actions, ${NATIVE_EXECUTORS.join(', ')}.`);
+    if (['models', 'setup', 'qualify', 'status', 'stop'].some(key => options[key]) || !options.maker || !options.reviewer) throw new Error('--maker-executor requires a new build with explicit --maker and --reviewer.');
+    if (isNativeExecutor(options['maker-executor']) && (!/^\d+$/.test(options['max-tokens'] ?? '') || Number(options['max-tokens']) <= 0)) throw new Error('Native execution requires an explicit positive token budget (--max-tokens).');
+  }
   return options;
 }
 
@@ -121,7 +135,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (options.json) console.log(JSON.stringify(catalog, null, 2));
     else for (const role of ['maker', 'reviewer']) {
       console.log(`${role}:`);
-      for (const seat of catalog[role]) console.log(`  ${seat.backend}:${seat.model} — ${seat.available ? 'available (advisory code loop)' : 'qualify this tuple first'}`);
+      for (const seat of catalog[role]) console.log(`  ${seat.backend}:${seat.model} — ${seat.available ? 'available (advisory code loop)' : 'qualify this tuple first'}${seat.codeExecutors.length > 1 ? `; executors ${seat.codeExecutors.join(', ')}` : ''}`);
     }
     return 0;
   }
@@ -137,7 +151,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (Boolean(options.maker) !== Boolean(options.reviewer)) throw new Error('Specify both --maker and --reviewer, or neither to use saved Studio choices.');
   if (!options.maker && (options['maker-effort'] || options['reviewer-effort'])) throw new Error('Effort overrides require explicit --maker and --reviewer.');
   const pairing = existing ? existing.models : options.maker ? {
-    maker: { ...parseCodeSeat(options.maker), ...(options['maker-effort'] ? { effort: options['maker-effort'] } : {}) },
+    maker: { ...parseCodeSeat(options.maker), ...(options['maker-effort'] ? { effort: options['maker-effort'] } : {}), ...(options['maker-executor'] ? { codeExecutor: options['maker-executor'] } : {}) },
     reviewer: { ...parseCodeSeat(options.reviewer), ...(options['reviewer-effort'] ? { effort: options['reviewer-effort'] } : {}) },
   } : null;
   let repoPath;

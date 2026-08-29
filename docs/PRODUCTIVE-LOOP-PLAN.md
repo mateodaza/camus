@@ -1,11 +1,65 @@
 # Productive Loop — service contract and next implementation plan
 
 Date: 2026-08-28. Baseline: 0.4.8, commit `745f51d`.
-Status: A–C implemented on `codex/productive-loop`, unreleased. The first live
+Status: A–C and the isolated native-maker boundary are included in 0.4.9. The first live
 dogfood on frozen commit `e8df8dd` failed productively: safe budget stop, but no
 feature code. It exposed a context-rollover/discovery loop missed by synthetic
 coverage. See [the attempt and bounded follow-up](DOGFOOD-PRODUCTIVE-LOOP-1.md).
 No model admission or release-readiness claim follows from this attempt.
+
+Native-maker follow-up (2026-08-28, released experimentally in 0.4.9): a bounded `codex_native` maker
+executor is now integrated behind both entry points, with raw file actions still
+the default. Codex owns its tool/context session; Camus retains the frozen task,
+candidate, verification, advisory review and acceptance boundary. The initial
+native/file-action pilot did not produce an accepted candidate; it justified an
+integration experiment, not a performance claim. The subsequent authorized
+integrated run is recorded separately below. See [the opt-in contract and limits](INDEPENDENT-CODE-SEATS.md#opt-in-native-makers-released-experimentally-in-049).
+
+Additional offline coverage: native protocol/configuration/auth refusals, live
+usage deltas and budget interrupts, real Codex sandbox and descendant cleanup
+without generation, host SIGKILL, repair/review binding, ignored-file refusal,
+packaged runtime and Studio→CLI native-candidate continuation. A completed native
+turn can resume; uncertain mid-turn writes refuse automatic adoption/replay.
+The [single frozen provider-backed native attempt](DOGFOOD-NATIVE-MAKER-1.md)
+stopped after 177.925 seconds at the original accounting budget. It produced a
+partial candidate but never reached verification/review; the independent
+post-stop acceptance check failed. Two zero-generation preflight defects were
+fixed and regression-tested. No extension, acceptance or automatic repeat follows.
+Useful provider-backed end-to-end completion remains an unmet evidence gate for
+quality admission and routing, not for the experimental infrastructure release.
+
+Next-adapter priority (operator decision, 2026-08-28): **Grok Build and Qwen Code**,
+not additional Codex feature expansion. Keep the existing raw API adapters;
+evaluate model + harness combinations, not model names alone. Native execution
+does not change the verification, advisory review or human acceptance boundary.
+
+Interface research completed: [Qwen Code first, Grok Build next](NATIVE-HARNESS-INTEGRATION-NOTES.md).
+Both have official automation interfaces. The pinned source/binary probes found
+that provider credentials survive ordinary shell isolation and Grok's stock path
+can request an unselected helper model. Those boundaries were treated as release
+blockers rather than hidden behind a generic CLI wrapper.
+
+Executable qualification follow-up: [the pinned Qwen/Grok probes](NATIVE-HARNESS-QUALIFICATION-1.md)
+confirm both stock launch paths expose synthetic provider credentials to shell
+tools and fail the tested filesystem/network boundaries. Grok also attempted an
+unselected session-title model, and a cancelled run returned exit zero. The
+development fixture is repeatable; its classifier is covered by eight cheap
+root-suite tests.
+
+Shared-boundary follow-up (same date): a host-owned, one-model gateway now keeps
+the real provider key outside an outer macOS Seatbelt worker. Candidate/scratch
+are the only private writable roots; source, receipts, protected tracked files,
+Git metadata, arbitrary localhost and external network are denied. Requests are
+path/model/capability bound, upstream headers are rebuilt, response identity is
+validated before forwarding, usage is accounted, and gateway shutdown aborts
+in-flight upstream work. Qwen Code 0.22.3 and Grok Build 1.0.5 artifacts are
+digest-pinned and have separate exact JSONL terminal/session parsers. Both shared
+CLI/Studio picker paths are implemented without changing raw API adapters. The
+production supervisor completed the same synthetic candidate edit through each
+pinned vendor CLI in about two seconds total; no credential or paid call was used.
+This closes boundary/protocol enablement for an experimental release, not model
+quality, latency or best-combination admission. Provider-backed combination
+dogfood is the next evidence step.
 
 Implementation evidence (2026-08-28):
 
@@ -28,8 +82,9 @@ Implementation evidence (2026-08-28):
   work is represented by these synthetic tests.
 
 The developer guide is [Independent coding seats](INDEPENDENT-CODE-SEATS.md).
-0.4.8 remains the published version. Carlos's actual supported environment and
-the exact live pair/task/spend allowance are still decisions for the next handoff.
+0.4.9 releases the experimental infrastructure. Carlos's actual supported
+environment and the exact live pair/task/spend allowance remain decisions for the
+next provider-backed handoff.
 
 This is the active next-work plan. It operationalizes
 [Compare & Learn](COMPARE-AND-LEARN-DIRECTION.md), not a new architecture or a

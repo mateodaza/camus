@@ -2,10 +2,10 @@
 
 **A coding loop that proves every change.**
 
-Unreleased: the [Productive Loop](https://github.com/mateodaza/camus/blob/main/docs/PRODUCTIVE-LOOP-PLAN.md)
-adds bounded repair, shared CLI/Studio recovery and CLI-only connection setup.
-Use this checkout's `camus build --help` for `--setup`, `--qualify`, `--status`,
-`--stop`, `--resume`, bound answers and budgets. These are not in published 0.4.8.
+**New in 0.4.9:** the [Productive Loop](https://github.com/mateodaza/camus/blob/main/docs/PRODUCTIVE-LOOP-PLAN.md)
+adds bounded repair, shared CLI/Studio recovery, CLI connection setup, and explicit
+native Codex/Qwen Code/Grok Build maker executors. Run `camus build --help` for
+`--setup`, `--qualify`, `--status`, `--stop`, `--resume`, bound answers and budgets.
 
 **New in 0.4.8:** `camus build` uses the same independent maker and
 reviewer selection as Studio's Any-model Build. Run `camus build --help` and
@@ -29,9 +29,10 @@ compatibility: `/camus-plan` turns a raw request into a quality-gated task list,
 v2; v1 remains archived at [mateodaza/nightcrawler](https://github.com/mateodaza/nightcrawler).
 Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMUS-SPEC.md).
 
-> **0.4.8:** independent coding seats and the blinded calibration workspace are now
-> available. Reversed and same-model code pairings are experimental advisory candidates,
-> not automatic gates. See the [0.4.8 release notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.8.md).
+> **0.4.9:** productive repair/recovery and opt-in native Codex, Qwen Code and
+> Grok Build maker harnesses are available to Any-model Build. Raw file actions
+> remain the default; all results remain experimental advisory candidates, not
+> automatic gates. See the [0.4.9 release notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.9.md).
 >
 > **Existing native infrastructure (introduced in 0.4.7):** The Hybrid Kernel can evaluate a Studio-configured Grok, Qwen,
 > or other OpenAI-compatible reviewer on the exact code candidate before Codex performs the final
@@ -82,8 +83,8 @@ plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep �
 
 Experimental `camus build` instead requires Node 18.17+, Git and the selected
 backends' authentication. It does not require Claude, Codex or Python when neither
-selected seat uses those CLIs. Configure and qualify external roles in Studio;
-the unreleased CLI setup path provides the same underlying controls without a server.
+selected seat uses those CLIs. Configure and qualify external roles in Studio or
+use the CLI setup path for the same underlying controls without a server.
 The requirements below apply to `camus run` and the compatibility workflows.
 
 - **Claude Code** v2.1.154+ with dynamic workflows, on a subscription plan.
@@ -418,7 +419,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.4.8
+npm i -g camus-cli@0.4.9
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)

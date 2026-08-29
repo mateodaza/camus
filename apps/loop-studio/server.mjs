@@ -21,7 +21,8 @@ import { fileURLToPath } from 'node:url';
 import { runLoop } from './lib/engine.mjs';
 import { runIndependentCodeLoop } from './lib/independent-code-lane.mjs';
 import { prepareCodeReceiptsDir, codeLimits as validateCodeLimits } from './lib/code-seats.mjs';
-import { prepareCodeExecution } from './lib/code-seat-launch.mjs';
+import { prepareCodeExecution, codeModelChoices } from './lib/code-seat-launch.mjs';
+import { isNativeExecutor } from './lib/code-native-policy.mjs';
 import { codeRunsRoot, readCodeRunMetadata, codeContinuation } from './lib/code-session.mjs';
 import { readCodeCheckpoint, requestCodeStop } from './lib/code-run-state.mjs';
 import { runCodeLoop, runVerificationRecovery, resolveRecoveryTarget, recoveryTarget, reconstructInterruptedParked, readGateStatus, gateStateFromStatus, validateBuildTarget, gateInstalled, gatherContinuationEvidence } from './lib/code-lane.mjs';
@@ -1626,6 +1627,7 @@ const server = http.createServer(async (req, res) => {
         // vocabulary (name, kind, baseUrl) — also values-never, per §11.2.
         catalog: modelCatalog(),
         seats,
+        codeChoices: codeModelChoices(seats),
         templates: seats.templates,
         plannedProtocols: seats.plannedProtocols,
         evaluationCampaign: {
@@ -1904,6 +1906,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: 'codeMode must be gate or independent, and applies only to Build.' });
       }
       const independentBuild = lane === 'build' && codeMode === 'independent';
+      if (!independentBuild && (body.pairing?.maker?.codeExecutor !== undefined || body.pairing?.reviewer?.codeExecutor !== undefined)) return json(res, 400, { error: 'codeExecutor applies only to independent Build; no executor override was accepted.' });
       let codeLimits;
       try { codeLimits = independentBuild ? validateCodeLimits(body.codeLimits) : undefined; }
       catch (error) { return json(res, 400, { error: String(error.message || error).slice(0, 300) }); }
@@ -2091,6 +2094,7 @@ const server = http.createServer(async (req, res) => {
               // directory must not put Camus internals into the target repo.
               await prepareCodeReceiptsDir(RUNS_DIR, targetPath);
               const prepared = await prepareCodeExecution(body.pairing ?? null);
+              if (isNativeExecutor(prepared.models.maker.codeExecutor) && codeLimits.maxTokens <= 0) throw new Error('Native execution requires an explicit positive token budget.');
               modelsSnapshot = prepared.models;
               frozenBackends = prepared.frozenBackends;
               pairingView = prepared.pairingView;

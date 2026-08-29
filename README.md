@@ -2,15 +2,13 @@
 
 **Makes it work. Knows when to stop.**
 
-Unreleased development: [Productive Loop](docs/PRODUCTIVE-LOOP-PLAN.md) adds bounded
-repair, private checkpoints and shared CLI/Studio continuation. These controls
-are not part of the published 0.4.8 package; live dogfood is the next validation step.
-
-New in 0.4.8: [`camus build`](docs/INDEPENDENT-CODE-SEATS.md)
-and Studio's **Any-model candidate** let you select maker and reviewer
-independently, including reversed and configured open-model pairings. Results
-are experimental, non-gating candidates requiring human acceptance. The native
-Claude/Codex proof gate described below remains unchanged.
+New in 0.4.9: [Productive Loop](docs/PRODUCTIVE-LOOP-PLAN.md) adds bounded repair,
+private checkpoints, shared CLI/Studio continuation, and explicit native maker
+harnesses. `codex_native`, `qwen_native`, and `grok_native` are maker-only,
+experimental executors; the latter two keep real provider keys outside the worker
+behind a one-model gateway and qualified macOS sandbox. Maker model/backend,
+harness, and reviewer remain independent choices. Every Any-model candidate is
+non-gating and requires human acceptance.
 
 The native proof gate runs a coding task from plan to verified commit:
 Claude writes the code, Codex (a competing model) reviews
@@ -45,7 +43,7 @@ The native proof gate needs [Claude Code](https://code.claude.com) and the
 `camus build` needs only the backends you choose, Node 18.17+, and Git.
 
 ```bash
-npm i -g camus-cli@0.4.8
+npm i -g camus-cli@0.4.9
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 ```
@@ -69,7 +67,7 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.4.8
+### Public alpha: 0.4.9
 
 Choose both coding roles independently in the CLI or Studio: Luna → Claude,
 Claude → Qwen, Grok → Qwen, or any other available, role-qualified pairing.
@@ -78,15 +76,24 @@ Claude → Qwen, Grok → Qwen, or any other available, role-qualified pairing.
 Same-model pairings are allowed but never called independent. These candidates
 always require human acceptance; the legacy native gate is unchanged.
 
+Productive runs can now repair deterministic verification failures and bounded
+review findings, resume the same private candidate across CLI and Studio, preserve
+questions/answers and accounting, and stop repeated discovery instead of buying
+more identical turns. Native Codex, Qwen Code and Grok Build are explicit maker
+executors. Qwen/Grok use digest-pinned vendor artifacts, an outer macOS arm64
+Seatbelt worker, and a host-owned exact-model credential gateway. Raw API/file-
+action execution remains available and is still the default.
+
 Studio's new blinded calibration workspace replaces repeated terminal labeling
 with private autosaved drafts, explicit immutable labels, separate human/proxy
 authority, safe navigation and measured timing. It does not run judges or grant
 admission. Native recovery also preserves operator-assisted provenance, deduplicates
 Claude usage and allows an explicitly recorded one-round advisory skip.
 
-This release has hermetic and synthetic browser coverage, not a live-provider
-coding-combination campaign. No new reviewer admission or automatic route is claimed.
-See the [0.4.8 release notes](docs/RELEASE-0.4.8.md).
+This release has hermetic, synthetic browser and pinned-harness boundary coverage,
+not a live-provider coding-combination campaign. No new reviewer admission,
+automatic route or optimal pairing is claimed. See the
+[0.4.9 release notes](docs/RELEASE-0.4.9.md).
 
 ### Existing admission infrastructure
 
@@ -212,7 +219,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.4.8
+npm i -g camus-cli@0.4.9
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```

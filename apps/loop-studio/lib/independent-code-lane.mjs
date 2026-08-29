@@ -27,6 +27,7 @@ export async function runIndependentCodeLoop(run, { emit, adapters, signal, rece
       '# Experimental Build candidate',
       'Human acceptance required. This is not an admitted code gate.',
       `Maker: ${run.models.maker.backend}:${run.models.maker.model}`,
+      `Maker executor: ${run.models.maker.codeExecutor ?? 'file_actions'}`,
       `Reviewer: ${run.models.reviewer.backend}:${run.models.reviewer.model}`,
       `Status: ${status}`,
       `Candidate worktree: ${result.candidate?.worktree ?? 'not created'}`,

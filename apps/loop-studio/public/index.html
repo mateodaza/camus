@@ -192,13 +192,21 @@
         <input id="verify-cmd" class="path-input" placeholder="e.g. dotnet test Tests/App.Tests/App.Tests.csproj -f net10.0" autocomplete="off" />
         <div class="hint">Any-model mode: empty means untested. Supply your test command to verify the candidate. It executes locally with credential environment variables removed, not in an OS sandbox; use trusted projects. The legacy gate can detect the stack. No <code>$</code>, backticks, quotes, backslashes or newlines: put complex commands in a script.</div>
         <details id="code-policy">
-          <summary>Any-model recovery and budget</summary>
+          <summary>Any-model executor, recovery and budget</summary>
+          <label class="lbl" for="code-maker-executor">Maker executor</label>
+          <select id="code-maker-executor" class="path-input">
+            <option value="file_actions">Camus file actions (default, any offered model)</option>
+            <option value="codex_native">Native Codex tools (experimental, built-in Codex maker only)</option>
+            <option value="qwen_native">Qwen Code tools (experimental, qualified compatible maker)</option>
+            <option value="grok_native">Grok Build tools (experimental, qualified compatible maker)</option>
+          </select>
+          <div class="hint">Native needs a positive token budget. Codex uses its existing ChatGPT login. Qwen Code and Grok Build use the selected qualified endpoint through Camus's one-model gateway: the provider key stays in the host, and the harness currently requires macOS plus its pinned version. Native tools cannot access arbitrary network, Git metadata, Camus receipts, or source credentials. An uncertain crashed turn is preserved, never automatically replayed.</div>
           <label class="toggle"><input id="code-verify-repeatable" type="checkbox" /><span>This check is safe to repeat after fixes or interruption</span></label>
           <div class="hint">Without this authorization, an additional verification pauses for permission. No changed contract or model is allowed on resume. These are global run limits, not per-round allowances.</div>
           <div class="row">
             <label>Model calls <input class="path-input" id="code-maxCalls" type="number" min="1" value="32" /></label>
             <label>Maker steps <input class="path-input" id="code-maxSteps" type="number" min="1" value="12" /></label>
-            <label>File actions <input class="path-input" id="code-maxActions" type="number" min="1" value="32" /></label>
+            <label>File/tool actions <input class="path-input" id="code-maxActions" type="number" min="1" value="32" /></label>
           </div>
           <div class="row">
             <label>Repairs <input class="path-input" id="code-maxRepairs" type="number" min="0" value="2" /></label>

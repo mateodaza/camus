@@ -4,6 +4,7 @@ import { getModels, listBackends, EFFORTS } from './models.mjs';
 import { admissionCatalog, admittedSeat, pairingPresentation } from './admission.mjs';
 import { seatQualification } from './capability-probes.mjs';
 import { resolveSeatAdapters } from './adapters/registry.mjs';
+import { validateCodeExecutor, NATIVE_EXECUTOR, HARNESS_NATIVE_EXECUTORS, isNativeExecutor } from './code-native-policy.mjs';
 
 export function codeSeatSnapshot(entry, effort = null) {
   return {
@@ -38,10 +39,12 @@ export async function prepareCodeSeats({ pairing = null, live = true } = {}, dep
     if (!entry) throw new Error(`${role} ${selected.backend}:${selected.model} is unavailable or not qualified for this seat. Configure and qualify it in Studio or with camus build --setup / --qualify; no substitution was made.`);
     const backend = definitions[entry.backend];
     if (!backend || !backend.seats?.includes(role)) throw new Error(`The selected ${role} backend cannot execute this seat.`);
+    validateCodeExecutor(selected, backend, role);
     const requestedEffort = selected.effort;
     if (requestedEffort != null && !EFFORTS.includes(requestedEffort)) throw new Error(`${role} effort must be low, medium, high, or xhigh.`);
     if (requestedEffort != null && !entry.effort) throw new Error(`${role} ${entry.backend} does not honor an effort setting.`);
     models[role] = codeSeatSnapshot(entry, entry.effort ? requestedEffort ?? standing[role]?.effort ?? 'medium' : null);
+    if (selected.codeExecutor !== undefined) models[role].codeExecutor = selected.codeExecutor;
     frozenBackends[role] = clone(backend);
     if (entry.admission?.fingerprint) models[role].qualification = {
       fingerprint: entry.admission.fingerprint,
@@ -63,27 +66,34 @@ export async function prepareCodeSeats({ pairing = null, live = true } = {}, dep
   return {
     models, frozenBackends,
     pairingView: { ...presentation, gating: false, experimental: true,
-      note: `${presentation.note} Code feedback is experimental and non-gating. Human acceptance is required; nothing is committed, merged, or published.` },
+      note: `${presentation.note}${isNativeExecutor(models.maker.codeExecutor) ? ` Maker executor: ${models.maker.codeExecutor}.` : ''} Code feedback is experimental and non-gating. Human acceptance is required; nothing is committed, merged, or published.` },
     adapters: live ? (dependencies.resolve ?? resolveSeatAdapters)(models, frozenBackends) : null,
   };
 }
 
-export function codeModelChoices(catalog = admissionCatalog()) {
-  const safe = (entry) => ({
+export function codeModelChoices(catalog = admissionCatalog(), runtime = {}) {
+  const platform = runtime.platform ?? process.platform, arch = runtime.arch ?? process.arch;
+  const nodeMajor = runtime.nodeMajor ?? Number(process.versions.node.split('.')[0]);
+  const harnesses = platform === 'darwin' && arch === 'arm64'
+    ? [...(nodeMajor >= 22 ? [HARNESS_NATIVE_EXECUTORS[0]] : []), HARNESS_NATIVE_EXECUTORS[1]] : [];
+  const safe = (entry, role) => ({
     backend: entry.backend, model: entry.model, provider: entry.provider,
     transport: entry.transport, trainingOrg: entry.trainingOrg,
     available: entry.admission?.qualified === true,
     reason: entry.admission?.reason ?? 'unknown',
     effort: entry.effort === true,
+    codeExecutors: ['file_actions', ...(role === 'maker' && entry.backend === 'codex' && entry.transport === 'vendor_managed' ? [NATIVE_EXECUTOR] : []),
+      ...(role === 'maker' && entry.executor === 'http_client' ? harnesses : [])],
   });
-  return { maker: catalog.maker.map(safe), reviewer: catalog.reviewer.map(safe), gating: false };
+  return { maker: catalog.maker.map(entry => safe(entry, 'maker')), reviewer: catalog.reviewer.map(entry => safe(entry, 'reviewer')), gating: false };
 }
 
 // Resolve locally first. The engine checks the saved candidate/contract before
 // invoking authorization, so a drifted resume cannot even contact a provider.
 export async function prepareCodeExecution(pairing = null) {
   const prepared = await prepareCodeSeats({ pairing, live: false });
-  return { ...prepared, adapters: resolveSeatAdapters(prepared.models, prepared.frozenBackends),
+  const adapters = resolveSeatAdapters(prepared.models, prepared.frozenBackends);
+  return { ...prepared, adapters,
     authorize: async () => {
       for (const role of ['maker', 'reviewer']) {
         const entry = prepared.frozenBackends[role];

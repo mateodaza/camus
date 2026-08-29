@@ -34,7 +34,7 @@ try {
   const entries = (await command('tar', ['-tzf', tarball])).stdout.trim().split('\n').filter(Boolean);
   assert(entries.includes('package/runtime/apps/loop-studio/code-build.mjs'), 'tarball includes the shared build entry');
   assert(entries.includes('package/runtime/apps/loop-studio/lib/code-seats.mjs'), 'tarball includes the shared code-seat engine');
-  for (const name of ['code-loop', 'code-context', 'code-run-state', 'code-session', 'code-setup', 'code-diagnostics', 'code-verify-child']) assert(entries.includes(`package/runtime/apps/loop-studio/lib/${name}.mjs`), `tarball includes ${name}`);
+  for (const name of ['code-loop', 'code-context', 'code-run-state', 'code-session', 'code-setup', 'code-diagnostics', 'code-verify-child', 'code-native-policy', 'code-native-child', 'native-process', 'native-gateway', 'native-harness-policy', 'codex-rpc', 'adapters/codex-native', 'adapters/native-harness', 'adapters/qwen-native', 'adapters/grok-native']) assert(entries.includes(`package/runtime/apps/loop-studio/lib/${name}.mjs`), `tarball includes ${name}`);
   assert(entries.includes('package/runtime/apps/loop-studio/lib/adapters/registry.mjs'), 'tarball includes the shared adapter registry');
   assert(entries.includes('package/runtime/apps/loop-studio/checks/models.json'), 'tarball includes the public model catalog');
   for (const entry of entries) {
@@ -66,6 +66,7 @@ try {
 
   const help = await command(process.execPath, [bin, 'build', '--help'], { cwd: installed, env });
   assert.match(help.stdout, /independent maker\/reviewer coding \(experimental\)/);
+  assert.match(help.stdout, /--maker-executor file_actions\|codex_native\|qwen_native\|grok_native/);
   const listed = await command(process.execPath, [bin, 'models', '--json'], { cwd: installed, env });
   const catalog = JSON.parse(listed.stdout);
   for (const role of ['maker', 'reviewer']) {
@@ -74,12 +75,29 @@ try {
     assert(catalog[role].some((seat) => seat.backend === 'codex'), `packed ${role} catalog supports Codex`);
   }
   assert.equal(catalog.gating, false, 'packed catalog explicitly labels Build as non-gating');
+  assert(catalog.maker.some(seat => seat.codeExecutors.includes('codex_native')), 'packaged CLI advertises native maker opt-in');
+  assert(!catalog.reviewer.some(seat => seat.codeExecutors.includes('codex_native')), 'native reviewer is not advertised');
+  assert(!catalog.reviewer.some(seat => seat.codeExecutors.includes('qwen_native') || seat.codeExecutors.includes('grok_native')), 'native harness reviewer is not advertised');
+  // Exercise the packaged supervisor, not just its presence in the tarball.
+  const rpcUrl = pathToFileURL(join(installed, 'runtime/apps/loop-studio/lib/codex-rpc.mjs')).href;
+  const rpcScript = `import {CodexRpc} from ${JSON.stringify(rpcUrl)};
+    const peer="process.stdin.once('data',data=>process.stdout.write(JSON.stringify({id:JSON.parse(data).id,result:'native package ok'})+'\\\\n'));";
+    const rpc=new CodexRpc({command:process.execPath,args:['-e',peer],cwd:process.cwd(),env:{PATH:process.env.PATH},timeoutMs:5000});
+    try{console.log(await rpc.request('fixture'));}finally{await rpc.close();}`;
+  const rpcResult = await command(process.execPath, ['--input-type=module', '-e', rpcScript], { cwd: installed, env });
+  assert.equal(rpcResult.stdout.trim(), 'native package ok');
   const configPath = join(TEMP, 'connection.json');
   await writeFile(configPath, JSON.stringify({ connectionName: 'fixture', connection: { kind: 'direct_https', baseUrl: 'https://api.example.com/v1', why: 'offline package fixture' },
     backendName: 'fixture', backend: { kind: 'openai_compat', provider: 'fixture', protocol: 'chat_completions', trainingOrg: 'fixture', modelFamily: 'fixture', inferenceOperator: 'fixture', derivedFrom: null,
       auth: { kind: 'env', envVar: 'CAMUS_FIXTURE_API_KEY' }, models: ['fixture-model'], seats: ['maker', 'reviewer'], why: 'offline package fixture' } }));
   const setup = JSON.parse((await command(process.execPath, [bin, 'build', '--setup', configPath, '--json'], { cwd: installed, env })).stdout);
   assert.equal(setup.configured, true); assert.equal(setup.qualified, false);
+  const configuredCatalog = JSON.parse((await command(process.execPath, [bin, 'build', '--models', '--json'], { cwd: installed, env })).stdout);
+  const fixtureMaker = configuredCatalog.maker.find(seat => seat.backend === 'fixture'); assert.ok(fixtureMaker);
+  if (process.platform === 'darwin' && process.arch === 'arm64') {
+    assert(fixtureMaker.codeExecutors.includes('grok_native'), 'packaged configurable makers advertise Grok Build on its qualified runtime');
+    assert.equal(fixtureMaker.codeExecutors.includes('qwen_native'), Number(process.versions.node.split('.')[0]) >= 22, 'Qwen Code is advertised only with Node 22+');
+  } else assert.deepEqual(fixtureMaker.codeExecutors, ['file_actions'], 'unsupported runtimes do not advertise isolated harnesses');
   await assert.rejects(command(process.execPath, [bin, 'build', '--qualify', 'fixture:fixture-model', '--role', 'maker'], { cwd: installed, env }), error => /allow-provider-calls/.test(error.stderr));
 
   // A cold package executes and resumes the real engine, replacing ONLY the
