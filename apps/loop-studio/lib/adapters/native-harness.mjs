@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { runNativeProcess } from '../native-process.mjs';
@@ -15,6 +15,29 @@ const outputSchema = { type: 'object', additionalProperties: false, required: ['
 const prohibitedTool = /(?:web[_-]?(?:search|fetch)|mcp|search_tool|use_tool|subagent|task)/i;
 const routeSlug = /^[a-z0-9](?:[a-z0-9._-]{0,63})(?:\/[a-z0-9](?:[a-z0-9._-]{0,63}))*$/;
 const observedProvider = /^[A-Za-z0-9][A-Za-z0-9 ._()+\/-]{0,127}$/;
+const qwenSystemPolicy = Object.freeze({
+  general: Object.freeze({ enableAutoUpdate: false }),
+  privacy: Object.freeze({ usageStatisticsEnabled: false }),
+  model: Object.freeze({ generationConfig: Object.freeze({ maxRetries: 0 }) }),
+});
+const qwenSystemPolicyText = `${JSON.stringify(qwenSystemPolicy, null, 2)}\n`;
+
+export async function installQwenSystemPolicy(home) {
+  const path = join(home, 'qwen-system.json');
+  try {
+    await writeFile(path, qwenSystemPolicyText, { flag: 'wx', mode: 0o600 });
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error;
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || (info.mode & 0o777) !== 0o600) {
+      throw new Error('Qwen Code system policy changed inside native scratch; execution refused.');
+    }
+    if (await readFile(path, 'utf8') !== qwenSystemPolicyText) {
+      throw new Error('Qwen Code system policy changed inside native scratch; execution refused.');
+    }
+  }
+  return path;
+}
 
 export function normalizeNativeRouteObservation(backend, state) {
   const route = backend?.route;
@@ -102,9 +125,13 @@ export async function runNativeHarness({ executor, prompt, model, effort, backen
       onTick, onProgress: progress => { const reason = onNativeProgress({ ...progress, actions }); if (reason) stop(reason); return reason; } });
     const policy = await nativeHarnessPolicy({ executor, worktree, scratch, harness, artifactDigest, gatewayPort: gateway.port, deniedPaths });
     const env = { ...nativeHarnessEnvironment({ executor, policy, gateway }) };
-    if (executor === QWEN_NATIVE_EXECUTOR) Object.assign(env, { QWEN_HOME: join(policy.home, 'qwen'), QWEN_RUNTIME_DIR: join(policy.temp, 'runtime'),
-      QWEN_CODE_SYSTEM_SETTINGS_PATH: join(policy.home, 'qwen-system.json'), QWEN_CODE_SYSTEM_DEFAULTS_PATH: join(policy.home, 'qwen-defaults.json'),
-      QWEN_CODE_DISABLE_PRECONNECT: '1', QWEN_CODE_DISABLE_AUTO_UPDATE: '1', SEATBELT_PROFILE: 'permissive-open' });
+    if (executor === QWEN_NATIVE_EXECUTOR) {
+      const systemSettings = await installQwenSystemPolicy(policy.home);
+      Object.assign(env, { QWEN_HOME: join(policy.home, 'qwen'), QWEN_RUNTIME_DIR: join(policy.temp, 'runtime'),
+        QWEN_CODE_SYSTEM_SETTINGS_PATH: systemSettings, QWEN_CODE_SYSTEM_DEFAULTS_PATH: join(policy.home, 'qwen-defaults.json'),
+        QWEN_CODE_DISABLE_PRECONNECT: '1', QWEN_CODE_DISABLE_AUTO_UPDATE: '1', QWEN_CODE_UNATTENDED_RETRY: '0',
+        SEATBELT_PROFILE: 'permissive-open' });
+    }
     else {
       env.GROK_HOME = await grokConfig({ policy, gateway, model }); env.GROK_DISABLE_AUTOUPDATER = '1'; env.GROK_MEMORY = '0';
       env.GROK_SUBAGENTS = '0'; env.GROK_TOOL_SEARCH = '0'; env.GROK_WEB_FETCH = '0'; env.GROK_LSP_TOOLS = '0';

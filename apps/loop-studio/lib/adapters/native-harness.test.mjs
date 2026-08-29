@@ -1,6 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeNativeRouteObservation, qwenNativeArgs, validateNativeDecision } from './native-harness.mjs';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { installQwenSystemPolicy, normalizeNativeRouteObservation, qwenNativeArgs, validateNativeDecision } from './native-harness.mjs';
+
+test('Qwen native system policy disables hidden provider retries and refuses drift', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'camus-qwen-policy-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const path = await installQwenSystemPolicy(home);
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), {
+    general: { enableAutoUpdate: false },
+    privacy: { usageStatisticsEnabled: false },
+    model: { generationConfig: { maxRetries: 0 } },
+  });
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  assert.equal(await installQwenSystemPolicy(home), path, 'an exact resumed policy is idempotent');
+  await writeFile(path, '{}\n', { mode: 0o600 });
+  await assert.rejects(() => installQwenSystemPolicy(home), /system policy changed/);
+});
 
 test('native decision is exact, bounded and fail closed', () => {
   assert.deepEqual(validateNativeDecision({ done: true, summary: 'ready', decision: null }), { done: true, summary: 'ready', decision: null });

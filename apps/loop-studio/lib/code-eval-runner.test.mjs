@@ -138,7 +138,7 @@ test('one fake shared-engine cell observes the marker first, seals once and neve
     ...item.dependencies,
     createVerifier: () => async () => ({ ran: true, pass: true }),
     readCheckpoint: async () => ({ nativeSession: { executor: item.campaign.treatment.executor,
-      model: item.campaign.treatment.maker.model, version: 'native-harness-isolation/v1',
+      model: item.campaign.treatment.maker.model, version: 'native-harness-isolation/v2',
       harnessVersion: item.campaign.treatment.executor === 'qwen_native' ? '0.22.3' : '1.0.5' } }),
     runSeats: async ({ repoPath, adapters }) => {
       calls++;
@@ -177,7 +177,7 @@ test('plain model labels cannot satisfy exact provider-qualified identity eviden
     materializeSource: async (_fixture, path) => mkdir(path, { recursive: true, mode: 0o700 }),
     createVerifier: () => async () => ({ ran: true, pass: true }),
     readCheckpoint: async () => ({ nativeSession: { executor: item.campaign.treatment.executor,
-      model: item.campaign.treatment.maker.model, version: 'native-harness-isolation/v1', harnessVersion: '0.22.3' } }),
+      model: item.campaign.treatment.maker.model, version: 'native-harness-isolation/v2', harnessVersion: '0.22.3' } }),
     runSeats: async () => ({
       status: 'needs_decision', completion: 'candidate_ready_for_acceptance',
       candidate: { fingerprint }, verificationBinding: fingerprint, reviewBinding: fingerprint,
@@ -226,7 +226,7 @@ test('OpenRouter route is bound before spend and normalized evidence reaches the
     materializeSource: async (_fixture, path) => mkdir(path, { recursive: true, mode: 0o700 }),
     createVerifier: () => async () => ({ ran: true, pass: true }),
     readCheckpoint: async () => ({ nativeSession: { executor: item.campaign.treatment.executor,
-      model: item.campaign.treatment.maker.model, version: 'native-harness-isolation/v1', harnessVersion: '0.22.3',
+      model: item.campaign.treatment.maker.model, version: 'native-harness-isolation/v2', harnessVersion: '0.22.3',
       routeObservation } }),
     runSeats: async ({ adapters }) => {
       await adapters.nativeMaker({ onNativeProgress: () => null });
@@ -269,7 +269,7 @@ test('an uncertain native terminal preserves complete gateway usage instead of s
     },
     readCheckpoint: async () => ({
       nativeSession: { executor: item.campaign.treatment.executor, model: item.campaign.treatment.maker.model,
-        version: 'native-harness-isolation/v1', harnessVersion: '0.22.3' },
+        version: 'native-harness-isolation/v2', harnessVersion: '0.22.3' },
       pendingCall: { role: 'maker', response: { uncertain: true, usage: measured, usageIncomplete: false } },
       usage: { calls: 2, unmeasuredCalls: 0 },
     }),
