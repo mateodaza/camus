@@ -41,6 +41,25 @@ test('provider evidence refuses missing, substituted, or inconsistent identity',
   assert.throws(() => inspectNativeProviderBody(Buffer.from('data: nope\n\n'), 'text/event-stream', new Set(['m'])), /malformed/);
 });
 
+test('xAI reasoning usage is accepted only when its separate tokens explain the provider total', () => {
+  const event = model => Buffer.from(`data: ${JSON.stringify({ model, usage: {
+    prompt_tokens: 32, completion_tokens: 9, total_tokens: 135,
+    prompt_tokens_details: { cached_tokens: 6 }, completion_tokens_details: { reasoning_tokens: 94 },
+  } })}\n\ndata: [DONE]\n\n`);
+  assert.deepEqual(inspectNativeProviderBody(event('grok-4.6'), 'text/event-stream', new Set(['grok-4.6'])).usage, {
+    input_tokens: 32, cached_input_tokens: 6, output_tokens: 9, total_tokens: 135,
+  });
+  const reasoningIncluded = Buffer.from(`data: ${JSON.stringify({ model: 'responses-model', usage: {
+    input_tokens: 32, output_tokens: 103, total_tokens: 135,
+    output_tokens_details: { reasoning_tokens: 94 },
+  } })}\n\ndata: [DONE]\n\n`);
+  assert.equal(inspectNativeProviderBody(reasoningIncluded, 'text/event-stream', new Set(['responses-model'])).usage.total_tokens, 135);
+  const malformed = Buffer.from(`data: ${JSON.stringify({ model: 'grok-4.6', usage: {
+    prompt_tokens: 32, completion_tokens: 9, total_tokens: 136, completion_tokens_details: { reasoning_tokens: 94 },
+  } })}\n\ndata: [DONE]\n\n`);
+  assert.equal(inspectNativeProviderBody(malformed, 'text/event-stream', new Set(['grok-4.6'])).usage, null);
+});
+
 test('OpenRouter native gateway pins every request and refuses missing or substituted route evidence', async t => {
   const entry = { name: 'openrouter-qwen', kind: 'openai_compat', provider: 'openrouter', auth: { kind: 'none' },
     baseUrl: 'https://openrouter.invalid/api/v1', route: { upstreamProvider: 'alibaba', allowFallbacks: false } };

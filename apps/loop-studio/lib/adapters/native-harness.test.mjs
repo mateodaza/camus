@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { installQwenSystemPolicy, normalizeNativeRouteObservation, qwenNativeArgs, validateNativeDecision } from './native-harness.mjs';
+import { createGrokProtocolReducer, installQwenSystemPolicy, normalizeNativeRouteObservation, qwenNativeArgs, validateNativeDecision } from './native-harness.mjs';
 
 test('Qwen native system policy disables hidden provider retries and refuses drift', async t => {
   const home = await mkdtemp(join(tmpdir(), 'camus-qwen-policy-'));
@@ -27,6 +27,35 @@ test('native decision is exact, bounded and fail closed', () => {
     { done: false, summary: 'x', decision: { action: 'approve', reason: 'x' } }, { done: true, summary: 'x', decision: null, extra: true }]) {
     assert.throws(() => validateNativeDecision(bad), /Invalid native/);
   }
+});
+
+test('Grok protocol accepts pinned informational frames and joins chunked final JSON', () => {
+  let actions = 0;
+  const protocol = createGrokProtocolReducer({ onAction: () => { actions++; } });
+  for (const frame of [
+    { type: 'available_commands', tools: [], commands: [] },
+    { type: 'thought', data: 'Inspecting the bounded parser.' },
+    { type: 'plan', entries: [] },
+    { type: 'text', data: 'I will inspect the file.' },
+    { type: 'tool_call', toolCallId: 'call-1', toolName: 'read_file', rawInput: { path: 'src/a.mjs' } },
+    { type: 'tool_call_update', toolCallId: 'call-1', status: 'completed' },
+    { type: 'usage', stopReason: 'tool_calls', usage: { input_tokens: 10, output_tokens: 2 } },
+    { type: 'text', data: '{"done":true,' },
+    { type: 'text', data: '"summary":"ready","decision":null}' },
+    { type: 'end', stopReason: 'end_turn', sessionId: '01900000-0000-7000-8000-000000000001' },
+  ]) protocol.push(frame);
+  assert.equal(actions, 1);
+  assert.deepEqual(protocol.finish().result, { done: true, summary: 'ready', decision: null });
+  assert.throws(() => protocol.push({ type: 'text', data: 'late' }), /after its terminal/);
+});
+
+test('Grok protocol records bounded error terminals and refuses unknown or prohibited frames', () => {
+  const failed = createGrokProtocolReducer();
+  failed.push({ type: 'error', message: 'rate limited' });
+  failed.push({ type: 'end', stopReason: 'rate_limit', sessionId: '01900000-0000-7000-8000-000000000001' });
+  assert.equal(failed.finish().reportedError, true);
+  assert.throws(() => createGrokProtocolReducer().push({ type: 'future_unreviewed' }), /Unexpected Grok/);
+  assert.throws(() => createGrokProtocolReducer().push({ type: 'tool_call', toolName: 'WebSearch' }), /unsupported tool/);
 });
 
 test('Qwen receives limits derived from the enclosing native turn', () => {

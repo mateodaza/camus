@@ -21,6 +21,55 @@ const qwenSystemPolicy = Object.freeze({
   model: Object.freeze({ generationConfig: Object.freeze({ maxRetries: 0 }) }),
 });
 const qwenSystemPolicyText = `${JSON.stringify(qwenSystemPolicy, null, 2)}\n`;
+const grokFrameTypes = new Set(['available_commands', 'usage', 'thought', 'plan', 'tool_call', 'tool_call_update', 'text', 'error',
+  'max_turns_reached', 'auto_compact_started', 'auto_compact_completed', 'auto_compact_failed', 'auto_compact_cancelled', 'end']);
+
+export function createGrokProtocolReducer({ onAction = () => {} } = {}) {
+  let terminal = null, responseText = '', lastResponseText = '', completionBytes = 0, thoughtBytes = 0, reportedError = false;
+  const push = frame => {
+    if (!frame || typeof frame !== 'object' || Array.isArray(frame) || !grokFrameTypes.has(frame.type)) {
+      throw new Error('Unexpected Grok Build protocol frame.');
+    }
+    if (terminal) throw new Error('Grok Build emitted data after its terminal.');
+    if (frame.type === 'thought') {
+      if (typeof frame.data !== 'string' || (thoughtBytes += Buffer.byteLength(frame.data)) > 1024 * 1024) {
+        throw new Error('Grok Build reasoning exceeded the protocol limit.');
+      }
+    }
+    if (frame.type === 'tool_call') {
+      if (prohibitedTool.test(frame.toolName ?? frame.title ?? '')) throw new Error('Grok Build attempted an unsupported tool.');
+      onAction(frame);
+    }
+    if (frame.type === 'text') {
+      if (typeof frame.data !== 'string' || (completionBytes += Buffer.byteLength(frame.data)) > 65536) {
+        throw new Error('Grok Build completion exceeded the response limit.');
+      }
+      responseText += frame.data;
+    }
+    if (frame.type === 'usage') {
+      // streaming-json emits text for intermediate tool-calling responses too.
+      // A usage boundary makes only the latest complete response eligible to
+      // be the final bounded decision.
+      lastResponseText = responseText;
+      responseText = '';
+    }
+    if (frame.type === 'error') {
+      if (typeof frame.message !== 'string' || Buffer.byteLength(frame.message) > 8192) throw new Error('Invalid Grok Build error frame.');
+      reportedError = true;
+    }
+    if (frame.type === 'end') {
+      if (responseText) lastResponseText = responseText;
+      terminal = frame;
+    }
+  };
+  const finish = () => ({
+    terminal,
+    reportedError,
+    result: terminal?.stopReason === 'end_turn' && !reportedError && lastResponseText
+      ? validateNativeDecision(JSON.parse(lastResponseText)) : null,
+  });
+  return { push, finish, get terminal() { return terminal; } };
+}
 
 export async function installQwenSystemPolicy(home) {
   const path = join(home, 'qwen-system.json');
@@ -112,7 +161,7 @@ function grokArgs({ policy, model, effort, prompt, session }) {
 export async function runNativeHarness({ executor, prompt, model, effort, backend, expectedReported, worktree, scratch, receiptsDir, sourcePath,
   deniedPaths = [], nativeSession = null, signal, timeoutMs = 600000, onNativeSession = () => {}, onNativeProgress = () => {}, onTick = () => {},
   maxModelCalls = 32, maxToolCalls = 32, remainingTokens, gatewayFactory = startNativeGateway, processRunner = runNativeProcess }) {
-  const startedAt = Date.now(); let gateway = null, dispatched = false, terminal = null, result = null, actions = 0, frames = 0;
+  const startedAt = Date.now(); let gateway = null, dispatched = false, terminal = null, result = null, actions = 0, frames = 0, grokProtocol = null;
   const local = new AbortController(); let stopReason = null;
   const stop = reason => { if (!stopReason) stopReason = String(reason); local.abort(new Error(stopReason)); };
   const externalAbort = () => stop('Native execution cancelled.');
@@ -146,6 +195,9 @@ export async function runNativeHarness({ executor, prompt, model, effort, backen
     const session = { version: HARNESS_POLICY_VERSION, executor, policyHash: policy.hash, model, harnessVersion,
       sessionId: nativeSession?.sessionId ?? randomUUID(), resumed: Boolean(nativeSession) };
     onNativeSession({ ...session, resumed: undefined });
+    grokProtocol = executor === GROK_NATIVE_EXECUTOR ? createGrokProtocolReducer({ onAction: () => {
+      actions++; onTick('Native maker used a sandboxed tool.');
+    } }) : null;
     const handle = frame => {
       frames++; if (frames > 100000) throw new Error('Native frame limit exceeded.');
       if (executor === QWEN_NATIVE_EXECUTOR) {
@@ -161,19 +213,7 @@ export async function runNativeHarness({ executor, prompt, model, effort, backen
           if (terminal) throw new Error('Duplicate Qwen Code terminal.');
           terminal = frame; if (frame.subtype === 'success' && frame.is_error === false) result = validateNativeDecision(frame.structured_result);
         }
-      } else {
-        if (!['available_commands', 'usage', 'tool_call', 'tool_call_update', 'text', 'end'].includes(frame.type)) throw new Error('Unexpected Grok Build protocol frame.');
-        if (frame.type === 'tool_call') {
-          if (prohibitedTool.test(frame.toolName ?? frame.title ?? '')) throw new Error('Grok Build attempted an unsupported tool.');
-          actions++; onTick('Native maker used a sandboxed tool.');
-        }
-        if (frame.type === 'text') {
-          if (typeof frame.data !== 'string' || Buffer.byteLength(frame.data) > 65536) throw new Error('Grok Build completion exceeded the response limit.');
-          if (result) throw new Error('Duplicate Grok Build completion.');
-          result = validateNativeDecision(JSON.parse(frame.data));
-        }
-        if (frame.type === 'end') { if (terminal) throw new Error('Duplicate Grok Build terminal.'); terminal = frame; }
-      }
+      } else grokProtocol.push(frame);
       const reason = onNativeProgress({ usage: gateway.state.usageIncomplete ? null : gateway.state.usage, responses: gateway.state.calls, actions });
       if (reason) stop(reason);
     };
@@ -183,14 +223,19 @@ export async function runNativeHarness({ executor, prompt, model, effort, backen
     dispatched = true;
     const run = await processRunner({ command: '/usr/bin/sandbox-exec', args: ['-p', policy.profile, policy.harness, ...args], cwd: policy.cwd,
       env, timeoutMs, signal: local.signal, jsonl: true, onFrame: handle });
+    let grokReportedError = false;
+    if (grokProtocol) {
+      const completed = grokProtocol.finish(); terminal = completed.terminal; result = completed.result; grokReportedError = completed.reportedError;
+    }
     const definitive = executor === QWEN_NATIVE_EXECUTOR
       ? terminal?.subtype === 'success' && terminal?.is_error === false
       : terminal?.stopReason === 'end_turn' && terminal?.sessionId === session.sessionId
         && terminal?.modelUsage && Object.keys(terminal.modelUsage).length === 1
         && Number.isSafeInteger(terminal.modelUsage[model]?.modelCalls)
         && terminal.modelUsage[model].modelCalls > 0;
-    if (run.code !== 0 || !definitive || !result || stopReason || gateway.state.stopped) return { ok: false, interrupted: Boolean(terminal),
-      uncertain: !terminal, definitiveTurnEnd: Boolean(terminal), error: stopReason ?? gateway.state.stopped ?? 'Native harness did not produce a successful terminal.',
+    if (run.code !== 0 || !definitive || !result || stopReason || gateway.state.stopped || grokReportedError) return { ok: false, interrupted: Boolean(terminal),
+      uncertain: !terminal, definitiveTurnEnd: Boolean(terminal), error: stopReason ?? gateway.state.stopped
+        ?? (grokReportedError ? 'Grok Build reported an execution error.' : 'Native harness did not produce a successful terminal.'),
       stopKind: stopReason ? 'budget' : 'failure', usage: gateway.state.usageIncomplete ? null : gateway.state.usage,
       usageIncomplete: gateway.state.usageIncomplete, nativeSession: { ...session, resumed: undefined } };
     if (!gateway.state.calls || !gateway.state.reportedModels.size) throw new Error('Native gateway did not observe model identity evidence.');
@@ -201,6 +246,7 @@ export async function runNativeHarness({ executor, prompt, model, effort, backen
       modelActual: `${backend.provider}:${model}`, modelReported: [...gateway.state.reportedModels].join(','),
       modelActualEvidence: 'native_gateway_observed_response', durationMs: Date.now() - startedAt };
   } catch (error) {
+    terminal ??= grokProtocol?.terminal ?? null;
     return { ok: false, error: String(error.message).slice(0, 600), uncertain: dispatched && !terminal, noModelCalled: !dispatched,
       definitiveTurnEnd: Boolean(terminal), usage: gateway?.state.usageIncomplete ? null : gateway?.state.usage ?? null,
       usageIncomplete: gateway?.state.usageIncomplete ?? false, nativeSession };

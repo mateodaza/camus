@@ -18,9 +18,14 @@ const usageOf = value => {
   if (!value || typeof value !== 'object') return null;
   const input = value.prompt_tokens ?? value.input_tokens;
   const output = value.completion_tokens ?? value.output_tokens;
+  const reasoning = value.completion_tokens_details?.reasoning_tokens ?? value.output_tokens_details?.reasoning_tokens ?? 0;
   const cached = value.prompt_tokens_details?.cached_tokens ?? value.input_tokens_details?.cached_tokens ?? value.cached_input_tokens ?? 0;
   const total = value.total_tokens ?? (Number.isSafeInteger(input) && Number.isSafeInteger(output) ? input + output : null);
-  if (![input, output, cached, total].every(v => Number.isSafeInteger(v) && v >= 0) || cached > input || total !== input + output) return null;
+  const totalMatches = total === input + output + reasoning || total === input + output && reasoning <= output;
+  // OpenAI-style Responses usage counts reasoning inside output_tokens, while
+  // xAI Chat Completions reports reasoning separately and adds it only to
+  // total_tokens. Accept exactly those two documented accounting shapes.
+  if (![input, output, reasoning, cached, total].every(v => Number.isSafeInteger(v) && v >= 0) || cached > input || !totalMatches) return null;
   return { input_tokens: input, cached_input_tokens: cached, output_tokens: output, total_tokens: total };
 };
 const sumUsage = (a, b) => ({ input_tokens: a.input_tokens + b.input_tokens,
