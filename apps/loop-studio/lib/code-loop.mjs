@@ -9,6 +9,16 @@ import { NATIVE_EXECUTOR, isNativeExecutor, validateCodeExecutor } from './code-
 const TRANSIENT = /\b(?:429|502|503|504|ECONNRESET|ETIMEDOUT|rate.limit|temporarily unavailable)\b/i;
 const TERMINAL = new Set(['complete', 'refused']);
 const clone = (value) => JSON.parse(JSON.stringify(value));
+export const nativeTrackedInventory = record => {
+  const paths = Array.isArray(record.tracked) ? record.tracked : [];
+  const visible = []; let bytes = 2;
+  for (const path of paths) {
+    const encoded = JSON.stringify(path), next = bytes + (visible.length ? 1 : 0) + Buffer.byteLength(encoded);
+    if (next > 16 * 1024) break;
+    visible.push(path); bytes = next;
+  }
+  return `Host-observed tracked candidate paths (${visible.length}${paths.length > visible.length ? ` of ${paths.length}` : ''}): ${JSON.stringify(visible)}`;
+};
 const nativeMakerPrompt = (task, record) => [
   'You are the native maker in an EXPERIMENTAL ADVISORY Camus code loop. Work only in the candidate using your sandboxed tools.',
   'Do not commit, push, publish, install dependencies, change acceptance criteria, access credentials, or change Camus private state.',
@@ -19,6 +29,8 @@ const nativeMakerPrompt = (task, record) => [
   'Return JSON {"done":true,"summary":"...","decision":null} when ready for host verification. Keep summary under 2000 bytes.',
   'If a real decision is needed, return done:false, summary, and decision:{action:"human"|"stop"|"retry_verify"|"rebut",reason:"..."}. Keep the reason under 2000 characters.',
   'Routine implementation and test repairs need no human permission. Git metadata, arbitrary network access, and provider credentials are blocked; a host-owned one-model gateway may be reachable only for the harness conversation. The host owns Git/diffs and can run authorized service tests.',
+  nativeTrackedInventory(record),
+  'Do not inspect .git or hidden root metadata, and do not use broad `ls -la` or `find .` discovery. Those reads are intentionally blocked and a failed tool call still consumes the action and model-turn budgets. Start from the host-observed paths and use targeted file or directory reads.',
   'Keep test caches and temporary output in TMPDIR, not ignored candidate files. Native tool and response counts consume the shared run limits.',
 ].join('\n\n');
 
@@ -241,7 +253,7 @@ export async function runProductiveCodeLoop(options, h) {
   const failedCall = async (response, role) => {
     if (response.budget) return question(response.budget, 'budget');
     if (response.uncertain) return native && role === 'maker'
-      ? finish('needs_decision', `${response.stopKind === 'budget' ? `${cleanError(response.error ?? 'Native accounting limit reached')}. ` : ''}Native turn outcome is uncertain. Candidate preserved for inspection; automatic adoption or replay is refused.`, 'refused')
+      ? finish('needs_decision', `${response.stopKind === 'budget' ? `${cleanError(response.error ?? 'Native accounting limit reached').replace(/[.]+$/, '')}. ` : ''}Native turn outcome is uncertain. Candidate preserved for inspection; automatic adoption or replay is refused.`, 'refused')
       : question('Provider completion is uncertain. Explicitly authorize a bounded retry or leave this candidate parked.', 'uncertain_call');
     if (!(native && role === 'maker') && TRANSIENT.test(response.error ?? '') && record.usage.retries < limits.maxRetries && !abort.signal.aborted) {
       record.usage.retries++; record.pendingCall = null;

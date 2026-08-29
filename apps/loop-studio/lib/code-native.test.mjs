@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm, realpath } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runCodeSeats } from './code-seats.mjs';
+import { nativeTrackedInventory } from './code-loop.mjs';
 import { readCodeCheckpoint, saveCodeCheckpoint } from './code-run-state.mjs';
 import { nativeUsage } from './adapters/codex-native.mjs';
 import { validateCodeExecutor } from './code-native-policy.mjs';
@@ -13,6 +14,15 @@ const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encodi
 const session = { version: 'codex-native/v1', threadId: '01900000-0000-7000-8000-000000000001', policyHash: 'fixture', usageTotal: { inputTokens: 10, cachedInputTokens: 4, outputTokens: 5, totalTokens: 15 } };
 const usage = { input_tokens: 10, output_tokens: 5, cached_input_tokens: 4, total_tokens: 15 };
 const done = () => ({ ok: true, definitiveTurnEnd: true, text: JSON.stringify({ actions: [], done: true, summary: 'Ready for host verification.' }), usage, nativeSession: session, modelActual: 'openai:fixture' });
+
+test('native tracked inventory is byte-bounded and reports omitted paths', () => {
+  const tracked = Array.from({ length: 1000 }, (_, index) => `${String(index).padStart(4, '0')}-${'x'.repeat(500)}`);
+  const inventory = nativeTrackedInventory({ tracked });
+  assert.ok(Buffer.byteLength(inventory) < 17 * 1024);
+  assert.match(inventory, /\(\d+ of 1000\)/);
+  assert.doesNotMatch(inventory, /0999-/);
+});
+
 async function fixture(t, nativeMaker, reviewer = async () => ({ ran: true, verdict: 'APPROVED', findings: [], usage: { total_tokens: 5 } })) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'camus-native-test-')));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -34,6 +44,10 @@ test('native edits use a private clone, live accounting, host verification and f
   let turns = 0, reviews = 0; const remaining = [];
   const f = await fixture(t, async args => {
     turns++; remaining.push(args.remainingTokens);
+    if (turns === 1) {
+      assert.match(args.prompt, /Host-observed tracked candidate paths \(1\): \["README\.md"\]/);
+      assert.match(args.prompt, /do not use broad `ls -la` or `find \.` discovery/);
+    }
     if (turns === 2) { assert.equal(args.nativeSession.threadId, session.threadId); assert.match(args.prompt, /incorrect/); }
     args.onNativeSession(session);
     args.onNativeProgress({ usage, responses: 1, actions: 1 });

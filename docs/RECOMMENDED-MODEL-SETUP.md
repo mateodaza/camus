@@ -40,7 +40,7 @@ manual starting point; it does **not** mean Camus has proven it is the winner.
 | Balanced work | Operator-selected qualified maker; begin with Qwen3.8 Max raw or the existing Claude incumbent | `file_actions` | Independent Luna/Sol seat appropriate to stakes | **No winner.** Collect matched raw/native and cross-model evidence before routing. |
 | Difficult or repository-wide work | Existing Claude Opus 4.8 maker + GPT-5.6 Sol high reviewer is the conservative incumbent | Existing qualified path | Sol high | **Incumbent only.** No controlled current-vendor campaign proves optimality. |
 | Qwen Code native | Qwen3.8 Max | `qwen_native` | Luna medium | **Exploratory.** Do not prefer for simple tasks. Test next on balanced/difficult work where harness context may amortize its overhead. |
-| Grok Build native | Grok 4.6 through direct xAI | `grok_native` | Luna medium | **Exploratory; not routed.** Two bounded live cells exposed integration and call-accounting defects before a candidate attempt, so neither is a Grok quality result. |
+| Grok Build native | Grok 4.6 through direct xAI | `grok_native` | Luna medium | **Exploratory; not routed.** The latest bounded cell made the exact fix, but exhausted its frozen turn cap before a definitive terminal or review. This is useful harness evidence, not a formal pass or model ranking. |
 
 Kimi and Gemini remain second-round candidates by operator decision. Grok and
 Qwen are current priorities; that priority does not waive qualification,
@@ -130,8 +130,25 @@ enough to reject Qwen Code for larger work.
   `turn_summary`, and `session_recap` model side-calls in both the private config
   and higher-precedence environment. Grok Build 1.0.5 does not expose a supported
   switch for the initial title call, so Camus does not patch session files or
-  pretend the call did not happen. A future three-work-turn campaign must budget
-  one additional Grok provider call for that fixed harness overhead.
+  pretend the call did not happen. A campaign must budget that fixed title call
+  separately and leave a work turn after the final tool result for a definitive
+  terminal; tool-producing turns alone do not close the harness session.
+- Campaign `grok46-native-smoke-20260829-v4` sealed receipt
+  `codebench1:4a39e33fe932212d12c638a63a37e0ef330d0a968f3db7598a97343935346dd5`
+  with formal standing **failed** after exactly four direct-xAI Grok calls,
+  16,152 accounted tokens, three actions, and about 13.4 active seconds. Luna
+  was not called; there was no retry, repair, fallback, substitution, or Git
+  landing.
+- The preserved v4 transcript has three main Grok turns plus the initial-title
+  call. Turn one attempted broad discovery and hit the intentionally blocked
+  `.git` boundary; turn two read the exact fixture files; turn three made the
+  canonical one-line inclusive-bound fix. The cap then stopped the harness before
+  a final terminal turn. A provider-free audit ran the frozen verifier successfully,
+  but cannot upgrade the failed receipt or authorize candidate adoption.
+- Native prompts now include the bounded host-observed tracked-file inventory and
+  explicitly avoid blocked hidden-root/broad-discovery calls. This removes a
+  Camus-created source of wasted native turns without relaxing `.git` isolation or
+  tuning away a legitimate model decision.
 - One sample never grants model admission or automatic routing.
 
 ## Camus defects found and fixed by this dogfood
@@ -145,6 +162,7 @@ enough to reject Qwen Code for larger work.
 | `b8f13e7` | Qwen Code retried a locally refused fourth request despite a zero-retry campaign. | Native isolation v2 writes a private, drift-refusing Qwen system policy with `maxRetries: 0`; the real pinned binary made exactly one request against a synthetic 429 provider. |
 | `afd5061` | xAI reasoning usage was rejected as incomplete, and Grok Build's documented event/text boundaries were parsed as one strict final frame. | The gateway accepts only the two documented reasoning-total shapes; Grok's pinned stream vocabulary, bounded reasoning/errors, intermediate response boundaries, and chunked final decision are now validated explicitly. |
 | Native isolation v3 | Grok Build's automatic title consumed one of three frozen maker calls, and the resulting local abort surfaced only as a generic cancellation. | Camus disables every supported optional summary/title side-call, refuses config drift, and retains the exact local stop reason. The unavoidable first-title call remains counted and must receive an explicit budget. |
+| Native path inventory | Grok spent a bounded turn discovering files through a broad command that touched intentionally blocked `.git` metadata. | The host supplies its bounded tracked-path inventory and warns native makers that blocked broad discovery still consumes turn/action budget; the sandbox remains unchanged. |
 
 The Qwen native failure itself is not erased by these fixes. A future campaign
 uses a new generation and must receive fresh authorization.
@@ -203,11 +221,10 @@ Choose the cheapest path that can meet the task contract:
 
 ## Next evidence sequence
 
-1. **Do not rerun Grok v3.** It is sealed and answered the call-accounting
-   question. If another simple smoke is worth its cost, create a fresh v4
-   generation under native isolation v3 and authorize one initial-title call
-   plus the intended work turns explicitly; never relabel the title call as
-   free or replay the failed cell.
+1. **Do not rerun the simple Grok smoke.** v2–v4 are sealed and together answer
+   the integration, accounting, and simple-task behavior questions. The v4
+   candidate was correct but lacked a definitive terminal; manual verification
+   does not rewrite that outcome.
 2. **Do not blindly repeat Qwen simple.** Its result already answers the simple
    task question and exposed the retry-policy defect.
 3. **Add a balanced fixture in Code Harness Eval v1b.** Use the same model,
@@ -226,8 +243,8 @@ Choose the cheapest path that can meet the task contract:
 
 The branch should not release immediately. First:
 
-- preserve both bounded Grok Build failures and the provider-free evidence that
-  explains them; a further paid smoke is optional, not a release prerequisite;
+- preserve all bounded Grok Build failures and the provider-free evidence that
+  explains them; another paid simple smoke is not a release prerequisite;
 - fix only deterministic Camus defects the smoke exposes—do not tune away a
   legitimate model/harness loss;
 - rerun the full Studio and root/CLI suites, `git diff --check`, and the npm

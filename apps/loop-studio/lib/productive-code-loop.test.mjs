@@ -118,6 +118,7 @@ test('an uncertain native budget stop keeps its exact local cause without replay
   const result = await f.run({ limits: { maxTokens: 32768 } });
   assert.equal(result.status, 'needs_decision');
   assert.match(result.error, /^Native model-call budget exhausted\./);
+  assert.doesNotMatch(result.error, /exhausted\.\./);
   assert.match(result.error, /automatic adoption or replay is refused/);
   assert.equal(result.usage.calls, 1);
 });
