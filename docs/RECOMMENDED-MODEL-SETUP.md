@@ -110,6 +110,11 @@ enough to reject Qwen Code for larger work.
   unknown stream types, prohibited tools, model substitution, and fallbacks
   fail-closed. A new campaign generation and fresh spend authorization are
   required before another live cell.
+- Replacement campaign `grok46-native-smoke-20260829-v3` is now frozen and
+  provider-free planned at cell
+  `cell1:a938fb6148f8d1326b474d07606bb92d1e9b7868fd12e73a379c196d998fb25f`.
+  Planning made zero provider calls; execution still requires fresh literal
+  consent.
 - One sample never grants model admission or automatic routing.
 
 ## Camus defects found and fixed by this dogfood
@@ -180,10 +185,10 @@ Choose the cheapest path that can meet the task contract:
 
 ## Next evidence sequence
 
-1. **Repeat Grok Build once after the integration repair.** The first live cell
-   is sealed and cannot be replayed or upgraded. Create a fresh generation and
-   run the same simple fixture with direct xAI, no fallback, no repair/retry,
-   and Luna review only after another fresh spend authorization.
+1. **Run the prepared Grok Build v3 cell after the integration repair.** The
+   first live cell is sealed and cannot be replayed or upgraded. The fresh v3
+   generation holds the same simple fixture with direct xAI, no fallback, no
+   repair/retry, and Luna review, but still needs fresh spend authorization.
 2. **Do not blindly repeat Qwen simple.** Its result already answers the simple
    task question and exposed the retry-policy defect.
 3. **Add a balanced fixture in Code Harness Eval v1b.** Use the same model,
