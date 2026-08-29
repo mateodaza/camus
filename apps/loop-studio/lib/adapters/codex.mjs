@@ -6,7 +6,7 @@
 // error, never a clean verdict.
 
 import { spawn } from 'node:child_process';
-import { readFile, mkdir } from 'node:fs/promises';
+import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getModels } from '../models.mjs';
@@ -16,6 +16,28 @@ const SCHEMA_PATH = join(__dirname, '..', '..', 'checks', 'review.schema.json');
 
 const IDLE_KILL_MS = Number(process.env.REVIEW_IDLE_MS || 300_000);
 const TOTAL_TIMEOUT_MS = { low: 420_000, medium: 600_000, high: 900_000, xhigh: 1_200_000 };
+const ASSESSMENT_ARRAYS = ['claim_assessments', 'coverage_assessments', 'threshold_assessments'];
+
+// Independent code review has no prose-lane ledgers. Constrain that fact in
+// code, not only in prose: otherwise a reviewer can invent C1/C2 identifiers
+// from the acceptance text and turn an otherwise valid verdict into infra.
+// Generic words reviews keep the tracked schema and exact-ledger validator.
+export function emptyAssessmentReviewSchema(schema) {
+  const scoped = structuredClone(schema);
+  for (const key of ASSESSMENT_ARRAYS) {
+    if (scoped?.properties?.[key]?.type !== 'array') throw new Error(`review schema is missing array property ${key}`);
+    scoped.properties[key].maxItems = 0;
+  }
+  return scoped;
+}
+
+async function reviewSchemaPath(dir, emptyAssessmentLedgers) {
+  if (!emptyAssessmentLedgers) return SCHEMA_PATH;
+  const schema = emptyAssessmentReviewSchema(JSON.parse(await readFile(SCHEMA_PATH, 'utf8')));
+  const path = join(dir, 'review-empty-ledgers.schema.json');
+  await writeFile(path, `${JSON.stringify(schema, null, 2)}\n`, { mode: 0o600 });
+  return path;
+}
 
 function infraError(error) {
   return { ran: false, error, verdict: 'ERROR', findings: [], questions: [], claimAssessments: [], coverageAssessments: [], thresholdAssessments: [] };
@@ -143,13 +165,14 @@ export function normalizeReview(raw, exitCode, expectedClaims = [], expectedCrit
   };
 }
 
-export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSession, receiptDir, model, claims = [], criteria = [], thresholds = [] }) {
+export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSession, receiptDir, model, claims = [], criteria = [], thresholds = [], emptyAssessmentLedgers = false }) {
   effort ||= getModels().reviewer.effort;
   model ||= getModels().reviewer.model;
   // codex resolves -o against ITS cwd, not ours — the path must be absolute.
   const dir = resolve(receiptDir);
   await mkdir(dir, { recursive: true });
   const lastFile = join(dir, 'last.json');
+  const outputSchema = await reviewSchemaPath(dir, emptyAssessmentLedgers);
 
   // Model and effort are always named explicitly — the account default is
   // never reachable (it isn't a decision anyone made). The seat runs hardened:
@@ -159,7 +182,7 @@ export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSe
   for (const id of (process.env.CAMUS_CODEX_DISABLE_MCP || '').split(',').filter(Boolean)) {
     args.push('-c', `mcp_servers.${id.trim()}.enabled=false`);
   }
-  args.push('--output-schema', SCHEMA_PATH, '-o', lastFile, prompt);
+  args.push('--output-schema', outputSchema, '-o', lastFile, prompt);
   const childEnv = scrubbedEnv(process.env, (key, why) => onSession?.(`env ${key}: ${why}`));
   onSession?.('hardened seat: shell/exec, web search, browser, apps and plugins disabled by flag; no user config or MCP; ephemeral session; environment scrubbed; any unexpected tool event fails the call.');
 

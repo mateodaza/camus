@@ -3874,12 +3874,19 @@ exit 0
     const review = await runCodexReview({
       prompt: 'judge', cwd: stubDir, effort: 'low', model: 'gpt-5.4',
       signal: new AbortController().signal, onTick: () => {}, onSession: (l) => sessions.push(l),
-      receiptDir: join(stubDir, 'receipt'), claims: [], criteria: [], thresholds: [],
+      receiptDir: join(stubDir, 'receipt'), claims: [], criteria: [], thresholds: [], emptyAssessmentLedgers: true,
     });
     assert.equal(review.ran, true, `the stub review normalizes (${review.error ?? ''})`);
     const reviewArgv = readFileSync(argvFile, 'utf8');
     for (const required of ['--ignore-user-config', '--ignore-rules', '--ephemeral', 'shell_tool', 'unified_exec', 'shell_environment_policy.inherit=none']) {
       assert.ok(reviewArgv.includes(required), `the REVIEWER seat's real argv carries ${required}`);
+    }
+    const reviewArgs = reviewArgv.trim().split('\n');
+    const schemaIndex = reviewArgs.indexOf('--output-schema');
+    assert.ok(schemaIndex >= 0 && reviewArgs[schemaIndex + 1], 'the code reviewer receives an explicit output schema');
+    const scopedSchema = JSON.parse(readFileSync(reviewArgs[schemaIndex + 1], 'utf8'));
+    for (const key of ['claim_assessments', 'coverage_assessments', 'threshold_assessments']) {
+      assert.equal(scopedSchema.properties[key].maxItems, 0, `the code reviewer schema mechanically keeps ${key} empty`);
     }
     const reviewEnv = readFileSync(envFile, 'utf8');
     assert.ok(!reviewEnv.includes('must-not-appear'), 'the reviewer subprocess environment is scrubbed');

@@ -72,9 +72,11 @@ await test('reversed Claude maker / Codex reviewer changes only an isolated cand
     }
     return { ok: true, text: '{"actions":[],"done":true,"summary":"implemented"}' };
   };
-  adapters.reviewer = async ({ prompt, cwd, expectedReported }) => {
+  adapters.reviewer = async ({ prompt, cwd, expectedReported, emptyAssessmentLedgers }) => {
     assert.equal(cwd, adapterScratch, 'reviewer shares private adapter scratch, never candidate cwd');
     assert.deepEqual(expectedReported, ['reviewer-pin']);
+    assert.equal(emptyAssessmentLedgers, true, 'code review selects the empty-ledger output contract');
+    assert.match(prompt, /Do not derive or invent ledger IDs/, 'the provider-agnostic prompt names the empty-ledger rule');
     assert.match(prompt, /export const answer = 2/);
     assert.match(prompt, /--- src\/app.js ---/);
     return cleanReview();

@@ -106,7 +106,7 @@ export async function runProductiveCodeLoop(options, h) {
     record.result.reviewBinding = null; record.result.verificationBinding = null;
     record.verificationReady = false;
   };
-  const call = async (role, prompt) => {
+  const call = async (role, prompt, { emptyAssessmentLedgers = false } = {}) => {
     if (record.pendingCall?.response && !record.pendingCall.response.uncertain) {
       if (record.pendingCall.role !== role || record.pendingCall.promptHash !== digest(prompt)) throw new Error('Saved response does not bind this role and context.');
       return record.pendingCall.response;
@@ -144,6 +144,7 @@ export async function runProductiveCodeLoop(options, h) {
       if (abort.signal.aborted) interrupted();
       const common = { prompt, model: seats[role].model, effort: seats[role].effort ?? null, cwd: record.scratch,
         signal: control.signal, expectedReported: seats[role].expectedReported,
+        ...(emptyAssessmentLedgers ? { emptyAssessmentLedgers: true } : {}),
         onTick: (line) => { activity(); emit('progress', { actor: role, line: cleanError(line) }); },
         onSession: (line) => { activity(); emit('session', { actor: role, line: cleanError(line) }); } };
       response = nativeCall ? await adapters.nativeMaker({ ...common, backend: backendSnapshot.maker, worktree: record.candidate.worktree,
@@ -510,7 +511,7 @@ export async function runProductiveCodeLoop(options, h) {
           readContextLabel: native ? 'Host-selected current changed files (not a native tool-read trace)' : undefined });
         if (Buffer.byteLength(prompt) > limits.maxReviewContextBytes) throw new Error('Complete reviewer prompt exceeds context limit; host did not truncate it');
         emit('stage', { stage: 'review', actor: 'reviewer' });
-        const response = await call('reviewer', prompt);
+        const response = await call('reviewer', prompt, { emptyAssessmentLedgers: true });
         if (abort.signal.aborted) return finish('stopped', 'code seats stopped during review');
         if (!response.ran || !['APPROVED', 'REVISE'].includes(response.verdict)) { const failed = await failedCall(response, 'reviewer'); if (failed) return failed; continue; }
         await checkCandidate('candidate changed while reviewer ran; advisory verdict is stale');
