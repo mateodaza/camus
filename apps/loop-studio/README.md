@@ -1,11 +1,12 @@
 # Camus Loop Studio
 
-Version 0.4.9 Productive Loop work adds repair feedback, checkpointed continuation,
-budget/answer controls, the same private run IDs as the CLI, and opt-in native
-Codex/Qwen Code/Grok Build maker executors. See [the coding guide](../../docs/INDEPENDENT-CODE-SEATS.md).
+Version 0.4.10 adds the shared CLI-only `camus code-eval` v1a bounded native-smoke
+evidence path. Studio intentionally has no live-campaign UI or hidden provider
+authorization for it. Version 0.4.9 Productive Loop work added repair feedback,
+checkpointed continuation, budget/answer controls, the same private run IDs as
+the CLI, and opt-in native Codex/Qwen Code/Grok Build maker executors. See [the
+coding guide](../../docs/INDEPENDENT-CODE-SEATS.md).
 This does not grant external code-gate admission or automatic acceptance.
-The shared runtime also powers the CLI-only `camus code-eval` v1a one-cell native
-smoke. Studio has no live-campaign UI or hidden provider authorization for it.
 
 New private receipts default to `~/.camus/studio/runs/<id>`, shared with the CLI;
 `STUDIO_RUNS_DIR` overrides the root. Historical `./runs` files are not moved or
