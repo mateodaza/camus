@@ -70,6 +70,26 @@ test('gateway reserves a concurrent call slot exactly once', async t => {
   assert.equal((await first).status, 200); assert.equal(upstreamCalls, 1); assert.equal(gateway.state.calls, 1);
 });
 
+test('gateway turns a local model-call refusal into one immediate harness stop', async t => {
+  let upstreamCalls = 0; const stops = [];
+  const gateway = await startNativeGateway({ entry: { name: 'fixture', kind: 'openai_compat', provider: 'fixture', auth: { kind: 'none' }, baseUrl: 'http://127.0.0.1:9/v1' },
+    model: 'm', maxCalls: 1, remainingTokens: 100, onStop: reason => stops.push(reason), fetchImpl: async () => {
+      upstreamCalls++;
+      return new Response('data: {"model":"m","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\ndata: [DONE]\n\n',
+        { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    } });
+  t.after(() => gateway.close());
+  const request = () => fetch(`${gateway.url}/chat/completions`, { method: 'POST', headers: {
+    authorization: `Bearer ${gateway.capability}`, 'content-type': 'application/json' },
+  body: JSON.stringify({ model: 'm', stream: true, messages: [] }) });
+  assert.equal((await request()).status, 200);
+  const refused = await request(); assert.equal(refused.status, 429);
+  assert.match(await refused.text(), /Native model-call budget exhausted/);
+  assert.deepEqual(stops, ['Native model-call budget exhausted.']);
+  assert.equal(upstreamCalls, 1, 'the refused request never reaches the provider');
+  assert.equal((await request()).status, 429); assert.equal(stops.length, 1, 'the stop notification is idempotent');
+});
+
 test('gateway emits the provider-specific completion field and never widens a harness limit', async t => {
   const rows = [
     [{ provider: 'xai' }, 'grok-4.6', 'max_tokens'],

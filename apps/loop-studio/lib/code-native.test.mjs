@@ -82,11 +82,12 @@ test('hard-crash native writes never silently become an authorized candidate on 
     return { ok: false, uncertain: true, usage };
   });
   const first = await f.run(); assert.equal(first.resumable, false); assert.equal(first.candidate.fingerprint, null);
+  assert.equal(first.usage.accountedTokens, usage.total_tokens, 'known provider usage stays measured despite an uncertain coding terminal');
+  assert.equal(first.usage.unmeasuredCalls, 0);
   const checkpoint = await f.checkpoint(); checkpoint.phase = 'make'; checkpoint.status = 'running';
   // Reconstruct the exact crash window after measured progress was persisted
-  // but before final uncertainty restored the unknown-call reservation.
-  checkpoint.usage.accountedTokens -= checkpoint.limits.unknownTokenReserve;
-  checkpoint.usage.unmeasuredCalls--;
+  // but before any completed response was durably recorded.
+  delete checkpoint.pendingCall.response;
   checkpoint.pendingCall.progress.reservationRestored = false;
   saveCodeCheckpoint(f.options.receiptsDir, checkpoint); // force the actual crash window
   const resumed = await f.run({ resume: true, retryUncertain: true });

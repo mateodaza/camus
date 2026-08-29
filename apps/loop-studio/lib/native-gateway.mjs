@@ -67,7 +67,7 @@ function inspectProviderBody(buffer, contentType, allowedModels) {
 // remains in the host process; request headers are rebuilt from scratch and the
 // selected model/path are enforced before any upstream traffic is possible.
 export async function startNativeGateway({ entry, model, expectedReported, signal, maxCalls = 32, remainingTokens,
-  onProgress = () => {}, onTick = () => {}, fetchImpl = fetch, tunnelManager = getSharedTunnelManager() }) {
+  onProgress = () => {}, onTick = () => {}, onStop = () => {}, fetchImpl = fetch, tunnelManager = getSharedTunnelManager() }) {
   if (!entry || entry.kind !== 'openai_compat') throw new Error('Native gateway requires a frozen OpenAI-compatible backend.');
   if (!Number.isSafeInteger(maxCalls) || maxCalls <= 0) throw new Error('Native gateway requires a positive model-call limit.');
   if (!Number.isSafeInteger(remainingTokens) || remainingTokens <= 0) throw new Error('Native gateway requires a positive remaining token budget.');
@@ -86,6 +86,15 @@ export async function startNativeGateway({ entry, model, expectedReported, signa
   const allowedModels = aliases(model, expectedReported);
   const state = { calls: 0, accountedCalls: 0, usage: zero(), usageIncomplete: false, reportedModels: new Set(), stopped: null,
     tokenBudget: remainingTokens, tokenAllowanceRemaining: remainingTokens };
+  let stopNotified = false;
+  const stopFor = reason => {
+    state.stopped ??= String(reason);
+    if (!stopNotified) {
+      stopNotified = true;
+      onStop(state.stopped);
+    }
+    return state.stopped;
+  };
   let server;
   const close = async () => {
     lifetime.abort(); signal?.removeEventListener('abort', externalAbort);
@@ -115,8 +124,9 @@ export async function startNativeGateway({ entry, model, expectedReported, signa
       // prevents concurrent requests from all observing the same call or token
       // allowance. The allowance caps generated completion tokens; provider-
       // reported input/total usage can still consume more than this reservation.
-      if (state.stopped || state.calls >= maxCalls) return fail(429, 'Native model-call budget exhausted.');
-      if (state.tokenAllowanceRemaining <= 0) return fail(429, 'Native token allowance exhausted.');
+      if (state.stopped) { const reason = state.stopped; fail(429, reason); stopFor(reason); return; }
+      if (state.calls >= maxCalls) { const reason = 'Native model-call budget exhausted.'; fail(429, reason); stopFor(reason); return; }
+      if (state.tokenAllowanceRemaining <= 0) { const reason = 'Native token allowance exhausted.'; fail(429, reason); stopFor(reason); return; }
       const completionLimit = Math.min(state.tokenAllowanceRemaining, harnessLimit ?? state.tokenAllowanceRemaining);
       state.tokenAllowanceRemaining -= completionLimit;
       state.calls++;

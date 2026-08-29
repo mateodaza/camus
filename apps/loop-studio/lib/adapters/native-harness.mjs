@@ -32,9 +32,16 @@ async function grokConfig({ policy, gateway, model }) {
   return home;
 }
 
-function qwenArgs({ model, prompt, session }) {
+export function qwenNativeArgs({ model, prompt, session, timeoutMs, maxModelCalls, maxToolCalls }) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 1000 || !Number.isSafeInteger(maxModelCalls) || maxModelCalls <= 0
+      || !Number.isSafeInteger(maxToolCalls) || maxToolCalls < 0) throw new Error('Qwen native execution requires valid bounded integer limits.');
+  const headroomMs = Math.min(5000, timeoutMs - 1000);
+  const wallSeconds = Math.max(1, Math.floor((timeoutMs - headroomMs) / 1000));
+  // The schema terminal consumes a session turn but not a tool call. The
+  // provider gateway remains the exact hard model-call boundary.
+  const sessionTurns = maxModelCalls + 1;
   return ['--bare', '--safe-mode', '--auth-type', 'openai', '--model', model, '--approval-mode', 'yolo',
-    '--max-session-turns', '32', '--max-tool-calls', '128', '--max-wall-time', '15m', '--output-format', 'stream-json',
+    '--max-session-turns', String(sessionTurns), '--max-tool-calls', String(maxToolCalls), '--max-wall-time', `${wallSeconds}s`, '--output-format', 'stream-json',
     '--json-schema', JSON.stringify(outputSchema), ...(session.resumed ? ['--resume', session.sessionId] : ['--session-id', session.sessionId]), '-p', prompt];
 }
 function grokArgs({ policy, model, effort, prompt, session }) {
@@ -46,7 +53,7 @@ function grokArgs({ policy, model, effort, prompt, session }) {
 
 export async function runNativeHarness({ executor, prompt, model, effort, backend, expectedReported, worktree, scratch, receiptsDir, sourcePath,
   deniedPaths = [], nativeSession = null, signal, timeoutMs = 600000, onNativeSession = () => {}, onNativeProgress = () => {}, onTick = () => {},
-  maxModelCalls = 32, remainingTokens, gatewayFactory = startNativeGateway, processRunner = runNativeProcess }) {
+  maxModelCalls = 32, maxToolCalls = 32, remainingTokens, gatewayFactory = startNativeGateway, processRunner = runNativeProcess }) {
   const startedAt = Date.now(); let gateway = null, dispatched = false, terminal = null, result = null, actions = 0, frames = 0;
   const local = new AbortController(); let stopReason = null;
   const stop = reason => { if (!stopReason) stopReason = String(reason); local.abort(new Error(stopReason)); };
@@ -56,6 +63,7 @@ export async function runNativeHarness({ executor, prompt, model, effort, backen
     const harness = await resolveNativeHarness(executor);
     const artifactDigest = await assertNativeHarnessArtifact(executor, harness);
     gateway = await gatewayFactory({ entry: backend, model, expectedReported, signal: local.signal, maxCalls: maxModelCalls, remainingTokens,
+      onStop: stop,
       onTick, onProgress: progress => { const reason = onNativeProgress({ ...progress, actions }); if (reason) stop(reason); return reason; } });
     const policy = await nativeHarnessPolicy({ executor, worktree, scratch, harness, artifactDigest, gatewayPort: gateway.port, deniedPaths });
     const env = { ...nativeHarnessEnvironment({ executor, policy, gateway }) };
@@ -107,8 +115,10 @@ export async function runNativeHarness({ executor, prompt, model, effort, backen
       const reason = onNativeProgress({ usage: gateway.state.usageIncomplete ? null : gateway.state.usage, responses: gateway.state.calls, actions });
       if (reason) stop(reason);
     };
+    const args = executor === QWEN_NATIVE_EXECUTOR
+      ? qwenNativeArgs({ model, prompt, session, timeoutMs, maxModelCalls, maxToolCalls })
+      : grokArgs({ policy, model, effort, prompt, session });
     dispatched = true;
-    const args = executor === QWEN_NATIVE_EXECUTOR ? qwenArgs({ model, prompt, session }) : grokArgs({ policy, model, effort, prompt, session });
     const run = await processRunner({ command: '/usr/bin/sandbox-exec', args: ['-p', policy.profile, policy.harness, ...args], cwd: policy.cwd,
       env, timeoutMs, signal: local.signal, jsonl: true, onFrame: handle });
     const definitive = executor === QWEN_NATIVE_EXECUTOR

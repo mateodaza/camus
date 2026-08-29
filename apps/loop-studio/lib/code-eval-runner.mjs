@@ -421,21 +421,34 @@ function exactObservedIdentity(identity, provider, model) {
   return identity === `${provider}:${model}`;
 }
 
-function usageTotals(result) {
+function normalizedUsage(value) {
+  if (!value || typeof value !== 'object') return null;
+  const input = value.input_tokens ?? value.inputTokens ?? value.prompt_tokens;
+  const output = value.output_tokens ?? value.outputTokens ?? value.completion_tokens;
+  return Number.isSafeInteger(input) && input >= 0 && Number.isSafeInteger(output) && output >= 0 ? { input, output } : null;
+}
+
+function usageTotals(result, checkpoint, roleCalls) {
   const makerTurns = result?.seats?.maker?.observed?.turns ?? [];
   const reviewerTurns = result?.seats?.reviewer?.observed ? [result.seats.reviewer.observed] : [];
-  const turns = [...makerTurns, ...reviewerTurns];
-  const normalized = turns.map(turn => turn?.usage).map(value => {
-    if (!value || typeof value !== 'object') return null;
-    const input = value.input_tokens ?? value.inputTokens ?? value.prompt_tokens;
-    const output = value.output_tokens ?? value.outputTokens ?? value.completion_tokens;
-    return Number.isSafeInteger(input) && input >= 0 && Number.isSafeInteger(output) && output >= 0 ? { input, output } : null;
-  });
+  const roleUsages = {
+    maker: makerTurns.map(turn => normalizedUsage(turn?.usage)),
+    reviewer: reviewerTurns.map(turn => normalizedUsage(turn?.usage)),
+  };
+  // A native harness can end without a structured coding terminal after the
+  // gateway has nevertheless measured every provider response. In that case
+  // the pending response is the authoritative aggregate usage for that role;
+  // do not turn the absence of a successful observed turn into synthetic zero.
+  const pending = checkpoint?.pendingCall;
+  if (['maker', 'reviewer'].includes(pending?.role) && roleUsages[pending.role].length === 0) {
+    roleUsages[pending.role].push(normalizedUsage(pending?.response?.usage));
+  }
+  for (const role of ['maker', 'reviewer']) if (roleCalls[role] > 0 && roleUsages[role].length === 0) roleUsages[role].push(null);
+  const usages = [...roleUsages.maker, ...roleUsages.reviewer];
+  if (!usages.length || usages.some(value => value === null)) return { inputTokens: null, outputTokens: null };
   return {
-    makerCalls: makerTurns.length,
-    reviewerCalls: reviewerTurns.length,
-    inputTokens: normalized.every(Boolean) ? normalized.reduce((sum, row) => sum + row.input, 0) : null,
-    outputTokens: normalized.every(Boolean) ? normalized.reduce((sum, row) => sum + row.output, 0) : null,
+    inputTokens: usages.reduce((sum, row) => sum + row.input, 0),
+    outputTokens: usages.reduce((sum, row) => sum + row.output, 0),
   };
 }
 
@@ -467,10 +480,12 @@ function receiptFromBuild({ campaign, execution, cell, prepared, fixtureReadines
   const reviewBindingMatch = candidateCurrent && result?.reviewBinding === result.candidate.fingerprint;
   const verificationPassed = result?.verification?.pass === true;
   const mechanicalFloorPassed = candidateCurrent && verificationBindingMatch && verificationPassed;
-  const usage = usageTotals(result);
+  const usage = usageTotals(result, checkpoint, roleCalls);
   const providerCalls = Number.isSafeInteger(result?.usage?.calls) ? result.usage.calls : null;
   const callsComplete = providerCalls !== null && providerCalls === roleCalls.maker + roleCalls.reviewer;
-  const usageIncomplete = !callsComplete || usage.inputTokens === null || usage.outputTokens === null;
+  const usageEvidenceIncomplete = checkpoint?.pendingCall?.response?.usageIncomplete === true
+    || Number.isSafeInteger(checkpoint?.usage?.unmeasuredCalls) && checkpoint.usage.unmeasuredCalls > 0;
+  const usageIncomplete = !callsComplete || usage.inputTokens === null || usage.outputTokens === null || usageEvidenceIncomplete;
   const outcome = outcomeFor(result, candidateCurrent);
   return createCodeEvalReceipt({
     campaign, execution, cell,

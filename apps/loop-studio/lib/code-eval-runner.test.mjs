@@ -189,6 +189,37 @@ test('plain model labels cannot satisfy exact provider-qualified identity eviden
   assert.equal(result.standing, 'failed');
 });
 
+test('an uncertain native terminal preserves complete gateway usage instead of sealing false zero', async t => {
+  const item = await setup(t); await planCodeEval(item, item.dependencies);
+  const measured = { input_tokens: 21286, cached_input_tokens: 0, output_tokens: 647, total_tokens: 21933 };
+  item.prepared.adapters.nativeMaker = async options => {
+    options.onNativeProgress({ usage: measured, responses: 2, actions: 4 });
+    return { ok: false, uncertain: true, usage: measured, usageIncomplete: false };
+  };
+  const result = await runCodeEval({ ...item, consent: true, maxCells: 1 }, {
+    ...item.dependencies,
+    materializeSource: async (_fixture, path) => mkdir(path, { recursive: true, mode: 0o700 }),
+    runSeats: async ({ adapters }) => {
+      await adapters.nativeMaker({ maxModelCalls: 99, onNativeProgress: () => null });
+      return { status: 'needs_decision', error: 'Native turn outcome is uncertain.',
+        candidate: { fingerprint: null, snapshotStatus: 'unverified_terminal' }, seats: {},
+        usage: { calls: 2, unmeasuredCalls: 0 } };
+    },
+    readCheckpoint: async () => ({
+      nativeSession: { executor: item.campaign.treatment.executor, model: item.campaign.treatment.maker.model,
+        version: 'native-harness-isolation/v1', harnessVersion: '0.22.3' },
+      pendingCall: { role: 'maker', response: { uncertain: true, usage: measured, usageIncomplete: false } },
+      usage: { calls: 2, unmeasuredCalls: 0 },
+    }),
+  });
+  assert.equal(result.standing, 'failed');
+  const receipt = JSON.parse((await readFile(item.ledgerPath, 'utf8')).trim());
+  assert.equal(receipt.economics.providerCalls, 2);
+  assert.equal(receipt.economics.makerCalls, 2); assert.equal(receipt.economics.reviewerCalls, 0);
+  assert.equal(receipt.economics.inputTokens, 21286); assert.equal(receipt.economics.outputTokens, 647);
+  assert.equal(receipt.economics.usageIncomplete, false, 'coding uncertainty does not erase complete cost evidence');
+});
+
 test('symlinked evidence artifact directories refuse before reservation or execution', async t => {
   const item = await setup(t); await planCodeEval(item, item.dependencies);
   const outside = join(item.root, 'outside'); await mkdir(outside, { mode: 0o700 });

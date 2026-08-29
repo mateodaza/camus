@@ -151,6 +151,7 @@ export async function runProductiveCodeLoop(options, h) {
         sourcePath: record.source.repoPath, receiptsDir,
         deniedPaths: record.nativeDeniedPaths, nativeSession: record.nativeSession ?? null, timeoutMs: limits.callTimeoutMs,
         maxModelCalls: Math.max(1, limits.maxCalls - record.usage.calls + 1), remainingTokens,
+        maxToolCalls: Math.max(0, limits.maxActions - record.usage.actions),
         onNativeSession: (session) => { record.nativeSession = clone(session); persist(); },
         onNativeProgress: ({ usage, responses = 0, actions = 0 }) => {
           const previous = record.pendingCall.progress ?? { tokens: 0, responses: 0, actions: 0, reservationReplaced: false };
@@ -172,7 +173,7 @@ export async function runProductiveCodeLoop(options, h) {
           // dispatch. Equality means the just-completed allowed response must
           // still reach the harness; only a measured overshoot is interrupted.
           return record.usage.calls > limits.maxCalls ? 'Native model-call accounting limit reached.'
-            : record.usage.actions >= limits.maxActions ? 'Native tool-action accounting limit reached.'
+            : record.usage.actions > limits.maxActions ? 'Native tool-action accounting limit reached.'
               : record.usage.accountedTokens > limits.maxTokens ? 'Native token accounting limit reached.' : null;
         },
       }) : await adapters[role](role === 'maker' ? { ...common, stage: record.feedback ? 'fix' : 'make', toolPolicy: 'none' }
@@ -214,13 +215,13 @@ export async function runProductiveCodeLoop(options, h) {
       if (tokens < alreadyObserved) throw new Error('Native final usage regressed.');
       record.usage.observedTokens += tokens - alreadyObserved;
       record.usage.accountedTokens += tokens - alreadyObserved;
-      if (response?.usageIncomplete || response?.uncertain) {
+      if (response?.usageIncomplete) {
         if (reservationReplaced) {
           record.usage.accountedTokens += limits.unknownTokenReserve;
           record.pendingCall.progress.reservationRestored = true;
         }
       } else if (!reservationReplaced) record.usage.accountedTokens -= limits.unknownTokenReserve;
-      if (response?.usageIncomplete || response?.uncertain) record.usage.unmeasuredCalls++;
+      if (response?.usageIncomplete) record.usage.unmeasuredCalls++;
     }
     else {
       if (reservationReplaced) {
