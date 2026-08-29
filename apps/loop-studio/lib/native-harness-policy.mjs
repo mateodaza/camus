@@ -15,11 +15,60 @@ const artifactPins = { [QWEN_NATIVE_EXECUTOR]: '51e46da04cbf833fedf0426ba8903a98
   [GROK_NATIVE_EXECUTOR]: '3dfa7f04fbb5427a8fbead286591543aaecb478b3a0ab222c4329eca1a3b2f86' };
 const defaults = { [QWEN_NATIVE_EXECUTOR]: 'qwen', [GROK_NATIVE_EXECUTOR]: 'grok' };
 const overrides = { [QWEN_NATIVE_EXECUTOR]: 'CAMUS_QWEN_CODE_BIN', [GROK_NATIVE_EXECUTOR]: 'CAMUS_GROK_BUILD_BIN' };
+const labels = { [QWEN_NATIVE_EXECUTOR]: 'Qwen Code', [GROK_NATIVE_EXECUTOR]: 'Grok Build' };
+const requiredVersions = { [QWEN_NATIVE_EXECUTOR]: '0.22.3', [GROK_NATIVE_EXECUTOR]: '1.0.5' };
+const remedies = {
+  [QWEN_NATIVE_EXECUTOR]: 'Follow https://github.com/mateodaza/camus/blob/main/docs/NATIVE-HARNESS-QUALIFICATION-1.md to verify and unpack the pinned Qwen npm artifact without dependencies, then set CAMUS_QWEN_CODE_BIN to its absolute cli-entry.js path.',
+  [GROK_NATIVE_EXECUTOR]: 'Follow https://github.com/mateodaza/camus/blob/main/docs/NATIVE-HARNESS-QUALIFICATION-1.md to download and verify the pinned Grok artifact, then set CAMUS_GROK_BUILD_BIN to that executable.',
+};
+const readinessProfile = '(version 1)\n(allow default)\n(deny network*)\n(deny file-write*)';
 const quote = value => JSON.stringify(String(value));
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const within = (parent, child) => child === parent || child.startsWith(parent + sep);
 
 export function isHarnessNativeExecutor(value) { return HARNESS_NATIVE_EXECUTORS.includes(value); }
+
+function readiness(executor, status, detail) {
+  return Object.freeze({ executor, label: labels[executor], requiredVersion: requiredVersions[executor],
+    status, ready: status === 'ready', detail, remedy: ['ready', 'unsupported'].includes(status) ? null : remedies[executor] });
+}
+
+// Spend-free operator preflight. It resolves and hashes the local artifact, then
+// asks the already-reviewed artifact for `--version` under a credential-free
+// environment. It never creates a model session, opens a provider connection, or
+// returns the resolved private path. Production launch still repeats every check.
+export async function nativeHarnessReadiness(executor, {
+  env = process.env, platform = process.platform, arch = process.arch,
+  nodeMajor = Number(process.versions.node.split('.')[0]),
+  resolveHarness = resolveNativeHarness, assertArtifact = assertNativeHarnessArtifact,
+  runVersion = async (harness) => runNativeProcess({ command: '/usr/bin/sandbox-exec',
+    args: ['-p', readinessProfile, harness, '--version'], cwd: process.cwd(),
+    env: { PATH: [dirname(process.execPath), '/usr/bin', '/bin'].join(':'), HOME: '/var/empty',
+      TMPDIR: '/tmp', CI: '1', NO_COLOR: '1', TERM: 'dumb', QWEN_CODE_DISABLE_PRECONNECT: '1',
+      QWEN_CODE_DISABLE_AUTO_UPDATE: '1', GROK_DISABLE_AUTOUPDATER: '1' },
+    timeoutMs: 10_000, maxBytes: 64 * 1024 }),
+} = {}) {
+  if (!isHarnessNativeExecutor(executor)) throw new Error('Unknown native harness executor.');
+  if (platform !== 'darwin' || arch !== 'arm64') {
+    return readiness(executor, 'unsupported', 'Native Qwen/Grok isolation currently requires macOS arm64.');
+  }
+  if (executor === QWEN_NATIVE_EXECUTOR && nodeMajor < 22) {
+    return readiness(executor, 'unsupported', 'Qwen Code 0.22.3 requires Node 22 or newer.');
+  }
+  let harness;
+  try { harness = await resolveHarness(executor, { env }); }
+  catch { return readiness(executor, 'missing', `${labels[executor]} ${requiredVersions[executor]} was not found.`); }
+  try { await assertArtifact(executor, harness); }
+  catch { return readiness(executor, 'wrong_digest', `${labels[executor]} does not match Camus's reviewed artifact digest.`); }
+  let result;
+  try { result = await runVersion(harness); }
+  catch { return readiness(executor, 'wrong_version', `${labels[executor]} could not prove version ${requiredVersions[executor]}.`); }
+  const output = String(result?.stdout ?? '').trim();
+  if (result?.code !== 0 || !versions[executor].test(output)) {
+    return readiness(executor, 'wrong_version', `${labels[executor]} did not report required version ${requiredVersions[executor]}.`);
+  }
+  return readiness(executor, 'ready', `${labels[executor]} ${requiredVersions[executor]} matches the reviewed artifact.`);
+}
 
 export async function resolveNativeHarness(executor, { env = process.env } = {}) {
   if (!isHarnessNativeExecutor(executor)) throw new Error('Unknown native harness executor.');
@@ -32,16 +81,21 @@ export async function resolveNativeHarness(executor, { env = process.env } = {})
   throw new Error(`${executor === QWEN_NATIVE_EXECUTOR ? 'Qwen Code' : 'Grok Build'} is not installed; no model was called.`);
 }
 
-export async function assertNativeHarnessArtifact(executor, harness) {
-  if (process.arch !== 'arm64') throw new Error('The reviewed native harness artifacts currently require macOS arm64; no model was called.');
-  if (executor === QWEN_NATIVE_EXECUTOR && Number(process.versions.node.split('.')[0]) < 22) throw new Error('Qwen Code 0.22.3 requires Node 22 or newer; no model was called.');
+export async function assertNativeHarnessArtifact(executor, harness, {
+  arch = process.arch, nodeMajor = Number(process.versions.node.split('.')[0]),
+} = {}) {
+  if (arch !== 'arm64') throw new Error('The reviewed native harness artifacts currently require macOS arm64; no model was called.');
+  if (executor === QWEN_NATIVE_EXECUTOR && nodeMajor < 22) throw new Error('Qwen Code 0.22.3 requires Node 22 or newer; no model was called.');
   let digest;
   if (executor === GROK_NATIVE_EXECUTOR) digest = createHash('sha256').update(await readFile(harness)).digest('hex');
   else {
     const root = dirname(harness), files = [];
+    if (harness.split(sep).includes('node_modules') || harness.split(sep).at(-1) !== 'cli-entry.js') {
+      throw new Error('Qwen Code must use the reviewed unpacked artifact without dependencies; no model was called.');
+    }
     async function walk(relative = '') {
       for (const name of (await readdir(join(root, relative))).sort()) {
-        if (name === 'node_modules') continue;
+        if (name === 'node_modules') throw new Error('Qwen Code artifact contains unreviewed dependencies; no model was called.');
         const path = join(relative, name), info = await lstat(join(root, path));
         if (info.isSymbolicLink()) throw new Error('Qwen Code artifact contains an unexpected link; no model was called.');
         if (info.isDirectory()) await walk(path);

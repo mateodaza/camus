@@ -4,7 +4,8 @@ import { getModels, listBackends, EFFORTS } from './models.mjs';
 import { admissionCatalog, admittedSeat, pairingPresentation } from './admission.mjs';
 import { seatQualification } from './capability-probes.mjs';
 import { resolveSeatAdapters } from './adapters/registry.mjs';
-import { validateCodeExecutor, NATIVE_EXECUTOR, HARNESS_NATIVE_EXECUTORS, isNativeExecutor } from './code-native-policy.mjs';
+import { validateCodeExecutor, NATIVE_EXECUTOR, NATIVE_MIN_TOKEN_BUDGET, HARNESS_NATIVE_EXECUTORS, isNativeExecutor } from './code-native-policy.mjs';
+import { nativeHarnessReadiness } from './native-harness-policy.mjs';
 
 export function codeSeatSnapshot(entry, effort = null) {
   return {
@@ -17,6 +18,21 @@ export function codeSeatSnapshot(entry, effort = null) {
     ...(entry.expectedReported !== undefined ? { expectedReported: structuredClone(entry.expectedReported) } : {}),
     ...(effort ? { effort } : {}),
     source: 'independent code seat selection',
+  };
+}
+
+// Server config is readable without a session token, so it must not turn every
+// loopback GET into artifact hashing and process work. A server creates one
+// scoped memoizer; CLI invocations keep the default fresh probe.
+export function memoizeNativeHarnessReadiness(probe = nativeHarnessReadiness) {
+  const pending = new Map();
+  return (executor, runtime) => {
+    if (!pending.has(executor)) {
+      const value = Promise.resolve().then(() => probe(executor, runtime));
+      pending.set(executor, value);
+      value.catch(() => pending.delete(executor));
+    }
+    return pending.get(executor);
   };
 }
 
@@ -71,21 +87,28 @@ export async function prepareCodeSeats({ pairing = null, live = true } = {}, dep
   };
 }
 
-export function codeModelChoices(catalog = admissionCatalog(), runtime = {}) {
+export async function codeModelChoices(catalog = admissionCatalog(), runtime = {}) {
   const platform = runtime.platform ?? process.platform, arch = runtime.arch ?? process.arch;
   const nodeMajor = runtime.nodeMajor ?? Number(process.versions.node.split('.')[0]);
-  const harnesses = platform === 'darwin' && arch === 'arm64'
-    ? [...(nodeMajor >= 22 ? [HARNESS_NATIVE_EXECUTORS[0]] : []), HARNESS_NATIVE_EXECUTORS[1]] : [];
+  const readinessProbe = runtime.readiness ?? nativeHarnessReadiness;
+  const nativeHarnesses = Object.fromEntries(await Promise.all(HARNESS_NATIVE_EXECUTORS.map(async executor => [executor,
+    await readinessProbe(executor, { platform, arch, nodeMajor })])));
+  const harnesses = HARNESS_NATIVE_EXECUTORS.filter(executor => nativeHarnesses[executor].ready);
   const safe = (entry, role) => ({
     backend: entry.backend, model: entry.model, provider: entry.provider,
     transport: entry.transport, trainingOrg: entry.trainingOrg,
     available: entry.admission?.qualified === true,
     reason: entry.admission?.reason ?? 'unknown',
+    modelQualification: { qualified: entry.admission?.qualified === true,
+      status: entry.admission?.status ?? (entry.admission?.qualified === true ? 'qualified' : 'unqualified'),
+      reason: entry.admission?.reason ?? 'unknown' },
     effort: entry.effort === true,
     codeExecutors: ['file_actions', ...(role === 'maker' && entry.backend === 'codex' && entry.transport === 'vendor_managed' ? [NATIVE_EXECUTOR] : []),
       ...(role === 'maker' && entry.executor === 'http_client' ? harnesses : [])],
+    ...(role === 'maker' && entry.executor === 'http_client' ? { executorReadiness: nativeHarnesses } : {}),
   });
-  return { maker: catalog.maker.map(entry => safe(entry, 'maker')), reviewer: catalog.reviewer.map(entry => safe(entry, 'reviewer')), gating: false };
+  return { maker: catalog.maker.map(entry => safe(entry, 'maker')), reviewer: catalog.reviewer.map(entry => safe(entry, 'reviewer')),
+    nativeHarnesses, minimumNativeTokenBudget: NATIVE_MIN_TOKEN_BUDGET, gating: false };
 }
 
 // Resolve locally first. The engine checks the saved candidate/contract before

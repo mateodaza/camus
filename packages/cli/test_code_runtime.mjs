@@ -59,6 +59,8 @@ try {
     STUDIO_CODEX_CACHE_FILE: join(TEMP, 'codex-cache.json'),
     STUDIO_RUNS_DIR: join(TEMP, 'runs'),
     STUDIO_CAPABILITIES_DIR: join(TEMP, 'capabilities'),
+    CAMUS_QWEN_CODE_BIN: join(TEMP, 'missing-qwen'),
+    CAMUS_GROK_BUILD_BIN: join(TEMP, 'missing-grok'),
   };
   for (const key of Object.keys(env)) if (/api.?key|token|secret|password|credential|^CLAUDE_MODEL$|^CODEX_MODEL$|^CODEX_EFFORT$|^ROUND_CAP$/i.test(key)) delete env[key];
   const bin = join(installed, 'bin', 'camus.js');
@@ -94,10 +96,22 @@ try {
   assert.equal(setup.configured, true); assert.equal(setup.qualified, false);
   const configuredCatalog = JSON.parse((await command(process.execPath, [bin, 'build', '--models', '--json'], { cwd: installed, env })).stdout);
   const fixtureMaker = configuredCatalog.maker.find(seat => seat.backend === 'fixture'); assert.ok(fixtureMaker);
-  if (process.platform === 'darwin' && process.arch === 'arm64') {
-    assert(fixtureMaker.codeExecutors.includes('grok_native'), 'packaged configurable makers advertise Grok Build on its qualified runtime');
-    assert.equal(fixtureMaker.codeExecutors.includes('qwen_native'), Number(process.versions.node.split('.')[0]) >= 22, 'Qwen Code is advertised only with Node 22+');
-  } else assert.deepEqual(fixtureMaker.codeExecutors, ['file_actions'], 'unsupported runtimes do not advertise isolated harnesses');
+  assert.deepEqual(fixtureMaker.codeExecutors, ['file_actions'], 'missing native harnesses are not advertised as selectable');
+  for (const executor of ['qwen_native', 'grok_native']) {
+    const readiness = configuredCatalog.nativeHarnesses[executor];
+    assert.equal(readiness.ready, false, `${executor} is unavailable without its reviewed artifact`);
+    assert(['missing', 'wrong_version', 'wrong_digest', 'unsupported'].includes(readiness.status), `${executor} reports a bounded readiness status`);
+    if (readiness.status === 'unsupported') {
+      assert.equal(readiness.remedy, null, `${executor} does not prescribe an unusable install on this platform`);
+      assert.equal(typeof readiness.detail, 'string', `${executor} explains the unsupported platform`);
+    } else {
+      assert.match(readiness.remedy, /https:\/\/github\.com\/mateodaza\/camus\/blob\/main\/docs\/NATIVE-HARNESS-QUALIFICATION-1\.md/,
+        `${executor} links to the shipped public qualification guide`);
+      assert.match(readiness.remedy, /CAMUS_.+_BIN/, `${executor} names its explicit private-path override`);
+      assert.doesNotMatch(readiness.remedy, /curl\s*\|\s*(?:sh|bash)|npm install -g/, `${executor} never suggests executing unreviewed dependencies or a remote installer`);
+    }
+  }
+  assert(!JSON.stringify(configuredCatalog).includes(TEMP), 'native harness readiness does not expose resolved operator paths');
   await assert.rejects(command(process.execPath, [bin, 'build', '--qualify', 'fixture:fixture-model', '--role', 'maker'], { cwd: installed, env }), error => /allow-provider-calls/.test(error.stderr));
 
   // A cold package executes and resumes the real engine, replacing ONLY the

@@ -11,6 +11,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { promisify } from 'node:util';
 import { runProductiveCodeLoop } from './code-loop.mjs';
 import { redactCodeText, diagnosticSecrets } from './code-diagnostics.mjs';
+import { NATIVE_MIN_TOKEN_BUDGET } from './code-native-policy.mjs';
 
 const execFile = promisify(execFileCb);
 const PROTOCOL_VERSION = 'code-seats/v2';
@@ -31,7 +32,7 @@ const DEFAULT_LIMITS = Object.freeze({
   maxRepairs: 2,
   maxRetries: 1,
   maxTokens: 0,
-  unknownTokenReserve: 32768,
+  unknownTokenReserve: NATIVE_MIN_TOKEN_BUDGET,
 });
 
 const PRIVATE_COMPONENT = /^(?:\.git|\.camus|\.claude|\.codex|\.ssh|\.aws|\.azure|\.docker|credentials?|secrets?|passwords?)$/i;

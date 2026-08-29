@@ -628,6 +628,13 @@ function reflectCodeExecutors() {
     select.appendChild(option);
   }
   select.value = current;
+  const readiness = state.codeChoices?.nativeHarnesses ?? {};
+  const minimumTokens = state.codeChoices?.minimumNativeTokenBudget ?? 32768;
+  const unavailable = Object.values(readiness).filter(item => !item.ready);
+  const note = $('code-maker-executor-note');
+  if (note) note.textContent = unavailable.length
+    ? `Spend-free native readiness: ${unavailable.map(item => `${item.label} ${item.status}${item.remedy || item.detail ? ` — ${item.remedy || item.detail}` : ''}`).join(' ')} Raw Camus file actions remain available.`
+    : `Spend-free native readiness passed for Qwen Code and Grok Build. Provider/model qualification is separate. Native still needs a token budget of at least ${minimumTokens}; raw Camus file actions remain available.`;
 }
 const seatOf = (sel) => {
   try {
@@ -881,6 +888,7 @@ $('save-connection').addEventListener('click', async () => {
 
 function renderSettingsConfig(c) {
   state.seats = c.seats ?? { maker: [], reviewer: [] };
+  state.codeChoices = c.codeChoices ?? { maker: [], reviewer: [], nativeHarnesses: {} };
   const makerOffered = fillSeatPicker($('set-maker'), state.seats.maker, { backend: c.maker.backend, model: c.maker.model });
   const reviewerOffered = fillSeatPicker($('set-reviewer'), state.seats.reviewer, { backend: c.reviewer.backend, model: c.reviewer.model });
   if (c.reviewer.effort) $('set-effort').value = c.reviewer.effort;
@@ -1256,7 +1264,8 @@ $('start').addEventListener('click', async () => {
       const executor = $('code-maker-executor').value;
       const offered = (state.codeChoices?.maker ?? []).find(item => item.backend === pairMaker?.backend && item.model === pairMaker?.model)?.codeExecutors ?? [];
       if (!offered.includes(executor)) throw new Error('That native executor is not offered for the selected maker. Your model was not changed.');
-      if (Number($('code-maxTokens').value) <= 0) throw new Error('Native execution needs an explicit positive token budget.');
+      const minimumTokens = state.codeChoices?.minimumNativeTokenBudget ?? 32768;
+      if (Number($('code-maxTokens').value) < minimumTokens) throw new Error(`Native execution needs a token budget of at least ${minimumTokens} so the first call reservation fits.`);
       pairMaker.codeExecutor = executor;
     }
     const pairing = ((independentBuild) || (!state.automaticModelRouting && pairingDirty && state.lane !== 'build')) && pairMaker && pairReviewer

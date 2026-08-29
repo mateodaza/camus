@@ -196,11 +196,8 @@
           <label class="lbl" for="code-maker-executor">Maker executor</label>
           <select id="code-maker-executor" class="path-input">
             <option value="file_actions">Camus file actions (default, any offered model)</option>
-            <option value="codex_native">Native Codex tools (experimental, built-in Codex maker only)</option>
-            <option value="qwen_native">Qwen Code tools (experimental, qualified compatible maker)</option>
-            <option value="grok_native">Grok Build tools (experimental, qualified compatible maker)</option>
           </select>
-          <div class="hint">Native needs a positive token budget. Codex uses its existing ChatGPT login. Qwen Code and Grok Build use the selected qualified endpoint through Camus's one-model gateway: the provider key stays in the host, and the harness currently requires macOS plus its pinned version. Native tools cannot access arbitrary network, Git metadata, Camus receipts, or source credentials. An uncertain crashed turn is preserved, never automatically replayed.</div>
+          <div class="hint" id="code-maker-executor-note">Native needs a token budget of at least 32768. Codex uses its existing ChatGPT login. Qwen Code and Grok Build are offered only after a spend-free local version and artifact check. The selected qualified endpoint runs through Camus's one-model gateway: the provider key stays in the host. Native tools cannot access arbitrary network, Git metadata, Camus receipts, or source credentials. An uncertain crashed turn is preserved, never automatically replayed.</div>
           <label class="toggle"><input id="code-verify-repeatable" type="checkbox" /><span>This check is safe to repeat after fixes or interruption</span></label>
           <div class="hint">Without this authorization, an additional verification pauses for permission. No changed contract or model is allowed on resume. These are global run limits, not per-round allowances.</div>
           <div class="row">
@@ -211,7 +208,7 @@
           <div class="row">
             <label>Repairs <input class="path-input" id="code-maxRepairs" type="number" min="0" value="2" /></label>
             <label>Retries <input class="path-input" id="code-maxRetries" type="number" min="0" value="1" /></label>
-            <label>Token budget (0 = off) <input class="path-input" id="code-maxTokens" type="number" min="0" value="0" /></label>
+            <label>Token budget (0 = raw only) <input class="path-input" id="code-maxTokens" type="number" min="0" value="0" /></label>
           </div>
           <div class="row">
             <label>Active time (ms) <input class="path-input" id="code-timeoutMs" type="number" min="1" value="1200000" /></label>

@@ -89,6 +89,8 @@ try {
   const final = await waitStopped(second.id, 3); assert.equal(final.phase, 'complete'); assert.equal(final.candidate.worktree, second.candidate.worktree);
   const questionRun = await cli(['--task', `${task} ASK_FORMAT`, '--contract', contract, '--repo', repo, '--json']);
   const q = JSON.parse(questionRun.stdout); assert.equal(q.question.kind, 'judgment');
+  const unchanged = JSON.parse((await cli(['--resume', q.id, '--json'])).stdout);
+  assert.match(unchanged.receiptPath, /report-\d+\.json$/, 'an unchanged resume reports its new immutable receipt, not stale report.json');
   const answered = await post(`runs/${q.id}/answer`, { questionId: q.question.id, answer: 'Plain text is required.' });
   assert.equal(answered.status, 201, await answered.clone().text()); assert.equal((await waitStopped(q.id, 4)).phase, 'complete');
   worker = spawn(process.execPath, ['--experimental-loader', loader, 'code-build.mjs', '--task', `${task} WAIT_FOR_STOP`, '--contract', contract, '--repo', repo, '--json'], { cwd: studio, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -108,7 +110,8 @@ try {
   assert.equal(calls.length, 11, 'reattachment/restart/status do not buy model calls');
   const nativePair = { maker: { backend: 'codex', model: 'gpt-5.6-luna', codeExecutor: 'codex_native' }, reviewer: { backend: 'claude', model: 'sonnet' } };
   const nativeBody = { goal: task, acceptanceContract: contract, lane: 'build', codeMode: 'independent', targetPath: repo, pairing: nativePair };
-  assert.equal((await post('runs', nativeBody)).status, 400, 'native needs positive budget before metadata/execution');
+  assert.equal((await post('runs', nativeBody)).status, 400, 'native needs its first-call reservation before metadata/execution');
+  assert.equal((await post('runs', { ...nativeBody, codeLimits: { maxTokens: 32767 } })).status, 400, 'an unusably small native budget refuses before metadata/execution');
   assert.equal((await post('runs', { ...nativeBody, codeLimits: { maxTokens: 100000 }, pairing: { ...nativePair, maker: { ...nativePair.maker, backend: 'claude', model: 'sonnet' } } })).status, 400);
   assert.equal((await post('runs', { ...nativeBody, lane: 'freeform', codeMode: undefined })).status, 400, 'words lanes must not silently discard native selection');
   const nativeResponse = await post('runs', { ...nativeBody, codeLimits: { maxTokens: 100000, maxCalls: 1 } });

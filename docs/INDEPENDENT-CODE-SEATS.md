@@ -114,7 +114,11 @@ node packages/cli/bin/camus.js build --repo /path/to/project \
 ```
 
 Studio exposes the same choice under **Any-model executor, recovery and budget**.
-A positive token budget is mandatory for every native executor. Codex uses the
+A token budget of at least 32,768 is mandatory for every native executor. Camus
+reserves that amount for any call whose harness does not report usage and also
+caps the provider request to the remaining allowance. Reported input or total
+usage can still exceed the output allowance, so this is a conservative token
+control rather than a dollar guarantee. Codex uses the
 existing ChatGPT login in its normal account store: no credential copy, custom API
 provider, proxy override or API-key fallback. This uses the account's quota/credit
 billing; it is not free or a dollar-cap guarantee.
@@ -123,8 +127,9 @@ Qwen Code/Grok Build require macOS arm64 and the exact reviewed artifacts. Qwen
 also requires Node 22+:
 
 ```sh
-npm install -g @qwen-code/qwen-code@0.22.3
-# Install the official Grok Build 1.0.5 macOS arm64 artifact per xAI's CLI docs.
+# Follow docs/NATIVE-HARNESS-QUALIFICATION-1.md to verify and unpack the exact
+# Qwen Code 0.22.3 and Grok Build 1.0.5 artifacts without executing installers.
+# Then set CAMUS_QWEN_CODE_BIN and CAMUS_GROK_BUILD_BIN to those private paths.
 
 camus build --repo /path/to/project \
   --task 'Fix the bounded regression.' \

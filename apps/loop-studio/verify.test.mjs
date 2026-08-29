@@ -5236,6 +5236,7 @@ exit 0
     assert.match(banner, /no reviewed standing can be claimed/, 'and that no reviewed standing follows from it');
     assert.ok(!/already reviewed/.test(banner), 'and never simply claims the candidate is "already reviewed"');
     assert.ok(!/already committed and reviewed/.test(app), 'the old overstatement is gone from the file entirely');
+    assert.match(app, /item\.remedy \|\| item\.detail/, 'unsupported native readiness renders its bounded explanation, never a null remedy');
     // The client must not re-derive the recovery kind; the server is authoritative.
     assert.ok(!/state\.replayParked/.test(app), 'the browser holds no second classifier for parked runs');
     assert.match(app, /parked: ev\.parked === true/, 'it consumes the classification the server sends');

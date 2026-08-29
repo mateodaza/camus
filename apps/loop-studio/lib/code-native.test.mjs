@@ -31,9 +31,9 @@ async function fixture(t, nativeMaker, reviewer = async () => ({ ran: true, verd
 }
 
 test('native edits use a private clone, live accounting, host verification and fresh advisory review', async t => {
-  let turns = 0, reviews = 0;
+  let turns = 0, reviews = 0; const remaining = [];
   const f = await fixture(t, async args => {
-    turns++;
+    turns++; remaining.push(args.remainingTokens);
     if (turns === 2) { assert.equal(args.nativeSession.threadId, session.threadId); assert.match(args.prompt, /incorrect/); }
     args.onNativeSession(session);
     args.onNativeProgress({ usage, responses: 1, actions: 1 });
@@ -47,6 +47,7 @@ test('native edits use a private clone, live accounting, host verification and f
   assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
   assert.equal(turns, 2); assert.equal(reviews, 1); assert.equal(result.usage.repairs, 1);
   assert.equal(result.usage.observedTokens, 35); assert.equal(result.usage.accountedTokens, 35);
+  assert.deepEqual(remaining, [1000000, 999985], 'each native turn receives the remaining run budget before its reservation');
   assert.equal(result.usage.actions, 2); assert.equal(result.reviewBinding, result.candidate.fingerprint);
   assert.equal(git(result.candidate.worktree, 'rev-parse', '--git-common-dir'), '.git');
   assert.equal(git(f.options.repoPath, 'status', '--porcelain'), '');
@@ -75,13 +76,28 @@ test('definitive budget interruption preserves the same session and candidate fo
 
 test('hard-crash native writes never silently become an authorized candidate on retry', async t => {
   let calls = 0;
-  const f = await fixture(t, async args => { calls++; await writeFile(join(args.worktree, 'answer.txt'), 'unfinished'); return { ok: false, uncertain: true, usage }; });
+  const f = await fixture(t, async args => {
+    calls++; args.onNativeProgress({ usage, responses: 1, actions: 1 });
+    await writeFile(join(args.worktree, 'answer.txt'), 'unfinished');
+    return { ok: false, uncertain: true, usage };
+  });
   const first = await f.run(); assert.equal(first.resumable, false); assert.equal(first.candidate.fingerprint, null);
   const checkpoint = await f.checkpoint(); checkpoint.phase = 'make'; checkpoint.status = 'running';
+  // Reconstruct the exact crash window after measured progress was persisted
+  // but before final uncertainty restored the unknown-call reservation.
+  checkpoint.usage.accountedTokens -= checkpoint.limits.unknownTokenReserve;
+  checkpoint.usage.unmeasuredCalls--;
+  checkpoint.pendingCall.progress.reservationRestored = false;
   saveCodeCheckpoint(f.options.receiptsDir, checkpoint); // force the actual crash window
   const resumed = await f.run({ resume: true, retryUncertain: true });
   assert.match(resumed.error, /automatic adoption or replay is refused/); assert.equal(calls, 1);
   assert.equal(resumed.candidate.fingerprint, null);
+  assert.equal(resumed.usage.accountedTokens, usage.total_tokens + checkpoint.limits.unknownTokenReserve);
+  assert.equal(resumed.usage.unmeasuredCalls, 1);
+  const sealed = await f.checkpoint();
+  assert.equal(sealed.phase, 'refused');
+  assert.equal(sealed.usage.accountedTokens, resumed.usage.accountedTokens);
+  assert.equal(sealed.pendingCall.progress.reservationRestored, true);
 });
 
 test('native live accounting charges separate model responses without double-counting usage', async t => {
@@ -93,6 +109,47 @@ test('native live accounting charges separate model responses without double-cou
   });
   const result = await f.run();
   assert.equal(result.usage.calls, 3); assert.equal(result.usage.observedTokens, 35); assert.equal(result.usage.accountedTokens, 35);
+});
+
+test('native live usage replaces the reservation instead of exhausting the advertised minimum', async t => {
+  let stopReason;
+  const measured = { input_tokens: 0, output_tokens: 1, cached_input_tokens: 0, total_tokens: 1 };
+  const f = await fixture(t, async args => {
+    stopReason = args.onNativeProgress({ usage: measured, responses: 1, actions: 0 });
+    await writeFile(join(args.worktree, 'answer.txt'), 'correct');
+    return { ...done(), usage: measured };
+  });
+  const result = await f.run({ limits: { maxTokens: 32768 } });
+  assert.equal(stopReason, null, 'measured usage does not stack on the in-flight 32768 reservation');
+  assert.equal(result.question.kind, 'budget', 'the next reviewer call still needs a fresh reservation');
+  assert.equal(result.usage.accountedTokens, 1);
+});
+
+test('the one allowed native model response is not retroactively rejected at the call cap', async t => {
+  let stopReason;
+  const measured = { input_tokens: 0, output_tokens: 1, cached_input_tokens: 0, total_tokens: 1 };
+  const f = await fixture(t, async args => {
+    stopReason = args.onNativeProgress({ usage: measured, responses: 1, actions: 0 });
+    await writeFile(join(args.worktree, 'answer.txt'), 'correct');
+    return { ...done(), usage: measured };
+  });
+  const result = await f.run({ limits: { maxCalls: 1, maxTokens: 100000 } });
+  assert.equal(stopReason, null);
+  assert.equal(result.question.kind, 'budget', 'a second reviewer call is refused before dispatch');
+  assert.equal(result.usage.calls, 1);
+});
+
+test('native missing usage retains the full conservative reservation', async t => {
+  const f = await fixture(t, async args => {
+    args.onNativeProgress({ usage: null, responses: 1, actions: 0 });
+    await writeFile(join(args.worktree, 'answer.txt'), 'correct');
+    return { ok: true, definitiveTurnEnd: true,
+      text: JSON.stringify({ actions: [], done: true, summary: 'Ready.' }), nativeSession: session };
+  });
+  const result = await f.run({ limits: { maxTokens: 32768 } });
+  assert.equal(result.question.kind, 'budget');
+  assert.equal(result.usage.accountedTokens, 32768);
+  assert.equal(result.usage.unmeasuredCalls, 1);
 });
 
 test('native preflight failure records no model call and never falls back', async t => {
@@ -115,7 +172,8 @@ test('unverified native transport cleanup refuses replay and candidate adoption'
 
 test('native execution requires a positive budget and an exact supported backend', async t => {
   const f = await fixture(t, async () => { throw new Error('must not run'); });
-  const result = await f.run({ limits: { maxTokens: 0 } }); assert.match(result.error, /positive token budget/);
+  const result = await f.run({ limits: { maxTokens: 0 } }); assert.match(result.error, /at least 32768/);
+  const tooSmall = await f.run({ limits: { maxTokens: 32767 } }); assert.match(tooSmall.error, /at least 32768/);
   assert.throws(() => validateCodeExecutor({ backend: 'custom', codeExecutor: 'codex_native' }, { kind: 'codex_cli', transport: 'loopback' }), /built-in/);
   assert.throws(() => validateCodeExecutor({ backend: 'codex', codeExecutor: 'codex_native' }, { kind: 'codex_cli', transport: 'vendor_managed' }, 'reviewer'), /maker/);
   assert.doesNotThrow(() => validateCodeExecutor({ backend: 'custom', codeExecutor: 'qwen_native' }, { kind: 'openai_compat', transport: 'direct_https' }));

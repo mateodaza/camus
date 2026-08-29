@@ -123,6 +123,11 @@ export async function runProductiveCodeLoop(options, h) {
     if (bind() !== record.binding) throw new Error('Credential or execution binding changed during this run.');
     const id = `${role}-${record.usage.calls + 1}`;
     const nativeCall = native && role === 'maker';
+    // Capture the budget before replacing the host's unknown-usage reservation.
+    // The native gateway uses this as an aggregate request-side completion cap
+    // across the harness's internal provider calls. Input tokens can still make
+    // measured total usage cross this bound and remain visible after the call.
+    const remainingTokens = nativeCall ? limits.maxTokens - record.usage.accountedTokens : null;
     record.pendingCall = { id, role, promptHash: digest(prompt), startedAt: Date.now(), ...(nativeCall ? { native: true } : {}) };
     if (nativeCall) { invalidateCandidateEvidence(); record.nativeInFlight = true; }
     record.usage.calls++; record.usage.accountedTokens += limits.unknownTokenReserve;
@@ -145,20 +150,30 @@ export async function runProductiveCodeLoop(options, h) {
         scratch: nativeExecutor === NATIVE_EXECUTOR ? join(receiptsDir, 'native-scratch') : join(dirname(record.candidate.worktree), 'native-scratch'),
         sourcePath: record.source.repoPath, receiptsDir,
         deniedPaths: record.nativeDeniedPaths, nativeSession: record.nativeSession ?? null, timeoutMs: limits.callTimeoutMs,
-        maxModelCalls: Math.max(1, limits.maxCalls - record.usage.calls + 1),
+        maxModelCalls: Math.max(1, limits.maxCalls - record.usage.calls + 1), remainingTokens,
         onNativeSession: (session) => { record.nativeSession = clone(session); persist(); },
         onNativeProgress: ({ usage, responses = 0, actions = 0 }) => {
-          const previous = record.pendingCall.progress ?? { tokens: 0, responses: 0, actions: 0 };
-          const tokens = observedTokens(usage) ?? previous.tokens;
+          const previous = record.pendingCall.progress ?? { tokens: 0, responses: 0, actions: 0, reservationReplaced: false };
+          const measuredTokens = observedTokens(usage);
+          const tokens = measuredTokens ?? previous.tokens;
           if (tokens < previous.tokens || responses < previous.responses || actions < previous.actions) throw new Error('Native progress regressed.');
           record.usage.observedTokens += tokens - previous.tokens;
-          record.usage.accountedTokens += tokens - previous.tokens;
+          // Once cumulative provider usage is measurable, replace this outer
+          // call's conservative reservation instead of stacking usage on top of
+          // it. If the terminal later becomes uncertain/incomplete, final
+          // accounting restores the reservation before handoff.
+          const replaceReservation = measuredTokens !== null && !previous.reservationReplaced;
+          record.usage.accountedTokens += tokens - previous.tokens - (replaceReservation ? limits.unknownTokenReserve : 0);
           record.usage.calls += Math.max(0, responses - 1) - Math.max(0, previous.responses - 1);
           record.usage.actions += actions - previous.actions;
-          record.pendingCall.progress = { tokens, responses, actions }; persist(); activity();
-          return record.usage.calls >= limits.maxCalls ? 'Native model-call accounting limit reached.'
+          record.pendingCall.progress = { tokens, responses, actions,
+            reservationReplaced: previous.reservationReplaced || replaceReservation }; persist(); activity();
+          // The gateway rejects a next model call/output reservation before
+          // dispatch. Equality means the just-completed allowed response must
+          // still reach the harness; only a measured overshoot is interrupted.
+          return record.usage.calls > limits.maxCalls ? 'Native model-call accounting limit reached.'
             : record.usage.actions >= limits.maxActions ? 'Native tool-action accounting limit reached.'
-              : record.usage.accountedTokens >= limits.maxTokens ? 'Native token accounting limit reached.' : null;
+              : record.usage.accountedTokens > limits.maxTokens ? 'Native token accounting limit reached.' : null;
         },
       }) : await adapters[role](role === 'maker' ? { ...common, stage: record.feedback ? 'fix' : 'make', toolPolicy: 'none' }
         : { ...common, claims: [], criteria: [], thresholds: [], receiptDir: join(receiptsDir, id) });
@@ -194,13 +209,26 @@ export async function runProductiveCodeLoop(options, h) {
     record.pendingCall.response = response ?? { ok: false, error: 'empty adapter result' };
     const tokens = observedTokens(response?.usage);
     const alreadyObserved = nativeCall ? record.pendingCall.progress?.tokens ?? 0 : 0;
+    const reservationReplaced = nativeCall && record.pendingCall.progress?.reservationReplaced === true;
     if (tokens !== null) {
       if (tokens < alreadyObserved) throw new Error('Native final usage regressed.');
       record.usage.observedTokens += tokens - alreadyObserved;
-      record.usage.accountedTokens += tokens - alreadyObserved - (response?.usageIncomplete || response?.uncertain ? 0 : limits.unknownTokenReserve);
+      record.usage.accountedTokens += tokens - alreadyObserved;
+      if (response?.usageIncomplete || response?.uncertain) {
+        if (reservationReplaced) {
+          record.usage.accountedTokens += limits.unknownTokenReserve;
+          record.pendingCall.progress.reservationRestored = true;
+        }
+      } else if (!reservationReplaced) record.usage.accountedTokens -= limits.unknownTokenReserve;
       if (response?.usageIncomplete || response?.uncertain) record.usage.unmeasuredCalls++;
     }
-    else record.usage.unmeasuredCalls++;
+    else {
+      if (reservationReplaced) {
+        record.usage.accountedTokens += limits.unknownTokenReserve;
+        record.pendingCall.progress.reservationRestored = true;
+      }
+      record.usage.unmeasuredCalls++;
+    }
     if (nativeCall && response?.noModelCalled) record.usage.calls--;
     const durationMs = Date.now() - record.pendingCall.startedAt;
     record.usage.modelMs += durationMs;
@@ -249,7 +277,7 @@ export async function runProductiveCodeLoop(options, h) {
         limits[key] = value;
       }
       record.limits = limits;
-      if (native && limits.maxTokens === 0) throw new Error('Native execution cannot disable its token budget on resume.');
+      if (native && limits.maxTokens < limits.unknownTokenReserve) throw new Error(`Native execution requires a token budget of at least ${limits.unknownTokenReserve} so the first call reservation fits.`);
       const base = await h.git(source, ['rev-parse', 'HEAD']);
       if (!base.ok || base.stdout.trim() !== record.source.head) throw new Error('Source baseline changed; resume refused.');
       if (answer) {
@@ -266,7 +294,7 @@ export async function runProductiveCodeLoop(options, h) {
       try { await readCodeCheckpoint(receiptsDir); throw new Error('Run already exists; use explicit resume.'); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
       limits = h.limitsFor(options.limits);
-      if (native && limits.maxTokens === 0) throw new Error('Native execution requires an explicit positive token budget.');
+      if (native && limits.maxTokens < limits.unknownTokenReserve) throw new Error(`Native execution requires a token budget of at least ${limits.unknownTokenReserve} so the first call reservation fits.`);
       const dirty = await h.git(source, ['status', '--porcelain']);
       if (!dirty.ok || dirty.stdout.trim()) return { status: 'needs_decision', advisory: true, error: 'source checkout is dirty; advisory code seats refuse to pick a base' };
       const base = await h.git(source, ['rev-parse', 'HEAD']);
@@ -340,7 +368,16 @@ export async function runProductiveCodeLoop(options, h) {
     if (native && record.nativeInFlight) {
       // A hard crash can strand writes not bound to a completed turn. Do not
       // silently adopt them or replay an effectful turn on --retry-uncertain.
+      const progress = record.pendingCall?.progress;
+      if (progress?.reservationReplaced === true && progress.reservationRestored !== true) {
+        record.usage.accountedTokens += limits.unknownTokenReserve;
+        record.usage.unmeasuredCalls++;
+        progress.reservationRestored = true;
+      }
       invalidateCandidateEvidence();
+      // Persist the conservative accounting and terminal refusal exactly once;
+      // later inspection must not reopen or double-charge this uncertain turn.
+      record.generation = owner.generation; writable = true;
       return finish('needs_decision', 'Native turn outcome is uncertain. Candidate preserved for inspection; automatic adoption or replay is refused.', 'refused');
     }
     await checkCandidate();

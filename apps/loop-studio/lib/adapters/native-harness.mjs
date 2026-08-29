@@ -46,7 +46,7 @@ function grokArgs({ policy, model, effort, prompt, session }) {
 
 export async function runNativeHarness({ executor, prompt, model, effort, backend, expectedReported, worktree, scratch, receiptsDir, sourcePath,
   deniedPaths = [], nativeSession = null, signal, timeoutMs = 600000, onNativeSession = () => {}, onNativeProgress = () => {}, onTick = () => {},
-  maxModelCalls = 32, gatewayFactory = startNativeGateway, processRunner = runNativeProcess }) {
+  maxModelCalls = 32, remainingTokens, gatewayFactory = startNativeGateway, processRunner = runNativeProcess }) {
   const startedAt = Date.now(); let gateway = null, dispatched = false, terminal = null, result = null, actions = 0, frames = 0;
   const local = new AbortController(); let stopReason = null;
   const stop = reason => { if (!stopReason) stopReason = String(reason); local.abort(new Error(stopReason)); };
@@ -55,7 +55,7 @@ export async function runNativeHarness({ executor, prompt, model, effort, backen
   try {
     const harness = await resolveNativeHarness(executor);
     const artifactDigest = await assertNativeHarnessArtifact(executor, harness);
-    gateway = await gatewayFactory({ entry: backend, model, expectedReported, signal: local.signal, maxCalls: maxModelCalls,
+    gateway = await gatewayFactory({ entry: backend, model, expectedReported, signal: local.signal, maxCalls: maxModelCalls, remainingTokens,
       onTick, onProgress: progress => { const reason = onNativeProgress({ ...progress, actions }); if (reason) stop(reason); return reason; } });
     const policy = await nativeHarnessPolicy({ executor, worktree, scratch, harness, artifactDigest, gatewayPort: gateway.port, deniedPaths });
     const env = { ...nativeHarnessEnvironment({ executor, policy, gateway }) };

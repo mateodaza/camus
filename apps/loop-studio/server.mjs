@@ -21,8 +21,8 @@ import { fileURLToPath } from 'node:url';
 import { runLoop } from './lib/engine.mjs';
 import { runIndependentCodeLoop } from './lib/independent-code-lane.mjs';
 import { prepareCodeReceiptsDir, codeLimits as validateCodeLimits } from './lib/code-seats.mjs';
-import { prepareCodeExecution, codeModelChoices } from './lib/code-seat-launch.mjs';
-import { isNativeExecutor } from './lib/code-native-policy.mjs';
+import { prepareCodeExecution, codeModelChoices, memoizeNativeHarnessReadiness } from './lib/code-seat-launch.mjs';
+import { NATIVE_MIN_TOKEN_BUDGET, isNativeExecutor } from './lib/code-native-policy.mjs';
 import { codeRunsRoot, readCodeRunMetadata, codeContinuation } from './lib/code-session.mjs';
 import { readCodeCheckpoint, requestCodeStop } from './lib/code-run-state.mjs';
 import { runCodeLoop, runVerificationRecovery, resolveRecoveryTarget, recoveryTarget, reconstructInterruptedParked, readGateStatus, gateStateFromStatus, validateBuildTarget, gateInstalled, gatherContinuationEvidence } from './lib/code-lane.mjs';
@@ -78,6 +78,7 @@ const PORT = Number(process.env.PORT || 1913); // Camus, b. 1913
 const ENGINE = process.env.ENGINE === 'mock' ? 'mock' : 'live';
 const MODEL_EVAL_CAMPAIGN = loadModelEvalCampaign();
 const MODEL_EVAL_CAMPAIGN_HASH = modelEvalCampaignHash(MODEL_EVAL_CAMPAIGN);
+const serverNativeHarnessReadiness = memoizeNativeHarnessReadiness();
 
 function automaticRouteDecision({ taskClass = null, lane = 'freeform', depth = 'standard' } = {}) {
   const classification = classifyTaskClass({ taskClass, lane, depth });
@@ -1627,7 +1628,7 @@ const server = http.createServer(async (req, res) => {
         // vocabulary (name, kind, baseUrl) — also values-never, per §11.2.
         catalog: modelCatalog(),
         seats,
-        codeChoices: codeModelChoices(seats),
+        codeChoices: await codeModelChoices(seats, { readiness: serverNativeHarnessReadiness }),
         templates: seats.templates,
         plannedProtocols: seats.plannedProtocols,
         evaluationCampaign: {
@@ -2094,7 +2095,9 @@ const server = http.createServer(async (req, res) => {
               // directory must not put Camus internals into the target repo.
               await prepareCodeReceiptsDir(RUNS_DIR, targetPath);
               const prepared = await prepareCodeExecution(body.pairing ?? null);
-              if (isNativeExecutor(prepared.models.maker.codeExecutor) && codeLimits.maxTokens <= 0) throw new Error('Native execution requires an explicit positive token budget.');
+              if (isNativeExecutor(prepared.models.maker.codeExecutor) && codeLimits.maxTokens < NATIVE_MIN_TOKEN_BUDGET) {
+                throw new Error(`Native execution requires a token budget of at least ${NATIVE_MIN_TOKEN_BUDGET} so the first call reservation fits.`);
+              }
               modelsSnapshot = prepared.models;
               frozenBackends = prepared.frozenBackends;
               pairingView = prepared.pairingView;

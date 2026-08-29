@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { prepareCodeSeats, codeModelChoices } from './code-seat-launch.mjs';
+import { prepareCodeSeats, codeModelChoices, memoizeNativeHarnessReadiness } from './code-seat-launch.mjs';
 import { createCodeVerifier, verificationEnvironment } from './code-seat-verify.mjs';
 import { parseCodeBuildArgs, parseCodeSeat } from '../code-build.mjs';
 import { resolveSeatAdapters, nativeMakerFor } from './adapters/registry.mjs';
@@ -27,6 +28,15 @@ const definitions = {
   claude: { name: 'claude', kind: 'claude_cli', seats: ['maker', 'reviewer'] },
   codex: { name: 'codex', kind: 'codex_cli', transport: 'vendor_managed', seats: ['maker', 'reviewer'] },
   qwen: { name: 'qwen', kind: 'openai_compat', seats: ['maker', 'reviewer'], baseUrl: 'https://fixture.invalid/v1' },
+};
+const readyHarness = async (executor, runtime) => {
+  const unsupported = runtime.platform !== 'darwin' || runtime.arch !== 'arm64'
+    || executor === 'qwen_native' && runtime.nodeMajor < 22;
+  return { executor, label: executor === 'qwen_native' ? 'Qwen Code' : 'Grok Build',
+    requiredVersion: executor === 'qwen_native' ? '0.22.3' : '1.0.5',
+    status: unsupported ? 'unsupported' : 'ready', ready: !unsupported,
+    detail: unsupported ? 'unsupported fixture runtime' : 'reviewed fixture artifact ready',
+    remedy: unsupported ? 'fixture remedy' : null };
 };
 let probes = 0;
 let resolutions = 0;
@@ -56,7 +66,7 @@ assert.equal(same.models.reviewer.qualification.seatType, 'words_reviewer');
 await assert.rejects(prepareCodeSeats({ pairing: { maker: { backend: 'codex', model: 'invented' }, reviewer: pick(claude) } }, deps), /unavailable/);
 await assert.rejects(prepareCodeSeats({ pairing: { maker: pick(claude), reviewer: { ...pick(claude), effort: 'high' } } }, deps), /does not honor/);
 assert.equal(resolutions, 2, 'refusals do not resolve or invoke models');
-const choices = codeModelChoices(catalog, { platform: 'darwin', arch: 'arm64', nodeMajor: 22 });
+const choices = await codeModelChoices(catalog, { platform: 'darwin', arch: 'arm64', nodeMajor: 22, readiness: readyHarness });
 assert.equal(choices.maker.length, choices.reviewer.length);
 assert.doesNotMatch(JSON.stringify(choices), /baseUrl|apiKey|changed.invalid/);
 assert.deepEqual(parseCodeSeat('host:qwen:large'), { backend: 'host', model: 'qwen:large' });
@@ -66,9 +76,26 @@ assert.throws(() => parseCodeBuildArgs(['--task', 'x', '--task-file', 'x.txt']),
 assert.throws(() => parseCodeBuildArgs(['--publish']), /Unknown/);
 assert.deepEqual(choices.maker.find(seat => seat.backend === 'codex').codeExecutors, ['file_actions', 'codex_native']);
 assert.deepEqual(choices.maker.find(seat => seat.backend === 'qwen').codeExecutors, ['file_actions', 'qwen_native', 'grok_native']);
-assert.deepEqual(codeModelChoices(catalog, { platform: 'darwin', arch: 'arm64', nodeMajor: 20 }).maker.find(seat => seat.backend === 'qwen').codeExecutors, ['file_actions', 'grok_native']);
-assert.deepEqual(codeModelChoices(catalog, { platform: 'linux', arch: 'arm64', nodeMajor: 22 }).maker.find(seat => seat.backend === 'qwen').codeExecutors, ['file_actions']);
+assert.equal(choices.maker.find(seat => seat.backend === 'qwen').modelQualification.qualified, true);
+assert.equal(choices.nativeHarnesses.qwen_native.status, 'ready');
+assert.equal(choices.minimumNativeTokenBudget, 32768);
+let readinessCalls = 0; let releaseReadiness;
+const readinessGate = new Promise(resolve => { releaseReadiness = resolve; });
+const sharedReadiness = memoizeNativeHarnessReadiness(async executor => {
+  readinessCalls++; await readinessGate;
+  return readyHarness(executor, { platform: 'darwin', arch: 'arm64', nodeMajor: 22 });
+});
+const concurrentChoices = [codeModelChoices(catalog, { readiness: sharedReadiness }), codeModelChoices(catalog, { readiness: sharedReadiness })];
+while (readinessCalls < 2) await new Promise(resolve => setImmediate(resolve));
+releaseReadiness(); await Promise.all(concurrentChoices);
+assert.equal(readinessCalls, 2, 'concurrent catalogs share one readiness probe per native harness');
+assert.deepEqual((await codeModelChoices(catalog, { platform: 'darwin', arch: 'arm64', nodeMajor: 20, readiness: readyHarness })).maker.find(seat => seat.backend === 'qwen').codeExecutors, ['file_actions', 'grok_native']);
+assert.deepEqual((await codeModelChoices(catalog, { platform: 'linux', arch: 'arm64', nodeMajor: 22, readiness: readyHarness })).maker.find(seat => seat.backend === 'qwen').codeExecutors, ['file_actions']);
 assert.equal(choices.reviewer.some(seat => seat.codeExecutors.some(executor => executor.endsWith('_native'))), false);
+const studioHtml = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+const staticExecutorOptions = studioHtml.match(/<select id="code-maker-executor"[\s\S]*?<\/select>/)?.[0] ?? '';
+assert.match(staticExecutorOptions, /value="file_actions"/);
+assert.doesNotMatch(staticExecutorOptions, /value="(?:codex|qwen|grok)_native"/, 'Studio starts fail-closed and adds only ready executors from config');
 const native = await prepareCodeSeats({ pairing: { maker: { ...pick(codex), codeExecutor: 'codex_native' }, reviewer: pick(claude) }, live: false }, deps);
 assert.equal(native.models.maker.codeExecutor, 'codex_native');
 assert.equal(resolveSeatAdapters(native.models, native.frozenBackends).nativeMaker, runNativeCodex, 'shared registry used by Studio AND CLI resolves native');
@@ -80,10 +107,12 @@ await assert.rejects(prepareCodeSeats({ pairing: { maker: { ...pick(codex), code
 await assert.rejects(prepareCodeSeats({ pairing: { maker: { ...pick(claude), codeExecutor: 'codex_native' }, reviewer: pick(codex) }, live: false }, deps), /built-in/);
 await assert.rejects(prepareCodeSeats({ pairing: { maker: pick(codex), reviewer: { ...pick(claude), codeExecutor: 'codex_native' } }, live: false }, deps), /maker/);
 const nativeArgs = ['--maker', 'codex:fixture', '--reviewer', 'claude:fixture', '--maker-executor', 'codex_native'];
-assert.throws(() => parseCodeBuildArgs(nativeArgs), /positive token budget/);
+assert.throws(() => parseCodeBuildArgs(nativeArgs), /at least 32768/);
+assert.throws(() => parseCodeBuildArgs([...nativeArgs, '--max-tokens', '32767']), /at least 32768/);
+assert.equal(parseCodeBuildArgs([...nativeArgs, '--max-tokens', '32768'])['maker-executor'], 'codex_native');
 assert.equal(parseCodeBuildArgs([...nativeArgs, '--max-tokens', '100000'])['maker-executor'], 'codex_native');
 const qwenArgs = ['--maker', 'qwen:fixture', '--reviewer', 'claude:fixture', '--maker-executor', 'qwen_native'];
-assert.throws(() => parseCodeBuildArgs(qwenArgs), /positive token budget/);
+assert.throws(() => parseCodeBuildArgs(qwenArgs), /at least 32768/);
 assert.equal(parseCodeBuildArgs([...qwenArgs, '--max-tokens', '100000'])['maker-executor'], 'qwen_native');
 assert.throws(() => parseCodeBuildArgs(['--resume', 'fixture', '--maker-executor', 'file_actions']), /frozen/);
 assert.throws(() => parseCodeBuildArgs(['--models', '--maker-executor', 'file_actions']), /new build/);

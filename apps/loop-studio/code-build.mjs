@@ -14,11 +14,11 @@ import { codeRunDirectory, readCodeRunMetadata } from './lib/code-session.mjs';
 import { configureCodeBackend, qualifyCodeSeat } from './lib/code-setup.mjs';
 import { redactCodeText, diagnosticSecrets } from './lib/code-diagnostics.mjs';
 import { getSharedTunnelManager } from './lib/ssh-tunnel.mjs';
-import { NATIVE_EXECUTORS, isNativeExecutor } from './lib/code-native-policy.mjs';
+import { NATIVE_EXECUTORS, NATIVE_MIN_TOKEN_BUDGET, isNativeExecutor } from './lib/code-native-policy.mjs';
 
 export const HELP = `camus build — independent maker/reviewer coding (experimental)
 
-  camus build --models [--json]
+  camus build --models [--json]  # model qualification + spend-free native readiness
   camus build --task "..." --contract "..." [--repo /path/to/repo]
       --maker <backend>:<model> --reviewer <backend>:<model>
       [--maker-effort low|medium|high|xhigh] [--reviewer-effort ...]
@@ -58,7 +58,8 @@ Native execution is opt-in and maker-only. Codex Native uses the built-in Codex
 backend and existing ChatGPT CLI login. Qwen Code/Grok Build use a qualified
 OpenAI-compatible maker through a host-owned one-model credential gateway; the
 real provider key never enters the harness. They currently require macOS and the
-pinned CLI version. Every native executor requires a positive token budget.
+pinned CLI version. Every native executor requires --max-tokens of at least
+${NATIVE_MIN_TOKEN_BUDGET} so the first conservative call reservation fits.
 Tools cannot read Git/Camus private state or use arbitrary network. Completed
 turns can resume; uncertain native writes cannot auto-replay.
 Legacy camus run and /camus-feat retain their existing Claude/Codex gate.
@@ -88,7 +89,9 @@ export function parseCodeBuildArgs(argv) {
   if (options['maker-executor']) {
     if (!['file_actions', ...NATIVE_EXECUTORS].includes(options['maker-executor'])) throw new Error(`--maker-executor must be file_actions, ${NATIVE_EXECUTORS.join(', ')}.`);
     if (['models', 'setup', 'qualify', 'status', 'stop'].some(key => options[key]) || !options.maker || !options.reviewer) throw new Error('--maker-executor requires a new build with explicit --maker and --reviewer.');
-    if (isNativeExecutor(options['maker-executor']) && (!/^\d+$/.test(options['max-tokens'] ?? '') || Number(options['max-tokens']) <= 0)) throw new Error('Native execution requires an explicit positive token budget (--max-tokens).');
+    if (isNativeExecutor(options['maker-executor']) && (!/^\d+$/.test(options['max-tokens'] ?? '') || Number(options['max-tokens']) < NATIVE_MIN_TOKEN_BUDGET)) {
+      throw new Error(`Native execution requires --max-tokens of at least ${NATIVE_MIN_TOKEN_BUDGET} so the first call reservation fits.`);
+    }
   }
   return options;
 }
@@ -131,11 +134,18 @@ export async function main(argv = process.argv.slice(2)) {
     console.log(JSON.stringify(result, null, 2)); return 0;
   }
   if (options.models) {
-    const catalog = codeModelChoices();
+    const catalog = await codeModelChoices();
     if (options.json) console.log(JSON.stringify(catalog, null, 2));
-    else for (const role of ['maker', 'reviewer']) {
-      console.log(`${role}:`);
-      for (const seat of catalog[role]) console.log(`  ${seat.backend}:${seat.model} — ${seat.available ? 'available (advisory code loop)' : 'qualify this tuple first'}${seat.codeExecutors.length > 1 ? `; executors ${seat.codeExecutors.join(', ')}` : ''}`);
+    else {
+      console.log('native harnesses (offline; no model call):');
+      for (const harness of Object.values(catalog.nativeHarnesses)) {
+        console.log(`  ${harness.executor} — ${harness.status}: ${harness.detail}`);
+        if (harness.remedy) console.log(`    fix: ${harness.remedy}`);
+      }
+      for (const role of ['maker', 'reviewer']) {
+        console.log(`${role}:`);
+        for (const seat of catalog[role]) console.log(`  ${seat.backend}:${seat.model} — model ${seat.modelQualification.qualified ? 'qualified' : `not qualified (${seat.modelQualification.status})`}${seat.codeExecutors.length > 1 ? `; ready executors ${seat.codeExecutors.join(', ')}` : ''}`);
+      }
     }
     return 0;
   }
@@ -188,16 +198,19 @@ export async function main(argv = process.argv.slice(2)) {
     await writes;
     const report = { ...metadata, ...result, endedAt: Date.now(), receiptsDegraded: receiptError };
     const serialized = JSON.stringify(report, null, 2);
-    studioAtomicWrite(join(receiptsDir, `report-${Date.now()}.json`), serialized, 0o600);
-    if (!result.stateUnchanged) studioAtomicWrite(join(receiptsDir, 'report.json'), serialized, 0o600);
-    if (options.json) console.log(JSON.stringify({ ...report, receiptPath: join(receiptsDir, 'report.json') }, null, 2));
+    const timestampedReport = join(receiptsDir, `report-${Date.now()}.json`);
+    const canonicalReport = join(receiptsDir, 'report.json');
+    studioAtomicWrite(timestampedReport, serialized, 0o600);
+    if (!result.stateUnchanged) studioAtomicWrite(canonicalReport, serialized, 0o600);
+    const receiptPath = result.stateUnchanged ? timestampedReport : canonicalReport;
+    if (options.json) console.log(JSON.stringify({ ...report, receiptPath }, null, 2));
     else {
       console.log(`Status: ${result.status}. Experimental advisory review; human acceptance required.`);
       if (result.candidate?.worktree) console.log(`Candidate: ${result.candidate.worktree}`);
       if (result.error) console.log(`Reason: ${result.error}`);
       if (result.question) console.log(`Question ${result.question.id}: ${result.question.text}`);
       if (result.resumable) console.log(`Continue: camus build --resume ${id} (same candidate; current usage retained)`);
-      console.log(`Receipt: ${join(receiptsDir, 'report.json')}`);
+      console.log(`Receipt: ${receiptPath}`);
     }
     // A human checkpoint is not an unattended/CI success.
     return ['needs_human', 'needs_decision'].includes(result.status) ? 2 : 1;

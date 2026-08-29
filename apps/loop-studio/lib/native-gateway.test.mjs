@@ -19,7 +19,7 @@ test('gateway retains provider credential and enforces path, capability and exac
   await listen(upstream); t.after(() => close(upstream));
   const gateway = await startNativeGateway({ entry: { name: 'fixture', kind: 'openai_compat', provider: 'fixture',
     baseUrl: `http://127.0.0.1:${upstream.address().port}/v1`, apiKeyEnv: 'CAMUS_GATEWAY_TEST_KEY', auth: { kind: 'env' } },
-  model: 'selected-model', expectedReported: ['served-alias'] });
+  model: 'selected-model', expectedReported: ['served-alias'], remainingTokens: 100 });
   t.after(() => gateway.close());
   assert.equal((await fetch(`${gateway.url}/models`, { headers: { authorization: `Bearer ${gateway.capability}` } })).status, 200);
   assert.equal((await fetch(`${gateway.url}/responses`, { method: 'POST', headers: { authorization: `Bearer ${gateway.capability}` } })).status, 404);
@@ -29,7 +29,8 @@ test('gateway retains provider credential and enforces path, capability and exac
     body: JSON.stringify({ model: 'selected-model', stream: true, messages: [{ role: 'user', content: 'fixture' }] }) });
   assert.equal(response.status, 200); assert.ok(!(await response.text()).includes(secret));
   assert.deepEqual(requests, [{ url: '/v1/chat/completions', auth: `Bearer ${secret}`, body: {
-    model: 'selected-model', stream: true, messages: [{ role: 'user', content: 'fixture' }], stream_options: { include_usage: true } } }]);
+    model: 'selected-model', stream: true, messages: [{ role: 'user', content: 'fixture' }],
+    stream_options: { include_usage: true }, max_tokens: 100 } }]);
   assert.deepEqual(gateway.state.usage, { input_tokens: 5, cached_input_tokens: 1, output_tokens: 2, total_tokens: 7 });
   assert.deepEqual([...gateway.state.reportedModels], ['served-alias']);
 });
@@ -43,7 +44,7 @@ test('provider evidence refuses missing, substituted, or inconsistent identity',
 test('gateway close aborts an in-flight upstream request', async () => {
   let begin; const began = new Promise(resolve => { begin = resolve; }); let aborted = false;
   const gateway = await startNativeGateway({ entry: { name: 'fixture', kind: 'openai_compat', provider: 'fixture', auth: { kind: 'none' }, baseUrl: 'http://127.0.0.1:9/v1' },
-    model: 'm', fetchImpl: async (_url, { signal }) => new Promise((_resolve, reject) => {
+    model: 'm', remainingTokens: 100, fetchImpl: async (_url, { signal }) => new Promise((_resolve, reject) => {
       begin(); signal.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); }, { once: true });
     }) });
   const pending = fetch(`${gateway.url}/chat/completions`, { method: 'POST', headers: { authorization: `Bearer ${gateway.capability}`, 'content-type': 'application/json' },
@@ -54,7 +55,7 @@ test('gateway close aborts an in-flight upstream request', async () => {
 test('gateway reserves a concurrent call slot exactly once', async t => {
   let release; const hold = new Promise(resolve => { release = resolve; }); let upstreamCalls = 0;
   const gateway = await startNativeGateway({ entry: { name: 'fixture', kind: 'openai_compat', provider: 'fixture', auth: { kind: 'none' }, baseUrl: 'http://127.0.0.1:9/v1' },
-    model: 'm', maxCalls: 1, fetchImpl: async () => {
+    model: 'm', maxCalls: 1, remainingTokens: 100, fetchImpl: async () => {
       upstreamCalls++; await hold;
       return new Response('data: {"model":"m","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\ndata: [DONE]\n\n',
         { status: 200, headers: { 'content-type': 'text/event-stream' } });
@@ -67,4 +68,128 @@ test('gateway reserves a concurrent call slot exactly once', async t => {
   while (upstreamCalls === 0) await new Promise(resolve => setImmediate(resolve));
   const second = await request(); assert.equal(second.status, 429); release();
   assert.equal((await first).status, 200); assert.equal(upstreamCalls, 1); assert.equal(gateway.state.calls, 1);
+});
+
+test('gateway emits the provider-specific completion field and never widens a harness limit', async t => {
+  const rows = [
+    [{ provider: 'xai' }, 'grok-4.6', 'max_tokens'],
+    [{ provider: 'dashscope' }, 'qwen3.8-27b', 'max_completion_tokens'],
+    [{ provider: 'self_hosted' }, 'custom-model', 'max_tokens'],
+  ];
+  for (const [extra, model, field] of rows) {
+    const bodies = [];
+    const gateway = await startNativeGateway({ entry: { name: 'fixture', kind: 'openai_compat', auth: { kind: 'none' }, baseUrl: 'http://127.0.0.1:9/v1', ...extra },
+      model, remainingTokens: 50, fetchImpl: async (_url, options) => {
+        bodies.push(JSON.parse(options.body));
+        return new Response(`data: {"model":${JSON.stringify(model)},"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}\n\ndata: [DONE]\n\n`,
+          { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      } });
+    t.after(() => gateway.close());
+    const response = await fetch(`${gateway.url}/chat/completions`, { method: 'POST', headers: {
+      authorization: `Bearer ${gateway.capability}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ model, stream: true, messages: [], max_tokens: 9, max_completion_tokens: 7, max_output_tokens: 8 }) });
+    assert.equal(response.status, 200);
+    assert.equal(bodies[0][field], 7, `${extra.provider} uses its provider field and preserves the lowest requested limit`);
+    for (const other of ['max_tokens', 'max_completion_tokens', 'max_output_tokens']) {
+      assert.equal(Object.hasOwn(bodies[0], other), other === field, `${extra.provider} strips ${other}`);
+    }
+  }
+});
+
+test('gateway refuses multiplicative completion fields before provider dispatch', async t => {
+  let upstreamCalls = 0;
+  const gateway = await startNativeGateway({ entry: { name: 'fixture', kind: 'openai_compat', provider: 'fixture', auth: { kind: 'none' }, baseUrl: 'http://127.0.0.1:9/v1' },
+    model: 'm', remainingTokens: 100, fetchImpl: async () => { upstreamCalls++; throw new Error('must not dispatch'); } });
+  t.after(() => gateway.close());
+  for (const body of [{ n: 2 }, { best_of: 2 }, { n: 0 }, { best_of: null }]) {
+    const response = await fetch(`${gateway.url}/chat/completions`, { method: 'POST', headers: {
+      authorization: `Bearer ${gateway.capability}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'm', stream: true, messages: [], ...body }) });
+    assert.equal(response.status, 400);
+  }
+  assert.equal(upstreamCalls, 0);
+});
+
+test('gateway accounts multiple calls against one aggregate completion allowance', async t => {
+  const limits = [], usages = [[1, 2], [2, 5]];
+  const gateway = await startNativeGateway({ entry: { name: 'fixture', kind: 'openai_compat', provider: 'fixture', auth: { kind: 'none' }, baseUrl: 'http://127.0.0.1:9/v1' },
+    model: 'm', remainingTokens: 10, fetchImpl: async (_url, options) => {
+      const body = JSON.parse(options.body); limits.push(body.max_tokens);
+      const [input, output] = usages.shift(); const total = input + output;
+      return new Response(`data: {"model":"m","usage":{"prompt_tokens":${input},"completion_tokens":${output},"total_tokens":${total}}}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    } });
+  t.after(() => gateway.close());
+  const request = limit => fetch(`${gateway.url}/chat/completions`, { method: 'POST', headers: {
+    authorization: `Bearer ${gateway.capability}`, 'content-type': 'application/json' },
+  body: JSON.stringify({ model: 'm', stream: true, messages: [], ...(limit ? { max_tokens: limit } : {}) }) });
+  assert.equal((await request(4)).status, 200);
+  assert.equal(gateway.state.tokenAllowanceRemaining, 7, 'unused completion reservation is replaced by measured total usage');
+  assert.equal((await request()).status, 200);
+  assert.deepEqual(limits, [4, 7]);
+  assert.equal(gateway.state.tokenAllowanceRemaining, 0);
+  assert.equal((await request()).status, 429); assert.equal(limits.length, 2, 'zero allowance refuses before provider dispatch');
+});
+
+test('gateway reserves completion allowance synchronously across concurrent calls', async t => {
+  let release; const hold = new Promise(resolve => { release = resolve; }); let upstreamCalls = 0;
+  const gateway = await startNativeGateway({ entry: { name: 'fixture', kind: 'openai_compat', provider: 'fixture', auth: { kind: 'none' }, baseUrl: 'http://127.0.0.1:9/v1' },
+    model: 'm', remainingTokens: 5, fetchImpl: async () => {
+      upstreamCalls++; await hold;
+      return new Response('data: {"model":"m","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\ndata: [DONE]\n\n',
+        { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    } });
+  t.after(() => gateway.close());
+  const request = () => fetch(`${gateway.url}/chat/completions`, { method: 'POST', headers: {
+    authorization: `Bearer ${gateway.capability}`, 'content-type': 'application/json' },
+  body: JSON.stringify({ model: 'm', stream: true, messages: [] }) });
+  const first = request(); while (!upstreamCalls) await new Promise(resolve => setImmediate(resolve));
+  assert.equal((await request()).status, 429); assert.equal(upstreamCalls, 1);
+  release(); assert.equal((await first).status, 200);
+});
+
+test('input usage can honestly exceed the output cap and exhaust later calls', async t => {
+  let upstreamCalls = 0;
+  const gateway = await startNativeGateway({ entry: { name: 'fixture', kind: 'openai_compat', provider: 'fixture', auth: { kind: 'none' }, baseUrl: 'http://127.0.0.1:9/v1' },
+    model: 'm', remainingTokens: 5, fetchImpl: async (_url, options) => {
+      upstreamCalls++; assert.equal(JSON.parse(options.body).max_tokens, 5);
+      return new Response('data: {"model":"m","usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}\n\ndata: [DONE]\n\n',
+        { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    } });
+  t.after(() => gateway.close());
+  const request = () => fetch(`${gateway.url}/chat/completions`, { method: 'POST', headers: {
+    authorization: `Bearer ${gateway.capability}`, 'content-type': 'application/json' },
+  body: JSON.stringify({ model: 'm', stream: true, messages: [] }) });
+  assert.equal((await request()).status, 200);
+  assert.equal(gateway.state.usage.total_tokens, 11); assert.equal(gateway.state.tokenAllowanceRemaining, 0);
+  assert.equal((await request()).status, 429); assert.equal(upstreamCalls, 1);
+});
+
+test('upstream failure after a lower completion reservation exhausts unknown allowance', async t => {
+  let upstreamCalls = 0;
+  const gateway = await startNativeGateway({ entry: { name: 'fixture', kind: 'openai_compat', provider: 'fixture', auth: { kind: 'none' }, baseUrl: 'http://127.0.0.1:9/v1' },
+    model: 'm', remainingTokens: 100, fetchImpl: async () => { upstreamCalls++; return new Response('failure', { status: 500 }); } });
+  t.after(() => gateway.close());
+  const request = () => fetch(`${gateway.url}/chat/completions`, { method: 'POST', headers: {
+    authorization: `Bearer ${gateway.capability}`, 'content-type': 'application/json' },
+  body: JSON.stringify({ model: 'm', stream: true, messages: [], max_tokens: 10 }) });
+  assert.equal((await request()).status, 502); assert.equal(gateway.state.tokenAllowanceRemaining, 0);
+  assert.equal((await request()).status, 429); assert.equal(upstreamCalls, 1);
+});
+
+test('missing usage after a lower completion reservation blocks another provider call', async t => {
+  let upstreamCalls = 0;
+  const gateway = await startNativeGateway({ entry: { name: 'fixture', kind: 'openai_compat', provider: 'fixture', auth: { kind: 'none' }, baseUrl: 'http://127.0.0.1:9/v1' },
+    model: 'm', remainingTokens: 100, fetchImpl: async () => {
+      upstreamCalls++;
+      return new Response('data: {"model":"m","choices":[]}\n\ndata: [DONE]\n\n',
+        { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    } });
+  t.after(() => gateway.close());
+  const request = () => fetch(`${gateway.url}/chat/completions`, { method: 'POST', headers: {
+    authorization: `Bearer ${gateway.capability}`, 'content-type': 'application/json' },
+  body: JSON.stringify({ model: 'm', stream: true, messages: [], max_tokens: 10 }) });
+  assert.equal((await request()).status, 200); assert.equal(gateway.state.usageIncomplete, true);
+  assert.equal(gateway.state.tokenAllowanceRemaining, 0);
+  assert.equal((await request()).status, 429); assert.equal(upstreamCalls, 1);
 });

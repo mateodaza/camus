@@ -9,6 +9,7 @@ export { HARNESS_NATIVE_EXECUTORS, QWEN_NATIVE_EXECUTOR, GROK_NATIVE_EXECUTOR } 
 export const NATIVE_EXECUTOR = 'codex_native';
 export const NATIVE_EXECUTORS = Object.freeze([NATIVE_EXECUTOR, ...HARNESS_NATIVE_EXECUTORS]);
 export const isNativeExecutor = value => NATIVE_EXECUTORS.includes(value);
+export const NATIVE_MIN_TOKEN_BUDGET = 32768;
 export const NATIVE_POLICY_VERSION = 'codex-native/v1';
 const disabled = ['apps', 'plugins', 'hooks', 'multi_agent', 'goals', 'memories', 'shell_snapshot',
   'skill_search', 'skill_mcp_dependency_install', 'remote_plugin', 'browser_use', 'browser_use_external',

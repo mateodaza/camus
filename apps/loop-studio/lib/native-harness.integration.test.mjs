@@ -18,7 +18,7 @@ test('pinned Qwen Code and Grok Build complete through the isolated gateway', { 
   const model = 'camus-native-selected'; const calls = [];
   const provider = createServer(async (req, res) => {
     let raw = ''; for await (const chunk of req) raw += chunk;
-    const body = JSON.parse(raw); calls.push(body.model);
+    const body = JSON.parse(raw); calls.push({ model: body.model, maxTokens: body.max_tokens });
     const tools = body.tools ?? []; const prior = (body.messages ?? []).some(message => message.role === 'tool');
     let toolCalls, content = null;
     if (!prior) {
@@ -45,11 +45,13 @@ test('pinned Qwen Code and Grok Build complete through the isolated gateway', { 
     baseUrl: `http://127.0.0.1:${provider.address().port}/v1` };
   for (const [kind, run] of [['qwen', runNativeQwen], ['grok', runNativeGrok]]) {
     const result = await run({ prompt: 'Write the synthetic proof and return the exact final decision.', model, backend, expectedReported: [model],
-      worktree: candidate, scratch: join(root, `${kind}-scratch`), receiptsDir: receipts, sourcePath: source, timeoutMs: 30000 });
+      worktree: candidate, scratch: join(root, `${kind}-scratch`), receiptsDir: receipts, sourcePath: source, timeoutMs: 30000,
+      remainingTokens: 1000 });
     assert.equal(result.ok, true, `${kind}: ${result.error}`); assert.equal(result.definitiveTurnEnd, true);
     assert.equal(JSON.parse(result.text).done, true); assert.equal(result.modelActual, `fixture:${model}`);
     assert.equal(await readFile(join(candidate, 'native-proof.txt'), 'utf8'), 'isolated harness wrote this');
     await rm(join(candidate, 'native-proof.txt'));
   }
-  assert.ok(calls.length >= 4); assert.ok(calls.every(value => value === model));
+  assert.ok(calls.length >= 4); assert.ok(calls.every(call => call.model === model));
+  assert.ok(calls.every(call => Number.isSafeInteger(call.maxTokens) && call.maxTokens > 0 && call.maxTokens <= 1000));
 });
