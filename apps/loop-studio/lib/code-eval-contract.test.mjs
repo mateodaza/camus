@@ -271,6 +271,7 @@ test('an exact OpenRouter route is campaign identity and receipt evidence, with 
   const c = campaign();
   c.treatment.maker.provider = 'openrouter';
   c.treatment.maker.backend = 'openrouter_qwen';
+  c.treatment.maker.model = 'qwen/qwen3.8-max';
   c.treatment.maker.connection = 'openrouter-primary';
   c.treatment.maker.route = { upstreamProvider: 'deepinfra/fp4', allowFallbacks: false };
   const e = execution(c);

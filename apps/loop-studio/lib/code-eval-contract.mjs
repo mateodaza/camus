@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const SAFE_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,127}$/;
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:@+\/-]{0,127}$/;
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const FIXTURE_ID = /^fixture1:[a-f0-9]{64}$/;
 const CAMPAIGN_ID = /^campaign1:[a-f0-9]{64}$/;
@@ -183,7 +184,7 @@ function validateSeat(seat, path, { reviewer = false } = {}) {
     : ['backend', 'provider', 'model', 'effort', 'trainingOrg', 'transport', 'connection', 'route']);
   string(seat.backend, `${path}.backend`, { pattern: SAFE_NAME, max: 64 });
   if (!reviewer) string(seat.provider, `${path}.provider`, { pattern: SAFE_NAME, max: 64 });
-  string(seat.model, `${path}.model`, { pattern: SAFE_VALUE, max: 128 });
+  string(seat.model, `${path}.model`, { pattern: MODEL_ID, max: 128 });
   nullableString(seat.effort, `${path}.effort`, { pattern: SAFE_NAME, max: 64 });
   string(seat.trainingOrg, `${path}.trainingOrg`, { pattern: SAFE_NAME, max: 64 });
   if (!reviewer) {
@@ -291,7 +292,7 @@ function validateExecutionSeat(value, path, campaignSeat, { maker = false } = {}
   string(value.qualificationFingerprint, `${path}.qualificationFingerprint`, { pattern: QUALIFICATION, max: 73 });
   string(value.credentialRevision, `${path}.credentialRevision`, { pattern: REVISION, max: 71 });
   string(value.connectionDefinitionDigest, `${path}.connectionDefinitionDigest`, { pattern: SHA256, max: 71 });
-  string(value.expectedModel, `${path}.expectedModel`, { pattern: SAFE_VALUE, max: 128 });
+  string(value.expectedModel, `${path}.expectedModel`, { pattern: MODEL_ID, max: 128 });
   if (value.expectedModel !== campaignSeat.model) fail(`${path}.expectedModel`, 'must match the campaign seat');
   if (maker) {
     validateRoute(value.expectedRoute, campaignSeat.provider, `${path}.expectedRoute`);
@@ -422,8 +423,8 @@ function validateObservedIdentity(value, execution, campaign) {
     'makerModel', 'reviewerModel', 'executor', 'harnessArtifactDigest',
     'makerRoute', 'identityStable', 'substitutionDetected', 'helperModelDetected', 'fallbackDetected',
   ]);
-  nullableString(value.makerModel, 'receipt.observedIdentity.makerModel', { pattern: SAFE_VALUE, max: 128 });
-  nullableString(value.reviewerModel, 'receipt.observedIdentity.reviewerModel', { pattern: SAFE_VALUE, max: 128 });
+  nullableString(value.makerModel, 'receipt.observedIdentity.makerModel', { pattern: MODEL_ID, max: 128 });
+  nullableString(value.reviewerModel, 'receipt.observedIdentity.reviewerModel', { pattern: MODEL_ID, max: 128 });
   nullableString(value.executor, 'receipt.observedIdentity.executor', { pattern: SAFE_NAME, max: 64 });
   nullableString(value.harnessArtifactDigest, 'receipt.observedIdentity.harnessArtifactDigest', { pattern: SHA256, max: 71 });
   if (campaign.treatment.maker.route === null) {
