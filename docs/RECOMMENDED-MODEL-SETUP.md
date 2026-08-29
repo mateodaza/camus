@@ -40,7 +40,7 @@ manual starting point; it does **not** mean Camus has proven it is the winner.
 | Balanced work | Operator-selected qualified maker; begin with Qwen3.8 Max raw or the existing Claude incumbent | `file_actions` | Independent Luna/Sol seat appropriate to stakes | **No winner.** Collect matched raw/native and cross-model evidence before routing. |
 | Difficult or repository-wide work | Existing Claude Opus 4.8 maker + GPT-5.6 Sol high reviewer is the conservative incumbent | Existing qualified path | Sol high | **Incumbent only.** No controlled current-vendor campaign proves optimality. |
 | Qwen Code native | Qwen3.8 Max | `qwen_native` | Luna medium | **Exploratory.** Do not prefer for simple tasks. Test next on balanced/difficult work where harness context may amortize its overhead. |
-| Grok Build native | Grok 4.6 through direct xAI | `grok_native` | Luna medium | **Integration repair pending fresh smoke.** The first live cell exposed Camus defects before a candidate attempt, so it is not a Grok quality result and is not routed. |
+| Grok Build native | Grok 4.6 through direct xAI | `grok_native` | Luna medium | **Exploratory; not routed.** Two bounded live cells exposed integration and call-accounting defects before a candidate attempt, so neither is a Grok quality result. |
 
 Kimi and Gemini remain second-round candidates by operator decision. Grok and
 Qwen are current priorities; that priority does not waive qualification,
@@ -110,11 +110,28 @@ enough to reject Qwen Code for larger work.
   unknown stream types, prohibited tools, model substitution, and fallbacks
   fail-closed. A new campaign generation and fresh spend authorization are
   required before another live cell.
-- Replacement campaign `grok46-native-smoke-20260829-v3` is now frozen and
-  provider-free planned at cell
-  `cell1:a938fb6148f8d1326b474d07606bb92d1e9b7868fd12e73a379c196d998fb25f`.
-  Planning made zero provider calls; execution still requires fresh literal
-  consent.
+- Replacement campaign `grok46-native-smoke-20260829-v3` executed the frozen
+  cell `cell1:a938fb6148f8d1326b474d07606bb92d1e9b7868fd12e73a379c196d998fb25f`
+  and sealed receipt
+  `codebench1:4407858998eccc0902f2cba89931a5557a31b1b9c47743fb846a79d56180f59c`
+  with formal standing **failed**. It stayed within the authorized three Grok
+  calls, 10,679 measured tokens, two actions, and about 7.2 active seconds;
+  Luna was not called and the candidate remained unchanged.
+- The pinned Grok session records two main agent turns: two bounded repository
+  listing commands, the second successful. A third direct-xAI response generated
+  the session title, after which the next main inference was refused locally by
+  the frozen three-call cap. Grok Build's
+  [session documentation](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/17-sessions.md)
+  and [title implementation](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-shell/src/session/summary.rs)
+  confirm that its first title is a separate model call. This is harness overhead,
+  not hidden provider fallback or a substitute model, and must remain visible in
+  call and billing evidence.
+- Native isolation v3 now disables the supported optional `title_refresh`,
+  `turn_summary`, and `session_recap` model side-calls in both the private config
+  and higher-precedence environment. Grok Build 1.0.5 does not expose a supported
+  switch for the initial title call, so Camus does not patch session files or
+  pretend the call did not happen. A future three-work-turn campaign must budget
+  one additional Grok provider call for that fixed harness overhead.
 - One sample never grants model admission or automatic routing.
 
 ## Camus defects found and fixed by this dogfood
@@ -127,6 +144,7 @@ enough to reject Qwen Code for larger work.
 | `806d10d` | The code-eval contract rejected valid slash-qualified model IDs. | Campaign, execution, and observed identity accept bounded provider-qualified IDs such as `qwen/qwen3.8-max`. |
 | `b8f13e7` | Qwen Code retried a locally refused fourth request despite a zero-retry campaign. | Native isolation v2 writes a private, drift-refusing Qwen system policy with `maxRetries: 0`; the real pinned binary made exactly one request against a synthetic 429 provider. |
 | `afd5061` | xAI reasoning usage was rejected as incomplete, and Grok Build's documented event/text boundaries were parsed as one strict final frame. | The gateway accepts only the two documented reasoning-total shapes; Grok's pinned stream vocabulary, bounded reasoning/errors, intermediate response boundaries, and chunked final decision are now validated explicitly. |
+| Native isolation v3 | Grok Build's automatic title consumed one of three frozen maker calls, and the resulting local abort surfaced only as a generic cancellation. | Camus disables every supported optional summary/title side-call, refuses config drift, and retains the exact local stop reason. The unavoidable first-title call remains counted and must receive an explicit budget. |
 
 The Qwen native failure itself is not erased by these fixes. A future campaign
 uses a new generation and must receive fresh authorization.
@@ -185,10 +203,11 @@ Choose the cheapest path that can meet the task contract:
 
 ## Next evidence sequence
 
-1. **Run the prepared Grok Build v3 cell after the integration repair.** The
-   first live cell is sealed and cannot be replayed or upgraded. The fresh v3
-   generation holds the same simple fixture with direct xAI, no fallback, no
-   repair/retry, and Luna review, but still needs fresh spend authorization.
+1. **Do not rerun Grok v3.** It is sealed and answered the call-accounting
+   question. If another simple smoke is worth its cost, create a fresh v4
+   generation under native isolation v3 and authorize one initial-title call
+   plus the intended work turns explicitly; never relabel the title call as
+   free or replay the failed cell.
 2. **Do not blindly repeat Qwen simple.** Its result already answers the simple
    task question and exposed the retry-policy defect.
 3. **Add a balanced fixture in Code Harness Eval v1b.** Use the same model,
@@ -207,8 +226,8 @@ Choose the cheapest path that can meet the task contract:
 
 The branch should not release immediately. First:
 
-- finish one fresh bounded Grok Build provider-backed smoke after `afd5061` and
-  preserve its outcome;
+- preserve both bounded Grok Build failures and the provider-free evidence that
+  explains them; a further paid smoke is optional, not a release prerequisite;
 - fix only deterministic Camus defects the smoke exposes—do not tune away a
   legitimate model/harness loss;
 - rerun the full Studio and root/CLI suites, `git diff --check`, and the npm

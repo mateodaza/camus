@@ -109,6 +109,19 @@ test('unknown in-flight call requires explicit retry and conservatively retains 
   assert.ok(result.attempts.some((x) => x.possibleDuplicateBilling));
 });
 
+test('an uncertain native budget stop keeps its exact local cause without replay', async (t) => {
+  const f = await fixture(t, () => { throw new Error('file-action maker must not run'); });
+  f.options.seats.maker.codeExecutor = 'grok_native';
+  f.options.adapters.makerBackend = { name: 'xai', kind: 'openai_compat', provider: 'xai' };
+  f.options.adapters.nativeMaker = async () => ({ ok: false, uncertain: true, stopKind: 'budget',
+    error: 'Native model-call budget exhausted.', usage: { input_tokens: 10, output_tokens: 2 }, usageIncomplete: false });
+  const result = await f.run({ limits: { maxTokens: 32768 } });
+  assert.equal(result.status, 'needs_decision');
+  assert.match(result.error, /^Native model-call budget exhausted\./);
+  assert.match(result.error, /automatic adoption or replay is refused/);
+  assert.equal(result.usage.calls, 1);
+});
+
 test('binding, HMAC, candidate drift and concurrent ownership refuse before more model calls', async (t) => {
   const f = await fixture(t, () => message([write('correct')]));
   await f.run({ limits: { maxCalls: 1 } });

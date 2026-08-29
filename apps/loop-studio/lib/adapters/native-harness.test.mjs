@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createGrokProtocolReducer, installQwenSystemPolicy, normalizeNativeRouteObservation, qwenNativeArgs, validateNativeDecision } from './native-harness.mjs';
+import { createGrokProtocolReducer, installGrokConfig, installQwenSystemPolicy, nativeCaughtFailure, normalizeNativeRouteObservation, qwenNativeArgs, validateNativeDecision } from './native-harness.mjs';
 
 test('Qwen native system policy disables hidden provider retries and refuses drift', async t => {
   const home = await mkdtemp(join(tmpdir(), 'camus-qwen-policy-'));
@@ -18,6 +18,29 @@ test('Qwen native system policy disables hidden provider retries and refuses dri
   assert.equal(await installQwenSystemPolicy(home), path, 'an exact resumed policy is idempotent');
   await writeFile(path, '{}\n', { mode: 0o600 });
   await assert.rejects(() => installQwenSystemPolicy(home), /system policy changed/);
+});
+
+test('Grok native config disables optional model side-calls and refuses drift', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'camus-grok-policy-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const path = await installGrokConfig(home, { gatewayUrl: 'http://127.0.0.1:1926/v1', model: 'grok-fixture' });
+  const text = await readFile(path, 'utf8');
+  assert.match(text, /\[features\]\ntitle_refresh = false\nturn_summary = false\nsession_recap = false\n/);
+  assert.match(text, /base_url = "http:\/\/127\.0\.0\.1:1926\/v1"/);
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  assert.equal(await installGrokConfig(home, { gatewayUrl: 'http://127.0.0.1:1926/v1', model: 'grok-fixture' }), path);
+  await writeFile(path, '[features]\ntitle_refresh = true\n', { mode: 0o600 });
+  await assert.rejects(() => installGrokConfig(home, { gatewayUrl: 'http://127.0.0.1:1926/v1', model: 'grok-fixture' }), /configuration changed/);
+});
+
+test('native abort evidence preserves the local stop reason and kind', () => {
+  assert.deepEqual(nativeCaughtFailure({ error: new Error('Native execution cancelled.'), stopReason: 'Native model-call budget exhausted.',
+    stopKind: 'budget', dispatched: true, terminal: null }), {
+    ok: false, error: 'Native model-call budget exhausted.', uncertain: true, noModelCalled: false,
+    definitiveTurnEnd: false, stopKind: 'budget',
+  });
+  assert.equal(nativeCaughtFailure({ error: new Error('cancelled'), stopReason: 'Native execution cancelled.',
+    stopKind: 'cancel', dispatched: true, terminal: null }).stopKind, 'cancel');
 });
 
 test('native decision is exact, bounded and fail closed', () => {

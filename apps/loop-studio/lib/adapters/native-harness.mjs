@@ -132,11 +132,34 @@ export function validateNativeDecision(result) {
   return result;
 }
 
-async function grokConfig({ policy, gateway, model }) {
-  const home = join(policy.home, 'grok'); await mkdir(home, { recursive: true, mode: 0o700 });
+export async function installGrokConfig(home, { gatewayUrl, model }) {
+  await mkdir(home, { recursive: true, mode: 0o700 });
   const table = JSON.stringify(model);
-  await writeFile(join(home, 'config.toml'), `[cli]\nauto_update = false\n[session]\nload_envrc = false\n[models]\ndefault = ${table}\nallowed_models = [${table}]\nmax_retries = 0\n[model.${table}]\nmodel = ${table}\nbase_url = ${JSON.stringify(gateway.url)}\nenv_key = "CAMUS_NATIVE_GATEWAY_TOKEN"\napi_backend = "chat_completions"\nsupports_backend_search = false\nsupports_reasoning_effort = false\nmax_retries = 0\n`, { mode: 0o600 });
+  const text = `[cli]\nauto_update = false\n[features]\ntitle_refresh = false\nturn_summary = false\nsession_recap = false\n[session]\nload_envrc = false\n[models]\ndefault = ${table}\nallowed_models = [${table}]\nmax_retries = 0\n[model.${table}]\nmodel = ${table}\nbase_url = ${JSON.stringify(gatewayUrl)}\nenv_key = "CAMUS_NATIVE_GATEWAY_TOKEN"\napi_backend = "chat_completions"\nsupports_backend_search = false\nsupports_reasoning_effort = false\nmax_retries = 0\n`;
+  const path = join(home, 'config.toml');
+  try {
+    await writeFile(path, text, { flag: 'wx', mode: 0o600 });
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error;
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || (info.mode & 0o777) !== 0o600
+        || await readFile(path, 'utf8') !== text) {
+      throw new Error('Grok Build configuration changed inside native scratch; execution refused.');
+    }
+  }
+  return path;
+}
+
+async function grokConfig({ policy, gateway, model }) {
+  const home = join(policy.home, 'grok');
+  await installGrokConfig(home, { gatewayUrl: gateway.url, model });
   return home;
+}
+
+export function nativeCaughtFailure({ error, stopReason, stopKind, dispatched, terminal }) {
+  return { ok: false, error: String(stopReason ?? error?.message ?? error).slice(0, 600),
+    uncertain: dispatched && !terminal, noModelCalled: !dispatched,
+    definitiveTurnEnd: Boolean(terminal), stopKind: stopKind ?? 'failure' };
 }
 
 export function qwenNativeArgs({ model, prompt, session, timeoutMs, maxModelCalls, maxToolCalls }) {
@@ -162,9 +185,9 @@ export async function runNativeHarness({ executor, prompt, model, effort, backen
   deniedPaths = [], nativeSession = null, signal, timeoutMs = 600000, onNativeSession = () => {}, onNativeProgress = () => {}, onTick = () => {},
   maxModelCalls = 32, maxToolCalls = 32, remainingTokens, gatewayFactory = startNativeGateway, processRunner = runNativeProcess }) {
   const startedAt = Date.now(); let gateway = null, dispatched = false, terminal = null, result = null, actions = 0, frames = 0, grokProtocol = null;
-  const local = new AbortController(); let stopReason = null;
-  const stop = reason => { if (!stopReason) stopReason = String(reason); local.abort(new Error(stopReason)); };
-  const externalAbort = () => stop('Native execution cancelled.');
+  const local = new AbortController(); let stopReason = null, stopKind = null;
+  const stop = (reason, kind = 'budget') => { if (!stopReason) { stopReason = String(reason); stopKind = kind; } local.abort(new Error(stopReason)); };
+  const externalAbort = () => stop('Native execution cancelled.', 'cancel');
   signal?.addEventListener('abort', externalAbort, { once: true }); if (signal?.aborted) externalAbort();
   try {
     const harness = await resolveNativeHarness(executor);
@@ -183,6 +206,7 @@ export async function runNativeHarness({ executor, prompt, model, effort, backen
     }
     else {
       env.GROK_HOME = await grokConfig({ policy, gateway, model }); env.GROK_DISABLE_AUTOUPDATER = '1'; env.GROK_MEMORY = '0';
+      env.GROK_TITLE_REFRESH = '0'; env.GROK_TURN_SUMMARY = '0'; env.GROK_SESSION_RECAP = '0';
       env.GROK_SUBAGENTS = '0'; env.GROK_TOOL_SEARCH = '0'; env.GROK_WEB_FETCH = '0'; env.GROK_LSP_TOOLS = '0';
       for (const vendor of ['CLAUDE', 'CURSOR']) for (const feature of ['SKILLS', 'RULES', 'AGENTS', 'MCPS', 'HOOKS']) env[`GROK_${vendor}_${feature}_ENABLED`] = '0';
     }
@@ -236,7 +260,7 @@ export async function runNativeHarness({ executor, prompt, model, effort, backen
     if (run.code !== 0 || !definitive || !result || stopReason || gateway.state.stopped || grokReportedError) return { ok: false, interrupted: Boolean(terminal),
       uncertain: !terminal, definitiveTurnEnd: Boolean(terminal), error: stopReason ?? gateway.state.stopped
         ?? (grokReportedError ? 'Grok Build reported an execution error.' : 'Native harness did not produce a successful terminal.'),
-      stopKind: stopReason ? 'budget' : 'failure', usage: gateway.state.usageIncomplete ? null : gateway.state.usage,
+      stopKind: stopKind ?? 'failure', usage: gateway.state.usageIncomplete ? null : gateway.state.usage,
       usageIncomplete: gateway.state.usageIncomplete, nativeSession: { ...session, resumed: undefined } };
     if (!gateway.state.calls || !gateway.state.reportedModels.size) throw new Error('Native gateway did not observe model identity evidence.');
     const routeObservation = normalizeNativeRouteObservation(backend, gateway.state);
@@ -247,8 +271,8 @@ export async function runNativeHarness({ executor, prompt, model, effort, backen
       modelActualEvidence: 'native_gateway_observed_response', durationMs: Date.now() - startedAt };
   } catch (error) {
     terminal ??= grokProtocol?.terminal ?? null;
-    return { ok: false, error: String(error.message).slice(0, 600), uncertain: dispatched && !terminal, noModelCalled: !dispatched,
-      definitiveTurnEnd: Boolean(terminal), usage: gateway?.state.usageIncomplete ? null : gateway?.state.usage ?? null,
+    return { ...nativeCaughtFailure({ error, stopReason, stopKind, dispatched, terminal }),
+      usage: gateway?.state.usageIncomplete ? null : gateway?.state.usage ?? null,
       usageIncomplete: gateway?.state.usageIncomplete ?? false, nativeSession };
   } finally {
     signal?.removeEventListener('abort', externalAbort); await gateway?.close();

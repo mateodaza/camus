@@ -241,7 +241,7 @@ export async function runProductiveCodeLoop(options, h) {
   const failedCall = async (response, role) => {
     if (response.budget) return question(response.budget, 'budget');
     if (response.uncertain) return native && role === 'maker'
-      ? finish('needs_decision', 'Native turn outcome is uncertain. Candidate preserved for inspection; automatic adoption or replay is refused.', 'refused')
+      ? finish('needs_decision', `${response.stopKind === 'budget' ? `${cleanError(response.error ?? 'Native accounting limit reached')}. ` : ''}Native turn outcome is uncertain. Candidate preserved for inspection; automatic adoption or replay is refused.`, 'refused')
       : question('Provider completion is uncertain. Explicitly authorize a bounded retry or leave this candidate parked.', 'uncertain_call');
     if (!(native && role === 'maker') && TRANSIENT.test(response.error ?? '') && record.usage.retries < limits.maxRetries && !abort.signal.aborted) {
       record.usage.retries++; record.pendingCall = null;

@@ -9,7 +9,7 @@ import { runNativeProcess } from './native-process.mjs';
 export const QWEN_NATIVE_EXECUTOR = 'qwen_native';
 export const GROK_NATIVE_EXECUTOR = 'grok_native';
 export const HARNESS_NATIVE_EXECUTORS = Object.freeze([QWEN_NATIVE_EXECUTOR, GROK_NATIVE_EXECUTOR]);
-export const HARNESS_POLICY_VERSION = 'native-harness-isolation/v2';
+export const HARNESS_POLICY_VERSION = 'native-harness-isolation/v3';
 const versions = { [QWEN_NATIVE_EXECUTOR]: /^0\.22\.3(?:\s|$)/, [GROK_NATIVE_EXECUTOR]: /(?:^|\s)1\.0\.5(?:\s|$)/ };
 const artifactPins = { [QWEN_NATIVE_EXECUTOR]: '51e46da04cbf833fedf0426ba8903a98f1ac269c0298a23df00b4c40a377300d',
   [GROK_NATIVE_EXECUTOR]: '3dfa7f04fbb5427a8fbead286591543aaecb478b3a0ab222c4329eca1a3b2f86' };
