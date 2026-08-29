@@ -2,7 +2,7 @@
 // reviewer admission: the independent code loop always stops for acceptance.
 import { getModels, listBackends, EFFORTS } from './models.mjs';
 import { admissionCatalog, admittedSeat, pairingPresentation } from './admission.mjs';
-import { seatQualification } from './capability-probes.mjs';
+import { expectedReportedFor, seatQualification } from './capability-probes.mjs';
 import { resolveSeatAdapters } from './adapters/registry.mjs';
 import { validateCodeExecutor, NATIVE_EXECUTOR, NATIVE_MIN_TOKEN_BUDGET, HARNESS_NATIVE_EXECUTORS, isNativeExecutor } from './code-native-policy.mjs';
 import { nativeHarnessReadiness } from './native-harness-policy.mjs';
@@ -121,7 +121,9 @@ export async function prepareCodeExecution(pairing = null) {
       for (const role of ['maker', 'reviewer']) {
         const entry = prepared.frozenBackends[role];
         if (entry.kind !== 'openai_compat') continue;
-        const q = await seatQualification({ entry, model: prepared.models[role].model, seatType: role === 'maker' ? 'words_maker' : 'words_reviewer' });
+        const model = prepared.models[role].model;
+        const q = await seatQualification({ entry, model, seatType: role === 'maker' ? 'words_maker' : 'words_reviewer',
+          expectedReported: expectedReportedFor(entry, prepared.models[role], model) });
         if (!q.qualified || q.fingerprint !== prepared.models[role].qualification?.fingerprint) throw new Error(`${role} qualification changed or is unavailable; qualify the exact tuple again.`);
       }
     },

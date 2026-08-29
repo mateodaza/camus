@@ -23,6 +23,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { normalizeReview } from './codex.mjs';
 import { getSharedTunnelManager } from '../ssh-tunnel.mjs';
+import { openRouterRequestControls, verifyOpenRouterMetadata } from '../openrouter-route.mjs';
 
 // Paid compatibility endpoints need a bounded generation contract, not only a
 // socket deadline. A healthy stream can otherwise run for the old nine-minute
@@ -75,6 +76,7 @@ function redactSecret(message, secretValue) {
 // One SSE stream in, { text, usage, responseModel } out — or a thrown Error
 // whose .code says which kill path fired (abort | idle | timeout | http).
 export async function streamChatCompletion({ entry, model, prompt, signal, timeoutMs, maxTokens = null, thinkingTokens = null, onDelta }) {
+  const openRouter = openRouterRequestControls(entry);
   // auth.kind:none (keyless loopback, e.g. a bare Ollama) neither requires nor
   // emits a bearer credential — no env var is read and no Authorization header
   // is sent. Every other backend reads its key ONLY from the environment.
@@ -108,6 +110,7 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
       headers: {
         ...(keyless ? {} : { authorization: `Bearer ${apiKey}` }),
         'content-type': 'application/json',
+        ...openRouter.headers,
       },
       body: JSON.stringify({
         model,
@@ -115,6 +118,7 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
         stream: true,
         // Tolerated when the endpoint ignores it; usage stays null then.
         stream_options: { include_usage: true },
+        ...openRouter.body,
         // Most Chat Completions targets implement `max_tokens`. DashScope's
         // current thinking models are materially different: `max_tokens` caps
         // only the answer while reasoning remains unbounded, whereas
@@ -159,6 +163,8 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
     let usage = null;
     let responseModel = null;
     let finishReason = null;
+    let openRouterMetadata = null;
+    let openRouterMetadataSeen = false;
     // The number of NON-EMPTY content deltas actually observed on the wire. This
     // is the only honest evidence that SSE deltas arrived and fed the idle
     // watchdog — an empty body or a [DONE]-only response returns cleanly yet
@@ -187,6 +193,11 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
         if (!seenModels.has(ev.model)) { seenModels.add(ev.model); reportedModels.push(ev.model); }
       }
       if (ev.usage && typeof ev.usage === 'object') usage = ev.usage;
+      if (ev.openrouter_metadata !== undefined) {
+        if (openRouterMetadataSeen) throw new Error('OpenRouter returned conflicting duplicate routing metadata.');
+        openRouterMetadataSeen = true;
+        openRouterMetadata = ev.openrouter_metadata;
+      }
       const reportedFinish = ev.choices?.[0]?.finish_reason;
       if (typeof reportedFinish === 'string' && reportedFinish) finishReason = reportedFinish;
       const delta = ev.choices?.[0]?.delta?.content;
@@ -209,7 +220,9 @@ export async function streamChatCompletion({ entry, model, prompt, signal, timeo
     // only after the complete stream is assembled so a credential split across
     // SSE deltas is still removed, and do it before any consumer can normalize,
     // log, or persist the text.
-    return { text: redactSecret(text, apiKey), usage, responseModel, reportedModels, deltaCount, finishReason };
+    const routerEvidence = verifyOpenRouterMetadata(requestEntry, openRouterMetadata);
+    return { text: redactSecret(text, apiKey), usage, responseModel, reportedModels, deltaCount, finishReason,
+      ...(routerEvidence ? { openRouterRouteEvidence: routerEvidence } : {}) };
   } catch (err) {
     if (killedBy === 'abort') { const e = new Error('aborted by user'); e.code = 'abort'; throw e; }
     if (killedBy === 'tunnel') { const e = new Error('managed SSH inference tunnel died; direct-network fallback is disabled'); e.code = 'tunnel'; throw e; }

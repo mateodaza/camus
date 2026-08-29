@@ -4,7 +4,7 @@
 
 import { listBackends, seatCatalog } from './models.mjs';
 import { qualificationForSeat } from './identity.mjs';
-import { storedSeatQualification } from './capability-probes.mjs';
+import { expectedReportedFor, storedSeatQualification } from './capability-probes.mjs';
 import { providerTemplates, plannedProtocols } from './provider-templates.mjs';
 
 const SEAT_TYPE = Object.freeze({ maker: 'words_maker', reviewer: 'words_reviewer' });
@@ -38,6 +38,9 @@ export function seatBadges(entry, { discoveryStatus = null } = {}) {
   ];
   if (discoveryStatus && discoveryStatus !== 'not_recorded') {
     badges.push({ kind: 'discovery', label: String(discoveryStatus).replace(/_/g, ' ') });
+  }
+  if (entry.route?.upstreamProvider && entry.route.allowFallbacks === false) {
+    badges.push({ kind: 'route', label: `route:${entry.route.upstreamProvider} · no fallback` });
   }
   return badges;
 }
@@ -83,7 +86,8 @@ function qualifyEntry(entry, backend, seatType, now) {
       presentation: { badges: seatBadges(entry) },
     };
   }
-  const result = storedSeatQualification({ entry: backend, model: entry.model, seatType, now });
+  const result = storedSeatQualification({ entry: backend, model: entry.model, seatType,
+    expectedReported: expectedReportedFor(backend, entry, entry.model), now });
   const discoveryStatus = result.receipt?.probeResults?.discoveryStatus ?? 'not_recorded';
   const reason = reasonFor(result, seatType, entry);
   const qualifiable = backend?.kind === 'openai_compat'

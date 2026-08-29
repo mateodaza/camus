@@ -64,6 +64,12 @@ const models = {
       trainingOrg: 'openlab', modelFamily: 'openlab-family', derivedFrom: null, inferenceOperator: 'openlab',
       auth: { kind: 'none' }, models: ['open-1'], seats: ['maker', 'reviewer'],
     },
+    openrouter_backend: {
+      kind: 'openai_compat', provider: 'openrouter', connection: 'hosted', protocol: 'chat_completions',
+      trainingOrg: 'alibaba', modelFamily: 'qwen', derivedFrom: null, inferenceOperator: 'gateway:openrouter',
+      auth: { kind: 'env', envVar: KEY_NAME }, models: ['qwen/qwen3.5'], seats: ['maker', 'reviewer'],
+      route: { upstreamProvider: 'alibaba', allowFallbacks: false },
+    },
   },
 };
 const modelsFile = join(tmp, 'models.json');
@@ -166,6 +172,12 @@ try {
       'the seat catalog carries the env-var NAME for the keyed backend');
     assert.ok(config.seats?.backends?.some((b) => b.name === 'keyless_backend' && b.apiKeyEnv === 'CAMUS_NO_AUTH'),
       'and the CAMUS_NO_AUTH placeholder for the keyless backend');
+    assert.deepEqual(config.seats?.backends?.find((b) => b.name === 'openrouter_backend')?.route,
+      { upstreamProvider: 'alibaba', allowFallbacks: false },
+      'the config API retains the explicit non-secret OpenRouter route pin');
+    assert.ok(config.seats?.maker?.some((seat) => seat.backend === 'openrouter_backend'
+      && seat.route?.upstreamProvider === 'alibaba' && seat.route.allowFallbacks === false),
+    'the selectable seat carries the same route into the run snapshot boundary');
   });
 
   await check('the key VALUE never surfaces on either read-only path', async () => {

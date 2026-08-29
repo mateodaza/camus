@@ -335,7 +335,8 @@ An isolation pair contains exactly two arms:
     "effort": null,
     "trainingOrg": "alibaba",
     "transport": "direct_https",
-    "connection": "dashscope-primary"
+    "connection": "dashscope-primary",
+    "route": null
   },
   "reviewerSeat": {
     "backend": "codex",

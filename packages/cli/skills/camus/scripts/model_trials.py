@@ -33,6 +33,11 @@ MODEL_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 ORG_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
 ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 EFFORTS = ("low", "medium", "high", "xhigh")
+# Slice G's Python reviewer-admission chain does not yet bind an OpenRouter
+# request to the exact upstream provider/model route that served it. Refuse that
+# aggregator at profile validation, before endpoint custody or a trial authority
+# can be created. Direct providers keep their existing behavior.
+UNBOUND_ROUTE_PROVIDERS = frozenset(("openrouter",))
 HARDENING = (
     "-N", "-T",
     "-o", "BatchMode=yes",
@@ -175,6 +180,11 @@ def load_profiles(env=None):
         if auth["kind"] == "env":
             key_env = _required(auth.get("envVar"), "backends.%s.auth.envVar" % name, ENV_RE)
         provider = _required(raw.get("provider") or name, "backends.%s.provider" % name, NAME_RE)
+        if provider.lower() in UNBOUND_ROUTE_PROVIDERS:
+            raise TrialError(
+                "provider %s is refused for reviewer trials until Slice G binds "
+                "the exact upstream route end to end" % provider
+            )
         model_family = _required(
             raw.get("modelFamily") or "unknown", "backends.%s.modelFamily" % name, NAME_RE,
         )

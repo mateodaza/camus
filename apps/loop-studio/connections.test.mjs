@@ -10,6 +10,7 @@ import {
   listBackends,
   parseConnections,
   saveConnectionBackend,
+  seatCatalog,
   updateModels,
   validateLegacyCompatEntry,
 } from './lib/models.mjs';
@@ -52,6 +53,17 @@ const validXai = () => ({
       trainingOrg: 'xai', modelFamily: 'grok', inferenceOperator: 'xai',
       derivedFrom: null,
       auth: { kind: 'env', envVar: 'CAMUS_TEST_XAI_KEY' }, models: ['grok-4.6'], seats: ['maker', 'reviewer'],
+    },
+  },
+});
+const validOpenRouter = () => ({
+  connections: { openrouter: { kind: 'direct_https', baseUrl: 'https://openrouter.ai/api/v1' } },
+  backends: {
+    qwen_router: {
+      kind: 'openai_compat', provider: 'openrouter', connection: 'openrouter', protocol: 'chat_completions',
+      trainingOrg: 'alibaba', modelFamily: 'qwen', inferenceOperator: 'gateway:openrouter', derivedFrom: null,
+      auth: { kind: 'env', envVar: 'CAMUS_TEST_OPENROUTER_KEY' }, models: ['qwen/qwen3.5'], seats: ['maker', 'reviewer'],
+      route: { upstreamProvider: 'alibaba', allowFallbacks: false },
     },
   },
 });
@@ -181,6 +193,44 @@ try {
     assert.equal(backend.trainingOrg, 'xai');
     assert.equal(backend.modelFamily, 'grok');
     assert.equal(backend.lineageSources['grok-4.6'], 'registry');
+  });
+
+  check('OpenRouter route pin is closed, mandatory, and retained across config surfaces and settings writes', () => {
+    const fixture = validOpenRouter();
+    const normalized = listBackends(decision(fixture)).qwen_router;
+    assert.deepEqual(normalized.route, { upstreamProvider: 'alibaba', allowFallbacks: false });
+    const variant = structuredClone(fixture);
+    variant.backends.qwen_router.route.upstreamProvider = 'deepinfra/fp4';
+    assert.equal(listBackends(decision(variant)).qwen_router.route.upstreamProvider, 'deepinfra/fp4',
+      'full endpoint-variant slugs documented by OpenRouter remain exact pins');
+
+    write(decision({ ...fixture, maker: { backend: 'qwen_router', model: 'qwen/qwen3.5' } }));
+    assert.deepEqual(getModels().maker.route, normalized.route, 'the selected seat snapshot source retains the route');
+    const catalog = seatCatalog();
+    assert.deepEqual(catalog.maker.find((row) => row.backend === 'qwen_router').route, normalized.route);
+    assert.deepEqual(catalog.backends.find((row) => row.name === 'qwen_router').route, normalized.route,
+      'the /api/config backend metadata retains the non-secret route declaration');
+
+    const saved = saveConnectionBackend({
+      connectionName: 'openrouter', connection: { ...fixture.connections.openrouter, why: 'hosted OpenRouter route' },
+      backendName: 'qwen_router', backend: { ...fixture.backends.qwen_router, why: 'pin Qwen to Alibaba' }, replace: true,
+    });
+    assert.deepEqual(saved.backend.route, normalized.route);
+    assert.deepEqual(JSON.parse(readFileSync(modelsPath, 'utf8')).backends.qwen_router.route, normalized.route,
+      'settings reconstruction persists the exact route instead of dropping it');
+
+    const refuses = (mutate, pattern) => {
+      const candidate = structuredClone(fixture);
+      mutate(candidate.backends.qwen_router);
+      assert.throws(() => listBackends(decision(candidate)), pattern);
+    };
+    refuses((backend) => { delete backend.route; }, /must pin one exact/);
+    refuses((backend) => { backend.route.upstreamProvider = ''; }, /one exact lowercase/);
+    refuses((backend) => { backend.route.upstreamProvider = ['alibaba', 'together']; }, /one exact lowercase/);
+    refuses((backend) => { backend.route.upstreamProvider = 'Alibaba'; }, /one exact lowercase/);
+    refuses((backend) => { backend.route.allowFallbacks = true; }, /explicitly false/);
+    refuses((backend) => { backend.route.order = ['alibaba']; }, /unsupported field/);
+    refuses((backend) => { backend.provider = 'dashscope'; }, /valid only when provider is "openrouter"/);
   });
 
   check('new backends require known declarations and the supported protocol', () => {

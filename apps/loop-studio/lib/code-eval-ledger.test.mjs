@@ -56,7 +56,7 @@ function campaign() {
       maker: {
         backend: 'dashscope_qwen', provider: 'alibaba', model: 'qwen3-coder-plus',
         effort: null, trainingOrg: 'alibaba', transport: 'direct_https',
-        connection: 'dashscope-primary',
+        connection: 'dashscope-primary', route: null,
       },
       reviewer: {
         backend: 'codex', model: 'gpt-5.6-sol', effort: 'high', trainingOrg: 'openai',
@@ -86,7 +86,7 @@ function execution(c, createdAt = '2026-08-29T12:00:00.000Z') {
     maker: {
       backendDefinitionDigest: hash('7'), qualificationFingerprint: `qual1:${'8'.repeat(64)}`,
       credentialRevision: hash('9'), connectionDefinitionDigest: hash('a'),
-      expectedModel: c.treatment.maker.model,
+      expectedModel: c.treatment.maker.model, expectedRoute: null,
     },
     reviewer: {
       backendDefinitionDigest: hash('b'), qualificationFingerprint: `builtin1:${'c'.repeat(64)}`,
@@ -111,6 +111,7 @@ function success(c, e) {
     observedIdentity: {
       makerModel: e.maker.expectedModel, reviewerModel: e.reviewer.expectedModel,
       executor: e.nativeHarness.executor, harnessArtifactDigest: e.nativeHarness.artifactDigest,
+      makerRoute: null,
       identityStable: true, substitutionDetected: false, helperModelDetected: false,
       fallbackDetected: false,
     },

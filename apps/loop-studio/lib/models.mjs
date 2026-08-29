@@ -19,6 +19,7 @@ import { isIP } from 'node:net';
 import { deriveLineageSource, executorOrgFamily, originConfidence } from './identity.mjs';
 import { initGrandfather, consult, consultClaudeRoute, studioAtomicWrite, STUDIO_FILE_MODE } from './grandfather.mjs';
 import { validateSshTunnelConfig } from './ssh-tunnel.mjs';
+import { normalizeOpenRouterRoute } from './openrouter-route.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // The tracked file is a PUBLIC FALLBACK, not mutable operator state. Settings
@@ -222,14 +223,15 @@ function validateBackendCommon(name, entry) {
   if (!Array.isArray(seats) || !seats.length || seats.some((s) => !['maker', 'reviewer'].includes(s))) {
     throw new Error(`backends.${name}.seats may only name "maker" and/or "reviewer"`);
   }
-  return { seats };
+  const route = normalizeOpenRouterRoute(entry, `backends.${name}`);
+  return { seats, route };
 }
 
 // The exact validator shipped before connection objects. Kept as a named,
 // exported compatibility boundary so dual-write tests exercise the real old
 // requirements rather than a test-only approximation.
 export function validateLegacyCompatEntry(name, entry) {
-  const { seats } = validateBackendCommon(name, entry);
+  const { seats, route } = validateBackendCommon(name, entry);
   if (!/^https?:\/\//.test(entry.baseUrl || '')) throw new Error(`backends.${name}.baseUrl must be an http(s) URL`);
   required(entry.apiKeyEnv, `backends.${name}.apiKeyEnv`);
   return {
@@ -240,6 +242,7 @@ export function validateLegacyCompatEntry(name, entry) {
     apiKeyEnv: entry.apiKeyEnv,
     models: [...entry.models],
     seats,
+    ...(route ? { route } : {}),
     effort: false, // no configured backend honors a reasoning-effort knob yet
   };
 }
@@ -263,7 +266,7 @@ function authForBackend(name, entry) {
 }
 
 function validateConnectionBackend(name, entry, connection) {
-  const { seats } = validateBackendCommon(name, entry);
+  const { seats, route } = validateBackendCommon(name, entry);
   const trainingOrg = requiredDeclaration(entry.trainingOrg, `backends.${name}.trainingOrg`);
   const modelFamily = requiredDeclaration(entry.modelFamily, `backends.${name}.modelFamily`);
   if (entry.protocol !== 'chat_completions') {
@@ -322,6 +325,7 @@ function validateConnectionBackend(name, entry, connection) {
     inferenceOperator: entry.inferenceOperator ?? 'unknown',
     auth: auth.auth,
     lineageSources,
+    ...(route ? { route } : {}),
   };
 }
 
@@ -438,6 +442,7 @@ function connectionBackendForWrite(name, entry, connections) {
   };
   if (entry.derivedFrom !== undefined) out.derivedFrom = entry.derivedFrom;
   if (entry.inferenceOperator !== undefined) out.inferenceOperator = entry.inferenceOperator;
+  if (normalized.route) out.route = { ...normalized.route };
   // The operator-declared expected-reported alias mapping (§6.2) is a persisted
   // property of the backend, not a derived one: reconstructing the entry on a
   // connection edit must carry it forward verbatim, or saving a mapped backend —
@@ -678,6 +683,7 @@ export function getModels() {
       source: makerEnv ? 'env:CLAUDE_MODEL' : decisionSource,
       // Orthogonal identity facts, preserving every legacy key above.
       ...seatIdentityFacts(makerBackend, makerModel),
+      ...(makerBackend.route ? { route: { ...makerBackend.route } } : {}),
       // A seat-level expected-reported alias mapping (§6.2) overrides/augments the
       // backend-level one and must reach qualification + runtime reconciliation.
       ...seatExpectedReported(file.maker),
@@ -687,6 +693,7 @@ export function getModels() {
       provider: reviewerBackend.provider,
       model: reviewerModel,
       ...seatIdentityFacts(reviewerBackend, reviewerModel),
+      ...(reviewerBackend.route ? { route: { ...reviewerBackend.route } } : {}),
       ...seatExpectedReported(file.reviewer),
       // Effort is a requested knob only where the backend honors one (codex
       // today). Elsewhere it is null — a fabricated tier is not a decision.
@@ -844,6 +851,7 @@ export function saveConnectionBackend({ connectionName, connection, backendName,
       derivedFrom: normalized.derivedFrom, inferenceOperator: normalized.inferenceOperator,
       auth: normalized.auth, models: [...normalized.models], seats: [...normalized.seats],
       transport: normalized.transport,
+      ...(normalized.route ? { route: { ...normalized.route } } : {}),
     },
     replaced: connectionExists || backendExists,
   };
@@ -969,7 +977,8 @@ export function seatCatalog() {
         : backend.name === 'codex' ? codex.source
           : decision.source;
       for (const model of models) {
-        const entry = { backend: backend.name, provider: backend.provider, model, source, effort: backend.effort, ...seatIdentityFacts(backend, model) };
+        const entry = { backend: backend.name, provider: backend.provider, model, source, effort: backend.effort, ...seatIdentityFacts(backend, model),
+          ...(backend.route ? { route: { ...backend.route } } : {}) };
         if (backend.name === seatBackendName && seatDecision?.model === model) {
           Object.assign(entry, seatExpectedReported(seatDecision));
         }
@@ -992,6 +1001,7 @@ export function seatCatalog() {
       apiKeyEnv: b.apiKeyEnv ?? null,
       connection: b.connection ?? null,
       transport: b.transport ?? null,
+      ...(b.route ? { route: { ...b.route } } : {}),
     })),
   };
 }

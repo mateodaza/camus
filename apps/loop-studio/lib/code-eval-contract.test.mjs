@@ -54,6 +54,7 @@ function campaign({ executor = 'qwen_native', campaignId = 'qwen-native-smoke-v1
         trainingOrg: executor === 'qwen_native' ? 'alibaba' : 'xai',
         transport: 'direct_https',
         connection: executor === 'qwen_native' ? 'dashscope-primary' : 'xai-primary',
+        route: null,
       },
       reviewer: {
         backend: 'codex',
@@ -103,6 +104,7 @@ function execution(c, { createdAt = '2026-08-29T12:00:00.000Z' } = {}) {
       credentialRevision: hash('9'),
       connectionDefinitionDigest: hash('a'),
       expectedModel: c.treatment.maker.model,
+      expectedRoute: c.treatment.maker.route === null ? null : clone(c.treatment.maker.route),
     },
     reviewer: {
       backendDefinitionDigest: hash('b'),
@@ -131,6 +133,10 @@ function observed(executionValue) {
     reviewerModel: executionValue.reviewer.expectedModel,
     executor: executionValue.nativeHarness.executor,
     harnessArtifactDigest: executionValue.nativeHarness.artifactDigest,
+    makerRoute: executionValue.maker.expectedRoute === null ? null : {
+      requestEnforced: clone(executionValue.maker.expectedRoute),
+      metadataObserved: [{ provider: executionValue.maker.expectedRoute.upstreamProvider.split('/')[0], attempt: 1 }],
+    },
     identityStable: true,
     substitutionDetected: false,
     helperModelDetected: false,
@@ -259,6 +265,45 @@ test('native harness name and exact maker/reviewer observations stay binding', (
   const helper = observed(e);
   helper.helperModelDetected = true;
   assert.throws(() => successfulReceipt(c, e, { observedIdentity: helper }), /stable identity/);
+});
+
+test('an exact OpenRouter route is campaign identity and receipt evidence, with fallback derived from attempts', () => {
+  const c = campaign();
+  c.treatment.maker.provider = 'openrouter';
+  c.treatment.maker.backend = 'openrouter_qwen';
+  c.treatment.maker.connection = 'openrouter-primary';
+  c.treatment.maker.route = { upstreamProvider: 'deepinfra/fp4', allowFallbacks: false };
+  const e = execution(c);
+  assert.doesNotThrow(() => validateCodeEvalCampaign(c));
+  assert.doesNotThrow(() => validateCodeEvalExecution(e, c));
+  assert.deepEqual(successfulReceipt(c, e).assignment.requestedMaker.route, c.treatment.maker.route);
+
+  const changed = clone(c);
+  changed.treatment.maker.route.upstreamProvider = 'together/fp8';
+  assert.notEqual(codeEvalCampaignIdentity(changed), codeEvalCampaignIdentity(c));
+
+  const missing = clone(c);
+  missing.treatment.maker.route = null;
+  assert.throws(() => validateCodeEvalCampaign(missing), /treatment\.maker\.route/);
+  const directRoute = campaign();
+  directRoute.treatment.maker.route = clone(c.treatment.maker.route);
+  assert.throws(() => validateCodeEvalCampaign(directRoute), /null unless provider is openrouter/);
+  const driftedExecution = clone(e);
+  driftedExecution.maker.expectedRoute.upstreamProvider = 'together/fp8';
+  assert.throws(() => validateCodeEvalExecution(driftedExecution, c), /expectedRoute/);
+
+  const fallback = observed(e);
+  fallback.identityStable = false;
+  fallback.fallbackDetected = true;
+  fallback.makerRoute.metadataObserved[0].attempt = 2;
+  assert.equal(successfulReceipt(c, e, { observedIdentity: fallback }).standing, 'failed');
+  fallback.fallbackDetected = false;
+  assert.throws(() => successfulReceipt(c, e, { observedIdentity: fallback }), /derived from the route observation/);
+
+  const wrongCount = observed(e);
+  wrongCount.makerRoute.metadataObserved.push({ provider: 'DeepInfra', attempt: 1 });
+  wrongCount.identityStable = false;
+  assert.throws(() => successfulReceipt(c, e, { observedIdentity: wrongCount }), /one observation per measured maker call/);
 });
 
 test('standing is derived conservatively from terminal, identity, quality, and all custody bindings', () => {

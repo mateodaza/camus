@@ -156,6 +156,8 @@ try {
   await check('provider templates are inert declarations with Responses visibly planned', () => {
     const templates = providerTemplates();
     assert.ok(templates.some((entry) => entry.id === 'xai'));
+    const openrouter = templates.find((entry) => entry.id === 'openrouter_qwen');
+    assert.deepEqual(openrouter?.backend?.value?.route, { upstreamProvider: 'alibaba', allowFallbacks: false });
     assert.ok(templates.some((entry) => entry.id === 'ollama'));
     assert.ok(templates.some((entry) => entry.id === 'vllm'));
     const walkKeys = (value, keys = []) => {

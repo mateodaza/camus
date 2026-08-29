@@ -97,6 +97,13 @@ function assertSeatMatchesCampaign(actual, requested, role) {
   }
 }
 
+function assertRouteMatchesCampaign(backend, requested) {
+  const actualRoute = backend?.route ?? null;
+  if (canonicalCodeEvalJson(actualRoute) !== canonicalCodeEvalJson(requested.route)) {
+    throw new Error('maker upstream route drifted from the frozen smoke campaign; no model was called.');
+  }
+}
+
 function credentialRevision(backend, env) {
   const name = backend?.auth?.envVar ?? backend?.apiKeyEnv;
   if (!name) return 'none';
@@ -216,6 +223,8 @@ async function buildExecutionSnapshot(campaign, { createdAt = new Date().toISOSt
   const prepared = await (dependencies.prepareExecution ?? prepareCodeExecution)(pairing);
   assertSeatMatchesCampaign(prepared.models?.maker, campaign.treatment.maker, 'maker');
   assertSeatMatchesCampaign(prepared.models?.reviewer, campaign.treatment.reviewer, 'reviewer');
+  const makerBackend = clone(prepared.frozenBackends.maker), reviewerBackend = clone(prepared.frozenBackends.reviewer);
+  assertRouteMatchesCampaign(makerBackend, campaign.treatment.maker);
   if (prepared.models.maker.codeExecutor !== campaign.treatment.executor) throw new Error('Native executor drifted from the frozen campaign; no model was called.');
   for (const role of ['maker', 'reviewer']) if (!/^(?:qual1|builtin1):[a-f0-9]{64}$/.test(prepared.models[role]?.qualification?.fingerprint ?? '')) {
     throw new Error(`${role} qualification is missing or invalid; no model was called.`);
@@ -225,7 +234,6 @@ async function buildExecutionSnapshot(campaign, { createdAt = new Date().toISOSt
   const harness = await (dependencies.resolveHarness ?? resolveNativeHarness)(campaign.treatment.executor);
   const artifact = await (dependencies.assertArtifact ?? assertNativeHarnessArtifact)(campaign.treatment.executor, harness);
   const runtime = await (dependencies.runtimeIdentity ?? codeEvalRuntimeIdentity)();
-  const makerBackend = clone(prepared.frozenBackends.maker), reviewerBackend = clone(prepared.frozenBackends.reviewer);
   const artifactDigest = `sha256:${artifact}`;
   const execution = {
     schemaVersion: 1,
@@ -238,6 +246,7 @@ async function buildExecutionSnapshot(campaign, { createdAt = new Date().toISOSt
       credentialRevision: credentialRevision(makerBackend, dependencies.env ?? process.env),
       connectionDefinitionDigest: digestJson({ backend: makerBackend, connection: prepared.models.maker.connection ?? null }),
       expectedModel: campaign.treatment.maker.model,
+      expectedRoute: campaign.treatment.maker.route === null ? null : clone(campaign.treatment.maker.route),
     },
     reviewer: {
       backendDefinitionDigest: digestJson(reviewerBackend),
@@ -254,7 +263,8 @@ async function buildExecutionSnapshot(campaign, { createdAt = new Date().toISOSt
       parserVersion: 'native-harness-v1',
       outerSandboxPolicyDigest: digestJson({ protocol: HARNESS_POLICY_VERSION, executor: campaign.treatment.executor, artifactDigest, runtime: runtime.treeDigest }),
       credentialGatewayPolicyDigest: digestJson({ protocol: 'native-gateway/v1a', provider: campaign.treatment.maker.provider,
-        model: campaign.treatment.maker.model, maximumCalls: campaign.controls.maximumProviderCallsPerCell,
+        model: campaign.treatment.maker.model, route: campaign.treatment.maker.route,
+        maximumCalls: campaign.controls.maximumProviderCallsPerCell,
         maximumTokens: campaign.controls.maximumTokensReserved, runtime: runtime.treeDigest }),
     },
     verifierDigest: fixture.verifierDigest,
@@ -273,6 +283,7 @@ function publicPlan(campaign, execution, cell, state = null) {
     executionDigest: codeEvalExecutionIdentity(execution, campaign),
     cellId: codeEvalCellIdentity(cell, campaign, execution),
     executor: campaign.treatment.executor,
+    route: campaign.treatment.maker.route === null ? null : clone(campaign.treatment.maker.route),
     totalCells: 1,
     providerCallsMade: 0,
     maximumRemainingProviderCalls: state?.canAttempt === false ? 0 : campaign.controls.maximumProviderCallsPerCell,
@@ -463,6 +474,38 @@ function outcomeFor(result, candidateCurrent) {
   return 'containment_refused';
 }
 
+const comparableProvider = value => String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+function routeObservationFrom(checkpoint) {
+  return checkpoint?.nativeSession?.routeObservation
+    ?? checkpoint?.pendingCall?.response?.routeObservation
+    ?? null;
+}
+
+function assessRouteObservation(campaign, checkpoint, makerCalls) {
+  const requested = campaign.treatment.maker.route;
+  if (requested === null) return {
+    observation: null, complete: true, stable: true, providerMismatch: false, fallbackDetected: false,
+  };
+  const observation = routeObservationFrom(checkpoint);
+  const metadata = observation?.metadataObserved;
+  const requestMatch = observation?.requestEnforced
+    && canonicalCodeEvalJson(observation.requestEnforced) === canonicalCodeEvalJson(requested);
+  const complete = requestMatch === true && Array.isArray(metadata) && metadata.length > 0
+    && Number.isSafeInteger(makerCalls) && metadata.length === makerCalls;
+  if (!complete) return {
+    observation: null, complete: false, stable: false, providerMismatch: false, fallbackDetected: null,
+  };
+  const expectedBase = requested.upstreamProvider.split('/')[0];
+  const providerMismatch = metadata.some(item =>
+    comparableProvider(item?.provider) !== comparableProvider(expectedBase));
+  const fallbackDetected = metadata.some(item => item?.attempt !== 1);
+  return {
+    observation, complete, providerMismatch, fallbackDetected,
+    stable: !providerMismatch && !fallbackDetected,
+  };
+}
+
 function receiptFromBuild({ campaign, execution, cell, prepared, fixtureReadiness, result, checkpoint, reportDigest, startedAt, roleCalls }) {
   const candidateFingerprint = isSha(`sha256:${result?.candidate?.fingerprint ?? ''}`) ? `sha256:${result.candidate.fingerprint}` : null;
   const candidateCurrent = Boolean(candidateFingerprint && result.candidate?.snapshotStatus !== 'unverified_terminal');
@@ -475,7 +518,12 @@ function receiptFromBuild({ campaign, execution, cell, prepared, fixtureReadines
     && checkpoint.nativeSession.model === campaign.treatment.maker.model
     && checkpoint.nativeSession.version === HARNESS_POLICY_VERSION
     && checkpoint.nativeSession.harnessVersion === execution.nativeHarness.version;
-  const identityStable = makerExact && reviewerExact && nativeSessionExact;
+  const route = assessRouteObservation(campaign, checkpoint, roleCalls.maker);
+  const identityStable = makerExact && reviewerExact && nativeSessionExact && route.stable;
+  const modelIdentityObserved = Boolean(makerRaw || reviewerRaw);
+  const modelSubstitution = modelIdentityObserved ? !(makerExact && reviewerExact) : null;
+  const substitutionDetected = modelSubstitution === null && !route.providerMismatch
+    ? null : Boolean(modelSubstitution || route.providerMismatch);
   const verificationBindingMatch = candidateCurrent && result?.verificationBinding === result.candidate.fingerprint;
   const reviewBindingMatch = candidateCurrent && result?.reviewBinding === result.candidate.fingerprint;
   const verificationPassed = result?.verification?.pass === true;
@@ -494,10 +542,11 @@ function receiptFromBuild({ campaign, execution, cell, prepared, fixtureReadines
       reviewerModel: reviewerExact ? campaign.treatment.reviewer.model : null,
       executor: nativeSessionExact ? campaign.treatment.executor : null,
       harnessArtifactDigest: nativeSessionExact ? execution.nativeHarness.artifactDigest : null,
+      makerRoute: route.observation,
       identityStable,
-      substitutionDetected: identityStable ? false : (makerRaw || reviewerRaw ? true : null),
+      substitutionDetected,
       helperModelDetected: nativeSessionExact ? false : null,
-      fallbackDetected: nativeSessionExact ? false : null,
+      fallbackDetected: route.fallbackDetected,
     },
     outcome: {
       status: outcome,

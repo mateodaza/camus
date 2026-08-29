@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { qwenNativeArgs, validateNativeDecision } from './native-harness.mjs';
+import { normalizeNativeRouteObservation, qwenNativeArgs, validateNativeDecision } from './native-harness.mjs';
 
 test('native decision is exact, bounded and fail closed', () => {
   assert.deepEqual(validateNativeDecision({ done: true, summary: 'ready', decision: null }), { done: true, summary: 'ready', decision: null });
@@ -22,4 +22,29 @@ test('Qwen receives limits derived from the enclosing native turn', () => {
   assert.equal(qwenNativeArgs({ model: 'm', prompt: 'p', session, timeoutMs: 5000, maxModelCalls: 1, maxToolCalls: 0 })
     .includes('0'), true, 'zero remaining real tool calls still allows the exempt structured terminal');
   assert.throws(() => qwenNativeArgs({ model: 'm', prompt: 'p', session, timeoutMs: 1000, maxModelCalls: 1, maxToolCalls: 1 }), /bounded integer/);
+});
+
+test('native route evidence is bounded, normalized, and contains no raw router metadata', () => {
+  assert.equal(normalizeNativeRouteObservation({ provider: 'alibaba' }, {}), null);
+  const backend = { provider: 'openrouter', route: { upstreamProvider: 'deepinfra/fp4', allowFallbacks: false } };
+  const observation = normalizeNativeRouteObservation(backend, {
+    accountedCalls: 2,
+    openRouterRouteEvidence: [
+      { attempt: 1, strategy: 'direct', selectedProvider: 'DeepInfra', requested: 'private-model' },
+      { attempt: 1, strategy: 'direct', selectedProvider: 'DeepInfra', raw: { forbidden: true } },
+    ],
+  });
+  assert.deepEqual(observation, {
+    requestEnforced: backend.route,
+    metadataObserved: [{ provider: 'DeepInfra', attempt: 1 }, { provider: 'DeepInfra', attempt: 1 }],
+  });
+  assert.equal(JSON.stringify(observation).includes('private-model'), false);
+  assert.equal(JSON.stringify(observation).includes('forbidden'), false);
+  assert.throws(() => normalizeNativeRouteObservation(backend, { accountedCalls: 1, openRouterRouteEvidence: [] }), /requires one bounded/);
+  assert.throws(() => normalizeNativeRouteObservation(backend, {
+    accountedCalls: 2, openRouterRouteEvidence: [{ attempt: 1, selectedProvider: 'DeepInfra' }],
+  }), /requires one bounded/);
+  assert.throws(() => normalizeNativeRouteObservation(backend, {
+    accountedCalls: 1, openRouterRouteEvidence: [{ attempt: 1, selectedProvider: 'bad\nprovider' }],
+  }), /observation 1 is invalid/);
 });

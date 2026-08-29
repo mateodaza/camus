@@ -8,7 +8,7 @@
 const replace = (value) => `<replace:${value}>`;
 
 const hosted = ({ id, label, provider, connection, baseUrl, apiKeyEnv, model,
-  trainingOrg, modelFamily, inferenceOperator, docsUrl, note = null }) => ({
+  trainingOrg, modelFamily, inferenceOperator, docsUrl, note = null, route = null }) => ({
   id,
   label,
   availability: 'available',
@@ -35,6 +35,7 @@ const hosted = ({ id, label, provider, connection, baseUrl, apiKeyEnv, model,
       models: [model],
       seats: ['maker', 'reviewer'],
       why: replace('why-this-model'),
+      ...(route ? { route } : {}),
     },
   },
 });
@@ -98,6 +99,14 @@ const TEMPLATES = Object.freeze([
     trainingOrg: 'alibaba', modelFamily: 'qwen', inferenceOperator: 'dashscope',
     docsUrl: 'https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope',
     note: 'Replace the endpoint with the exact regional/workspace URL from DashScope.',
+  }),
+  hosted({
+    id: 'openrouter_qwen', label: 'OpenRouter · Qwen (Alibaba route)', provider: 'openrouter', connection: 'openrouter',
+    baseUrl: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', model: 'qwen/qwen3.8-flash',
+    trainingOrg: 'alibaba', modelFamily: 'qwen', inferenceOperator: 'gateway:openrouter',
+    docsUrl: 'https://openrouter.ai/docs/guides/routing/provider-selection',
+    note: 'The upstream provider is exact and fallbacks stay off. Change the slug only as an explicit operator decision, then requalify.',
+    route: { upstreamProvider: 'alibaba', allowFallbacks: false },
   }),
   local({ id: 'ollama', label: 'Ollama · local', port: 11434, model: replace('ollama-model'), docsUrl: 'https://docs.ollama.com/api/openai-compatibility' }),
   local({ id: 'lm_studio', label: 'LM Studio · local', port: 1234, model: replace('lm-studio-model'), docsUrl: 'https://lmstudio.ai/docs/app/api/endpoints/openai' }),

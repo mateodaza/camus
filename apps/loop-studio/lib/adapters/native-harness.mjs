@@ -13,6 +13,41 @@ const outputSchema = { type: 'object', additionalProperties: false, required: ['
     action: { type: 'string', enum: ['human', 'stop', 'retry_verify', 'rebut'] }, reason: { type: 'string' } } },
 } };
 const prohibitedTool = /(?:web[_-]?(?:search|fetch)|mcp|search_tool|use_tool|subagent|task)/i;
+const routeSlug = /^[a-z0-9](?:[a-z0-9._-]{0,63})(?:\/[a-z0-9](?:[a-z0-9._-]{0,63}))*$/;
+const observedProvider = /^[A-Za-z0-9][A-Za-z0-9 ._()+\/-]{0,127}$/;
+
+export function normalizeNativeRouteObservation(backend, state) {
+  const route = backend?.route;
+  if (backend?.provider !== 'openrouter') {
+    if (route !== undefined && route !== null) throw new Error('A native upstream route is valid only for OpenRouter.');
+    return null;
+  }
+  if (!route || typeof route !== 'object' || Array.isArray(route)
+      || Object.keys(route).length !== 2
+      || !Object.hasOwn(route, 'upstreamProvider') || !Object.hasOwn(route, 'allowFallbacks')
+      || typeof route.upstreamProvider !== 'string' || route.upstreamProvider.length > 128
+      || !routeSlug.test(route.upstreamProvider) || route.allowFallbacks !== false) {
+    throw new Error('OpenRouter native execution requires one exact fallback-disabled upstream route.');
+  }
+  const evidence = state?.openRouterRouteEvidence;
+  if (!Array.isArray(evidence) || !evidence.length || evidence.length > 128
+      || !Number.isSafeInteger(state?.accountedCalls) || state.accountedCalls <= 0
+      || evidence.length !== state.accountedCalls) {
+    throw new Error('Successful OpenRouter native output requires one bounded route observation per accounted model call.');
+  }
+  const metadataObserved = evidence.map((item, index) => {
+    if (!item || typeof item !== 'object' || typeof item.selectedProvider !== 'string'
+        || item.selectedProvider.length > 128 || !observedProvider.test(item.selectedProvider)
+        || !Number.isSafeInteger(item.attempt) || item.attempt < 1 || item.attempt > 128) {
+      throw new Error(`OpenRouter route observation ${index + 1} is invalid.`);
+    }
+    return { provider: item.selectedProvider, attempt: item.attempt };
+  });
+  return {
+    requestEnforced: { upstreamProvider: route.upstreamProvider, allowFallbacks: false },
+    metadataObserved,
+  };
+}
 
 export function validateNativeDecision(result) {
   if (!result || typeof result.done !== 'boolean' || typeof result.summary !== 'string' || Buffer.byteLength(result.summary) > 2000
@@ -132,8 +167,10 @@ export async function runNativeHarness({ executor, prompt, model, effort, backen
       stopKind: stopReason ? 'budget' : 'failure', usage: gateway.state.usageIncomplete ? null : gateway.state.usage,
       usageIncomplete: gateway.state.usageIncomplete, nativeSession: { ...session, resumed: undefined } };
     if (!gateway.state.calls || !gateway.state.reportedModels.size) throw new Error('Native gateway did not observe model identity evidence.');
+    const routeObservation = normalizeNativeRouteObservation(backend, gateway.state);
     return { ok: true, text: JSON.stringify({ actions: [], ...result }), usage: gateway.state.usageIncomplete ? null : gateway.state.usage,
-      usageIncomplete: gateway.state.usageIncomplete, nativeSession: { ...session, resumed: undefined }, definitiveTurnEnd: true,
+      usageIncomplete: gateway.state.usageIncomplete, nativeSession: { ...session, resumed: undefined, routeObservation }, routeObservation,
+      definitiveTurnEnd: true,
       modelActual: `${backend.provider}:${model}`, modelReported: [...gateway.state.reportedModels].join(','),
       modelActualEvidence: 'native_gateway_observed_response', durationMs: Date.now() - startedAt };
   } catch (error) {

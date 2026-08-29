@@ -11,7 +11,7 @@ import { createCodeEvalCell } from './code-eval-contract.mjs';
 
 const hex = character => character.repeat(64);
 
-async function setup(t, executor = 'qwen_native') {
+async function setup(t, executor = 'qwen_native', { openRouter = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'camus-code-eval-runner-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const fixture = await loadCodeEvalFixture();
@@ -34,8 +34,9 @@ async function setup(t, executor = 'qwen_native') {
         timeoutMs: fixture.manifest.verifier.timeoutMs, expectedBase: 'red', expectedReference: 'green' },
     },
     treatment: {
-      maker: { backend: 'fixture-maker', provider: 'dashscope', model: 'fixture-model', effort: null,
-        trainingOrg: 'fixture-maker-org', transport: 'direct_https', connection: 'fixture-connection' },
+      maker: { backend: 'fixture-maker', provider: openRouter ? 'openrouter' : 'dashscope', model: 'fixture-model', effort: null,
+        trainingOrg: 'fixture-maker-org', transport: 'direct_https', connection: 'fixture-connection',
+        route: openRouter ? { upstreamProvider: 'deepinfra/fp4', allowFallbacks: false } : null },
       reviewer: { backend: 'fixture-reviewer', model: 'fixture-reviewer-model', effort: 'medium', trainingOrg: 'fixture-reviewer-org' },
       executor,
     },
@@ -59,8 +60,9 @@ async function setup(t, executor = 'qwen_native') {
       loop: {},
     },
     frozenBackends: {
-      maker: { name: 'fixture-maker', kind: 'openai_compat', provider: 'dashscope', transport: 'direct_https',
-        connection: 'fixture-connection', auth: { kind: 'none' }, baseUrl: 'https://synthetic.invalid/v1' },
+      maker: { name: 'fixture-maker', kind: 'openai_compat', provider: openRouter ? 'openrouter' : 'dashscope', transport: 'direct_https',
+        connection: 'fixture-connection', auth: { kind: 'none' }, baseUrl: 'https://synthetic.invalid/v1',
+        ...(openRouter ? { route: { upstreamProvider: 'deepinfra/fp4', allowFallbacks: false } } : {}) },
       reviewer: { name: 'fixture-reviewer', kind: 'codex_cli', provider: 'openai', transport: 'vendor_managed', auth: { kind: 'none' } },
     },
     adapters: { maker: async () => {}, reviewer: async () => {}, nativeMaker: async () => {} },
@@ -114,6 +116,7 @@ test('plan/status are spend-free, private and idempotently freeze one exact cell
   const dependencies = { ...item.dependencies, prepareExecution: async () => { prepared++; return item.freshPrepared(); } };
   const planned = await planCodeEval(item, dependencies);
   assert.equal(planned.providerCallsMade, 0); assert.equal(planned.totalCells, 1);
+  assert.equal(planned.route, null);
   assert.equal(planned.claim, 'no_execution_claim'); assert.equal(prepared, 1);
   assert.equal((await stat(item.statePath)).mode & 0o777, 0o600);
   assert.equal((await stat(join(item.root, 'evidence'))).mode & 0o777, 0o700);
@@ -187,6 +190,65 @@ test('plain model labels cannot satisfy exact provider-qualified identity eviden
     }),
   });
   assert.equal(result.standing, 'failed');
+});
+
+test('OpenRouter route is bound before spend and normalized evidence reaches the receipt', async t => {
+  const drift = await setup(t, 'qwen_native', { openRouter: true });
+  const planned = await planCodeEval(drift, drift.dependencies);
+  assert.deepEqual(planned.route, drift.campaign.treatment.maker.route);
+  let executed = false;
+  await assert.rejects(runCodeEval({ ...drift, consent: true, maxCells: 1 }, {
+    ...drift.dependencies,
+    prepareExecution: async () => {
+      const prepared = drift.freshPrepared();
+      prepared.frozenBackends.maker.route.upstreamProvider = 'together/fp8';
+      return prepared;
+    },
+    runSeats: async () => { executed = true; },
+  }), /maker upstream route drifted/);
+  assert.equal(executed, false);
+  await assert.rejects(stat(join(drift.root, 'evidence', 'inflight.json')), { code: 'ENOENT' });
+
+  const item = await setup(t, 'qwen_native', { openRouter: true });
+  await planCodeEval(item, item.dependencies);
+  const fingerprint = hex('7');
+  item.prepared.adapters.nativeMaker = async options => {
+    options.onNativeProgress({ responses: 1 });
+    return { ok: true };
+  };
+  item.prepared.adapters.reviewer = async () => ({ ok: true });
+  const routeObservation = {
+    requestEnforced: structuredClone(item.campaign.treatment.maker.route),
+    metadataObserved: [{ provider: 'DeepInfra', attempt: 1 }],
+  };
+  const result = await runCodeEval({ ...item, consent: true, maxCells: 1 }, {
+    ...item.dependencies,
+    materializeSource: async (_fixture, path) => mkdir(path, { recursive: true, mode: 0o700 }),
+    createVerifier: () => async () => ({ ran: true, pass: true }),
+    readCheckpoint: async () => ({ nativeSession: { executor: item.campaign.treatment.executor,
+      model: item.campaign.treatment.maker.model, version: 'native-harness-isolation/v1', harnessVersion: '0.22.3',
+      routeObservation } }),
+    runSeats: async ({ adapters }) => {
+      await adapters.nativeMaker({ onNativeProgress: () => null });
+      await adapters.reviewer({});
+      return {
+        status: 'needs_decision', completion: 'candidate_ready_for_acceptance',
+        candidate: { fingerprint }, verificationBinding: fingerprint, reviewBinding: fingerprint,
+        verification: { ran: true, pass: true }, review: { verdict: 'APPROVED' },
+        seats: {
+          maker: { observed: { identity: 'openrouter:fixture-model', turns: [{ usage: { input_tokens: 10, output_tokens: 4 } }] } },
+          reviewer: { observed: { identity: 'openai:fixture-reviewer-model', usage: { input_tokens: 8, output_tokens: 2 } } },
+        },
+        usage: { calls: 2 },
+      };
+    },
+  });
+  assert.equal(result.standing, 'execution_observed');
+  const receipt = JSON.parse((await readFile(item.ledgerPath, 'utf8')).trim());
+  assert.deepEqual(receipt.assignment.requestedMaker.route, item.campaign.treatment.maker.route);
+  assert.deepEqual(receipt.observedIdentity.makerRoute, routeObservation);
+  assert.equal(receipt.observedIdentity.fallbackDetected, false);
+  assert.equal(JSON.stringify(receipt.observedIdentity.makerRoute).includes('raw'), false);
 });
 
 test('an uncertain native terminal preserves complete gateway usage instead of sealing false zero', async t => {

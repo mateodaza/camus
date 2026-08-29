@@ -16,6 +16,8 @@ const CELL_ID = /^cell1:[a-f0-9]{64}$/;
 const RECEIPT_ID = /^codebench1:[a-f0-9]{64}$/;
 const QUALIFICATION = /^(?:qual1|builtin1):[a-f0-9]{64}$/;
 const REVISION = /^(?:(?:cred1|sha256):[a-f0-9]{64}|[a-f0-9]{64}|none)$/;
+const ROUTE_SLUG = /^[a-z0-9](?:[a-z0-9._-]{0,63})(?:\/[a-z0-9](?:[a-z0-9._-]{0,63}))*$/;
+const OBSERVED_PROVIDER = /^[A-Za-z0-9][A-Za-z0-9 ._()+\/-]{0,127}$/;
 
 export const CODE_EVAL_STANDINGS = Object.freeze([
   'execution_observed',
@@ -132,10 +134,53 @@ function contentId(prefix, value) {
   return `${prefix}:${createHash('sha256').update(canonicalCodeEvalJson(value), 'utf8').digest('hex')}`;
 }
 
+function validateRoute(route, provider, path) {
+  if (provider !== 'openrouter') {
+    if (route !== null) fail(path, 'must be null unless provider is openrouter');
+    return route;
+  }
+  exactObject(route, path, ['upstreamProvider', 'allowFallbacks']);
+  string(route.upstreamProvider, `${path}.upstreamProvider`, { pattern: ROUTE_SLUG, max: 128 });
+  if (route.allowFallbacks !== false) fail(`${path}.allowFallbacks`, 'must be false');
+  return route;
+}
+
+const comparableProvider = value => String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+function routeObservationStatus(value, campaignRoute) {
+  if (value === null) return { complete: false, fallbackDetected: null, stable: false };
+  const expectedBase = campaignRoute.upstreamProvider.split('/')[0];
+  const providersMatch = value.metadataObserved.every(item =>
+    comparableProvider(item.provider) === comparableProvider(expectedBase));
+  const fallbackDetected = value.metadataObserved.some(item => item.attempt !== 1);
+  return { complete: true, fallbackDetected, stable: providersMatch && !fallbackDetected };
+}
+
+function validateRouteObservation(value, campaignRoute, path) {
+  if (value === null) return value;
+  exactObject(value, path, ['requestEnforced', 'metadataObserved']);
+  exactObject(value.requestEnforced, `${path}.requestEnforced`, ['upstreamProvider', 'allowFallbacks']);
+  string(value.requestEnforced.upstreamProvider, `${path}.requestEnforced.upstreamProvider`, { pattern: ROUTE_SLUG, max: 128 });
+  if (value.requestEnforced.allowFallbacks !== false) fail(`${path}.requestEnforced.allowFallbacks`, 'must be false');
+  if (canonicalCodeEvalJson(value.requestEnforced) !== canonicalCodeEvalJson(campaignRoute)) {
+    fail(`${path}.requestEnforced`, 'does not match the campaign route');
+  }
+  if (!Array.isArray(value.metadataObserved) || !value.metadataObserved.length || value.metadataObserved.length > 128) {
+    fail(`${path}.metadataObserved`, 'must contain 1 to 128 bounded provider observations');
+  }
+  for (const [index, item] of value.metadataObserved.entries()) {
+    const itemPath = `${path}.metadataObserved[${index}]`;
+    exactObject(item, itemPath, ['provider', 'attempt']);
+    string(item.provider, `${itemPath}.provider`, { pattern: OBSERVED_PROVIDER, max: 128 });
+    integer(item.attempt, `${itemPath}.attempt`, { min: 1, max: 128 });
+  }
+  return value;
+}
+
 function validateSeat(seat, path, { reviewer = false } = {}) {
   exactObject(seat, path, reviewer
     ? ['backend', 'model', 'effort', 'trainingOrg']
-    : ['backend', 'provider', 'model', 'effort', 'trainingOrg', 'transport', 'connection']);
+    : ['backend', 'provider', 'model', 'effort', 'trainingOrg', 'transport', 'connection', 'route']);
   string(seat.backend, `${path}.backend`, { pattern: SAFE_NAME, max: 64 });
   if (!reviewer) string(seat.provider, `${path}.provider`, { pattern: SAFE_NAME, max: 64 });
   string(seat.model, `${path}.model`, { pattern: SAFE_VALUE, max: 128 });
@@ -144,6 +189,7 @@ function validateSeat(seat, path, { reviewer = false } = {}) {
   if (!reviewer) {
     enumValue(seat.transport, `${path}.transport`, TRANSPORTS);
     string(seat.connection, `${path}.connection`, { pattern: SAFE_NAME, max: 64 });
+    validateRoute(seat.route, seat.provider, `${path}.route`);
   }
 }
 
@@ -236,10 +282,10 @@ function validateRuntime(value) {
   string(value.nodeVersion, 'execution.runtime.nodeVersion', { pattern: SAFE_VALUE, max: 32 });
 }
 
-function validateExecutionSeat(value, path, campaignSeat) {
+function validateExecutionSeat(value, path, campaignSeat, { maker = false } = {}) {
   exactObject(value, path, [
     'backendDefinitionDigest', 'qualificationFingerprint', 'credentialRevision',
-    'connectionDefinitionDigest', 'expectedModel',
+    'connectionDefinitionDigest', 'expectedModel', ...(maker ? ['expectedRoute'] : []),
   ]);
   string(value.backendDefinitionDigest, `${path}.backendDefinitionDigest`, { pattern: SHA256, max: 71 });
   string(value.qualificationFingerprint, `${path}.qualificationFingerprint`, { pattern: QUALIFICATION, max: 73 });
@@ -247,6 +293,12 @@ function validateExecutionSeat(value, path, campaignSeat) {
   string(value.connectionDefinitionDigest, `${path}.connectionDefinitionDigest`, { pattern: SHA256, max: 71 });
   string(value.expectedModel, `${path}.expectedModel`, { pattern: SAFE_VALUE, max: 128 });
   if (value.expectedModel !== campaignSeat.model) fail(`${path}.expectedModel`, 'must match the campaign seat');
+  if (maker) {
+    validateRoute(value.expectedRoute, campaignSeat.provider, `${path}.expectedRoute`);
+    if (canonicalCodeEvalJson(value.expectedRoute) !== canonicalCodeEvalJson(campaignSeat.route)) {
+      fail(`${path}.expectedRoute`, 'must match the campaign seat route');
+    }
+  }
 }
 
 function validateHarness(value, executor) {
@@ -276,7 +328,7 @@ export function validateCodeEvalExecution(value, campaign) {
   if (value.campaignDigest !== campaignDigest) fail('execution.campaignDigest', 'does not match the campaign');
   canonicalIso(value.createdAt, 'execution.createdAt');
   validateRuntime(value.runtime);
-  validateExecutionSeat(value.maker, 'execution.maker', campaign.treatment.maker);
+  validateExecutionSeat(value.maker, 'execution.maker', campaign.treatment.maker, { maker: true });
   validateExecutionSeat(value.reviewer, 'execution.reviewer', campaign.treatment.reviewer);
   validateHarness(value.nativeHarness, campaign.treatment.executor);
   string(value.verifierDigest, 'execution.verifierDigest', { pattern: SHA256, max: 71 });
@@ -335,6 +387,7 @@ export function codeEvalReceiptAssignment(campaign, execution, cell) {
     requestedMaker: {
       backend: campaign.treatment.maker.backend,
       model: campaign.treatment.maker.model,
+      route: campaign.treatment.maker.route === null ? null : { ...campaign.treatment.maker.route },
     },
     requestedReviewer: {
       backend: campaign.treatment.reviewer.backend,
@@ -357,26 +410,37 @@ function validateAssignment(value, expected) {
     'harnessArtifactDigest', 'fixtureId', 'fixtureTreeDigest', 'verifierDigest',
     'controlsDigest',
   ]);
-  exactObject(value.requestedMaker, 'receipt.assignment.requestedMaker', ['backend', 'model']);
+  exactObject(value.requestedMaker, 'receipt.assignment.requestedMaker', ['backend', 'model', 'route']);
   exactObject(value.requestedReviewer, 'receipt.assignment.requestedReviewer', ['backend', 'model']);
   if (canonicalCodeEvalJson(value) !== canonicalCodeEvalJson(expected)) {
     fail('receipt.assignment', 'does not match the frozen campaign, execution, and cell');
   }
 }
 
-function validateObservedIdentity(value, execution) {
+function validateObservedIdentity(value, execution, campaign) {
   exactObject(value, 'receipt.observedIdentity', [
     'makerModel', 'reviewerModel', 'executor', 'harnessArtifactDigest',
-    'identityStable', 'substitutionDetected', 'helperModelDetected', 'fallbackDetected',
+    'makerRoute', 'identityStable', 'substitutionDetected', 'helperModelDetected', 'fallbackDetected',
   ]);
   nullableString(value.makerModel, 'receipt.observedIdentity.makerModel', { pattern: SAFE_VALUE, max: 128 });
   nullableString(value.reviewerModel, 'receipt.observedIdentity.reviewerModel', { pattern: SAFE_VALUE, max: 128 });
   nullableString(value.executor, 'receipt.observedIdentity.executor', { pattern: SAFE_NAME, max: 64 });
   nullableString(value.harnessArtifactDigest, 'receipt.observedIdentity.harnessArtifactDigest', { pattern: SHA256, max: 71 });
+  if (campaign.treatment.maker.route === null) {
+    if (value.makerRoute !== null) fail('receipt.observedIdentity.makerRoute', 'must be null for a non-OpenRouter campaign');
+  } else {
+    validateRouteObservation(value.makerRoute, campaign.treatment.maker.route, 'receipt.observedIdentity.makerRoute');
+  }
   boolean(value.identityStable, 'receipt.observedIdentity.identityStable', { nullable: true });
   boolean(value.substitutionDetected, 'receipt.observedIdentity.substitutionDetected', { nullable: true });
   boolean(value.helperModelDetected, 'receipt.observedIdentity.helperModelDetected', { nullable: true });
   boolean(value.fallbackDetected, 'receipt.observedIdentity.fallbackDetected', { nullable: true });
+  const routeStatus = campaign.treatment.maker.route === null
+    ? { complete: true, fallbackDetected: false, stable: value.makerRoute === null }
+    : routeObservationStatus(value.makerRoute, campaign.treatment.maker.route);
+  if (value.fallbackDetected !== routeStatus.fallbackDetected) {
+    fail('receipt.observedIdentity.fallbackDetected', 'must be derived from the route observation');
+  }
   if (value.identityStable === true && (
     value.makerModel !== execution.maker.expectedModel
     || value.reviewerModel !== execution.reviewer.expectedModel
@@ -385,6 +449,8 @@ function validateObservedIdentity(value, execution) {
     || value.substitutionDetected !== false
     || value.helperModelDetected !== false
     || value.fallbackDetected !== false
+    || !routeStatus.complete
+    || !routeStatus.stable
   )) fail('receipt.observedIdentity', 'cannot claim stable identity with mismatched or incomplete observations');
 }
 
@@ -497,10 +563,15 @@ export function validateCodeEvalReceipt(receipt, campaign, execution, cell) {
   if (receipt.executionDigest !== cell.executionDigest) fail('receipt.executionDigest', 'does not match the cell');
   enumValue(receipt.standing, 'receipt.standing', STANDINGS);
   validateAssignment(receipt.assignment, codeEvalReceiptAssignment(campaign, execution, cell));
-  validateObservedIdentity(receipt.observedIdentity, execution);
+  validateObservedIdentity(receipt.observedIdentity, execution, campaign);
   validateOutcome(receipt.outcome);
   validateQuality(receipt.quality);
   validateEconomics(receipt.economics, campaign);
+  if (campaign.treatment.maker.route !== null && receipt.observedIdentity.makerRoute !== null
+      && receipt.economics.makerCalls !== null
+      && receipt.observedIdentity.makerRoute.metadataObserved.length !== receipt.economics.makerCalls) {
+    fail('receipt.observedIdentity.makerRoute.metadataObserved', 'must contain exactly one observation per measured maker call');
+  }
   validateCustody(receipt.custody);
   validateArtifacts(receipt.artifacts);
   canonicalIso(receipt.recordedAt, 'receipt.recordedAt');
@@ -562,10 +633,11 @@ export function createUnknownCodeEvalReceipt({
       reviewerModel: null,
       executor: null,
       harnessArtifactDigest: null,
+      makerRoute: null,
       identityStable: null,
       substitutionDetected: null,
       helperModelDetected: null,
-      fallbackDetected: null,
+      fallbackDetected: campaign.treatment.maker.route === null ? false : null,
     },
     outcome: {
       status: 'interrupted_unknown',

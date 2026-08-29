@@ -148,7 +148,10 @@ outside the harness. The worker receives only a random, short-lived gateway
 capability. The gateway accepts Chat Completions for the one selected model,
 refuses Responses/helper substitution and other paths, rebuilds upstream headers,
 buffers and validates every reported model identity before forwarding output, and
-accounts each provider call. Managed SSH backends reuse Camus's tunnel lease and
+accounts each provider call. An OpenRouter backend additionally requires one
+exact upstream provider, disables fallbacks, checks current direct-route metadata
+for every response, and binds normalized route evidence into native-evaluation
+receipts; missing or contradictory route evidence fails closed. Managed SSH backends reuse Camus's tunnel lease and
 never fall back to a direct route. Provider output cannot echo the real key into
 the harness. This does not make provider calls free or impose a dollar cap.
 

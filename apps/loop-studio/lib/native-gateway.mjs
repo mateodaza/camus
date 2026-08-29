@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { getSharedTunnelManager } from './ssh-tunnel.mjs';
+import { openRouterRequestControls, verifyOpenRouterMetadata } from './openrouter-route.mjs';
 
 const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
@@ -41,7 +42,7 @@ function requestedOutputLimit(body) {
   return values.length ? Math.min(...values) : null;
 }
 
-function inspectProviderBody(buffer, contentType, allowedModels) {
+function inspectProviderBody(buffer, contentType, allowedModels, entry = null) {
   const text = buffer.toString('utf8');
   const events = [];
   if (/text\/event-stream/i.test(contentType) || text.includes('\ndata:')) {
@@ -54,13 +55,20 @@ function inspectProviderBody(buffer, contentType, allowedModels) {
   } else {
     try { events.push(JSON.parse(text)); } catch { throw new Error('Provider returned malformed completion evidence.'); }
   }
-  const reported = new Set(); let usage = null;
+  const reported = new Set(); let usage = null; let openRouterMetadata = null; let openRouterMetadataSeen = false;
   for (const event of events) {
     if (typeof event?.model === 'string' && event.model) reported.add(event.model);
     if (event?.usage) usage = usageOf(event.usage) ?? usage;
+    if (event?.openrouter_metadata !== undefined) {
+      if (openRouterMetadataSeen) throw new Error('OpenRouter returned conflicting duplicate routing metadata.');
+      openRouterMetadataSeen = true;
+      openRouterMetadata = event.openrouter_metadata;
+    }
   }
   if (!reported.size || [...reported].some(model => !allowedModels.has(model))) throw new Error('Provider model identity did not match the selected native seat.');
-  return { reportedModels: [...reported], usage };
+  const routerEvidence = entry ? verifyOpenRouterMetadata(entry, openRouterMetadata) : null;
+  return { reportedModels: [...reported], usage,
+    ...(routerEvidence ? { openRouterRouteEvidence: routerEvidence } : {}) };
 }
 
 // A native harness sees only this one-run capability. The real provider secret
@@ -71,6 +79,7 @@ export async function startNativeGateway({ entry, model, expectedReported, signa
   if (!entry || entry.kind !== 'openai_compat') throw new Error('Native gateway requires a frozen OpenAI-compatible backend.');
   if (!Number.isSafeInteger(maxCalls) || maxCalls <= 0) throw new Error('Native gateway requires a positive model-call limit.');
   if (!Number.isSafeInteger(remainingTokens) || remainingTokens <= 0) throw new Error('Native gateway requires a positive remaining token budget.');
+  const openRouter = openRouterRequestControls(entry);
   const keyless = entry.auth?.kind === 'none';
   const providerKey = keyless ? null : process.env[entry.apiKeyEnv];
   if (!keyless && !providerKey) throw new Error(`backend "${entry.name}" needs ${entry.apiKeyEnv} set in the environment`);
@@ -85,7 +94,7 @@ export async function startNativeGateway({ entry, model, expectedReported, signa
   if (signal?.aborted) externalAbort();
   const allowedModels = aliases(model, expectedReported);
   const state = { calls: 0, accountedCalls: 0, usage: zero(), usageIncomplete: false, reportedModels: new Set(), stopped: null,
-    tokenBudget: remainingTokens, tokenAllowanceRemaining: remainingTokens };
+    tokenBudget: remainingTokens, tokenAllowanceRemaining: remainingTokens, openRouterRouteEvidence: [] };
   let stopNotified = false;
   const stopFor = reason => {
     state.stopped ??= String(reason);
@@ -135,9 +144,10 @@ export async function startNativeGateway({ entry, model, expectedReported, signa
       for (const field of outputLimitFields) delete upstreamBody[field];
       upstreamBody.model = model; upstreamBody.stream = true;
       upstreamBody.stream_options = { include_usage: true };
+      Object.assign(upstreamBody, openRouter.body);
       upstreamBody[limitField] = completionLimit;
       const upstream = await fetchImpl(`${upstreamBase}/chat/completions`, { method: 'POST', signal: lifetime.signal,
-        headers: { ...(keyless ? {} : { authorization: `Bearer ${providerKey}` }), 'content-type': 'application/json' },
+        headers: { ...(keyless ? {} : { authorization: `Bearer ${providerKey}` }), 'content-type': 'application/json', ...openRouter.headers },
         body: JSON.stringify(upstreamBody) });
       if (!upstream.ok) {
         state.usageIncomplete = true; state.tokenAllowanceRemaining = 0;
@@ -152,8 +162,9 @@ export async function startNativeGateway({ entry, model, expectedReported, signa
       const complete = Buffer.concat(output);
       if (providerKey && complete.includes(Buffer.from(providerKey))) throw new Error('Provider response contained credential material.');
       const contentType = upstream.headers.get('content-type') ?? 'text/event-stream';
-      const evidence = inspectProviderBody(complete, contentType, allowedModels);
+      const evidence = inspectProviderBody(complete, contentType, allowedModels, entry);
       for (const reported of evidence.reportedModels) state.reportedModels.add(reported);
+      if (evidence.openRouterRouteEvidence) state.openRouterRouteEvidence.push(evidence.openRouterRouteEvidence);
       state.accountedCalls++;
       if (evidence.usage) {
         state.usage = sumUsage(state.usage, evidence.usage);

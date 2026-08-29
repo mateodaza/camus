@@ -41,6 +41,7 @@ import {
   SEAT_REQUIREMENTS,
   WORDS_SEATS,
 } from './capabilities.mjs';
+import { openRouterRouteIdentity } from './openrouter-route.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -62,7 +63,7 @@ export function isSupportedTransport(entry) {
 // openai-compat adapter + this runner that ran the probe. Bump when the probe
 // wiring or the adapter contract changes so old receipts read as a visible
 // adapter mismatch rather than silently matching under new behavior.
-export const ADAPTER_CONTRACT_VERSION = 'oai-compat-runner-1';
+export const ADAPTER_CONTRACT_VERSION = 'oai-compat-runner-2';
 
 // The version stamp carried by the ACTUAL review schema qualification exercises
 // (checks/review.schema.json). Read at load so a schema change that bumps the
@@ -96,10 +97,15 @@ export const PROMPT_ENVELOPES = Object.freeze({
   words_maker: Object.freeze({ version: 'words_maker-env-1', targetTokens: 8192 }),
 });
 
-// The decoding knobs the probes request (§9.2 component 12). This backend honors
-// no effort/temperature knob, so the probes request none and the receipt records
-// that honestly rather than a fabricated tier.
-const DECODING_KNOBS = 'not_honored';
+// Every completion used for qualification is deliberately tiny: one sentence,
+// one compact review object, or two context markers. Binding an explicit output
+// ceiling prevents a large context-input probe from accidentally buying a large
+// completion. Qwen 3 receives the smaller thinking budget through the existing
+// adapter so its total cap still leaves room for the required visible answer.
+export const QUALIFICATION_MAX_OUTPUT_TOKENS = 256;
+export const QUALIFICATION_THINKING_TOKENS = 64;
+const DECODING_KNOBS =
+  `max_output_tokens=${QUALIFICATION_MAX_OUTPUT_TOKENS};thinking_tokens=${QUALIFICATION_THINKING_TOKENS}_when_supported`;
 
 // A fixed miniature review prompt carrying the REAL normalized-review schema
 // shape, so the structured-output probe exercises the production parser, not a
@@ -415,18 +421,21 @@ function mergeAnchorsForGate(liveSerialized, storedSerialized) {
 
 function connectionLabel(entry) {
   const kind = entry.transport || entry.connectionDetails?.kind || 'loopback';
+  let connection;
   if (kind === 'loopback') {
     const url = new URL(entry.baseUrl);
     const host = url.hostname.replace(/^\[|\]$/g, '');
     const port = url.port || (url.protocol === 'https:' ? '443' : '80');
-    return `loopback ${host}:${port}`;
-  }
-  if (kind === 'direct_https') return `direct_https ${entry.baseUrl}`;
-  if (kind === 'ssh_tunnel') {
+    connection = `loopback ${host}:${port}`;
+  } else if (kind === 'direct_https') {
+    connection = `direct_https ${entry.baseUrl}`;
+  } else if (kind === 'ssh_tunnel') {
     const c = entry.connectionDetails || entry;
-    return `ssh_tunnel ${c.sshHostAlias}:${c.remoteAddress}:${c.remotePort}${c.basePath || '/v1'}`;
+    connection = `ssh_tunnel ${c.sshHostAlias}:${c.remoteAddress}:${c.remotePort}${c.basePath || '/v1'}`;
+  } else {
+    connection = `${kind} ${entry.baseUrl}`;
   }
-  return `${kind} ${entry.baseUrl}`;
+  return `${connection};route=${openRouterRouteIdentity(entry, 'qualification backend')}`;
 }
 
 // The full §9.2 seat-identity descriptor the fingerprint binds — assembled from
@@ -436,7 +445,15 @@ function connectionLabel(entry) {
 // passes what it observed; the admission gate passes what the stored receipt
 // recorded, so it validates the operator-controlled axes and expiry without
 // re-contacting the endpoint.
-function qualInput({ entry, model, seatType, serverAnchors, keyless, secretValue }) {
+function expectedReportedIdentity(expectedReported) {
+  const values = typeof expectedReported === 'string'
+    ? [expectedReported]
+    : Array.isArray(expectedReported) ? expectedReported : [];
+  const normalized = [...new Set(values.filter((value) => typeof value === 'string' && value).sort())];
+  return normalized.length ? JSON.stringify(normalized) : 'exact-requested-model-only';
+}
+
+function qualInput({ entry, model, seatType, serverAnchors, keyless, secretValue, expectedReported }) {
   const envelope = PROMPT_ENVELOPES[seatType];
   return {
     seatType,
@@ -454,7 +471,11 @@ function qualInput({ entry, model, seatType, serverAnchors, keyless, secretValue
     promptEnvelopeVersion: envelope.version,
     decodingKnobs: DECODING_KNOBS,
     executorVersion: 'none',
-    adapterContractVersion: ADAPTER_CONTRACT_VERSION,
+    // A declared reported-model alias changes which provider identity Camus is
+    // willing to accept. Bind that policy into the existing versioned adapter
+    // component so widening or narrowing it voids the old receipt instead of
+    // silently reinterpreting old qualification evidence.
+    adapterContractVersion: `${ADAPTER_CONTRACT_VERSION};expectedReported=${expectedReportedIdentity(expectedReported)}`,
     gateScope: 'n/a',
   };
 }
@@ -466,7 +487,14 @@ function qualInput({ entry, model, seatType, serverAnchors, keyless, secretValue
 // stream serves streaming/liveness, structured-output, and context probes.
 async function runStream({ entry, model, prompt, timeoutMs, streamImpl, secretValue }) {
   try {
-    const { text, responseModel, reportedModels, usage, deltaCount } = await streamImpl({ entry, model, prompt, timeoutMs });
+    const { text, responseModel, reportedModels, usage, deltaCount } = await streamImpl({
+      entry,
+      model,
+      prompt,
+      timeoutMs,
+      maxTokens: QUALIFICATION_MAX_OUTPUT_TOKENS,
+      thinkingTokens: QUALIFICATION_THINKING_TOKENS,
+    });
     return {
       ok: true,
       text: String(text ?? ''),
@@ -797,7 +825,7 @@ async function deepQualifyModelInternal({
   // Studio can explain listed/unlisted/unavailable without re-contacting a
   // provider on every config GET; it never gates qualification.
   probeResults.discoveryStatus = discoveryStatus;
-  const input = qualInput({ entry, model, seatType, serverAnchors, keyless, secretValue });
+  const input = qualInput({ entry, model, seatType, serverAnchors, keyless, secretValue, expectedReported });
 
   let receipt;
   try {
@@ -975,7 +1003,8 @@ export async function qualifyUsedSeats({
  *
  * Returns { qualified, fingerprint?, seatType, reason, component?, missing? }.
  */
-export async function seatQualification({ entry, model, seatType, fetchImpl = fetch, now = Date.now(), tunnelManager } = {}) {
+export async function seatQualification({ entry, model, seatType, expectedReported = expectedReportedFor(entry, null, model),
+  fetchImpl = fetch, now = Date.now(), tunnelManager } = {}) {
   if (!WORDS_SEATS.includes(seatType)) {
     return { qualified: false, seatType, reason: 'out_of_scope_seat' };
   }
@@ -991,7 +1020,8 @@ export async function seatQualification({ entry, model, seatType, fetchImpl = fe
     try { lease = await manager.acquire(entry.connectionDetails || entry); }
     catch (error) { return { qualified: false, seatType, reason: 'tunnel', detail: error.message }; }
     try {
-      return await seatQualification({ entry: { ...entry, baseUrl: lease.url, tunnelLease: lease }, model, seatType, fetchImpl, now, tunnelManager: manager });
+      return await seatQualification({ entry: { ...entry, baseUrl: lease.url, tunnelLease: lease }, model, seatType, expectedReported,
+        fetchImpl, now, tunnelManager: manager });
     } finally { await lease.release(); }
   }
   const keyless = entry.auth?.kind === 'none';
@@ -1004,7 +1034,7 @@ export async function seatQualification({ entry, model, seatType, fetchImpl = fe
   // the tuple key), then reconcile the fingerprint against the anchors as they
   // are NOW — re-probed live — so weight/server drift under a stable served
   // alias voids the receipt instead of launching on a stale one.
-  const lookup = qualInput({ entry, model, seatType, serverAnchors: 'lookup', keyless, secretValue });
+  const lookup = qualInput({ entry, model, seatType, serverAnchors: 'lookup', keyless, secretValue, expectedReported });
   const stored = readStoredReceipt(lookup);
   if (!stored.ok) {
     return { qualified: false, seatType, reason: stored.state, component: stored.component };
@@ -1023,7 +1053,7 @@ export async function seatQualification({ entry, model, seatType, fetchImpl = fe
   // independent observations and let genuine digest drift slip through.
   const storedAnchors = stored.data.components.find((c) => c.name === 'serverAnchors')?.value;
   const anchorsForGate = mergeAnchorsForGate(liveAnchors, storedAnchors);
-  const liveInput = qualInput({ entry, model, seatType, serverAnchors: anchorsForGate, keyless, secretValue });
+  const liveInput = qualInput({ entry, model, seatType, serverAnchors: anchorsForGate, keyless, secretValue, expectedReported });
 
   let outcome;
   try {
@@ -1051,7 +1081,8 @@ export async function seatQualification({ entry, model, seatType, fetchImpl = fe
  * picker never enables a tuple whose local decision no longer matches its
  * receipt.
  */
-export function storedSeatQualification({ entry, model, seatType, now = Date.now() } = {}) {
+export function storedSeatQualification({ entry, model, seatType,
+  expectedReported = expectedReportedFor(entry, null, model), now = Date.now() } = {}) {
   if (!WORDS_SEATS.includes(seatType)) {
     return { qualified: false, seatType, reason: 'out_of_scope_seat' };
   }
@@ -1066,7 +1097,7 @@ export function storedSeatQualification({ entry, model, seatType, now = Date.now
   if (!keyless && !secretValue) {
     return { qualified: false, seatType, reason: 'missing_credential' };
   }
-  const lookup = qualInput({ entry, model, seatType, serverAnchors: 'lookup', keyless, secretValue });
+  const lookup = qualInput({ entry, model, seatType, serverAnchors: 'lookup', keyless, secretValue, expectedReported });
   const stored = readStoredReceipt(lookup);
   if (!stored.ok) {
     return { qualified: false, seatType, reason: stored.state, component: stored.component };
@@ -1075,7 +1106,7 @@ export function storedSeatQualification({ entry, model, seatType, now = Date.now
   if (typeof storedAnchors !== 'string' || !storedAnchors) {
     return { qualified: false, seatType, reason: 'voided', component: 'serverAnchors' };
   }
-  const liveInput = qualInput({ entry, model, seatType, serverAnchors: storedAnchors, keyless, secretValue });
+  const liveInput = qualInput({ entry, model, seatType, serverAnchors: storedAnchors, keyless, secretValue, expectedReported });
   let outcome;
   try {
     outcome = qualifySeat(liveInput, { acceptedReceipt: stored.data, now });

@@ -24,6 +24,8 @@ import {
   qualifyUsedSeats,
   isSupportedTransport,
   expectedReportedFor,
+  QUALIFICATION_MAX_OUTPUT_TOKENS,
+  QUALIFICATION_THINKING_TOKENS,
 } from './capability-probes.mjs';
 
 const dirs = [];
@@ -44,11 +46,12 @@ const ev = (obj) => `data: ${JSON.stringify(obj)}\n\n`;
 // include_usage). The context probe now MEASURES the window from this reported
 // usage rather than from a character count, so a compliant mock reports a prompt
 // size that clears the probe's small test target.
-function sseBody({ text = 'ok', model, done = true, promptTokens = 100000 }) {
+function sseBody({ text = 'ok', model, done = true, promptTokens = 100000, openRouterMetadata = null }) {
   let s = '';
   if (model) s += ev({ model, choices: [{ delta: {} }] });
   for (const ch of String(text).match(/.{1,4}/g) ?? [text]) s += ev({ model, choices: [{ delta: { content: ch } }] });
-  if (Number.isFinite(promptTokens)) s += ev({ model, choices: [], usage: { prompt_tokens: promptTokens, completion_tokens: 8 } });
+  if (Number.isFinite(promptTokens)) s += ev({ model, choices: [], usage: { prompt_tokens: promptTokens, completion_tokens: 8 },
+    ...(openRouterMetadata ? { openrouter_metadata: openRouterMetadata } : {}) });
   if (done) s += 'data: [DONE]\n\n';
   return s;
 }
@@ -64,6 +67,7 @@ const REVIEW_JSON = JSON.stringify({
 function startServer(route) {
   const seenAuth = [];
   const seenUrls = [];
+  const seenBodies = [];
   const server = http.createServer((req, res) => {
     seenUrls.push(req.url);
     if (req.method === 'GET' && req.url.endsWith('/models')) {
@@ -75,7 +79,9 @@ function startServer(route) {
     req.on('data', (c) => (raw += c));
     req.on('end', () => {
       seenAuth.push(req.headers.authorization ?? null);
-      const prompt = (() => { try { return JSON.parse(raw).messages[0].content; } catch { return ''; } })();
+      const body = (() => { try { return JSON.parse(raw); } catch { return {}; } })();
+      seenBodies.push(body);
+      const prompt = body.messages?.[0]?.content ?? '';
       const kind = /context envelope/.test(prompt) ? 'context'
         : /review schema/.test(prompt) ? 'structured' : 'liveness';
       const r = route(kind, { prompt, headers: req.headers }) || {};
@@ -98,7 +104,8 @@ function startServer(route) {
       // filler is genuinely large enough. A deliberately conservative chars/8
       // (pessimistic vs. real BPE) means an undersized filler would fail here.
       const promptTokens = kind === 'context' ? Math.floor(prompt.length / 8) : 100000;
-      const chunks = r.chunks ?? [sseBody({ text: bodyText, model: r.model, done: r.done !== false, promptTokens })];
+      const chunks = r.chunks ?? [sseBody({ text: bodyText, model: r.model, done: r.done !== false, promptTokens,
+        openRouterMetadata: r.openRouterMetadata ?? null })];
       for (const c of chunks) res.write(c);
       res.end();
     });
@@ -107,7 +114,7 @@ function startServer(route) {
     server.listen(0, '127.0.0.1', () => {
       servers.push(server);
       const { port } = server.address();
-      resolve({ baseUrl: `http://127.0.0.1:${port}/v1`, seenAuth, seenUrls, server });
+      resolve({ baseUrl: `http://127.0.0.1:${port}/v1`, seenAuth, seenUrls, seenBodies, server });
     });
   });
 }
@@ -157,7 +164,7 @@ await test('collectServerAnchors records absent anchors, never invents them', as
 await test('happy path: reviewer qualifies through the real adapter + normalizeReview', async () => {
   freshEnv();
   process.env.CAP_TEST_KEY = SECRET;
-  const { baseUrl, seenAuth } = await startServer((kind) =>
+  const { baseUrl, seenAuth, seenBodies } = await startServer((kind) =>
     kind === 'structured' ? { body: REVIEW_JSON, model: 'served-alias' }
       : { body: 'CAMUS-CTX-OK echoed', model: 'served-alias' });
   const progress = [];
@@ -172,6 +179,10 @@ await test('happy path: reviewer qualifies through the real adapter + normalizeR
   assert.equal(res.capabilities.toolCalling, 'not_applicable'); // words seat: never probed
   assert.equal(res.identity.mode, 'confirmed');
   assert.ok(seenAuth.every((a) => a === `Bearer ${SECRET}`), 'env auth sends the bearer from the environment');
+  const completionBodies = seenBodies.filter((body) => Array.isArray(body.messages));
+  assert.ok(completionBodies.length >= 2 && completionBodies.length <= 6, 'the real adapter stayed within the existing call ceiling');
+  assert.ok(completionBodies.every((body) => body.max_tokens === QUALIFICATION_MAX_OUTPUT_TOKENS),
+    'every real qualification completion carries the explicit output ceiling');
   assert.equal(progress[0].phase, 'discovery');
   assert.ok(progress.some((event) => event.phase === 'streaming' && event.status === 'demonstrated'));
   assert.ok(progress.some((event) => event.phase === 'structuredOutput' && event.status === 'demonstrated'));
@@ -313,6 +324,64 @@ await test('the context probe adaptively grows to reach the envelope from below'
   // Convergence from below keeps the crossing request modest, never a blind
   // multiple of the target (the old fixed-multiplier overshoot).
   assert.ok(maxContextUsage < 64 * 3, `the probe did not grossly overshoot the target (saw ${maxContextUsage})`);
+});
+
+await test('every maker/reviewer qualification stream carries the small output ceiling without adding calls', async () => {
+  for (const seatType of ['words_maker', 'words_reviewer']) {
+    freshEnv();
+    process.env.CAP_TEST_KEY = SECRET;
+    const calls = [];
+    const streamImpl = async (request) => {
+      calls.push(request);
+      const context = /context envelope/.test(request.prompt);
+      const structured = /review schema/.test(request.prompt);
+      if (!context) {
+        return {
+          text: structured ? REVIEW_JSON : 'A short live sentence.',
+          responseModel: request.model,
+          reportedModels: [request.model],
+          usage: { prompt_tokens: 20, completion_tokens: 20 },
+          deltaCount: 1,
+        };
+      }
+      const head = /MARKER-HEAD:\s*(\S+)/.exec(request.prompt)?.[1];
+      const tail = /MARKER-TAIL:\s*(\S+)/.exec(request.prompt)?.[1];
+      return {
+        text: `${head} ${tail}`,
+        responseModel: request.model,
+        reportedModels: [request.model],
+        // Deliberately undershoot the first request so this regression covers
+        // every adaptive attempt rather than only the easy single-call path.
+        usage: { prompt_tokens: Math.floor(request.prompt.length / 20), completion_tokens: 8 },
+        deltaCount: 1,
+      };
+    };
+    const result = await deepQualifyModel({
+      entry: envEntry('http://127.0.0.1:1/v1'),
+      model: 'served-alias',
+      seatType,
+      contextProbeTokens: 64,
+      streamImpl,
+      fetchImpl: async () => new Response('', { status: 404 }),
+    });
+    assert.equal(result.qualified, true, result.reason);
+    assert.ok(calls.length >= 3, `${seatType} exercised the initial and adaptive context calls`);
+    assert.ok(calls.length <= 6, `${seatType} stayed within one initial plus five existing context attempts`);
+    assert.ok(calls.every((call) => call.maxTokens === QUALIFICATION_MAX_OUTPUT_TOKENS));
+    assert.ok(calls.every((call) => call.thinkingTokens === QUALIFICATION_THINKING_TOKENS));
+    assert.equal(result.capabilities.contextWindow.status, 'demonstrated');
+    assert.ok(result.capabilities.contextWindow.demonstratedAt >= 64);
+    assert.equal(
+      result.receipt.components.find((component) => component.name === 'decodingKnobs').value,
+      `max_output_tokens=${QUALIFICATION_MAX_OUTPUT_TOKENS};thinking_tokens=${QUALIFICATION_THINKING_TOKENS}_when_supported`,
+      'the output bound is part of the qualification fingerprint',
+    );
+    assert.equal(
+      result.receipt.components.find((component) => component.name === 'adapterContractVersion').value,
+      'oai-compat-runner-2;expectedReported=exact-requested-model-only',
+      'old unbounded receipts and changed identity-alias policies cannot survive the runner contract change',
+    );
+  }
 });
 
 // ---- wrong / silent model identity -----------------------------------------
@@ -488,6 +557,64 @@ await test('seatQualification admits a probed seat against live anchors and retu
   const admit = await seatQualification({ entry, model: 'served-alias', seatType: 'words_reviewer' });
   assert.equal(admit.qualified, true, admit.reason);
   assert.equal(admit.fingerprint, probed.receipt.fingerprint, 'the run snapshot records the accepted fingerprint');
+});
+
+await test('reported-model alias policy is fingerprint-bound and drift voids qualification', async () => {
+  freshEnv();
+  process.env.CAP_TEST_KEY = SECRET;
+  const { baseUrl } = await startServer((kind) =>
+    kind === 'structured' ? { body: REVIEW_JSON, model: 'served-alias' } : { body: 'CAMUS-CTX-OK', model: 'served-alias' });
+  const entry = envEntry(baseUrl);
+  const expectedReported = ['served-alias'];
+  const probed = await deepQualifyModel({ entry, model: 'requested-model', seatType: 'words_reviewer', expectedReported, contextProbeTokens: 64 });
+  assert.equal(probed.qualified, true, probed.reason);
+
+  const exactPolicy = await seatQualification({ entry, model: 'requested-model', seatType: 'words_reviewer', expectedReported });
+  assert.equal(exactPolicy.qualified, true, exactPolicy.reason);
+  const widened = await seatQualification({ entry, model: 'requested-model', seatType: 'words_reviewer',
+    expectedReported: ['served-alias', 'another-alias'] });
+  assert.equal(widened.qualified, false);
+  assert.equal(widened.reason, 'voided');
+  assert.equal(widened.component, 'adapterContractVersion');
+});
+
+await test('the upstream route pin is normalized into connection identity and provider drift cannot admit', async () => {
+  freshEnv();
+  process.env.CAP_TEST_KEY = SECRET;
+  const routeMetadata = { requested: 'served-alias', strategy: 'direct', attempt: 1,
+    endpoints: { available: [{ provider: 'DeepInfra', model: 'served-alias', selected: true }] } };
+  const { baseUrl } = await startServer((kind) =>
+    kind === 'structured' ? { body: REVIEW_JSON, model: 'served-alias', openRouterMetadata: routeMetadata }
+      : { body: 'CAMUS-CTX-OK', model: 'served-alias', openRouterMetadata: routeMetadata });
+  const entry = {
+    ...envEntry(baseUrl),
+    provider: 'openrouter',
+    route: { upstreamProvider: 'deepinfra/fp4', allowFallbacks: false },
+  };
+  const probed = await deepQualifyModel({
+    entry, model: 'served-alias', seatType: 'words_reviewer', contextProbeTokens: 64,
+  });
+  assert.equal(probed.qualified, true, probed.reason);
+  const connection = probed.receipt.components.find((component) => component.name === 'connection').value;
+  assert.match(connection, /;route=deepinfra\/fp4;fallbacks=false$/);
+
+  const exact = await seatQualification({ entry, model: 'served-alias', seatType: 'words_reviewer' });
+  assert.equal(exact.qualified, true, exact.reason);
+  const drifted = await seatQualification({
+    entry: { ...entry, route: { upstreamProvider: 'alibaba', allowFallbacks: false } },
+    model: 'served-alias',
+    seatType: 'words_reviewer',
+  });
+  assert.equal(drifted.qualified, false, 'a different upstream provider cannot reuse the prior route-bound receipt');
+  assert.equal(drifted.reason, 'missing');
+
+  await assert.rejects(
+    deepQualifyModel({
+      entry: { ...entry, route: { upstreamProvider: 'deepinfra/fp4', allowFallbacks: true } },
+      model: 'served-alias', seatType: 'words_reviewer', contextProbeTokens: 64,
+    }),
+    /explicitly false/,
+  );
 });
 
 await test('seatQualification voids the receipt when live server anchors drift', async () => {

@@ -173,6 +173,7 @@ const snapshotSeat = (entry, model) => ({
   inferenceOperator: entry.inferenceOperator,
   lineage: { source: entry.lineage.source, derivedFrom: entry.lineage.derivedFrom ?? null },
   originConfidence: entry.originConfidence,
+  ...(entry.route ? { route: { ...entry.route } } : {}),
   // A seat/backend-level expected-reported alias mapping (§6.2) rides the
   // snapshot so the runtime adapter reconciles the same declared alias that
   // deep-doctor qualification accepted; dropping it here would make a qualified
@@ -2151,8 +2152,10 @@ const server = http.createServer(async (req, res) => {
           // without contacting the endpoint. Live Studio re-observes all
           // currently available server anchors immediately before execution.
           const q = ENGINE === 'mock'
-            ? storedSeatQualification({ entry, model: seat.model, seatType })
-            : await seatQualification({ entry, model: seat.model, seatType });
+            ? storedSeatQualification({ entry, model: seat.model, seatType,
+              expectedReported: expectedReportedFor(entry, seat, seat.model) })
+            : await seatQualification({ entry, model: seat.model, seatType,
+              expectedReported: expectedReportedFor(entry, seat, seat.model) });
           if (!q.qualified) {
             return json(res, 400, { error: `${seat.backend}:${seat.model} has no valid ${seatType} qualification (${q.reason}${q.component ? `: ${q.component}` : ''}${q.missing?.length ? ` [${q.missing.join(', ')}]` : ''}). Run \`--doctor\` deep probes (or the connect flow) to qualify it, then retry.` });
           }

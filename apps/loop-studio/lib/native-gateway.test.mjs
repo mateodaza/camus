@@ -41,6 +41,46 @@ test('provider evidence refuses missing, substituted, or inconsistent identity',
   assert.throws(() => inspectNativeProviderBody(Buffer.from('data: nope\n\n'), 'text/event-stream', new Set(['m'])), /malformed/);
 });
 
+test('OpenRouter native gateway pins every request and refuses missing or substituted route evidence', async t => {
+  const entry = { name: 'openrouter-qwen', kind: 'openai_compat', provider: 'openrouter', auth: { kind: 'none' },
+    baseUrl: 'https://openrouter.invalid/api/v1', route: { upstreamProvider: 'alibaba', allowFallbacks: false } };
+  const requests = [];
+  const responseFor = (provider = 'Alibaba', includeMetadata = true) => new Response([
+    'data: {"model":"qwen/qwen3.5","choices":[{"delta":{"content":"ok"}}]}\n\n',
+    `data: ${JSON.stringify({ model: 'qwen/qwen3.5', choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      ...(includeMetadata ? { openrouter_metadata: { requested: 'qwen/qwen3.5', strategy: 'direct', attempt: 1,
+        endpoints: { available: [{ provider, model: 'qwen/qwen3.5', selected: true }] } } } : {}) })}\n\n`,
+    'data: [DONE]\n\n',
+  ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const gateway = await startNativeGateway({ entry, model: 'qwen/qwen3.5', remainingTokens: 20, fetchImpl: async (_url, options) => {
+    requests.push({ headers: options.headers, body: JSON.parse(options.body) });
+    return responseFor();
+  } });
+  t.after(() => gateway.close());
+  const request = () => fetch(`${gateway.url}/chat/completions`, { method: 'POST', headers: {
+    authorization: `Bearer ${gateway.capability}`, 'content-type': 'application/json' },
+  body: JSON.stringify({ model: 'qwen/qwen3.5', stream: true, messages: [], provider: { only: ['attacker'] } }) });
+  assert.equal((await request()).status, 200);
+  assert.deepEqual(requests[0].body.provider, { only: ['alibaba'], order: ['alibaba'], allow_fallbacks: false });
+  assert.equal(requests[0].headers['X-OpenRouter-Metadata'], 'enabled');
+  assert.deepEqual(gateway.state.openRouterRouteEvidence, [{ attempt: 1, strategy: 'direct', selectedProvider: 'Alibaba', requested: 'qwen/qwen3.5' }]);
+
+  assert.throws(
+    () => inspectNativeProviderBody(Buffer.from('data: {"model":"qwen/qwen3.5"}\n\ndata: [DONE]\n\n'), 'text/event-stream', new Set(['qwen/qwen3.5']), entry),
+    /omitted required routing metadata/,
+  );
+  assert.throws(
+    () => inspectNativeProviderBody(Buffer.from(`data: ${JSON.stringify({ model: 'qwen/qwen3.5', openrouter_metadata: { strategy: 'direct', attempt: 1,
+      endpoints: { available: [{ provider: 'Together', selected: true }] } } })}\n\ndata: [DONE]\n\n`), 'text/event-stream', new Set(['qwen/qwen3.5']), entry),
+    /did not match the pinned route/,
+  );
+  assert.throws(
+    () => inspectNativeProviderBody(Buffer.from(`data: ${JSON.stringify({ model: 'qwen/qwen3.5', openrouter_metadata: { strategy: 'direct', attempt: 2,
+      endpoints: { available: [{ provider: 'Alibaba', selected: true }] } } })}\n\ndata: [DONE]\n\n`), 'text/event-stream', new Set(['qwen/qwen3.5']), entry),
+    /single-attempt pinned route/,
+  );
+});
+
 test('gateway close aborts an in-flight upstream request', async () => {
   let begin; const began = new Promise(resolve => { begin = resolve; }); let aborted = false;
   const gateway = await startNativeGateway({ entry: { name: 'fixture', kind: 'openai_compat', provider: 'fixture', auth: { kind: 'none' }, baseUrl: 'http://127.0.0.1:9/v1' },

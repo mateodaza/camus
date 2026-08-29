@@ -75,3 +75,40 @@ try {
 }
 
 console.log('openai-compat.test.mjs: quick/standard calls have explicit output and wall-clock budgets');
+
+let openRouterRequest = null;
+globalThis.fetch = async (_url, options) => {
+  openRouterRequest = { headers: options.headers, body: JSON.parse(options.body) };
+  const frame = [
+    { model: 'qwen/qwen3.5', choices: [{ delta: { content: 'pinned' }, finish_reason: null }] },
+    { model: 'qwen/qwen3.5', choices: [], usage: { prompt_tokens: 2, completion_tokens: 1 }, openrouter_metadata: {
+      requested: 'qwen/qwen3.5', strategy: 'direct', attempt: 1,
+      endpoints: { available: [{ provider: 'Alibaba', model: 'qwen/qwen3.5', selected: true }] },
+    } },
+  ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n';
+  return { ok: true, body: new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(frame)); controller.close(); } }) };
+};
+const openRouterEntry = { name: 'openrouter-qwen', provider: 'openrouter', baseUrl: 'https://openrouter.invalid/api/v1', auth: { kind: 'none' },
+  route: { upstreamProvider: 'alibaba', allowFallbacks: false } };
+try {
+  const result = await streamChatCompletion({ entry: openRouterEntry, model: 'qwen/qwen3.5', prompt: 'test', timeoutMs: 100, maxTokens: 321 });
+  assert.deepEqual(openRouterRequest.body.provider, { only: ['alibaba'], order: ['alibaba'], allow_fallbacks: false },
+    'every OpenRouter completion is pinned to exactly one upstream with fallbacks disabled');
+  assert.equal(openRouterRequest.headers['X-OpenRouter-Metadata'], 'enabled');
+  assert.equal(openRouterRequest.body.max_tokens, 321);
+  assert.deepEqual(result.openRouterRouteEvidence, { attempt: 1, strategy: 'direct', selectedProvider: 'Alibaba', requested: 'qwen/qwen3.5' });
+
+  globalThis.fetch = async () => ({ ok: true, body: new ReadableStream({ start(controller) {
+    controller.enqueue(new TextEncoder().encode('data: {"model":"qwen/qwen3.5","choices":[{"delta":{"content":"cached"}}]}\n\ndata: [DONE]\n\n'));
+    controller.close();
+  } }) });
+  await assert.rejects(
+    streamChatCompletion({ entry: openRouterEntry, model: 'qwen/qwen3.5', prompt: 'test', timeoutMs: 100 }),
+    /omitted required routing metadata/,
+    'cache hits and other responses without current route evidence fail closed',
+  );
+} finally {
+  globalThis.fetch = originalFetch;
+}
+
+console.log('openai-compat.test.mjs: OpenRouter calls pin and verify one exact upstream route');

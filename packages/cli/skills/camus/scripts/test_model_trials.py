@@ -4,13 +4,14 @@
 import json
 import os
 import tempfile
+from unittest import mock
 
 import model_trials
 import review_trial
 from test_reviewer_backends import fixture_server, repo_fixture
 
 
-def _config(path, base_url):
+def _config(path, base_url, provider="fixture"):
     with open(path, "w", encoding="utf-8") as handle:
         json.dump({
             "connections": {
@@ -18,7 +19,7 @@ def _config(path, base_url):
             },
             "backends": {
                 "fixture_qwen": {
-                    "kind": "openai_compat", "provider": "fixture",
+                    "kind": "openai_compat", "provider": provider,
                     "connection": "fixture", "protocol": "chat_completions",
                     "trainingOrg": "alibaba", "modelFamily": "qwen",
                     "inferenceOperator": "fixture", "auth": {"kind": "none"},
@@ -42,6 +43,37 @@ def test_lists_profiles_without_credentials_or_endpoints():
             "finalGate": "codex",
         }]
         assert "127.0.0.1" not in json.dumps(rows)
+
+
+def test_openrouter_refuses_before_trial_authority_endpoint_or_provider_work():
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "models.json")
+        _config(path, "http://127.0.0.1:9/v1", provider="openrouter")
+        env = {
+            "CAMUS_MODELS_FILE": path,
+            "CAMUS_HOME": os.path.join(root, "camus"),
+            "STUDIO_GRANDFATHER_DIR": os.path.join(root, "studio"),
+        }
+        with mock.patch.object(model_trials, "_endpoint") as endpoint, \
+                mock.patch.object(model_trials.review_trial, "issue") as issue, \
+                mock.patch.object(model_trials, "_json_command") as provider_process:
+            try:
+                model_trials.run_review(
+                    "fixture_qwen", "qwen-test", root, "review fixture", env=env,
+                )
+                raise AssertionError("OpenRouter must refuse before a reviewer trial can start")
+            except model_trials.TrialError as exc:
+                assert "provider openrouter is refused" in str(exc)
+                assert "upstream route" in str(exc)
+            endpoint.assert_not_called()
+            issue.assert_not_called()
+            provider_process.assert_not_called()
+
+        # The refusal is provider-specific; an otherwise identical direct
+        # profile retains the existing provider-neutral validation behavior.
+        _config(path, "http://127.0.0.1:9/v1", provider="fixture")
+        profiles = model_trials.load_profiles(env)
+        assert profiles["fixture_qwen"]["provider"] == "fixture"
 
 
 def test_runs_signed_shadow_review_and_keeps_codex_as_gate():
@@ -238,6 +270,7 @@ def test_private_receipt_reader_refuses_public_or_symlinked_evidence():
 
 def main():
     tests = [test_lists_profiles_without_credentials_or_endpoints,
+             test_openrouter_refuses_before_trial_authority_endpoint_or_provider_work,
              test_runs_signed_shadow_review_and_keeps_codex_as_gate,
              test_profile_file_must_be_private,
              test_ssh_preflight_requires_the_exact_only_forward,

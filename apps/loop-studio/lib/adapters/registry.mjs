@@ -11,7 +11,7 @@ import { listBackends } from '../models.mjs';
 import { runClaude, runClaudeReview } from './claude.mjs';
 import { runCodexReview, runCodexMaker } from './codex.mjs';
 import { openAiCompatMaker, openAiCompatReviewer } from './openai-compat.mjs';
-import { storedSeatQualification } from '../capability-probes.mjs';
+import { expectedReportedFor, storedSeatQualification } from '../capability-probes.mjs';
 import { validateCodeExecutor, NATIVE_EXECUTOR, QWEN_NATIVE_EXECUTOR, GROK_NATIVE_EXECUTOR } from '../code-native-policy.mjs';
 import { runNativeCodex } from './codex-native.mjs';
 import { runNativeQwen } from './qwen-native.mjs';
@@ -50,7 +50,8 @@ function requireAcceptedAdmission(seat, backend, seatType) {
       `backend "${backend.name}" cannot resolve as ${seatType} without the exact accepted qual1 qualification in the run snapshot`,
     );
   }
-  const stored = storedSeatQualification({ entry: backend, model: seat?.model, seatType });
+  const stored = storedSeatQualification({ entry: backend, model: seat?.model, seatType,
+    expectedReported: expectedReportedFor(backend, seat, seat?.model) });
   if (!stored.qualified || stored.fingerprint !== accepted.fingerprint) {
     throw new Error(
       `backend "${backend.name}" cannot resolve as ${seatType}: the snapshot qualification does not match the valid stored receipt for ${backend.name}:${seat?.model ?? 'unknown'}`,
