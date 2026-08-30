@@ -6,18 +6,33 @@ import { resolve } from 'node:path';
 import { claimCodeOwnedProcessLaunch, readCodeOwnedProcessIntent, updateCodeOwnedProcessIntent } from './code-owned-process-registry.mjs';
 
 export const codeOwnedProcessSupervisorPath = fileURLToPath(import.meta.url);
+const PROCESS_INSPECTION_TIMEOUT_MS = 5000;
 
 const inspect = (pid, field) => {
-  try { return execFileSync('/bin/ps', ['-p', String(pid), '-o', `${field}=`],
-    { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
-  catch (error) { if (error.status === 1 || error.code === 'ESRCH') return null; throw error; }
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try { return execFileSync('/bin/ps', ['-p', String(pid), '-o', `${field}=`],
+      { encoding: 'utf8', timeout: PROCESS_INSPECTION_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
+    catch (error) {
+      if (error.status === 1 || error.code === 'ESRCH') return null;
+      lastError = error;
+    }
+  }
+  throw lastError;
 };
 const identity = pid => inspect(pid, 'lstart');
 const children = pid => {
-  try { return execFileSync('/usr/bin/pgrep', ['-P', String(pid)],
-    { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] })
-    .trim().split(/\s+/).map(Number).filter(value => Number.isSafeInteger(value) && value > 1); }
-  catch (error) { if (error.status === 1 || error.code === 'ESRCH') return []; throw error; }
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try { return execFileSync('/usr/bin/pgrep', ['-P', String(pid)],
+      { encoding: 'utf8', timeout: PROCESS_INSPECTION_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'] })
+      .trim().split(/\s+/).map(Number).filter(value => Number.isSafeInteger(value) && value > 1); }
+    catch (error) {
+      if (error.status === 1 || error.code === 'ESRCH') return [];
+      lastError = error;
+    }
+  }
+  throw lastError;
 };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
@@ -93,6 +108,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     child = spawn(message.command, message.args, { cwd: message.cwd, env: process.env, detached: true,
       stdio: message.targetIpc ? ['pipe', 'pipe', 'pipe', 'ipc'] : ['pipe', 'pipe', 'pipe'] });
     child.stdin.on('error', () => {});
+    // Capture descendants before the first forwarded byte can encounter a
+    // closed parent pipe and make a noisy target exit between periodic scans.
+    let firstOutputTracked = false;
+    const trackFirstOutput = () => {
+      if (firstOutputTracked || ended) return;
+      firstOutputTracked = true;
+      try { collect(child.pid); } catch { /* periodic and final cleanup retry and prove custody */ }
+    };
+    child.stdout.on('data', trackFirstOutput); child.stderr.on('data', trackFirstOutput);
     child.stdout.pipe(process.stdout); child.stderr.pipe(process.stderr);
     child.on('message', value => {
       if (!process.send) return;

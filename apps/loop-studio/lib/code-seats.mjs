@@ -152,9 +152,23 @@ function parseProtocol(text, limits) {
   if (byteLength(text) > limits.maxResponseBytes) throw new Error('maker protocol response exceeded the response limit');
   let message;
   try { message = JSON.parse(text); } catch { throw new Error('maker protocol output is not one JSON object'); }
-  if (!message || typeof message !== 'object' || Array.isArray(message) || !Array.isArray(message.actions) || typeof message.done !== 'boolean') {
+  if (!message || typeof message !== 'object' || Array.isArray(message) || !Array.isArray(message.actions)) {
     throw new Error('maker protocol needs an actions array and boolean done');
   }
+  // An action-bearing response cannot safely mean "complete": the host still
+  // has work to validate and apply. Some otherwise-valid CLI model responses
+  // omit only `done`; derive the conservative value instead of spending a
+  // second model call on formatting repair. Empty-action responses remain
+  // strict because omission there could otherwise fabricate either completion
+  // or a human/stop decision.
+  delete message._hostProtocolNormalization;
+  if (message.done === undefined && message.actions.length) {
+    message.done = false;
+    Object.defineProperty(message, '_hostProtocolNormalization', {
+      value: 'nonempty_actions_imply_not_done', enumerable: false,
+    });
+  }
+  if (typeof message.done !== 'boolean') throw new Error('maker protocol needs an actions array and boolean done');
   if (message.actions.length > limits.maxActionsPerStep) throw new Error('maker requested too many actions in one response');
   if (message.done && message.actions.length) throw new Error('maker cannot combine done with actions');
   if (message.decision && (message.done || message.actions.length || !['human', 'stop', 'retry_verify', 'rebut'].includes(message.decision.action)

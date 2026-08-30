@@ -168,6 +168,28 @@ test('a malformed paid raw response preserves its call, usage, identity, and res
   assert.equal(checkpoint.result.protocol.steps, 0);
 });
 
+test('non-empty bounded actions safely imply done false while an empty omission still refuses', async t => {
+  let turn = 0;
+  const f = await fixture(t, async () => ++turn === 1
+    ? { ok: true, text: JSON.stringify({ actions: [write('correct')], summary: 'write the accepted result' }),
+      usage: { input_tokens: 10, output_tokens: 5 } }
+    : message());
+  const result = await f.run({ limits: { maxRetries: 0 } });
+  assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+  assert.equal(result.usage.retries, 0, 'safe host normalization spends no formatting-repair call');
+  assert.equal(await readFile(join(result.candidate.worktree, 'answer.txt'), 'utf8'), 'correct');
+  const events = (await readFile(join(f.options.receiptsDir, 'code-events.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.ok(events.some(event => event.type === 'protocol_normalized'
+    && event.normalization === 'nonempty_actions_imply_not_done'));
+
+  const g = await fixture(t, async () => ({ ok: true, text: JSON.stringify({ actions: [], summary: 'ambiguous omission' }),
+    usage: { input_tokens: 10, output_tokens: 5 } }));
+  const refused = await g.run({ limits: { maxRetries: 0 } });
+  assert.equal(refused.status, 'infra_error');
+  assert.match(refused.error, /actions array and boolean done/);
+  assert.equal(refused.protocol.steps, 0);
+});
+
 test('binding, HMAC, candidate drift and concurrent ownership refuse before more model calls', async (t) => {
   const f = await fixture(t, () => message([write('correct')]));
   await f.run({ limits: { maxCalls: 1 } });

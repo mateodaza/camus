@@ -92,6 +92,12 @@ test('SIGKILL of evaluator with a noisy long-lived reviewer cleans target and de
   });
   t.after(() => { try { process.kill(worker.pid, 'SIGKILL'); } catch {} });
   const pids = await waitFor(async () => JSON.parse(await readFile(pidPath, 'utf8')));
+  const processIdentities = [pids.target, pids.descendant].map(pid => ({ pid, birth: processBirth(pid) }));
+  t.after(() => {
+    for (const identity of processIdentities) {
+      try { if (identity.birth && processBirth(identity.pid) === identity.birth) process.kill(identity.pid, 'SIGKILL'); } catch {}
+    }
+  });
   const active = await waitFor(() => {
     const status = codeOwnedProcessCleanupStatus(root);
     return status.intents[0]?.state === 'active' ? status : null;
@@ -105,7 +111,7 @@ test('SIGKILL of evaluator with a noisy long-lived reviewer cleans target and de
   const terminal = await waitFor(() => {
     const status = codeOwnedProcessCleanupStatus(root);
     return status.complete ? status : null;
-  });
+  }, 20_000);
   assert.equal(processAlive(pids.target), false);
   assert.equal(processAlive(pids.descendant), false);
   assert.equal(terminal.intents[0].cleanup.complete, true);

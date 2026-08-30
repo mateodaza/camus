@@ -458,7 +458,13 @@ export async function runProductiveCodeLoop(options, h) {
         if (abort.signal.aborted) return finish('stopped', 'code seats stopped during maker turn');
         if (!response.ok) { const failed = await failedCall(response, 'maker'); if (failed) return failed; continue; }
         let message;
-        try { message = h.parseProtocol(response.text, limits); if (native && message.actions.length) throw new Error('Native executor may not return file-action requests.'); }
+        try {
+          message = h.parseProtocol(response.text, limits);
+          if (message._hostProtocolNormalization) {
+            await log('protocol_normalized', { normalization: message._hostProtocolNormalization });
+          }
+          if (native && message.actions.length) throw new Error('Native executor may not return file-action requests.');
+        }
         catch (error) {
           if (native || record.usage.retries >= limits.maxRetries) throw error;
           record.usage.retries++; record.pendingCall = null;
