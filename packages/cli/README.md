@@ -116,6 +116,9 @@ use the CLI setup path for the same underlying controls without a server.
 The requirements below apply to `camus run` and the compatibility workflows.
 
 - **Claude Code** v2.1.154+ with dynamic workflows, on a subscription plan.
+  Independent Build seats that select Claude require a current CLI with
+  `--effort` support (verified with v2.1.251+); an older CLI is refused before
+  model-call accounting and should be updated.
   Camus runs interactively, so usage counts against your plan limits rather than
   metered API credit.
 - **Codex CLI** installed and authenticated (ChatGPT plan or API key). This is the

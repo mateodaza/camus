@@ -84,11 +84,29 @@ const rec = { argv: process.argv.slice(2), present: {}, constants: {} };
 for (const n of NAMES) rec.present[n] = Object.prototype.hasOwnProperty.call(process.env, n);
 rec.constants.CLAUDE_CODE_DISABLE_AUTO_MEMORY = process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
 fs.writeFileSync(path.join(process.cwd(), 'capture.json'), JSON.stringify(rec));
+const modelIndex = process.argv.indexOf('--model');
+if (process.argv[modelIndex + 1] === 'provider-error-effort-model' && process.argv.includes('--effort')) {
+  process.stdout.write(JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true, result: 'provider turn reached' }) + '\\n');
+  process.stderr.write("error: unknown option '--effort'\\n");
+  process.exit(2);
+}
+if (process.argv[modelIndex + 1] === 'ambiguous-effort-model' && process.argv.includes('--effort')) {
+  process.stderr.write('invalid value for --effort\\n');
+  process.exit(2);
+}
+if (process.argv[modelIndex + 1] === 'unsupported-effort-model' && process.argv.includes('--effort')) {
+  process.stderr.write("error: unknown option '--effort'\\n");
+  process.exit(2);
+}
 const structured = process.argv.includes('--json-schema')
   ? { actions: [], done: true, summary: 'schema ready', decision: null }
   : null;
+const promptIndex = process.argv.indexOf('-p');
+const review = process.argv[promptIndex + 1] === 'judge it'
+  ? JSON.stringify({ verdict: 'clean', findings: [], questions_for_human: [], claim_assessments: [], coverage_assessments: [], threshold_assessments: [] })
+  : null;
 process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false,
-  result: structured ? 'intermediate prose must not win' : 'ok', structured_output: structured, total_cost_usd: 0 }) + '\\n');
+  result: structured ? 'intermediate prose must not win' : review ?? 'ok', structured_output: structured, total_cost_usd: 0 }) + '\\n');
 process.exit(0);
 `;
 
@@ -204,12 +222,34 @@ try {
   // --- entry point 1: runClaude (maker seat) -------------------------------
   await (async () => {
     const cwd = freshDir('make');
-    const res = await runClaude({ prompt: 'draft it', stage: 'make', cwd, model: 'test-maker-model', toolPolicy: 'none' });
+    const res = await runClaude({ prompt: 'draft it', stage: 'make', cwd, model: 'test-maker-model', effort: 'medium', toolPolicy: 'none' });
     ok('runClaude spawned the fake and parsed its result', () => {
       assert.equal(res.ok, true, res.error || 'runClaude should succeed against the fake');
     });
     ok('runClaude: isolated env + empty --setting-sources, proven against an unisolated control', () => {
-      assertIsolated('runClaude', readCapture(cwd), controlSpawn('make'));
+      const capture = readCapture(cwd);
+      assertIsolated('runClaude', capture, controlSpawn('make'));
+      assert.deepEqual(capture.argv.slice(capture.argv.indexOf('--effort'), capture.argv.indexOf('--effort') + 2), ['--effort', 'medium']);
+    });
+  })();
+
+  await (async () => {
+    const maker = await runClaude({ prompt: 'draft it', stage: 'make', cwd: freshDir('provider-maker'),
+      model: 'provider-error-effort-model', effort: 'medium', toolPolicy: 'none' });
+    const reviewer = await runClaudeReview({ prompt: 'judge it', cwd: freshDir('provider-reviewer'),
+      model: 'provider-error-effort-model', effort: 'medium' });
+    ok('provider-stream evidence can never be relabeled as a local no-call effort refusal', () => {
+      assert.notEqual(maker.noModelCalled, true); assert.notEqual(reviewer.noModelCalled, true);
+      assert.match(maker.error, /provider turn reached/); assert.match(reviewer.error, /provider turn reached/);
+    });
+  })();
+
+  await (async () => {
+    const maker = await runClaude({ prompt: 'draft it', stage: 'make', cwd: freshDir('ambiguous-maker'),
+      model: 'ambiguous-effort-model', effort: 'medium', toolPolicy: 'none' });
+    ok('ambiguous effort stderr remains conservatively model-call-accounted', () => {
+      assert.notEqual(maker.noModelCalled, true);
+      assert.match(maker.error, /invalid value for --effort/);
     });
   })();
 
@@ -227,20 +267,43 @@ try {
       const index = capture.argv.indexOf('--json-schema');
       assert.ok(index >= 0, 'structured maker argv carries --json-schema');
       assert.deepEqual(JSON.parse(capture.argv[index + 1]), outputSchema);
+      assert.equal(capture.argv.includes('--effort'), false, 'an omitted effort never invents a Claude request');
     });
   })();
 
   // --- entry point 2: runClaudeReview (reviewer seat) ----------------------
   await (async () => {
     const cwd = freshDir('review');
-    const res = await runClaudeReview({ prompt: 'judge it', model: 'test-reviewer-model', cwd });
+    const res = await runClaudeReview({ prompt: 'judge it', model: 'test-reviewer-model', effort: 'high', cwd });
     ok('runClaudeReview spawned the fake (ran through the real reviewer path)', () => {
-      // The reviewer normalizes a bare "ok" to a fail-closed verdict; what matters
-      // for isolation is that it SPAWNED the fake, which the capture below proves.
-      assert.ok(res && typeof res === 'object');
+      assert.equal(res.ran, true);
+      assert.equal(res.reviewerEffort, 'high', 'the successful reviewer receipt records the requested Claude effort');
     });
     ok('runClaudeReview: isolated env + empty --setting-sources, proven against an unisolated control', () => {
-      assertIsolated('runClaudeReview', readCapture(cwd), controlSpawn('review'));
+      const capture = readCapture(cwd);
+      assertIsolated('runClaudeReview', capture, controlSpawn('review'));
+      assert.deepEqual(capture.argv.slice(capture.argv.indexOf('--effort'), capture.argv.indexOf('--effort') + 2), ['--effort', 'high']);
+    });
+  })();
+
+  await (async () => {
+    const cwd = freshDir('review-no-effort');
+    const res = await runClaudeReview({ prompt: 'judge it', model: 'test-reviewer-model', cwd });
+    ok('runClaudeReview omits an unrequested effort without inventing receipt evidence', () => {
+      assert.equal(res.ran, true);
+      assert.equal(res.reviewerEffort, null);
+      assert.equal(readCapture(cwd).argv.includes('--effort'), false);
+    });
+  })();
+
+  await (async () => {
+    const maker = await runClaude({ prompt: 'draft it', stage: 'make', cwd: freshDir('old-maker'),
+      model: 'unsupported-effort-model', effort: 'medium', toolPolicy: 'none' });
+    const reviewer = await runClaudeReview({ prompt: 'judge it', cwd: freshDir('old-reviewer'),
+      model: 'unsupported-effort-model', effort: 'medium' });
+    ok('an older CLI effort refusal is explicit pre-dispatch evidence for both roles', () => {
+      assert.equal(maker.noModelCalled, true); assert.equal(reviewer.noModelCalled, true);
+      assert.match(maker.error, /does not support --effort/); assert.match(reviewer.error, /does not support --effort/);
     });
   })();
 

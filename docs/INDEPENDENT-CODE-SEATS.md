@@ -113,7 +113,21 @@ node packages/cli/bin/camus.js build --repo /path/to/project \
   --reviewer claude:sonnet --verify 'npm test' --verify-repeatable
 ```
 
-Studio exposes the same choice under **Any-model executor, recovery and budget**.
+Claude CLI also accepts an explicit maker effort on current releases (verified
+with Claude Code 2.1.251+). Camus
+passes and records that request instead of inheriting the CLI/account default:
+
+```sh
+node packages/cli/bin/camus.js build --repo /path/to/project \
+  --task 'Implement the bounded feature.' --contract 'The focused tests pass.' \
+  --maker claude:claude-opus-4-8 --maker-effort medium \
+  --maker-executor file_actions --reviewer codex:gpt-5.6-luna \
+  --reviewer-effort medium --verify 'npm test' --verify-repeatable
+```
+
+Studio exposes the same model/executor pairing and recovery controls under
+**Any-model executor, recovery and budget**; the explicit maker-effort override
+is currently a CLI control.
 A token budget of at least 32,768 is mandatory for every native executor. Camus
 reserves that amount for any call whose harness does not report usage and also
 caps the provider request to the remaining allowance. Reported input or total

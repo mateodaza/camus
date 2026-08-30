@@ -157,8 +157,8 @@ try {
   const loader = join(TEMP, 'providers.mjs');
   const registry = pathToFileURL(join(installed, 'runtime/apps/loop-studio/lib/adapters/registry.mjs')).href;
   const fake = `export function resolveSeatAdapters(models,backends){return {makerBackend:backends.maker,reviewerBackend:backends.reviewer,
-    maker:async({prompt})=>({ok:true,text:JSON.stringify(prompt.includes('Complete host action history')?{actions:[],done:true}:{actions:[{type:'write',path:'answer.txt',content:'correct',expected_sha256:null}],done:false})}),
-    reviewer:async()=>({ran:true,verdict:'APPROVED',findings:[]})};}`;
+    maker:async({prompt,effort})=>{if(effort!=='high')throw new Error('maker effort was not pinned');return {ok:true,text:JSON.stringify(prompt.includes('Complete host action history')?{actions:[],done:true}:{actions:[{type:'create',path:'answer.txt',content:'correct',expected_sha256:null}],done:false})}},
+    reviewer:async({effort})=>{if(effort!=='low')throw new Error('reviewer effort was not pinned');return {ran:true,verdict:'APPROVED',findings:[]}}};}`;
   await writeFile(loader, `export async function load(url,ctx,next){if(url===${JSON.stringify(registry)})return {format:'module',shortCircuit:true,source:${JSON.stringify(fake)}};return next(url,ctx);}`);
   const runEnv = { ...env, NODE_OPTIONS: `--experimental-loader=${loader}` };
   const repo = join(TEMP, 'project'); await mkdir(repo);
@@ -169,11 +169,12 @@ try {
     catch (error) { assert.equal(error.code, 2, `${error.stdout}\n${error.stderr}`); return JSON.parse(error.stdout); }
   };
   const started = await execute(['--task', 'Add the expected answer file', '--contract', 'Keep the original source checkout unchanged', '--repo', repo,
-    '--maker', 'claude:sonnet', '--reviewer', 'claude:sonnet', '--max-calls', '1']);
+    '--maker', 'claude:sonnet', '--maker-effort', 'high', '--reviewer', 'claude:sonnet', '--reviewer-effort', 'low', '--max-calls', '1']);
   assert.equal(started.question.kind, 'budget');
   assert.equal((await execute(['--status', started.id])).usage.calls, 1);
   const done = await execute(['--resume', started.id, '--max-calls', '5']);
   assert.equal(done.completion, 'candidate_ready_for_acceptance', done.error);
+  assert.equal(done.protocol.fileActionPolicy, 'create_replace_v1');
   assert.equal(done.candidate.worktree, started.candidate.worktree); assert.equal(done.usage.calls, 3);
   console.log('test_code_runtime.mjs: packed any-model runtime is isolated and executable');
 } finally {

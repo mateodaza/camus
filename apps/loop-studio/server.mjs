@@ -589,7 +589,7 @@ async function resumeIndependentCode(id, body) {
     admission = acquireAdmission(1);
     if (!admission.ok) throw new Error('Studio is at its active run limit.');
     target = meta.targetPath; activeBuilds.add(target);
-    const prepared = await prepareCodeExecution(checkpoint.seats);
+    const prepared = await prepareCodeExecution(checkpoint.seats, { preserveAbsentEffort: true });
     return await startRun({
       existingCodeId: id, goal: meta.goal ?? meta.task, acceptanceContract: meta.acceptanceContract,
       lane: 'build', codeMode: 'independent', depth: 'quick', ground: false,

@@ -9,6 +9,8 @@ import { initializeCodeOwnedProcessRegistry } from './code-owned-process-registr
 
 const TRANSIENT = /\b(?:429|502|503|504|ECONNRESET|ETIMEDOUT|rate.limit|temporarily unavailable)\b/i;
 const TERMINAL = new Set(['complete', 'refused']);
+export const FILE_ACTION_POLICY = 'create_replace_v1';
+const LEGACY_FILE_ACTION_POLICY = 'legacy_write_v1';
 const clone = (value) => JSON.parse(JSON.stringify(value));
 export const nativeTrackedInventory = record => {
   const paths = Array.isArray(record.tracked) ? record.tracked : [];
@@ -69,7 +71,8 @@ export async function runProductiveCodeLoop(options, h) {
     // Provider responses and accepted host-protocol steps are distinct. A
     // malformed paid raw response is still durable economic/identity evidence,
     // even though it authorized zero protocol steps or file actions.
-    record.result.protocol = { version: 'code-seats/v2', rawProviderResponses: native ? null : record.usage.rawProviderResponses,
+    record.result.protocol = { version: 'code-seats/v2', fileActionPolicy: record.fileActionPolicy ?? LEGACY_FILE_ACTION_POLICY,
+      rawProviderResponses: native ? null : record.usage.rawProviderResponses,
       steps: record.usage.steps, actions: record.usage.actions };
     let checkpointWriteFailed = false;
     if (writable) try { persist(); } catch { status = 'infra_error'; reason = 'Checkpoint could not be saved; inspect the last durable state before recovery.'; checkpointWriteFailed = true; }
@@ -85,8 +88,9 @@ export async function runProductiveCodeLoop(options, h) {
     emit('terminal', { stage: 'code_seats', status, line: reason });
     return value;
   };
-  const bind = () => digest({ task, seats: { maker: seats.maker, reviewer: seats.reviewer }, backends: backendSnapshot,
+  const bind = (fileActionPolicy) => digest({ task, seats: { maker: seats.maker, reviewer: seats.reviewer }, backends: backendSnapshot,
     verifier: verify?.command ?? null, repeatable: verify?.repeatable !== false,
+    ...(fileActionPolicy === undefined ? {} : { fileActionPolicy }),
     credentialRevisions: Object.fromEntries(Object.entries(backendSnapshot).map(([role, backend]) => {
       const name = backend?.auth?.envVar ?? backend?.apiKeyEnv;
       return [role, name ? codeCredentialRevision(process.env[name] ?? '') : null];
@@ -144,7 +148,7 @@ export async function runProductiveCodeLoop(options, h) {
     const reason = budgetReason();
     if (reason) return { budget: reason };
     await checkCandidate();
-    if (bind() !== record.binding) throw new Error('Credential or execution binding changed during this run.');
+    if (bind(record.fileActionPolicy) !== record.binding) throw new Error('Credential or execution binding changed during this run.');
     const id = `${role}-${record.usage.calls + 1}`;
     const nativeCall = native && role === 'maker';
     // Capture the budget before replacing the host's unknown-usage reservation.
@@ -311,7 +315,8 @@ export async function runProductiveCodeLoop(options, h) {
     owner = await acquireCodeRun(receiptsDir);
     if (resume) {
       record = await readCodeCheckpoint(receiptsDir);
-      if (record.source.repoPath !== source || record.binding !== bind()) throw new Error('Run contract, model, credential, connection, or verification binding changed; no model was called.');
+      if (record.fileActionPolicy !== undefined && record.fileActionPolicy !== FILE_ACTION_POLICY) throw new Error('Run file-action policy is unsupported; no model was called.');
+      if (record.source.repoPath !== source || record.binding !== bind(record.fileActionPolicy)) throw new Error('Run contract, model, credential, connection, verification, or file-action policy binding changed; no model was called.');
       if (TERMINAL.has(record.phase)) throw new Error('This run is already closed; inspect its existing receipt. No model was called.');
       limits = { ...record.limits };
       for (const [key, value] of Object.entries(options.limits ?? {})) {
@@ -351,7 +356,8 @@ export async function runProductiveCodeLoop(options, h) {
       const holder = await mkdtemp(join(root, 'candidate-'));
       const worktree = join(holder, 'worktree');
       const branch = `codex/code-seats-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
-      record = { version: CODE_RUN_VERSION, runId: basename(receiptsDir), binding: bind(), task, seats,
+      record = { version: CODE_RUN_VERSION, runId: basename(receiptsDir), binding: bind(FILE_ACTION_POLICY), task, seats,
+        fileActionPolicy: FILE_ACTION_POLICY,
         source: { repoPath: source, head: base.stdout.trim() }, candidate: { worktree, branch, head: base.stdout.trim() },
         phase: 'initialize', status: 'running', limits, usage: { calls: 0, rawProviderResponses: 0, steps: 0, actions: 0, repairs: 0, retries: 0, observedTokens: 0, accountedTokens: 0, unmeasuredCalls: 0, activeMs: 0, modelMs: 0, verificationMs: 0, pausedMs: 0 },
         attempts: [], history: [], created: [], reads: [], feedback: null, pendingCall: null, pendingAction: null,
@@ -397,21 +403,21 @@ export async function runProductiveCodeLoop(options, h) {
     // Recover a mutation interrupted between application and checkpoint publication.
     if (record.pendingAction) {
       const { action, otherFingerprint, desiredSha256 } = record.pendingAction;
-      if (digest(await h.completeDiff(state.worktree, limits, action.path)) !== otherFingerprint) throw new Error('Unrelated candidate drift during interrupted action.');
       const path = await h.safePath(state.worktree, action.path);
+      if (digest(await h.completeDiff(state.worktree, limits, path.rel)) !== otherFingerprint) throw new Error('Unrelated candidate drift during interrupted action.');
       let text = null; try { text = await h.currentText(path.absolute, limits); } catch (error) { if (error.code !== 'ENOENT') throw error; }
       const current = text === null ? null : h.sha256(text);
-      const desired = action.type === 'write' ? h.sha256(action.content)
+      const desired = ['create', 'write'].includes(action.type) ? h.sha256(action.content)
         : action.type === 'replace' ? desiredSha256 : null;
-      if (action.type === 'replace' && !/^[a-f0-9]{64}$/i.test(desired ?? '')) throw new Error('Interrupted replace lacks its desired content binding.');
+      if (action.type === 'replace' && !/^[a-f0-9]{64}$/.test(desired ?? '')) throw new Error('Interrupted replace lacks its desired content binding.');
       if (current === desired) {
-        if (action.type === 'write' && action.expected_sha256 === null) state.created.add(action.path);
-        if (action.type === 'delete') { state.created.delete(action.path); state.tracked = state.tracked.filter((path) => path !== action.path); }
-        if (action.type === 'write') state.reads.set(action.path, action.content);
-        else if (action.type === 'replace') state.reads.set(action.path, text);
-        else state.reads.delete(action.path);
+        if (action.type === 'create' || (action.type === 'write' && action.expected_sha256 === null)) state.created.add(path.rel);
+        if (action.type === 'delete') { state.created.delete(path.rel); state.tracked = state.tracked.filter((trackedPath) => trackedPath !== path.rel); }
+        if (['create', 'write'].includes(action.type)) state.reads.set(path.rel, action.content);
+        else if (action.type === 'replace') state.reads.set(path.rel, text);
+        else state.reads.delete(path.rel);
         invalidateCandidateEvidence();
-        record.observations.push({ type: action.type, path: action.path, sha256: desired, recovered: true });
+        record.observations.push({ type: action.type, path: path.rel, sha256: desired, recovered: true });
         record.actionIndex++; record.pendingAction = null; await h.ensureCreatedVisible(state); await snapshot();
       } else if (current !== action.expected_sha256) throw new Error('Interrupted action has unexpected file contents.');
     }
@@ -430,6 +436,18 @@ export async function runProductiveCodeLoop(options, h) {
       record.generation = owner.generation; writable = true;
       return finish('needs_decision', 'Native turn outcome is uncertain. Candidate preserved for inspection; automatic adoption or replay is refused.', 'refused');
     }
+    // Pre-policy checkpoints can safely recover a mutation whose filesystem
+    // effect was already durably bound above. Their saved maker responses,
+    // however, hash the retired write-dialect prompt and cannot be re-bound to
+    // today's create/replace prompt. Native checkpoints are parked too: their
+    // policy was not bound, even though they did not use file actions. Preserve
+    // all evidence, perform no qualification/provider side effect, and require
+    // a fresh run. An in-flight native turn is handled conservatively above.
+    if (record.fileActionPolicy === undefined) {
+      await checkCandidate();
+      record.generation = owner.generation; writable = true;
+      return finish('needs_decision', 'Legacy file-action checkpoint recovered and parked; start a fresh run to continue under create/replace.', 'refused');
+    }
     await checkCandidate();
     if (authorize) await authorize();
     writable = true; record.generation = owner.generation; record.status = 'running'; record.reason = null;
@@ -440,7 +458,8 @@ export async function runProductiveCodeLoop(options, h) {
     heartbeat.unref();
     while (true) {
       if (abort.signal.aborted) return finish('stopped', cleanError(abort.signal.reason ?? 'code seats stopped'));
-      record.result.protocol = { version: 'code-seats/v2', rawProviderResponses: native ? null : record.usage.rawProviderResponses,
+      record.result.protocol = { version: 'code-seats/v2', fileActionPolicy: record.fileActionPolicy ?? LEGACY_FILE_ACTION_POLICY,
+        rawProviderResponses: native ? null : record.usage.rawProviderResponses,
         steps: record.usage.steps, actions: record.usage.actions };
       record.result.source = record.source;
       if (record.phase === 'make') {
@@ -499,11 +518,16 @@ export async function runProductiveCodeLoop(options, h) {
         let actionRefused = false;
         while (record.actionIndex < record.actions.length) {
           if (abort.signal.aborted) return finish('stopped', 'code seats stopped during host action');
-          const action = record.actions[record.actionIndex];
+          let action = record.actions[record.actionIndex];
+          if (action.type !== 'list') {
+            const canonicalPath = await h.safePath(state.worktree, action.path);
+            action = { ...action, path: canonicalPath.rel };
+            record.actions[record.actionIndex] = action;
+          }
           if (!record.pendingAction) {
             if (record.usage.actions >= limits.maxActions) return question('protocol action cap reached', 'budget');
             await checkCandidate(); record.usage.actions++;
-            if (['replace', 'write', 'delete'].includes(action.type)) {
+            if (['replace', 'create', 'write', 'delete'].includes(action.type)) {
               const validation = await h.applyAction(action, state, { validateOnly: true });
               record.pendingAction = { action, otherFingerprint: digest(await h.completeDiff(state.worktree, limits, action.path)),
                 ...(action.type === 'replace' ? { desiredSha256: validation.desiredSha256 } : {}) };
@@ -531,7 +555,7 @@ export async function runProductiveCodeLoop(options, h) {
             record.actionSummary = null; record.pendingAction = null; record.phase = 'make';
             await log('action_refused', { reason }); actionRefused = true; break;
           }
-          if (['replace', 'write', 'delete'].includes(action.type)) {
+          if (['replace', 'create', 'write', 'delete'].includes(action.type)) {
             invalidateCandidateEvidence();
           }
           await h.ensureCreatedVisible(state); await snapshot(); record.actionIndex++; record.pendingAction = null;

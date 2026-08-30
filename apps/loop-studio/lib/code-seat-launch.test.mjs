@@ -50,6 +50,7 @@ const reversed = await prepareCodeSeats({ pairing: { maker: { ...pick(codex), ef
 assert.equal(reversed.models.maker.backend, 'codex');
 assert.equal(reversed.models.reviewer.backend, 'claude');
 assert.equal(reversed.models.maker.effort, 'low');
+assert.equal(reversed.models.reviewer.effort, 'medium', 'Build pins a deterministic Claude effort instead of inheriting account settings');
 assert.equal(probes, 0);
 assert.equal(reversed.pairingView.gating, false);
 const same = await prepareCodeSeats({ pairing: { maker: pick(external), reviewer: pick(external) } }, {
@@ -64,11 +65,28 @@ assert.deepEqual(same.models.maker.expectedReported, external.expectedReported);
 assert.equal(same.frozenBackends.reviewer.baseUrl, 'https://fixture.invalid/v1');
 assert.equal(same.models.reviewer.qualification.seatType, 'words_reviewer');
 await assert.rejects(prepareCodeSeats({ pairing: { maker: { backend: 'codex', model: 'invented' }, reviewer: pick(claude) } }, deps), /unavailable/);
-await assert.rejects(prepareCodeSeats({ pairing: { maker: pick(claude), reviewer: { ...pick(claude), effort: 'high' } } }, deps), /does not honor/);
-assert.equal(resolutions, 2, 'refusals do not resolve or invoke models');
+const claudeEffort = await prepareCodeSeats({ pairing: { maker: pick(claude), reviewer: { ...pick(claude), effort: 'high' } } }, deps);
+assert.equal(claudeEffort.models.reviewer.effort, 'high');
+const legacyClaude = await prepareCodeSeats({ pairing: { maker: pick(claude), reviewer: pick(claude) }, preserveAbsentEffort: true }, deps);
+assert.equal(legacyClaude.models.maker.effort, undefined, 'a legacy checkpoint keeps its absent maker effort binding');
+assert.equal(legacyClaude.models.reviewer.effort, undefined, 'a legacy checkpoint keeps its absent reviewer effort binding');
+assert.equal(resolutions, 4, 'only accepted pairings resolve adapters; refusals do not');
+const claudeAlt = entry('claude', 'opus');
+const effortDeps = { ...deps, catalog: () => ({ maker: [claude, claudeAlt, codex], reviewer: [claude, claudeAlt, codex] }),
+  models: () => ({ maker: { ...pick(claude), effort: 'high' }, reviewer: { ...pick(codex), effort: 'low' }, loop: { roundCap: 2 } }) };
+const inherited = await prepareCodeSeats({ pairing: { maker: pick(claude), reviewer: pick(codex) }, live: false }, effortDeps);
+assert.equal(inherited.models.maker.effort, 'high', 'the exact same role/backend/model may inherit its standing effort');
+assert.equal(inherited.models.reviewer.effort, 'low');
+const differentModel = await prepareCodeSeats({ pairing: { maker: pick(claudeAlt), reviewer: { ...pick(codex), effort: 'xhigh' } }, live: false }, effortDeps);
+assert.equal(differentModel.models.maker.effort, 'medium', 'a different model never inherits another model\'s standing effort');
+assert.equal(differentModel.models.reviewer.effort, 'xhigh', 'an explicit request wins over standing effort');
+const roleSwapped = await prepareCodeSeats({ pairing: { maker: pick(codex), reviewer: pick(claude) }, live: false }, effortDeps);
+assert.equal(roleSwapped.models.maker.effort, 'medium', 'a role-swapped seat never inherits the other role\'s effort');
+assert.equal(roleSwapped.models.reviewer.effort, 'medium', 'a role-swapped seat defaults deterministically');
 const choices = await codeModelChoices(catalog, { platform: 'darwin', arch: 'arm64', nodeMajor: 22, readiness: readyHarness });
 assert.equal(choices.maker.length, choices.reviewer.length);
 assert.doesNotMatch(JSON.stringify(choices), /baseUrl|apiKey|changed.invalid/);
+assert.equal(choices.maker.find(seat => seat.backend === 'claude').effort, true, 'Build exposes the Claude CLI effort capability without changing the words-seat catalog');
 assert.deepEqual(parseCodeSeat('host:qwen:large'), { backend: 'host', model: 'qwen:large' });
 assert.throws(() => parseCodeSeat('only-model'), /backend:model/);
 assert.throws(() => parseCodeBuildArgs(['--maker', 'codex:x', '--maker', 'claude:y']), /Duplicate/);

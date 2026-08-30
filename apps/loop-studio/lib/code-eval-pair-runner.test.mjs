@@ -355,8 +355,8 @@ test('both cells traverse the real shared Build engine with only fake seat adapt
     value.adapters.maker = async () => {
       rawTurns++;
       const body = rawTurns === 1
-        ? { actions: [{ type: 'write', path: item.fixture.referenceFiles[0].path,
-          content: item.fixture.referenceFiles[0].content, expected_sha256: expectedSha }], done: false,
+        ? { actions: [{ type: 'replace', path: item.fixture.referenceFiles[0].path,
+          old: baseFile.content, content: item.fixture.referenceFiles[0].content, expected_sha256: expectedSha }], done: false,
           summary: 'apply bounded fixture solution' }
         : { actions: [], done: true, summary: 'candidate ready' };
       return { ok: true, text: JSON.stringify(body), modelActual: 'dashscope:fixture-model',

@@ -167,7 +167,7 @@ export async function main(argv = process.argv.slice(2)) {
   let repoPath;
   try { repoPath = execFileSync('git', ['-C', resolve(existing?.targetPath || options.repo || process.cwd()), 'rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 10_000 }).trim(); }
   catch { throw new Error('Choose a path inside an existing Git repository.'); }
-  const prepared = await prepareCodeExecution(pairing);
+  const prepared = await prepareCodeExecution(pairing, { preserveAbsentEffort: Boolean(existing) });
   const id = options.resume || `code-${Date.now()}-${randomBytes(4).toString('hex')}`;
   const receiptsDir = await prepareCodeReceiptsDir(codeRunDirectory(id), repoPath);
   const limits = parseCodeLimits(options);

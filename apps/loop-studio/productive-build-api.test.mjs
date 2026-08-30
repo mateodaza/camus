@@ -29,13 +29,13 @@ try {
         await writeFile(worktree+'/answer.txt','correct');
         return {ok:true,definitiveTurnEnd:true,usage:{total_tokens:10},text:JSON.stringify({actions:[],done:true,summary:'Ready.'})};
       }}:{}),
-      maker: async ({prompt, signal}) => {
-        await appendFile(${JSON.stringify(callsPath)}, JSON.stringify({role:'maker',model:models.maker.model})+'\\n');
+      maker: async ({prompt, signal, effort}) => {
+        await appendFile(${JSON.stringify(callsPath)}, JSON.stringify({role:'maker',model:models.maker.model,effort})+'\\n');
         if(prompt.includes('WAIT_FOR_STOP')) { await new Promise(r=>signal.aborted?r():signal.addEventListener('abort',r,{once:true})); return {ok:false,error:'interrupted'}; }
         const history=prompt.match(/Complete host action history[^\\n]*\\n(\\[.*\\])$/s);
         if(prompt.includes('ASK_FORMAT') && prompt.includes('Bound human answer: null')) return {ok:true,text:JSON.stringify({actions:[],done:false,decision:{action:'human',reason:'Choose the output format.'}})};
-        return {ok:true,usage:{total_tokens:10},text:JSON.stringify(history?{actions:[],done:true}:{actions:[{type:'write',path:'answer.txt',expected_sha256:null,content:'correct'}],done:false})};
-      }, reviewer: async()=> {await appendFile(${JSON.stringify(callsPath)},JSON.stringify({role:'reviewer',model:models.reviewer.model})+'\\n');return {ran:true,verdict:'APPROVED',findings:[],usage:{total_tokens:10}};}
+        return {ok:true,usage:{total_tokens:10},text:JSON.stringify(history?{actions:[],done:true}:{actions:[{type:'create',path:'answer.txt',expected_sha256:null,content:'correct'}],done:false})};
+      }, reviewer: async({effort})=> {await appendFile(${JSON.stringify(callsPath)},JSON.stringify({role:'reviewer',model:models.reviewer.model,effort})+'\\n');return {ran:true,verdict:'APPROVED',findings:[],usage:{total_tokens:10}};}
     }; }`;
   await writeFile(loader, `export async function load(url,ctx,next){if(url===${JSON.stringify(target)})return {format:'module',shortCircuit:true,source:${JSON.stringify(source)}};return next(url,ctx);}`);
   const env = { ...process.env, HOME: join(dir, 'home'), ENGINE: 'live', OPEN: '0', PORT: '0', STUDIO_RUNS_DIR: join(dir, 'runs'), STUDIO_MODELS_FILE: config,
@@ -66,7 +66,7 @@ try {
   const task = 'Implement the exact answer in this test project';
   const contract = 'Add answer.txt with correct and leave the source checkout untouched.';
   await start();
-  const createdResponse = await post('runs', { goal: task, acceptanceContract: contract, lane: 'build', codeMode: 'independent', targetPath: repo, codeLimits: { maxCalls: 1 }, pairing: { maker: { backend: 'codex', model: 'gpt-5.6-luna' }, reviewer: { backend: 'claude', model: 'sonnet' } } });
+  const createdResponse = await post('runs', { goal: task, acceptanceContract: contract, lane: 'build', codeMode: 'independent', targetPath: repo, codeLimits: { maxCalls: 1 }, pairing: { maker: { backend: 'codex', model: 'gpt-5.6-luna', effort: 'high' }, reviewer: { backend: 'claude', model: 'sonnet', effort: 'xhigh' } } });
   const created = await createdResponse.json(); assert.equal(createdResponse.status, 201, JSON.stringify(created));
   const parked = await waitStopped(created.id, 1); assert.equal(parked.question.kind, 'budget');
   const offline = JSON.parse((await cli(['--status', created.id, '--json'])).stdout); assert.equal(offline.usage.calls, 1);
@@ -77,7 +77,10 @@ try {
   const completed = JSON.parse(resumedCli.stdout);
   assert.equal(completed.completion, 'candidate_ready_for_acceptance', completed.error);
   assert.equal(completed.candidate.worktree, candidate); assert.equal(completed.usage.calls, 3);
+  assert.equal(completed.models.maker.effort, 'high'); assert.equal(completed.models.reviewer.effort, 'xhigh');
   await start();
+  const httpReport = await (await fetch(`${base}/api/runs/${created.id}/report`)).json();
+  assert.equal(httpReport.models.maker.effort, 'high'); assert.equal(httpReport.models.reviewer.effort, 'xhigh');
   const replay = await (await fetch(`${base}/api/runs/${created.id}/events`)).text();
   assert.match(replay, /code_checkpoint/); assert.match(replay, /"canResume":false/); assert.doesNotMatch(replay, /"status":"running"/);
   const freshCli = await cli(['--task', task, '--contract', contract, '--repo', repo, '--max-calls', '1', '--json']);
@@ -108,6 +111,9 @@ try {
   assert.equal(execFileSync('git', ['-C', repo, 'status', '--porcelain'], { encoding: 'utf8' }), '');
   const calls = (await readFile(callsPath, 'utf8')).trim().split('\n').map(JSON.parse);
   assert.equal(calls.length, 11, 'reattachment/restart/status do not buy model calls');
+  assert.deepEqual(calls.slice(0, 3).map(({ role, effort }) => ({ role, effort })), [
+    { role: 'maker', effort: 'high' }, { role: 'maker', effort: 'high' }, { role: 'reviewer', effort: 'xhigh' },
+  ], 'Studio start and CLI resume keep the same explicitly frozen effort snapshot');
   const nativePair = { maker: { backend: 'codex', model: 'gpt-5.6-luna', codeExecutor: 'codex_native' }, reviewer: { backend: 'claude', model: 'sonnet' } };
   const nativeBody = { goal: task, acceptanceContract: contract, lane: 'build', codeMode: 'independent', targetPath: repo, pairing: nativePair };
   assert.equal((await post('runs', nativeBody)).status, 400, 'native needs its first-call reservation before metadata/execution');

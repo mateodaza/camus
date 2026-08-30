@@ -38,7 +38,16 @@ export function memoizeNativeHarnessReadiness(probe = nativeHarnessReadiness) {
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
 
-export async function prepareCodeSeats({ pairing = null, live = true } = {}, dependencies = {}) {
+// Claude Code's current CLI accepts an explicit --effort setting for its
+// headless coding/review calls. Keep that execution capability scoped to the
+// independent Build lane: the older words-seat catalog is a grandfathered
+// public surface and must not change merely because a local CLI gained a flag.
+function honorsCodeEffort(entry) {
+  return entry.effort === true
+    || (entry.executor === 'claude_cli' && entry.transport === 'vendor_managed');
+}
+
+export async function prepareCodeSeats({ pairing = null, live = true, preserveAbsentEffort = false } = {}, dependencies = {}) {
   const catalog = (dependencies.catalog ?? admissionCatalog)();
   const standing = (dependencies.models ?? getModels)();
   // No await occurs until BOTH decisions AND their connection definitions have
@@ -58,8 +67,17 @@ export async function prepareCodeSeats({ pairing = null, live = true } = {}, dep
     validateCodeExecutor(selected, backend, role);
     const requestedEffort = selected.effort;
     if (requestedEffort != null && !EFFORTS.includes(requestedEffort)) throw new Error(`${role} effort must be low, medium, high, or xhigh.`);
-    if (requestedEffort != null && !entry.effort) throw new Error(`${role} ${entry.backend} does not honor an effort setting.`);
-    models[role] = codeSeatSnapshot(entry, entry.effort ? requestedEffort ?? standing[role]?.effort ?? 'medium' : null);
+    const codeEffort = honorsCodeEffort(entry);
+    if (requestedEffort != null && !codeEffort) throw new Error(`${role} ${entry.backend} does not honor an effort setting.`);
+    const sameStandingSeat = standing[role]?.backend === selected.backend && standing[role]?.model === selected.model;
+    const inheritedEffort = sameStandingSeat ? standing[role]?.effort : null;
+    // A pre-effort checkpoint deliberately omitted Claude effort and hashed
+    // that exact seat snapshot into its binding. Resume must preserve the
+    // absence; fresh launches still pin medium so account settings cannot leak
+    // into a new run.
+    const resolvedEffort = preserveAbsentEffort && requestedEffort == null
+      ? null : requestedEffort ?? inheritedEffort ?? 'medium';
+    models[role] = codeSeatSnapshot(entry, codeEffort ? resolvedEffort : null);
     if (selected.codeExecutor !== undefined) models[role].codeExecutor = selected.codeExecutor;
     frozenBackends[role] = clone(backend);
     if (entry.admission?.fingerprint) models[role].qualification = {
@@ -102,7 +120,7 @@ export async function codeModelChoices(catalog = admissionCatalog(), runtime = {
     modelQualification: { qualified: entry.admission?.qualified === true,
       status: entry.admission?.status ?? (entry.admission?.qualified === true ? 'qualified' : 'unqualified'),
       reason: entry.admission?.reason ?? 'unknown' },
-    effort: entry.effort === true,
+    effort: honorsCodeEffort(entry),
     codeExecutors: ['file_actions', ...(role === 'maker' && entry.backend === 'codex' && entry.transport === 'vendor_managed' ? [NATIVE_EXECUTOR] : []),
       ...(role === 'maker' && entry.executor === 'http_client' ? harnesses : [])],
     ...(role === 'maker' && entry.executor === 'http_client' ? { executorReadiness: nativeHarnesses } : {}),
@@ -113,8 +131,8 @@ export async function codeModelChoices(catalog = admissionCatalog(), runtime = {
 
 // Resolve locally first. The engine checks the saved candidate/contract before
 // invoking authorization, so a drifted resume cannot even contact a provider.
-export async function prepareCodeExecution(pairing = null) {
-  const prepared = await prepareCodeSeats({ pairing, live: false });
+export async function prepareCodeExecution(pairing = null, { preserveAbsentEffort = false } = {}) {
+  const prepared = await prepareCodeSeats({ pairing, live: false, preserveAbsentEffort });
   const adapters = resolveSeatAdapters(prepared.models, prepared.frozenBackends);
   return { ...prepared, adapters,
     authorize: async () => {

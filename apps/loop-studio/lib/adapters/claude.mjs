@@ -11,8 +11,8 @@ import { runCodeOwnedProcess } from '../code-owned-process.mjs';
 
 const TIMEOUTS = { plan: 120_000, ground: 300_000, make: 540_000, fix: 420_000 };
 
-function fail(error) {
-  return { ok: false, error, text: null, costUsd: 0 };
+function fail(error, extra = {}) {
+  return { ok: false, error, text: null, costUsd: 0, ...extra };
 }
 
 // Claude's stream starts with a large `system/init` object. Taking the first N
@@ -66,6 +66,10 @@ export function claudeFailureDiagnostic({ stderr = '', stdout = '', resultEvent 
   return eventLabel
     ? `no terminal error detail (last Claude event: ${boundedDiagnostic(eventLabel, 120)})`
     : 'no terminal error detail from Claude CLI';
+}
+
+function unsupportedEffortFlag(detail) {
+  return /\b(?:(?:unknown|unrecognized)\s+(?:option|argument)|unexpected\s+argument)\s+['"`]?--effort\b/i.test(detail);
 }
 
 // Redirect-isolation contract for EVERY headless Claude spawn (maker AND
@@ -171,7 +175,7 @@ export function parseHivemindToolResult(content, query = '') {
 }
 
 export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, onSession, model, toolPolicy = 'research',
-  outputSchema = null, ownedProcessDir = null }) {
+  effort = null, outputSchema = null, ownedProcessDir = null }) {
   const configuredHm = stage === 'plan' || ['none', 'web_only'].includes(toolPolicy) ? { enabled: false } : viaClaude();
   const hm = toolPolicy === 'hivemind_only' && !configuredHm.enabled ? { enabled: false } : configuredHm;
   const { tools, allowed } = claudeToolSurface({ stage, hivemindEnabled: hm.enabled, serverName: hm.serverName, toolName: hm.toolName, toolPolicy });
@@ -192,6 +196,7 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
     // to call even though it was allowed (golden-run P1, 2026-07-14).
     '--tools', tools,
   ];
+  if (effort) args.push('--effort', effort);
   // --setting-sources '' (empty user/project/local sources,
   // https://code.claude.com/docs/en/cli-usage) is UNCONDITIONAL now: the seat
   // never reads the operator's settings, whether or not Hivemind is on. When
@@ -269,7 +274,13 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
   if (exitCode === -1) return fail(`failed to spawn claude (${stderr.trim() || 'unknown'}) — check the Claude Code CLI is installed and on PATH`);
   if (exitCode === -2) return fail(`claude ${stage} stage hit the ${Math.round((TIMEOUTS[stage] ?? 540_000) / 60000)} min timeout`);
   if (exitCode === -4) return fail('aborted by user');
-  if (exitCode !== 0) return fail(`claude exited ${exitCode}: ${claudeFailureDiagnostic({ stderr, stdout, resultEvent })}`);
+  if (exitCode !== 0) {
+    const detail = claudeFailureDiagnostic({ stderr, stdout, resultEvent });
+    if (effort && !resultEvent && !String(stdout).trim() && unsupportedEffortFlag(String(stderr).trim())) {
+      return fail('This Claude Code CLI does not support --effort; update to a current release before using a Claude independent Build seat.', { noModelCalled: true });
+    }
+    return fail(`claude exited ${exitCode}: ${detail}`);
+  }
 
   // stream-json: the terminal `result` event carries the final text; fall
   // back to whole-output parse for older CLIs that ignore the format flag.
@@ -317,12 +328,12 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
 // the SAME fail-closed normalizeReview as codex — unparseable, incomplete, or
 // self-inconsistent output is an infra error, never a clean verdict. No MCP,
 // no web, no repo access: the reviewer judges the draft it was handed.
-export async function runClaudeReview({ prompt, model, cwd, signal, onTick, onSession, receiptDir, ownedProcessDir = null, claims = [], criteria = [], thresholds = [] }) {
+export async function runClaudeReview({ prompt, model, effort = null, cwd, signal, onTick, onSession, receiptDir, ownedProcessDir = null, claims = [], criteria = [], thresholds = [] }) {
   const { normalizeReview } = await import('./codex.mjs');
-  const infra = (error) => ({
+  const infra = (error, extra = {}) => ({
     ran: false, error, verdict: 'ERROR', findings: [], questions: [],
     claimAssessments: [], coverageAssessments: [], thresholdAssessments: [],
-    usage: null, durationMs: Date.now() - startedAt,
+    usage: null, durationMs: Date.now() - startedAt, ...extra,
   });
   const startedAt = Date.now();
   if (!model) return infra('claude reviewer needs an explicit model — the CLI default is not a decision');
@@ -337,6 +348,7 @@ export async function runClaudeReview({ prompt, model, cwd, signal, onTick, onSe
     '--setting-sources', '', // no user/project/local settings (cli-usage), same as the maker seat
     '--strict-mcp-config',
   ];
+  if (effort) args.push('--effort', effort);
 
   // Same idle contract as the codex reviewer: stream-json emits events as the
   // turn progresses, so output-silence beyond the window is a hung call, not a
@@ -387,7 +399,13 @@ export async function runClaudeReview({ prompt, model, cwd, signal, onTick, onSe
   if (exitCode === -2) return infra('claude review hit the 8 min hard timeout');
   if (exitCode === -3) return infra(`claude went silent for ${Math.round(idleKillMs / 60000)} min — killed (idle watchdog)`);
   if (exitCode === -4) return infra('review aborted by user');
-  if (exitCode !== 0) return infra(`claude exited ${exitCode}: ${claudeFailureDiagnostic({ stderr, stdout, resultEvent })}`);
+  if (exitCode !== 0) {
+    const detail = claudeFailureDiagnostic({ stderr, stdout, resultEvent });
+    if (effort && !resultEvent && !String(stdout).trim() && unsupportedEffortFlag(String(stderr).trim())) {
+      return infra('This Claude Code CLI does not support --effort; update to a current release before using a Claude independent Build seat.', { noModelCalled: true });
+    }
+    return infra(`claude exited ${exitCode}: ${detail}`);
+  }
 
   let data = resultEvent;
   if (!data) {
@@ -413,7 +431,7 @@ export async function runClaudeReview({ prompt, model, cwd, signal, onTick, onSe
   norm.durationMs = Date.now() - startedAt;
   if (norm.ran) {
     norm.reviewerModel = model;
-    norm.reviewerEffort = null; // claude exposes no reasoning-effort request — never a fabricated tier
+    norm.reviewerEffort = effort;
     norm.reviewerIdentity = observed.modelActual ?? `anthropic:${model}`;
     norm.reviewerActualEvidence = observed.modelActualEvidence;
   }

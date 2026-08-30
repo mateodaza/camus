@@ -68,7 +68,7 @@ await test('reversed Claude maker / Codex reviewer changes only an isolated cand
       const history = JSON.parse(prompt.match(/Complete host action history \(do not assume omitted state\):\n(\[.*\])$/s)[1]);
       assert.equal(history[0].actions[0].type, 'list', 'later model turn retains the original list observation');
       sourceHash = history[1].actions[0].sha256;
-      return { ok: true, text: JSON.stringify({ actions: [{ type: 'write', path: 'src/app.js', expected_sha256: sourceHash, content: 'export const answer = 2;\n' }], done: false }) };
+      return { ok: true, text: JSON.stringify({ actions: [{ type: 'replace', path: 'src/app.js', old: 'export const answer = 1;\n', expected_sha256: sourceHash, content: 'export const answer = 2;\n' }], done: false }) };
     }
     return { ok: true, text: '{"actions":[],"done":true,"summary":"implemented"}' };
   };
@@ -104,7 +104,7 @@ await test('HTTP maker/reviewer combination and same-origin reviewers remain non
   const repo = await fixture();
   const { seats: requested, adapters } = seats({ maker: 'qwen-coder', reviewer: 'qwen-review', makerProvider: 'alibaba', reviewerProvider: 'alibaba' });
   let n = 0;
-  adapters.maker = async () => ({ ok: true, text: n++ ? '{"actions":[],"done":true}' : '{"actions":[{"type":"write","path":"new.txt","expected_sha256":null,"content":"hello\\n"}],"done":false}', modelActual: 'alibaba:qwen-coder' });
+  adapters.maker = async () => ({ ok: true, text: n++ ? '{"actions":[],"done":true}' : '{"actions":[{"type":"create","path":"new.txt","expected_sha256":null,"content":"hello\\n"}],"done":false}', modelActual: 'alibaba:qwen-coder' });
   adapters.reviewer = async () => cleanReview();
   let result;
   try {
@@ -120,10 +120,12 @@ for (const [name, action, setup] of [
   ['traversal', { type: 'read', path: '../outside' }, null],
   ['private Camus state', { type: 'read', path: '.camus/token' }, null],
   ['private adapter directory', { type: 'read', path: '.codex/config.toml' }, null],
-  ['environment production file', { type: 'write', path: '.env.production', expected_sha256: null, content: 'x' }, null],
+  ['environment production file', { type: 'create', path: '.env.production', expected_sha256: null, content: 'x' }, null],
+  ['backslash environment file', { type: 'create', path: 'nested\\.env', expected_sha256: null, content: 'x' }, null],
   ['tracked npm credentials file', { type: 'read', path: '.npmrc' }, async (repo) => { await writeFile(join(repo, '.npmrc'), 'registry=https://example.invalid\n'); run(repo, ['add', '.npmrc']); run(repo, ['commit', '-qm', 'npmrc']); }],
   ['private key file', { type: 'read', path: 'id_ed25519' }, async (repo) => { await writeFile(join(repo, 'id_ed25519'), 'not a real key\n'); run(repo, ['add', 'id_ed25519']); run(repo, ['commit', '-qm', 'key']); }],
-  ['credential path', { type: 'write', path: 'credentials.txt', expected_sha256: null, content: 'x' }, null],
+  ['credential path', { type: 'create', path: 'credentials.txt', expected_sha256: null, content: 'x' }, null],
+  ['backslash credential path', { type: 'create', path: 'nested\\credentials.txt', expected_sha256: null, content: 'x' }, null],
   ['symlink', { type: 'read', path: 'src/link' }, async (repo) => { await symlink('/etc/hosts', join(repo, 'src/link')); run(repo, ['add', 'src/link']); run(repo, ['commit', '-qm', 'link']); }],
 ]) {
   await test(`${name} access is refused fail-closed`, async () => {
@@ -136,7 +138,7 @@ for (const [name, action, setup] of [
       const result = await runCodeSeats({ repoPath: repo, task: 'inspect', seats: requested, adapters });
       assert.equal(result.status, 'infra_error');
       assert.match(result.error, /refused|unsafe|limited/i);
-      if (action.type === 'write') await assert.rejects(readFile(join(result.candidate.worktree, action.path)), /ENOENT/);
+      if (action.type === 'create') await assert.rejects(readFile(join(result.candidate.worktree, action.path)), /ENOENT/);
     } finally { await remove(repo); }
   });
 }
@@ -156,14 +158,14 @@ await test('recognized credential-shaped tracked content is refused without echo
 
 await test('ignored new files and later ignore-rule mutations are refused before review', async () => {
   const repo = await fixture({ '.gitignore': 'ignored.txt\n', 'src/app.js': 'export {};\n' });
-  const pair = seats(); pair.adapters.maker = async () => ({ ok: true, text: '{"actions":[{"type":"write","path":"ignored.txt","expected_sha256":null,"content":"x"}],"done":false}' }); pair.adapters.reviewer = async () => cleanReview();
+  const pair = seats(); pair.adapters.maker = async () => ({ ok: true, text: '{"actions":[{"type":"create","path":"ignored.txt","expected_sha256":null,"content":"x"}],"done":false}' }); pair.adapters.reviewer = async () => cleanReview();
   try {
     const result = await runCodeSeats({ repoPath: repo, task: 'x', seats: pair.seats, adapters: pair.adapters });
     assert.equal(result.status, 'infra_error'); assert.match(result.error, /git-ignored/);
   } finally { await remove(repo); }
   const repo2 = await fixture({ '.gitignore': '', 'src/app.js': 'export {};\n' });
   const next = seats(); let turn = 0;
-  next.adapters.maker = async () => ({ ok: true, text: turn++ ? JSON.stringify({ actions: [{ type: 'write', path: '.gitignore', expected_sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', content: 'new.txt\n' }], done: false }) : JSON.stringify({ actions: [{ type: 'write', path: 'new.txt', expected_sha256: null, content: 'x' }], done: false }) }); next.adapters.reviewer = async () => cleanReview();
+  next.adapters.maker = async () => ({ ok: true, text: turn++ ? JSON.stringify({ actions: [{ type: 'replace', path: '.gitignore', old: '', expected_sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', content: 'new.txt\n' }], done: false }) : JSON.stringify({ actions: [{ type: 'create', path: 'new.txt', expected_sha256: null, content: 'x' }], done: false }) }); next.adapters.reviewer = async () => cleanReview();
   try {
     const result = await runCodeSeats({ repoPath: repo2, task: 'x', seats: next.seats, adapters: next.adapters });
     assert.equal(result.status, 'infra_error'); assert.match(result.error, /became git-ignored/);
@@ -175,7 +177,7 @@ await test('ignored new files and later ignore-rule mutations are refused before
 
 await test('stale edit, malformed output, empty output, and provider error never become clean', async () => {
   for (const output of [
-    '{"actions":[{"type":"write","path":"src/app.js","expected_sha256":"0000000000000000000000000000000000000000000000000000000000000000","content":"bad"}],"done":false}',
+    '{"actions":[{"type":"replace","path":"src/app.js","old":"export const answer = 1;\\n","expected_sha256":"0000000000000000000000000000000000000000000000000000000000000000","content":"bad"}],"done":false}',
     'not json',
     '',
   ]) {
@@ -229,7 +231,7 @@ await test('context caps never silently truncate and a verifier cannot alter rev
   } finally { await remove(repo); }
   const repo2 = await fixture();
   const pair2 = seats(); let n = 0;
-  pair2.adapters.maker = async () => ({ ok: true, text: n++ ? '{"actions":[],"done":true}' : '{"actions":[{"type":"write","path":"new.txt","expected_sha256":null,"content":"a"}],"done":false}' });
+  pair2.adapters.maker = async () => ({ ok: true, text: n++ ? '{"actions":[],"done":true}' : '{"actions":[{"type":"create","path":"new.txt","expected_sha256":null,"content":"a"}],"done":false}' });
   pair2.adapters.reviewer = async () => cleanReview();
   let result;
   try {
@@ -242,7 +244,7 @@ await test('context caps never silently truncate and a verifier cannot alter rev
 await test('explicit verification failure is terminal and clean review never auto-lands', async () => {
   const repo = await fixture();
   const pair = seats(); let n = 0;
-  pair.adapters.maker = async () => ({ ok: true, text: n++ ? '{"actions":[],"done":true}' : '{"actions":[{"type":"write","path":"new.txt","expected_sha256":null,"content":"a"}],"done":false}' });
+  pair.adapters.maker = async () => ({ ok: true, text: n++ ? '{"actions":[],"done":true}' : '{"actions":[{"type":"create","path":"new.txt","expected_sha256":null,"content":"a"}],"done":false}' });
   pair.adapters.reviewer = async () => { throw new Error('must not review failing verifier'); };
   let result;
   try {
@@ -256,7 +258,7 @@ await test('explicit verification failure is terminal and clean review never aut
 await test('inconclusive verification and verifier abort fail closed without buying review', async () => {
   const makeCandidate = () => {
     const pair = seats(); let n = 0;
-    pair.adapters.maker = async () => ({ ok: true, text: n++ ? '{"actions":[],"done":true}' : '{"actions":[{"type":"write","path":"new.txt","expected_sha256":null,"content":"a"}],"done":false}' });
+    pair.adapters.maker = async () => ({ ok: true, text: n++ ? '{"actions":[],"done":true}' : '{"actions":[{"type":"create","path":"new.txt","expected_sha256":null,"content":"a"}],"done":false}' });
     pair.adapters.reviewer = async () => { throw new Error('review must not run after inconclusive verification'); };
     return pair;
   };
@@ -279,7 +281,7 @@ await test('inconclusive verification and verifier abort fail closed without buy
 await test('an empty or malformed reviewer verdict is infrastructure evidence, never advisory clean', async () => {
   const repo = await fixture();
   const pair = seats(); let n = 0;
-  pair.adapters.maker = async () => ({ ok: true, text: n++ ? '{"actions":[],"done":true}' : '{"actions":[{"type":"write","path":"new.txt","expected_sha256":null,"content":"a"}],"done":false}' });
+  pair.adapters.maker = async () => ({ ok: true, text: n++ ? '{"actions":[],"done":true}' : '{"actions":[{"type":"create","path":"new.txt","expected_sha256":null,"content":"a"}],"done":false}' });
   // Production adapters reach this shape only after normalizeReview rejects an
   // empty/unparseable response. The engine must preserve that refusal.
   pair.adapters.reviewer = async () => ({ ran: false, verdict: 'ERROR', error: 'empty reviewer output', findings: [] });
@@ -296,7 +298,7 @@ await test('an empty or malformed reviewer verdict is infrastructure evidence, n
 await test('a reviewer invalid verdict or abort cannot become a clean advisory result', async () => {
   const makeCandidate = () => {
     const pair = seats(); let n = 0;
-    pair.adapters.maker = async () => ({ ok: true, text: n++ ? '{"actions":[],"done":true}' : '{"actions":[{"type":"write","path":"new.txt","expected_sha256":null,"content":"a"}],"done":false}' });
+    pair.adapters.maker = async () => ({ ok: true, text: n++ ? '{"actions":[],"done":true}' : '{"actions":[{"type":"create","path":"new.txt","expected_sha256":null,"content":"a"}],"done":false}' });
     return pair;
   };
   const repo = await fixture();
@@ -319,7 +321,7 @@ await test('a reviewer invalid verdict or abort cannot become a clean advisory r
 await test('a candidate changed during review invalidates the otherwise clean verdict', async () => {
   const repo = await fixture();
   const pair = seats(); let n = 0;
-  pair.adapters.maker = async () => ({ ok: true, text: n++ ? '{"actions":[],"done":true}' : '{"actions":[{"type":"write","path":"new.txt","expected_sha256":null,"content":"a"}],"done":false}' });
+  pair.adapters.maker = async () => ({ ok: true, text: n++ ? '{"actions":[],"done":true}' : '{"actions":[{"type":"create","path":"new.txt","expected_sha256":null,"content":"a"}],"done":false}' });
   pair.adapters.reviewer = async () => {
     const block = run(repo, ['worktree', 'list', '--porcelain']).split('\n\n').find((item) => item.includes('branch refs/heads/codex/code-seats-'));
     const candidate = block.match(/^worktree (.+)$/m)[1];

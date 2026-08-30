@@ -38,10 +38,11 @@ try {
       adapters:{ maker:async({prompt})=>{
         await appendFile(join(root,'calls'),'maker\\n');
         const match=prompt.match(/Complete host action history[^\\n]*\\n(\\[.*\\])$/s); const history=match?JSON.parse(match[1]):[];
-        const add={type:'write',path:'answer.txt',content:'correct',expected_sha256:null};
+        const add={type:'create',path:'answer.txt',content:'correct',expected_sha256:null};
+        const backslash={type:'create',path:'nested\\\\answer.txt',content:'correct',expected_sha256:null};
         const sourceHash=${JSON.stringify(createHash('sha256').update('base\n').digest('hex'))};
-        let action=kind==='delete'?{type:'delete',path:'README.md',expected_sha256:sourceHash}:kind==='replace'?{type:'replace',path:'README.md',old:'base',content:'changed',expected_sha256:sourceHash}:kind==='read'?{type:'read',path:'README.md'}:kind==='list'?{type:'list'}:add;
-        if(history.length) action=['read','list'].includes(kind)&&!history.some(step=>step.actions?.some(a=>a.type==='write'))?add:null;
+        let action=kind==='delete'?{type:'delete',path:'README.md',expected_sha256:sourceHash}:kind==='replace'?{type:'replace',path:'README.md',old:'base',content:'changed',expected_sha256:sourceHash}:kind==='read'?{type:'read',path:'README.md'}:kind==='list'?{type:'list'}:kind==='backslash'?backslash:add;
+        if(history.length) action=['read','list'].includes(kind)&&!history.some(step=>step.actions?.some(a=>a.type==='create'))?add:null;
         return {ok:true,text:JSON.stringify({actions:action?[action]:[],done:!action})};},
         reviewer:async()=>{await appendFile(join(root,'calls'),'reviewer\\n');return {ran:true,verdict:'APPROVED',findings:[]};} }});
     process.stdout.write(JSON.stringify(result));`);
@@ -54,8 +55,9 @@ try {
     return { code, signal, out, error };
   };
   const cases = [
-    ...['call_started', 'response_before_save', 'response_saved', 'write_started', 'write_before_save', 'write_saved'].map(window => ['write', window]),
+    ...['call_started', 'response_before_save', 'response_saved', 'write_started', 'write_before_save', 'write_saved'].map(window => ['create', window]),
     ...['read', 'list', 'replace', 'delete'].flatMap(kind => ['write_started', 'write_before_save', 'write_saved'].map(window => [kind, window])),
+    ['backslash', 'write_before_save'],
   ];
   for (const [kind, window] of cases) {
     const dir = join(root, `${kind}-${window}`), repo = join(dir, 'repo'); await mkdir(repo, { recursive: true });
@@ -65,10 +67,11 @@ try {
     const restarted = await run(dir, null, kind); assert.equal(restarted.code, 0, restarted.error);
     const result = JSON.parse(restarted.out);
     assert.equal(result.completion, 'candidate_ready_for_acceptance', `${window}: ${result.error}`);
-    if (['write', 'replace', 'delete'].includes(kind)) assert.equal(result.usage.actions, 1, `${kind}/${window}: a known mutation must not be applied or counted twice`);
+    if (['create', 'replace', 'delete', 'backslash'].includes(kind)) assert.equal(result.usage.actions, 1, `${kind}/${window}: a known mutation must not be applied or counted twice`);
     else assert.equal(result.usage.actions, window === 'write_saved' ? 2 : 3, 'only non-durable read/list attempts may be repeated; known completion is reused');
     if (kind === 'delete') await assert.rejects(readFile(join(result.candidate.worktree, 'README.md')), /ENOENT/);
     else if (kind === 'replace') assert.equal(await readFile(join(result.candidate.worktree, 'README.md'), 'utf8'), 'changed\n');
+    else if (kind === 'backslash') assert.equal(await readFile(join(result.candidate.worktree, 'nested', 'answer.txt'), 'utf8'), 'correct');
     else assert.equal(await readFile(join(result.candidate.worktree, 'answer.txt'), 'utf8'), 'correct');
     assert.equal(execFileSync('git', ['-C', repo, 'status', '--porcelain'], { encoding: 'utf8' }), '');
     const calls = (await readFile(join(dir, 'calls'), 'utf8')).trim().split('\n');

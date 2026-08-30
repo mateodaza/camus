@@ -89,7 +89,7 @@ every call.
 ### Maker
 
 ```
-maker({ prompt, stage, model, cwd, signal, onTick, onSession, toolPolicy })
+maker({ prompt, stage, model, effort, cwd, signal, onTick, onSession, toolPolicy })
   → { ok, error, text, costUsd, usage: { input_tokens, cached_input_tokens, output_tokens },
       durationMs, modelActual,            // "provider:model" observed, or null
       hivemindQueried?, hivemindQueries?, hivemindQueryTexts?, hivemindResults? }
@@ -128,7 +128,8 @@ reviewer({ prompt, model, effort, cwd, signal, onTick, onSession, receiptDir,
   `anthropic:claude-sonnet-4-6`, `moonshot:kimi-k2…`). It rides the review
   event into evidence and the sealed pack's `pairing.auditor.actual`.
 - `effort` is a **requested** knob and only where the backend honors one
-  (codex `model_reasoning_effort` today). Backends without the knob record
+  (Codex reasoning effort generally; Claude CLI `--effort` in the independent
+  Build lane). Backends without the knob record
   `reviewerEffort: null` — never a fabricated tier. Applied effort is never
   observed anywhere; receipts say "requested".
 
