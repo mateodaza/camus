@@ -1,9 +1,14 @@
 {
   "name": "camus-cli",
-  "version": "0.4.12",
+  "version": "0.4.13",
   "description": "Independent maker/reviewer choices for experimental coding candidates, plus a Claude/Codex proof gate. Shared CLI/Studio models, isolated worktrees, explicit verification, and honest human handoffs.",
   "bin": {
     "camus": "bin/camus.js"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true
   },
   "files": [
     "bin/",

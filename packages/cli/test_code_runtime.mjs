@@ -79,6 +79,13 @@ try {
   const bin = join(installed, 'bin', 'camus.js');
   assert.equal(existsSync(resolve(installed, '../../apps/loop-studio/code-build.mjs')), false, 'extracted package has no source-checkout fallback');
 
+  const ambientScripts = join(env.HOME, '.claude', 'skills', 'camus', 'scripts');
+  const ambientMarker = join(TEMP, 'ambient-script-ran');
+  await mkdir(ambientScripts, { recursive: true });
+  await writeFile(join(ambientScripts, 'status.py'), `from pathlib import Path\nPath(${JSON.stringify(ambientMarker)}).write_text('unexpected')\n`);
+  await assert.rejects(command(process.execPath, [bin, 'status'], { cwd: installed, env }), error => error.code === 1);
+  assert.equal(existsSync(ambientMarker), false, 'packaged CLI never executes a mutable ~/.claude script override');
+
   const help = await command(process.execPath, [bin, 'build', '--help'], { cwd: installed, env });
   assert.match(help.stdout, /independent maker\/reviewer coding \(experimental\)/);
   assert.match(help.stdout, /--maker-executor file_actions\|codex_native\|qwen_native\|grok_native/);

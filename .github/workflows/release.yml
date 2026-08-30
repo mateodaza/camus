@@ -1,23 +1,123 @@
-# Release automation: push a `v*` tag → a GitHub Release appears with notes generated from the
-# commit log since the previous tag, grouped by conventional prefix. No third-party actions, no
-# changelog file to maintain — the Releases page IS the changelog, derived from history.
-# Cut a release with: pnpm release:tag  (tags HEAD as v<packages/cli version> and pushes the tag).
+# A pushed release tag is the only publication trigger. Verification, npm publication, and the
+# GitHub Release are separate jobs so the npm OIDC permission exists only where it is required.
 name: release
 
 on:
   push:
     tags: ['v*']
 
-permissions:
-  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  github-release:
+  verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: 0   # full history — notes are generated from the commit log between tags
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.15.0'
+          package-manager-cache: false
+
+      - name: Install the pinned workspace package manager
+        run: npm install --global pnpm@9.15.0
+
+      - name: Bind the tag, package version, and main commit
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PACKAGE_VERSION="$(node -p "require('./packages/cli/package.json').version")"
+          RELEASE_SHA="$(git rev-parse HEAD)"
+          git fetch --no-tags origin main
+          MAIN_SHA="$(git rev-parse origin/main)"
+
+          test "$GITHUB_REF_NAME" = "v$PACKAGE_VERSION"
+          test "$TAG_VERSION" = "$PACKAGE_VERSION"
+          test "$RELEASE_SHA" = "$MAIN_SHA"
+
+      - name: Install the locked workspace
+        run: pnpm install --frozen-lockfile
+
+      - name: Run root and CLI verification
+        run: pnpm test
+
+      - name: Run Studio verification
+        run: pnpm --filter camus-loop-studio test
+
+      - name: Run trust-package verification
+        run: pnpm --filter camus-trust test
+
+      - name: Inspect the exact npm payload
+        working-directory: packages/cli
+        run: npm pack --dry-run
+
+  npm-publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.15.0'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Require an OIDC-capable npm CLI
+        run: |
+          node -e "const {execFileSync}=require('node:child_process'); const [major,minor]=execFileSync('npm',['--version'],{encoding:'utf8'}).trim().split('.').map(Number); if (major < 11 || (major === 11 && minor < 5)) throw new Error('npm 11.5.1 or newer is required for trusted publishing')"
+
+      - name: Publish once through npm trusted publishing
+        working-directory: packages/cli
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          RELEASE_SHA="$(git rev-parse HEAD)"
+          PUBLISHED_SHA="$(npm view "camus-cli@$VERSION" gitHead 2>/dev/null || true)"
+
+          if [ -n "$PUBLISHED_SHA" ]; then
+            test "$PUBLISHED_SHA" = "$RELEASE_SHA"
+            echo "camus-cli@$VERSION already resolves to $RELEASE_SHA; publication is complete."
+          else
+            npm publish
+          fi
+
+          for ATTEMPT in 1 2 3 4 5; do
+            PUBLISHED_SHA="$(npm view "camus-cli@$VERSION" gitHead 2>/dev/null || true)"
+            PROVENANCE="$(npm view "camus-cli@$VERSION" dist.attestations.provenance.predicateType 2>/dev/null || true)"
+            if [ "$PUBLISHED_SHA" = "$RELEASE_SHA" ] && [ "$PROVENANCE" = "https://slsa.dev/provenance/v1" ]; then
+              break
+            fi
+            [ "$ATTEMPT" = 5 ] || sleep 2
+          done
+          test "$PUBLISHED_SHA" = "$RELEASE_SHA"
+          test "$PROVENANCE" = "https://slsa.dev/provenance/v1"
+
+  github-release:
+    needs: npm-publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Generate release notes from commits since the previous tag
         run: |
@@ -37,9 +137,15 @@ jobs:
             echo "---"
             echo "_npm: [camus-cli](https://www.npmjs.com/package/camus-cli) · site: [camus.sh](https://camus.sh)_"
           } > /tmp/notes.md
-          echo "── notes ──"; cat /tmp/notes.md
+          echo "── notes ──"
+          cat /tmp/notes.md
 
-      - name: Create the GitHub Release
+      - name: Create the GitHub Release once
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file /tmp/notes.md --verify-tag
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "$GITHUB_REF_NAME already has a GitHub Release."
+          else
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file /tmp/notes.md --verify-tag
+          fi

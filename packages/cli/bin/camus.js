@@ -11,7 +11,6 @@
 
 const { spawnSync } = require('child_process');
 const path = require('path');
-const os = require('os');
 const fs = require('fs');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -29,11 +28,9 @@ function sh(args) {
 }
 
 function py(script, args) {
-  // Prefer the INSTALLED copy (the frozen gate); fall back to package source.
-  const installed = path.join(os.homedir(), '.claude', 'skills', 'camus', 'scripts', script);
-  const src = fs.existsSync(installed)
-    ? installed
-    : path.join(ROOT, 'skills', 'camus', 'scripts', script);
+  // CLI commands execute the code carried by this exact npm package. The separately installed
+  // ~/.claude gate is for Claude workflow invocations and must never override this dispatcher.
+  const src = path.join(ROOT, 'skills', 'camus', 'scripts', script);
   const r = spawnSync('python3', [src, ...args], { stdio: 'inherit' });
   if (r.error) console.error('camus: ' + r.error.message);   // e.g. python3 not found — never exit 1 silently
   process.exit(r.status === null ? 1 : r.status);

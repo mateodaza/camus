@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { prepareCodeSeats, codeModelChoices, memoizeNativeHarnessReadiness } from './code-seat-launch.mjs';
@@ -131,11 +131,13 @@ try {
   const pass = await verify({ worktree: dir });
   assert.equal(pass.pass, true);
   assert.equal(pass.outputRetained, false);
+  assert.deepEqual((await readdir(dir)).filter(name => name.startsWith('verify-home-')), [], 'successful verification removes its private home');
   const slow = join(dir, 'slow.cjs');
   await writeFile(slow, 'setInterval(() => {}, 1000);\n');
   const timeout = await createCodeVerifier(`${process.execPath} ${slow}`, { receiptsDir: dir, timeoutMs: 100 })({ worktree: dir });
   assert.equal(timeout.pass, null);
   assert.match(timeout.error, /timed out/);
+  assert.deepEqual((await readdir(dir)).filter(name => name.startsWith('verify-home-')), [], 'timed-out verification removes its private home');
   const backgroundPid = join(dir, 'background.pid');
   const background = join(dir, 'background.cjs');
   await writeFile(background, `const {spawn}=require('node:child_process'); const {writeFileSync}=require('node:fs');\nconst child=spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {stdio:'ignore'}); writeFileSync(${JSON.stringify(backgroundPid)}, String(child.pid)); child.unref();\n`);

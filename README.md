@@ -2,6 +2,13 @@
 
 **Makes it work. Knows when to stop.**
 
+New in 0.4.13: releases now publish from one tag-bound GitHub workflow through
+npm trusted-publisher OIDC with SLSA provenance and no long-lived npm token.
+The packaged CLI can no longer be overridden by mutable `~/.claude` scripts,
+and verifier-private homes are removed on every terminal path. The public
+[supply-chain audit](docs/SUPPLY-CHAIN-AUDIT.md) records Socket's findings and
+the intentional URL/network boundary without hiding product behavior.
+
 New in 0.4.12: `camus code-eval` preserves the v1a native smokes and adds a
 separate bounded v1b raw/native isolation pair. It counterbalances exactly
 two same-model cells, allows one fresh-consent cell per invocation, recovers
@@ -64,7 +71,7 @@ The native proof gate needs [Claude Code](https://code.claude.com) and the
 `camus build` needs only the backends you choose, Node 18.17+, and Git.
 
 ```bash
-npm i -g camus-cli@0.4.12
+npm i -g camus-cli@0.4.13
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 ```
@@ -88,7 +95,7 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.4.12
+### Public alpha: 0.4.13
 
 Choose both coding roles independently in the CLI or Studio: Luna → Claude,
 Claude → Qwen, Grok → Qwen, or any other available, role-qualified pairing.
@@ -123,8 +130,8 @@ the frozen turn budget before a definitive terminal. Neither result is a general
 model ranking.
 
 No new reviewer admission, automatic route, cross-case harness ranking, or
-optimal pairing is claimed. See the
-[0.4.12 release notes](docs/RELEASE-0.4.12.md).
+optimal pairing is claimed. See the [0.4.13 release notes](docs/RELEASE-0.4.13.md)
+and the underlying [0.4.12 evaluator notes](docs/RELEASE-0.4.12.md).
 
 ### Existing admission infrastructure
 
@@ -250,7 +257,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.4.12
+npm i -g camus-cli@0.4.13
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```
