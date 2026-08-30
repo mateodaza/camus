@@ -170,7 +170,8 @@ export function parseHivemindToolResult(content, query = '') {
   }
 }
 
-export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, onSession, model, toolPolicy = 'research', ownedProcessDir = null }) {
+export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, onSession, model, toolPolicy = 'research',
+  outputSchema = null, ownedProcessDir = null }) {
   const configuredHm = stage === 'plan' || ['none', 'web_only'].includes(toolPolicy) ? { enabled: false } : viaClaude();
   const hm = toolPolicy === 'hivemind_only' && !configuredHm.enabled ? { enabled: false } : configuredHm;
   const { tools, allowed } = claudeToolSurface({ stage, hivemindEnabled: hm.enabled, serverName: hm.serverName, toolName: hm.toolName, toolPolicy });
@@ -204,6 +205,7 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
   args.push('--setting-sources', '');
   if (!hm.enabled) args.push('--strict-mcp-config');
   if (allowed) args.push('--allowedTools', allowed);
+  if (outputSchema) args.push('--json-schema', JSON.stringify(outputSchema));
 
   const startedAt = Date.now();
   const { exitCode, stdout, stderr, resultEvent, hivemindQueries, hivemindQueryTexts, hivemindResults } = await new Promise((resolve) => {
@@ -281,7 +283,14 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
     }
   }
   if (data.is_error) return fail(`claude reported an error: ${boundedDiagnostic(data.result)}`);
-  const text = String(data.result ?? '').trim();
+  // A file-action maker supplies a host-owned schema. In that mode only the
+  // CLI's validated structured_output is authoritative: intermediate prose or
+  // a reminder echoed through `result` can never become protocol text.
+  const structured = outputSchema ? data.structured_output : null;
+  if (outputSchema && (!structured || typeof structured !== 'object' || Array.isArray(structured))) {
+    return fail('claude returned no schema-validated structured output');
+  }
+  const text = outputSchema ? JSON.stringify(structured) : String(data.result ?? '').trim();
   if (!text) return fail('claude returned an empty result');
   const observed = usageFromClaudeResult(data, model);
   return {

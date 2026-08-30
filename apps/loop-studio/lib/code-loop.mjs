@@ -202,7 +202,8 @@ export async function runProductiveCodeLoop(options, h) {
             : record.usage.actions > limits.maxActions ? 'Native tool-action accounting limit reached.'
               : record.usage.accountedTokens > limits.maxTokens ? 'Native token accounting limit reached.' : null;
         },
-      }) : await adapters[role](role === 'maker' ? { ...common, stage: record.feedback ? 'fix' : 'make', toolPolicy: 'none' }
+      }) : await adapters[role](role === 'maker' ? { ...common, stage: record.feedback ? 'fix' : 'make', toolPolicy: 'none',
+        outputSchema: h.protocolSchema(limits) }
         : { ...common, claims: [], criteria: [], thresholds: [], receiptDir: join(receiptsDir, id) });
     } catch (error) { response = { ok: false, ran: false, error: cleanError(error), ...(nativeCall ? { uncertain: true } : {}) }; }
     finally { clearTimeout(timeout); clearTimeout(idleTimer); abort.signal.removeEventListener('abort', interrupted); }

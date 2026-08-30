@@ -168,6 +168,22 @@ test('a malformed paid raw response preserves its call, usage, identity, and res
   assert.equal(checkpoint.result.protocol.steps, 0);
 });
 
+test('every file-action maker call receives the bounded host protocol schema', async t => {
+  let turn = 0;
+  const f = await fixture(t, async ({ outputSchema }) => {
+    assert.equal(outputSchema.type, 'object');
+    assert.equal(outputSchema.additionalProperties, false);
+    assert.deepEqual(outputSchema.required, ['actions', 'done', 'summary', 'decision']);
+    assert.equal(outputSchema.properties.actions.maxItems, 2);
+    assert.equal(outputSchema.properties.actions.items.additionalProperties, false);
+    assert.deepEqual(outputSchema.properties.actions.items.properties.type.enum, ['list', 'read', 'write', 'delete']);
+    return ++turn === 1 ? message([write('correct')], { summary: 'write result', decision: null })
+      : message([], { summary: 'ready', decision: null });
+  });
+  const result = await f.run({ limits: { maxActionsPerStep: 2 } });
+  assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+});
+
 test('non-empty bounded actions safely imply done false while an empty omission still refuses', async t => {
   let turn = 0;
   const f = await fixture(t, async () => ++turn === 1

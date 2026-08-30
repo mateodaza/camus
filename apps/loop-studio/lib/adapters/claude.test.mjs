@@ -84,7 +84,11 @@ const rec = { argv: process.argv.slice(2), present: {}, constants: {} };
 for (const n of NAMES) rec.present[n] = Object.prototype.hasOwnProperty.call(process.env, n);
 rec.constants.CLAUDE_CODE_DISABLE_AUTO_MEMORY = process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
 fs.writeFileSync(path.join(process.cwd(), 'capture.json'), JSON.stringify(rec));
-process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'ok', total_cost_usd: 0 }) + '\\n');
+const structured = process.argv.includes('--json-schema')
+  ? { actions: [], done: true, summary: 'schema ready', decision: null }
+  : null;
+process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false,
+  result: structured ? 'intermediate prose must not win' : 'ok', structured_output: structured, total_cost_usd: 0 }) + '\\n');
 process.exit(0);
 `;
 
@@ -206,6 +210,23 @@ try {
     });
     ok('runClaude: isolated env + empty --setting-sources, proven against an unisolated control', () => {
       assertIsolated('runClaude', readCapture(cwd), controlSpawn('make'));
+    });
+  })();
+
+  await (async () => {
+    const cwd = freshDir('structured-make');
+    const outputSchema = { type: 'object', required: ['actions', 'done'], properties: {
+      actions: { type: 'array' }, done: { type: 'boolean' },
+    } };
+    const res = await runClaude({ prompt: 'return protocol', stage: 'make', cwd,
+      model: 'test-maker-model', toolPolicy: 'none', outputSchema });
+    ok('runClaude binds a supplied schema and returns only validated structured output', () => {
+      assert.equal(res.ok, true, res.error || 'structured maker should succeed against the fake');
+      assert.deepEqual(JSON.parse(res.text), { actions: [], done: true, summary: 'schema ready', decision: null });
+      const capture = readCapture(cwd);
+      const index = capture.argv.indexOf('--json-schema');
+      assert.ok(index >= 0, 'structured maker argv carries --json-schema');
+      assert.deepEqual(JSON.parse(capture.argv[index + 1]), outputSchema);
     });
   })();
 
