@@ -213,6 +213,37 @@ test('one exact JSON fence is normalized while fenced commentary remains invalid
   assert.match(refused.error, /not one JSON object/);
 });
 
+test('one trailing protocol object after a bounded plain-text preface is normalized without ambiguity', async t => {
+  let turn = 0;
+  const f = await fixture(t, async () => {
+    const response = ++turn === 1 ? { actions: [write('correct')], done: false, summary: 'write result' }
+      : { actions: [], done: true, summary: 'ready' };
+    return { ok: true, text: `I will request the next bounded host action.\n\n${JSON.stringify(response)}`,
+      usage: { input_tokens: 10, output_tokens: 5 } };
+  });
+  const result = await f.run({ limits: { maxRetries: 0 } });
+  assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+  assert.equal(result.usage.retries, 0, 'unambiguous trailing-object normalization spends no formatting-repair call');
+  const events = (await readFile(join(f.options.receiptsDir, 'code-events.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(events.filter(event => event.type === 'protocol_normalized'
+    && event.normalization === 'leading_plaintext_removed').length, 2);
+
+  const protocol = JSON.stringify({ actions: [], done: true });
+  const ambiguous = await fixture(t, async () => ({ ok: true,
+    text: `Earlier object: ${protocol}\n\n${protocol}`,
+    usage: { input_tokens: 10, output_tokens: 5 } }));
+  const ambiguousResult = await ambiguous.run({ limits: { maxRetries: 0 } });
+  assert.equal(ambiguousResult.status, 'infra_error');
+  assert.match(ambiguousResult.error, /not one JSON object/);
+
+  const trailing = await fixture(t, async () => ({ ok: true,
+    text: `${protocol}\nThis text must not be ignored.`,
+    usage: { input_tokens: 10, output_tokens: 5 } }));
+  const trailingResult = await trailing.run({ limits: { maxRetries: 0 } });
+  assert.equal(trailingResult.status, 'infra_error');
+  assert.match(trailingResult.error, /not one JSON object/);
+});
+
 test('binding, HMAC, candidate drift and concurrent ownership refuse before more model calls', async (t) => {
   const f = await fixture(t, () => message([write('correct')]));
   await f.run({ limits: { maxCalls: 1 } });

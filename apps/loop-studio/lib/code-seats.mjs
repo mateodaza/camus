@@ -151,11 +151,35 @@ function parseProtocol(text, limits) {
   if (typeof text !== 'string' || !text.trim()) throw new Error('maker returned empty protocol output');
   if (byteLength(text) > limits.maxResponseBytes) throw new Error('maker protocol response exceeded the response limit');
   const normalizations = [];
-  let protocolText = text;
-  const fenced = text.trim().match(/^```json\r?\n([\s\S]+)\r?\n```$/);
+  const trimmed = text.trim();
+  let protocolText = trimmed;
+  const fenced = trimmed.match(/^```json\r?\n([\s\S]+)\r?\n```$/);
   if (fenced) {
     protocolText = fenced[1];
     normalizations.push('single_json_fence_removed');
+  } else {
+    // Some CLI harnesses prepend a short reasoning sentence despite the
+    // protocol prompt. Accept only an unambiguous JSON object that consumes
+    // the entire response after a blank line. A bounded plain-text prefix may
+    // not contain braces or a code fence, so duplicate/JSON-like commentary
+    // and fenced or trailing content still fail closed.
+    const candidates = [];
+    const separator = /\r?\n\r?\n(?=\{)/g;
+    let match;
+    let separators = 0;
+    while ((match = separator.exec(trimmed)) && ++separators <= 16) {
+      const prefix = trimmed.slice(0, match.index).trim();
+      const candidate = trimmed.slice(match.index + match[0].length);
+      if (!prefix || byteLength(prefix) > 2_000 || /[{}]/.test(prefix) || prefix.includes('```')) continue;
+      try {
+        const parsed = JSON.parse(candidate);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) candidates.push(candidate);
+      } catch {}
+    }
+    if (separators <= 16 && candidates.length === 1) {
+      protocolText = candidates[0];
+      normalizations.push('leading_plaintext_removed');
+    }
   }
   let message;
   try { message = JSON.parse(protocolText); } catch { throw new Error('maker protocol output is not one JSON object'); }
