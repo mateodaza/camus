@@ -394,18 +394,22 @@ export async function runProductiveCodeLoop(options, h) {
       record.created = [...state.created]; record.reads = [...state.reads];
       record.tracked = state.tracked;
     };
-    // Recover a write interrupted between application and checkpoint publication.
+    // Recover a mutation interrupted between application and checkpoint publication.
     if (record.pendingAction) {
-      const { action, otherFingerprint } = record.pendingAction;
+      const { action, otherFingerprint, desiredSha256 } = record.pendingAction;
       if (digest(await h.completeDiff(state.worktree, limits, action.path)) !== otherFingerprint) throw new Error('Unrelated candidate drift during interrupted action.');
       const path = await h.safePath(state.worktree, action.path);
       let text = null; try { text = await h.currentText(path.absolute, limits); } catch (error) { if (error.code !== 'ENOENT') throw error; }
       const current = text === null ? null : h.sha256(text);
-      const desired = action.type === 'write' ? h.sha256(action.content) : null;
+      const desired = action.type === 'write' ? h.sha256(action.content)
+        : action.type === 'replace' ? desiredSha256 : null;
+      if (action.type === 'replace' && !/^[a-f0-9]{64}$/i.test(desired ?? '')) throw new Error('Interrupted replace lacks its desired content binding.');
       if (current === desired) {
         if (action.type === 'write' && action.expected_sha256 === null) state.created.add(action.path);
         if (action.type === 'delete') { state.created.delete(action.path); state.tracked = state.tracked.filter((path) => path !== action.path); }
-        if (action.type === 'write') state.reads.set(action.path, action.content); else state.reads.delete(action.path);
+        if (action.type === 'write') state.reads.set(action.path, action.content);
+        else if (action.type === 'replace') state.reads.set(action.path, text);
+        else state.reads.delete(action.path);
         invalidateCandidateEvidence();
         record.observations.push({ type: action.type, path: action.path, sha256: desired, recovered: true });
         record.actionIndex++; record.pendingAction = null; await h.ensureCreatedVisible(state); await snapshot();
@@ -499,9 +503,10 @@ export async function runProductiveCodeLoop(options, h) {
           if (!record.pendingAction) {
             if (record.usage.actions >= limits.maxActions) return question('protocol action cap reached', 'budget');
             await checkCandidate(); record.usage.actions++;
-            if (['write', 'delete'].includes(action.type)) {
-              await h.applyAction(action, state, { validateOnly: true });
-              record.pendingAction = { action, otherFingerprint: digest(await h.completeDiff(state.worktree, limits, action.path)) };
+            if (['replace', 'write', 'delete'].includes(action.type)) {
+              const validation = await h.applyAction(action, state, { validateOnly: true });
+              record.pendingAction = { action, otherFingerprint: digest(await h.completeDiff(state.worktree, limits, action.path)),
+                ...(action.type === 'replace' ? { desiredSha256: validation.desiredSha256 } : {}) };
             }
             await log('action_started');
           }
@@ -526,7 +531,7 @@ export async function runProductiveCodeLoop(options, h) {
             record.actionSummary = null; record.pendingAction = null; record.phase = 'make';
             await log('action_refused', { reason }); actionRefused = true; break;
           }
-          if (['write', 'delete'].includes(action.type)) {
+          if (['replace', 'write', 'delete'].includes(action.type)) {
             invalidateCandidateEvidence();
           }
           await h.ensureCreatedVisible(state); await snapshot(); record.actionIndex++; record.pendingAction = null;

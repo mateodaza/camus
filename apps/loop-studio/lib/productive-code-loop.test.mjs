@@ -176,12 +176,51 @@ test('every file-action maker call receives the bounded host protocol schema', a
     assert.deepEqual(outputSchema.required, ['actions', 'done', 'summary', 'decision']);
     assert.equal(outputSchema.properties.actions.maxItems, 2);
     assert.equal(outputSchema.properties.actions.items.additionalProperties, false);
-    assert.deepEqual(outputSchema.properties.actions.items.properties.type.enum, ['list', 'read', 'write', 'delete']);
+    assert.deepEqual(outputSchema.properties.actions.items.properties.type.enum, ['list', 'read', 'replace', 'write', 'delete']);
     return ++turn === 1 ? message([write('correct')], { summary: 'write result', decision: null })
       : message([], { summary: 'ready', decision: null });
   });
   const result = await f.run({ limits: { maxActionsPerStep: 2 } });
   assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+});
+
+test('hash-bound exact replacement edits an existing file without a full-file model write', async t => {
+  let turn = 0;
+  const before = 'A test project.\n';
+  const f = await fixture(t, async ({ prompt }) => {
+    if (++turn === 1) {
+      assert.match(prompt, /prefer replace for focused edits/);
+      return message([{ type: 'read', path: 'README.md' }], { summary: 'read target' });
+    }
+    if (turn === 2) return message([{ type: 'replace', path: 'README.md', old: 'test', content: 'correct',
+      expected_sha256: digest(before) }], { summary: 'apply focused edit' });
+    return message([], { summary: 'ready' });
+  });
+  const result = await f.run();
+  assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+  assert.equal(await readFile(join(result.candidate.worktree, 'README.md'), 'utf8'), 'A correct project.\n');
+  assert.equal(result.usage.actions, 2);
+
+  const ambiguous = await fixture(t, async () => message([{ type: 'replace', path: 'README.md', old: 't', content: 'x',
+    expected_sha256: digest(before) }]));
+  const refused = await ambiguous.run({ limits: { maxRetries: 0 } });
+  assert.equal(refused.status, 'infra_error');
+  assert.match(refused.error, /must occur exactly once/);
+  assert.equal(await readFile(join(refused.candidate.worktree, 'README.md'), 'utf8'), before);
+
+  const stale = await fixture(t, async () => message([{ type: 'replace', path: 'README.md', old: 'test', content: 'correct',
+    expected_sha256: '0'.repeat(64) }]));
+  const staleResult = await stale.run({ limits: { maxRetries: 0 } });
+  assert.equal(staleResult.status, 'infra_error');
+  assert.match(staleResult.error, /stale expected_sha256/);
+  assert.equal(await readFile(join(staleResult.candidate.worktree, 'README.md'), 'utf8'), before);
+
+  const unchanged = await fixture(t, async () => message([{ type: 'replace', path: 'README.md', old: 'test', content: 'test',
+    expected_sha256: digest(before) }]));
+  const unchangedResult = await unchanged.run({ limits: { maxRetries: 0 } });
+  assert.equal(unchangedResult.status, 'infra_error');
+  assert.match(unchangedResult.error, /makes no change/);
+  assert.equal(await readFile(join(unchangedResult.candidate.worktree, 'README.md'), 'utf8'), before);
 });
 
 test('one safe untracked read receives bounded maker feedback while repeats and unsafe paths fail closed', async t => {
