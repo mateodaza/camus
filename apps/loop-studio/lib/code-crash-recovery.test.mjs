@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
+import { codeOwnedProcessCleanupStatus } from './code-owned-process-registry.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = await realpath(await mkdtemp(join(tmpdir(), 'camus-hard-crash-test-')));
@@ -86,5 +87,12 @@ try {
   for (let i = 0; i < 150; i++) { try { process.kill(pid, 0); } catch { alive = false; break; } await new Promise(r => setTimeout(r, 10)); }
   if (alive) try { process.kill(pid, 'SIGKILL'); } catch { /* fixture cleanup */ }
   assert.equal(alive, false, 'verifier command survives neither parent SIGKILL nor its own deadline');
+  let cleanup;
+  for (let i = 0; i < 300; i++) {
+    try { cleanup = codeOwnedProcessCleanupStatus(root); } catch { cleanup = null; }
+    if (cleanup?.complete) break;
+    await new Promise(r => setTimeout(r, 10));
+  }
+  assert.equal(cleanup?.complete, true, 'verifier supervisor records terminal cleanup before fixture removal');
   console.log('ok - verifier process group is cleaned after host SIGKILL');
-} finally { await rm(root, { recursive: true, force: true }); }
+} finally { await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 }); }
