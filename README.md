@@ -2,12 +2,18 @@
 
 **Makes it work. Knows when to stop.**
 
+New in 0.4.12: `camus code-eval` preserves the v1a native smokes and adds a
+separate bounded v1b raw/native isolation pair. It counterbalances exactly
+two same-model cells, allows one fresh-consent cell per invocation, recovers
+without replaying uncertain spend, and summarizes only case-scoped paired
+evidence. It cannot name a winner or change routing, admission, Git, or
+publication state.
+
 New in 0.4.11: `camus code-eval fixture --case` adds a deterministic balanced
 job-event/scheduler repair beside the original simple parser case. Candidate
 integrity is now mechanical: only the selected fixture's declared solution paths
 may change, and a test, ignored, extra, deleted, or symlinked-file mutation is
-refused before verification. The runner remains a one-cell native smoke—not a
-raw/native comparison, winner, or routing system. See [independent coding seats](docs/INDEPENDENT-CODE-SEATS.md#bounded-native-smoke-evidence-experimental).
+refused before verification. See [independent coding seats](docs/INDEPENDENT-CODE-SEATS.md#bounded-harness-evidence-experimental).
 Current evidence-backed model/harness guidance, including the first live Qwen
 raw-versus-native result and the sealed Grok findings, lives in the
 [recommended model and harness setup](docs/RECOMMENDED-MODEL-SETUP.md).
@@ -58,7 +64,7 @@ The native proof gate needs [Claude Code](https://code.claude.com) and the
 `camus build` needs only the backends you choose, Node 18.17+, and Git.
 
 ```bash
-npm i -g camus-cli@0.4.11
+npm i -g camus-cli@0.4.12
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 ```
@@ -82,7 +88,7 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.4.11
+### Public alpha: 0.4.12
 
 Choose both coding roles independently in the CLI or Studio: Luna → Claude,
 Claude → Qwen, Grok → Qwen, or any other available, role-qualified pairing.
@@ -116,9 +122,9 @@ Qwen actions; Grok Build produced the exact fix under its harness but exhausted
 the frozen turn budget before a definitive terminal. Neither result is a general
 model ranking.
 
-No new reviewer admission, automatic route, matched harness comparison, or
+No new reviewer admission, automatic route, cross-case harness ranking, or
 optimal pairing is claimed. See the
-[0.4.11 release notes](docs/RELEASE-0.4.11.md).
+[0.4.12 release notes](docs/RELEASE-0.4.12.md).
 
 ### Existing admission infrastructure
 
@@ -244,7 +250,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.4.11
+npm i -g camus-cli@0.4.12
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```

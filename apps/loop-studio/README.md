@@ -1,10 +1,12 @@
 # Camus Loop Studio
 
-Version 0.4.11 adds a selectable balanced fixture and a mechanical candidate-edit
-boundary to the shared CLI-only `camus code-eval` v1a path. Studio intentionally
-has no live-campaign UI or hidden provider authorization for it, and the runner
-still cannot make a raw/native comparison or routing claim. Version 0.4.10 added
-the original bounded native smoke. Version 0.4.9 Productive Loop work added repair feedback,
+Version 0.4.12 keeps the shared `camus code-eval` operator path CLI-only and adds
+a separate bounded v1b same-model raw/native isolation pair.
+It schedules exactly two case-scoped cells, requires fresh consent for each one,
+and has no winner, routing, admission, Git, or publication authority. Studio has
+no live-campaign UI or hidden provider authorization for it. Version 0.4.11 added
+the selectable balanced fixture and mechanical candidate-edit boundary to v1a;
+version 0.4.10 added the original bounded native smoke. Version 0.4.9 Productive Loop work added repair feedback,
 checkpointed continuation, budget/answer controls, the same private run IDs as
 the CLI, and opt-in native Codex/Qwen Code/Grok Build maker executors. See [the
 coding guide](../../docs/INDEPENDENT-CODE-SEATS.md).

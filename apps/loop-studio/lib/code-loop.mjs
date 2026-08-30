@@ -5,6 +5,7 @@ import { acquireCodeRun, readCodeCheckpoint, saveCodeCheckpoint, appendCodeEvent
 import { redactCodeText, diagnosticSecrets } from './code-diagnostics.mjs';
 import { codeMakerContext, discoveryProgress, DISCOVERY_STALL_STEPS } from './code-context.mjs';
 import { NATIVE_EXECUTOR, isNativeExecutor, validateCodeExecutor } from './code-native-policy.mjs';
+import { initializeCodeOwnedProcessRegistry } from './code-owned-process-registry.mjs';
 
 const TRANSIENT = /\b(?:429|502|503|504|ECONNRESET|ETIMEDOUT|rate.limit|temporarily unavailable)\b/i;
 const TERMINAL = new Set(['complete', 'refused']);
@@ -65,6 +66,11 @@ export async function runProductiveCodeLoop(options, h) {
   const finish = async (status, reason, phase = record?.phase) => {
     if (!record) return { status, error: reason, advisory: true, gating: false };
     record.status = status; record.reason = reason; record.phase = phase;
+    // Provider responses and accepted host-protocol steps are distinct. A
+    // malformed paid raw response is still durable economic/identity evidence,
+    // even though it authorized zero protocol steps or file actions.
+    record.result.protocol = { version: 'code-seats/v2', rawProviderResponses: native ? null : record.usage.rawProviderResponses,
+      steps: record.usage.steps, actions: record.usage.actions };
     let checkpointWriteFailed = false;
     if (writable) try { persist(); } catch { status = 'infra_error'; reason = 'Checkpoint could not be saved; inspect the last durable state before recovery.'; checkpointWriteFailed = true; }
     const result = clone(record.result);
@@ -121,6 +127,12 @@ export async function runProductiveCodeLoop(options, h) {
   const call = async (role, prompt, { emptyAssessmentLedgers = false } = {}) => {
     if (record.pendingCall?.response && !record.pendingCall.response.uncertain) {
       if (record.pendingCall.role !== role || record.pendingCall.promptHash !== digest(prompt)) throw new Error('Saved response does not bind this role and context.');
+      if (!native && role === 'maker' && record.pendingCall.response.noModelCalled !== true
+          && record.pendingCall.rawResponseRecorded !== true) {
+        record.result.seats.maker = h.observedMaker(record.pendingCall.response,
+          record.result.seats.maker.requested, record.result.seats.maker.observed);
+        record.pendingCall.rawResponseRecorded = true;
+      }
       return record.pendingCall.response;
     }
     if (record.pendingCall) {
@@ -155,6 +167,7 @@ export async function runProductiveCodeLoop(options, h) {
     try {
       if (abort.signal.aborted) interrupted();
       const common = { prompt, model: seats[role].model, effort: seats[role].effort ?? null, cwd: record.scratch,
+        ownedProcessDir: receiptsDir,
         signal: control.signal, expectedReported: seats[role].expectedReported,
         ...(emptyAssessmentLedgers ? { emptyAssessmentLedgers: true } : {}),
         onTick: (line) => { activity(); emit('progress', { actor: role, line: cleanError(line) }); },
@@ -224,7 +237,14 @@ export async function runProductiveCodeLoop(options, h) {
     const tokens = observedTokens(response?.usage);
     const alreadyObserved = nativeCall ? record.pendingCall.progress?.tokens ?? 0 : 0;
     const reservationReplaced = nativeCall && record.pendingCall.progress?.reservationReplaced === true;
-    if (tokens !== null) {
+    const noModelCalled = response?.noModelCalled === true;
+    if (noModelCalled) {
+      if (alreadyObserved !== 0 || (record.pendingCall.progress?.responses ?? 0) !== 0) {
+        throw new Error('A pre-dispatch refusal carried provider-call progress.');
+      }
+      record.usage.calls--;
+      record.usage.accountedTokens -= limits.unknownTokenReserve;
+    } else if (tokens !== null) {
       if (tokens < alreadyObserved) throw new Error('Native final usage regressed.');
       record.usage.observedTokens += tokens - alreadyObserved;
       record.usage.accountedTokens += tokens - alreadyObserved;
@@ -243,10 +263,18 @@ export async function runProductiveCodeLoop(options, h) {
       }
       record.usage.unmeasuredCalls++;
     }
-    if (nativeCall && response?.noModelCalled) record.usage.calls--;
     const durationMs = Date.now() - record.pendingCall.startedAt;
-    record.usage.modelMs += durationMs;
-    record.attempts.push({ id, role, outcome: response?.uncertain ? 'uncertain' : role === 'maker' ? (response?.ok ? 'response' : 'infra') : (response?.ran ? 'response' : 'infra'), tokens, durationMs });
+    if (!nativeCall && role === 'maker' && !noModelCalled && response?.uncertain !== true) {
+      record.usage.rawProviderResponses++;
+      record.result.seats.maker = h.observedMaker(response,
+        record.result.seats.maker.requested, record.result.seats.maker.observed);
+      record.pendingCall.rawResponseRecorded = true;
+    }
+    if (!noModelCalled) record.usage.modelMs += durationMs;
+    record.attempts.push({ id, role, outcome: noModelCalled ? 'preflight_refused'
+      : response?.uncertain ? 'uncertain' : role === 'maker' ? (response?.ok ? 'response' : 'infra')
+        : (response?.ran ? 'response' : 'infra'), tokens: noModelCalled ? null : tokens,
+      durationMs, modelTimeCounted: !noModelCalled });
     await log('call_response_saved', { id, role, tokens });
     return record.pendingCall.response;
   };
@@ -278,6 +306,7 @@ export async function runProductiveCodeLoop(options, h) {
     const top = await h.git(source, ['rev-parse', '--show-toplevel']);
     if (!top.ok || resolve(top.stdout.trim()) !== source) throw new Error('repoPath must be the git repository root');
     receiptsDir = await h.privateReceiptsDir(receiptsDir, source);
+    initializeCodeOwnedProcessRegistry(receiptsDir);
     owner = await acquireCodeRun(receiptsDir);
     if (resume) {
       record = await readCodeCheckpoint(receiptsDir);
@@ -291,6 +320,8 @@ export async function runProductiveCodeLoop(options, h) {
         limits[key] = value;
       }
       record.limits = limits;
+      record.usage.rawProviderResponses ??= record.attempts.filter(attempt => attempt.role === 'maker'
+        && ['response', 'infra'].includes(attempt.outcome)).length;
       if (native && limits.maxTokens < limits.unknownTokenReserve) throw new Error(`Native execution requires a token budget of at least ${limits.unknownTokenReserve} so the first call reservation fits.`);
       const base = await h.git(source, ['rev-parse', 'HEAD']);
       if (!base.ok || base.stdout.trim() !== record.source.head) throw new Error('Source baseline changed; resume refused.');
@@ -321,7 +352,7 @@ export async function runProductiveCodeLoop(options, h) {
       const branch = `codex/code-seats-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
       record = { version: CODE_RUN_VERSION, runId: basename(receiptsDir), binding: bind(), task, seats,
         source: { repoPath: source, head: base.stdout.trim() }, candidate: { worktree, branch, head: base.stdout.trim() },
-        phase: 'initialize', status: 'running', limits, usage: { calls: 0, steps: 0, actions: 0, repairs: 0, retries: 0, observedTokens: 0, accountedTokens: 0, unmeasuredCalls: 0, activeMs: 0, modelMs: 0, verificationMs: 0, pausedMs: 0 },
+        phase: 'initialize', status: 'running', limits, usage: { calls: 0, rawProviderResponses: 0, steps: 0, actions: 0, repairs: 0, retries: 0, observedTokens: 0, accountedTokens: 0, unmeasuredCalls: 0, activeMs: 0, modelMs: 0, verificationMs: 0, pausedMs: 0 },
         attempts: [], history: [], created: [], reads: [], feedback: null, pendingCall: null, pendingAction: null,
         result: h.baseResult({ seats, adapters, backendSnapshot }), generation: owner.generation };
       writable = true;
@@ -404,7 +435,8 @@ export async function runProductiveCodeLoop(options, h) {
     heartbeat.unref();
     while (true) {
       if (abort.signal.aborted) return finish('stopped', cleanError(abort.signal.reason ?? 'code seats stopped'));
-      record.result.protocol = { version: 'code-seats/v2', steps: record.usage.steps, actions: record.usage.actions };
+      record.result.protocol = { version: 'code-seats/v2', rawProviderResponses: native ? null : record.usage.rawProviderResponses,
+        steps: record.usage.steps, actions: record.usage.actions };
       record.result.source = record.source;
       if (record.phase === 'make') {
         if (!native && !record.pendingCall?.response && discoveryProgress(record.history).noNewSteps >= DISCOVERY_STALL_STEPS) {
@@ -433,7 +465,7 @@ export async function runProductiveCodeLoop(options, h) {
           record.history.push({ protocolError: cleanError(error), instruction: 'Return the exact bounded JSON protocol. No action from the invalid response was applied.' });
           await log('protocol_retry'); continue;
         }
-        record.result.seats.maker = h.observedMaker(response, record.result.seats.maker.requested, record.result.seats.maker.observed);
+        if (native) record.result.seats.maker = h.observedMaker(response, record.result.seats.maker.requested, record.result.seats.maker.observed);
         record.usage.steps++; record.pendingCall = null;
         if (message.decision) {
           const { action, reason } = message.decision;

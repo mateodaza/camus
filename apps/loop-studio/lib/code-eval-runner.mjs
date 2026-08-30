@@ -636,7 +636,8 @@ export async function runCodeEval({ campaignPath, statePath, ledgerPath, consent
       receiptsDir, timeoutMs: current.fixture.manifest.verifier.timeoutMs, repeatable: true,
     });
     const verify = async options => {
-      if (await inspectCandidateIntegrity(current.fixture, sourcePath) !== true) {
+      if (typeof options?.worktree !== 'string'
+          || await inspectCandidateIntegrity(current.fixture, options.worktree) !== true) {
         return { ran: false, pass: null, error: 'Candidate changed files outside the fixture solution boundary.' };
       }
       return baseVerify(options);
@@ -656,7 +657,8 @@ export async function runCodeEval({ campaignPath, statePath, ledgerPath, consent
       authorize: current.prepared.authorize,
       onEvent: dependencies.onEvent,
     });
-    const candidateIntegrity = await inspectCandidateIntegrity(current.fixture, sourcePath);
+    const candidateIntegrity = typeof result?.candidate?.worktree === 'string'
+      && await inspectCandidateIntegrity(current.fixture, result.candidate.worktree) === true;
     let checkpoint = null;
     try { checkpoint = await (dependencies.readCheckpoint ?? readCodeCheckpoint)(receiptsDir); } catch { /* normalized below as failed evidence */ }
     const report = { schemaVersion: 1, campaignDigest: ctx.execution.campaignDigest,

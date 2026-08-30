@@ -1,14 +1,18 @@
 #!/usr/bin/env node
-// One-cell native harness smoke runner. It reuses the shared Build engine and
-// deliberately has no comparison, ranking, routing, admission, or publication authority.
+// Bounded code-harness evidence runner. V1a native-smoke evidence remains
+// readable; v1b adds one exact two-arm isolation pair without ranking, routing,
+// admission, or publication authority.
+import { lstat, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { getSharedTunnelManager } from './lib/ssh-tunnel.mjs';
 import { planCodeEval, recoverCodeEval, runCodeEval, statusCodeEval } from './lib/code-eval-runner.mjs';
+import { planCodeEvalPair, recoverCodeEvalPair, runCodeEvalPair, statusCodeEvalPair } from './lib/code-eval-pair-runner.mjs';
+import { summarizeCodeEvalPair } from './lib/code-eval-pair-summary.mjs';
 import { codeEvalFixturePath, codeEvalFixtureReadiness } from './lib/code-eval-fixture.mjs';
 import { redactCodeText, diagnosticSecrets } from './lib/code-diagnostics.mjs';
 
-export const CODE_EVAL_HELP = `camus code-eval — one bounded native-harness execution smoke (experimental)
+export const CODE_EVAL_HELP = `camus code-eval — bounded native-smoke and raw/native pair evidence (experimental)
 
   camus code-eval plan --campaign campaign.json --state state.json --ledger receipts.jsonl [--json]
   camus code-eval fixture [--case case-id] [--json]
@@ -17,19 +21,22 @@ export const CODE_EVAL_HELP = `camus code-eval — one bounded native-harness ex
       --campaign campaign.json --state state.json --ledger receipts.jsonl [--json]
   camus code-eval recover --action seal-infra \
       --campaign campaign.json --state state.json --ledger receipts.jsonl [--json]
+  camus code-eval summarize \
+      --campaign campaign.json --state state.json --ledger receipts.jsonl [--json]
 
 Fixture, plan, status, and recovery make no provider calls. Fixture prints the
-exact tracked base-red/reference-green bindings needed by a campaign. Run requires fresh literal
-consent and can attempt exactly one frozen native-smoke cell. An uncertain cell
-is never replayed. This command cannot compare models, name a winner, change
-routing/admission/settings, commit, merge, push, or publish.
+exact tracked base-red/reference-green bindings needed by a campaign. Run requires
+fresh literal consent and can attempt exactly one frozen cell. An uncertain cell
+is never replayed. V1b summarizes only one exact same-model, same-case raw/native
+pair; it cannot name a winner, claim task-class coverage, change routing,
+admission, or settings, commit, merge, push, or publish.
 `;
 
 export function parseCodeEvalArgs(argv) {
   if (!Array.isArray(argv)) throw new Error('code-eval arguments must be an array.');
   const command = argv[0];
   if (!command || ['help', '-h', '--help'].includes(command)) return { command: 'help' };
-  if (!['fixture', 'plan', 'status', 'run', 'recover'].includes(command)) throw new Error(`Unknown code-eval operation: ${command}`);
+  if (!['fixture', 'plan', 'status', 'run', 'recover', 'summarize'].includes(command)) throw new Error(`Unknown code-eval operation: ${command}`);
   const valued = new Set(['campaign', 'state', 'ledger', 'max-cells', 'action', 'case']);
   const flags = new Set(['allow-provider-calls', 'json']);
   const options = { command };
@@ -54,12 +61,27 @@ export function parseCodeEvalArgs(argv) {
   for (const name of ['campaign', 'state', 'ledger']) if (!options[name]) throw new Error(`--${name} is required.`);
   if (command === 'run') {
     if (options['allow-provider-calls'] !== true) throw new Error('code-eval run requires literal --allow-provider-calls consent; no provider was called.');
-    if (options['max-cells'] !== '1') throw new Error('v1a code-eval run requires --max-cells 1; no provider was called.');
+    if (options['max-cells'] !== '1') throw new Error('code-eval run requires --max-cells 1; no provider was called.');
   } else if (options['allow-provider-calls'] || options['max-cells']) throw new Error(`code-eval ${command} does not accept provider-call authority.`);
   if (command === 'recover') {
-    if (options.action !== 'seal-infra') throw new Error('v1a recovery requires --action seal-infra.');
+    if (options.action !== 'seal-infra') throw new Error('code-eval recovery requires --action seal-infra.');
   } else if (options.action) throw new Error(`code-eval ${command} does not accept --action.`);
   return options;
+}
+
+async function treatmentProtocol(campaignPath) {
+  const path = resolve(campaignPath);
+  const info = await lstat(path);
+  if (!info.isFile() || info.isSymbolicLink() || info.size > 256 * 1024) {
+    throw new Error('Campaign must be a bounded regular non-symlink file.');
+  }
+  let campaign;
+  try { campaign = JSON.parse(await readFile(path, 'utf8')); }
+  catch { throw new Error('Campaign must contain valid JSON; private contents were omitted.'); }
+  if (!['code-harness-eval-v1a', 'code-harness-eval-v1b'].includes(campaign?.treatmentProtocol)) {
+    throw new Error('Campaign treatment protocol is unsupported; no provider was called.');
+  }
+  return campaign.treatmentProtocol;
 }
 
 export async function main(argv = process.argv.slice(2), dependencies = {}) {
@@ -72,10 +94,20 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
     return result.ready === true && result.providerCallsMade === 0 ? 0 : 1;
   }
   const paths = { campaignPath: resolve(options.campaign), statePath: resolve(options.state), ledgerPath: resolve(options.ledger) };
-  const result = options.command === 'plan' ? await planCodeEval(paths, dependencies)
-    : options.command === 'status' ? await statusCodeEval(paths, dependencies)
-      : options.command === 'run' ? await runCodeEval({ ...paths, consent: true, maxCells: 1 }, dependencies)
-        : await recoverCodeEval({ ...paths, action: 'seal-infra' }, dependencies);
+  const protocol = await treatmentProtocol(paths.campaignPath);
+  if (protocol === 'code-harness-eval-v1a' && options.command === 'summarize') {
+    throw new Error('V1a contains one native smoke and has no paired summary; no provider was called.');
+  }
+  const pair = protocol === 'code-harness-eval-v1b';
+  const result = options.command === 'plan'
+    ? await (pair ? planCodeEvalPair : planCodeEval)(paths, dependencies)
+    : options.command === 'status'
+      ? await (pair ? statusCodeEvalPair : statusCodeEval)(paths, dependencies)
+      : options.command === 'run'
+        ? await (pair ? runCodeEvalPair : runCodeEval)({ ...paths, consent: true, maxCells: 1 }, dependencies)
+        : options.command === 'recover'
+          ? await (pair ? recoverCodeEvalPair : recoverCodeEval)({ ...paths, action: 'seal-infra' }, dependencies)
+          : await summarizeCodeEvalPair(paths, dependencies);
   console.log(JSON.stringify(result, null, options.json ? 2 : 2));
   return result.ok === false || result.standing === 'unknown' ? 1 : 0;
 }

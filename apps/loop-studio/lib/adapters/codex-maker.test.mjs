@@ -6,7 +6,8 @@ import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runCodexMaker } from './codex.mjs';
+import { runCodexMaker, runCodexReview } from './codex.mjs';
+import { codeOwnedProcessCleanupStatus } from '../code-owned-process-registry.mjs';
 
 const root = await mkdtemp(join(tmpdir(), 'camus-codex-maker-'));
 const bin = join(root, 'bin');
@@ -32,6 +33,16 @@ try {
   const argv = (await readFile(join(cwd, 'argv.txt'), 'utf8')).split('\n');
   assert(argv.includes('model_reasoning_effort=high'), 'explicit independent-maker effort is passed to codex argv');
   assert(argv.includes('synthetic-codex'), 'explicit model remains pinned in argv');
+  const ownedProcessDir = join(root, 'owned-run');
+  await mkdir(ownedProcessDir, { recursive: true });
+  const registeredMaker = await runCodexMaker({ prompt: 'return protocol JSON', model: 'synthetic-codex',
+    effort: 'high', cwd, ownedProcessDir });
+  assert.equal(registeredMaker.ok, true);
+  await runCodexReview({ prompt: 'review it', model: 'synthetic-reviewer', effort: 'medium', cwd,
+    receiptDir: join(root, 'review-receipt'), ownedProcessDir });
+  const cleanup = codeOwnedProcessCleanupStatus(ownedProcessDir);
+  assert.equal(cleanup.complete, true);
+  assert.deepEqual(cleanup.intents.map(intent => intent.kind), ['codex_maker', 'codex_reviewer']);
   console.log('codex-maker.test.mjs: explicit maker effort reaches the hermetic Codex spawn argv');
 } finally {
   process.env.PATH = previousPath;

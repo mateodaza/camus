@@ -123,6 +123,51 @@ test('an uncertain native budget stop keeps its exact local cause without replay
   assert.equal(result.usage.calls, 1);
 });
 
+test('explicit raw-maker pre-dispatch refusal records an attempt without calls, token reservation, or model time', async t => {
+  const f = await fixture(t, async () => ({ ok: false, noModelCalled: true, error: 'Maker preflight refused.' }));
+  const result = await f.run();
+  assert.equal(result.usage.calls, 0);
+  assert.equal(result.usage.accountedTokens, 0);
+  assert.equal(result.usage.unmeasuredCalls, 0);
+  assert.equal(result.usage.modelMs, 0);
+  assert.deepEqual(result.attempts.map(({ role, outcome, tokens, modelTimeCounted }) => ({ role, outcome, tokens, modelTimeCounted })),
+    [{ role: 'maker', outcome: 'preflight_refused', tokens: null, modelTimeCounted: false }]);
+});
+
+test('explicit reviewer pre-dispatch refusal does not add a call, unknown tokens, unmeasured usage, or reviewer model time', async t => {
+  let turn = 0;
+  const f = await fixture(t, async () => ++turn === 1 ? message([write('correct')]) : message(),
+    async () => ({ ran: false, noModelCalled: true, error: 'Reviewer preflight refused.' }));
+  const result = await f.run();
+  assert.equal(result.usage.calls, 2);
+  assert.equal(result.usage.accountedTokens, 30);
+  assert.equal(result.usage.unmeasuredCalls, 0);
+  const attempt = result.attempts.at(-1);
+  assert.deepEqual({ role: attempt.role, outcome: attempt.outcome, tokens: attempt.tokens, modelTimeCounted: attempt.modelTimeCounted },
+    { role: 'reviewer', outcome: 'preflight_refused', tokens: null, modelTimeCounted: false });
+});
+
+test('a malformed paid raw response preserves its call, usage, identity, and response count without accepting a protocol step', async t => {
+  const f = await fixture(t, async () => ({ ok: true, text: 'not bounded protocol JSON',
+    modelActual: 'fixture-provider:fixture-maker', durationMs: 7,
+    usage: { input_tokens: 11, cached_input_tokens: 3, output_tokens: 5 } }));
+  const result = await f.run({ limits: { maxRetries: 0 } });
+  assert.equal(result.status, 'infra_error');
+  assert.equal(result.usage.calls, 1);
+  assert.equal(result.usage.rawProviderResponses, 1);
+  assert.equal(result.usage.observedTokens, 16);
+  assert.equal(result.protocol.rawProviderResponses, 1);
+  assert.equal(result.protocol.steps, 0);
+  assert.equal(result.protocol.actions, 0);
+  assert.equal(result.seats.maker.observed.identity, 'fixture-provider:fixture-maker');
+  assert.deepEqual(result.seats.maker.observed.turns[0].usage,
+    { input_tokens: 11, cached_input_tokens: 3, output_tokens: 5 });
+  assert.equal(result.attempts[0].outcome, 'response');
+  const checkpoint = await f.checkpoint();
+  assert.equal(checkpoint.usage.rawProviderResponses, 1);
+  assert.equal(checkpoint.result.protocol.steps, 0);
+});
+
 test('binding, HMAC, candidate drift and concurrent ownership refuse before more model calls', async (t) => {
   const f = await fixture(t, () => message([write('correct')]));
   await f.run({ limits: { maxCalls: 1 } });

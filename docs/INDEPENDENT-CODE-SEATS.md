@@ -199,6 +199,11 @@ the harness. This does not make provider calls free or impose a dollar cap.
   **cannot auto-adopt its writes or use `--retry-uncertain` to replay them**. It is
   preserved for inspection with verification/review claims cleared. No seamless
   mid-turn crash recovery or exactly-once provider billing is promised.
+- The paired evaluator adds a stricter recovery boundary: before an unknown paid
+  cell can be sealed, the Build lease must be released and every run-bound
+  subprocess intent must have durable cleanup evidence for its exact process
+  identity and observed descendants. Missing or malformed ownership evidence
+  refuses recovery and cannot open the second cell.
 
 Protocol references: [Codex app-server](https://learn.chatgpt.com/docs/app-server),
 [configuration](https://learn.chatgpt.com/docs/config-file/config-reference),
@@ -228,16 +233,16 @@ terminal and use only the selected model through the production gateway/supervis
 It is boundary evidence, not a model-quality or speed benchmark. Provider-backed
 combination dogfood remains required before making any performance claim.
 
-### Bounded native smoke evidence (experimental)
+### Bounded harness evidence (experimental)
 
-`camus code-eval` is the first deliberately small evidence path toward that
-provider-backed dogfood. It runs exactly one Qwen Code or Grok Build cell on one
-selected tracked synthetic fixture through the production Build engine. Two
-smoke fixtures are available: the original simple parser repair and a balanced
-job-event scheduler repair. It cannot run a raw arm or matched raw/native
-comparison, compare models, name a winner, change routing or admission, touch
-another repository, land Git changes, or publish anything. There is no Studio UI
-for this operator-only smoke yet.
+`camus code-eval` is the deliberately small evidence path for provider-backed
+dogfood. The released v1a protocol runs one Qwen Code or Grok Build smoke. The
+bounded v1b protocol freezes one same-model raw/native pair and schedules its two
+cells in stable counterbalanced order. Every invocation can attempt only the
+exact next cell and requires fresh consent. Neither protocol compares different
+models, names a winner, changes routing or admission, touches another repository,
+lands Git changes, or publishes anything. There is no Studio UI for this
+operator-only evaluator yet.
 
 First obtain the public fixture bindings and this machine's private model catalog.
 Both commands are provider-free; keep the catalog output private because it may
@@ -254,10 +259,11 @@ same selected case when authoring its private campaign; the case ID, task class,
 fixture tree, task, contract, and verifier bindings must match exactly. The
 balanced fixture enables one balanced-case observation, not balanced-class
 coverage: at least three materially distinct cases are required before a
-task-class claim. Matched raw/native scheduling remains unimplemented.
+task-class claim.
 
-Create one private campaign JSON. Replace every `REPLACE_*` value with the exact
-seat fields shown by `camus models --json`; never put a credential value or endpoint
+For a legacy v1a native smoke, create one private campaign JSON. Replace every
+`REPLACE_*` value with the exact seat fields shown by `camus models --json`;
+never put a credential value or endpoint
 URL in this file. `trainingOrg` must differ between maker and reviewer. For a Grok
 Build smoke, change only the exact maker seat and set `executor` to `grok_native`.
 Use a separate campaign and evidence directory for each harness:
@@ -362,9 +368,42 @@ implementation to the maker and does not assert semantic equality with it.
 A terminal `execution_observed` means only that this exact native smoke produced
 an identity-bound, independently reviewed, mechanically green candidate. One cell
 does not establish task-class coverage, superiority, production readiness,
-admission, or a route. See
-[Code Harness Evaluation v1](CODE-HARNESS-EVAL-V1.md) for the later controlled A/B
-contract that remains intentionally unimplemented.
+admission, or a route.
+
+For bounded v1b, author a fresh `code-harness-eval-v1b` campaign and a fresh
+evidence directory. Its closed shape contains singular `case` and `pair` fields,
+the same complete maker/reviewer seat on both arms, canonical arms
+`raw/file_actions` and `native/qwen_native|grok_native`,
+`repeatsPerArmCase: 1`, `maximumCells: 2`,
+`semanticPromptEnvelopeVersion: "code-harness-eval-v1b"`, and this exact claim
+policy:
+
+```json
+{
+  "pairedClaim": "paired_observation",
+  "winnerClaim": "forbidden",
+  "routingClaim": "forbidden",
+  "admissionClaim": "forbidden"
+}
+```
+
+Run `plan`, inspect `status`, then authorize at most one cell per invocation with
+the same `run --allow-provider-calls --max-cells 1` command shown above. A failed
+or unknown first arm remains terminal and the second invocation can run only the
+scheduled other arm. After either or both cells, inspect the provider-free
+summary:
+
+```sh
+camus code-eval summarize --campaign /private/path/pair-campaign.json \
+  --state /private/path/pair-evidence/state.json \
+  --ledger /private/path/pair-evidence/receipts.jsonl --json
+```
+
+The strongest v1b result is a `paired_observation` for that exact case only. It
+requires both arms, stable isolation evidence, and two true mechanical floors;
+it explicitly reports `taskClassCoverage: false` and cannot become a winner,
+efficiency, routing, admission, or production-readiness claim. See
+[Code Harness Evaluation v1](CODE-HARNESS-EVAL-V1.md) for the exact contract.
 
 `--verify` is an explicit local execution authorization. Environment credentials
 are removed and a private HOME is used, but this is **not an OS sandbox**: tests

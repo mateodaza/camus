@@ -5,9 +5,9 @@
 // stage gets no tools at all. The maker can read the web but cannot touch
 // the machine — including reads.
 
-import { spawn } from 'node:child_process';
 import { getModels } from '../models.mjs';
 import { viaClaude } from './hivemind.mjs';
+import { runCodeOwnedProcess } from '../code-owned-process.mjs';
 
 const TIMEOUTS = { plan: 120_000, ground: 300_000, make: 540_000, fix: 420_000 };
 
@@ -170,7 +170,7 @@ export function parseHivemindToolResult(content, query = '') {
   }
 }
 
-export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, onSession, model, toolPolicy = 'research' }) {
+export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, onSession, model, toolPolicy = 'research', ownedProcessDir = null }) {
   const configuredHm = stage === 'plan' || ['none', 'web_only'].includes(toolPolicy) ? { enabled: false } : viaClaude();
   const hm = toolPolicy === 'hivemind_only' && !configuredHm.enabled ? { enabled: false } : configuredHm;
   const { tools, allowed } = claudeToolSurface({ stage, hivemindEnabled: hm.enabled, serverName: hm.serverName, toolName: hm.toolName, toolPolicy });
@@ -207,7 +207,6 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
 
   const startedAt = Date.now();
   const { exitCode, stdout, stderr, resultEvent, hivemindQueries, hivemindQueryTexts, hivemindResults } = await new Promise((resolve) => {
-    const child = spawn('claude', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: claudeDirectEnv() });
     let out = '';
     let err = '';
     let lineBuf = '';
@@ -220,9 +219,12 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
     const finish = (code) => {
       if (!done) { done = true; clearTimeout(t); clearInterval(tick); resolve({ exitCode: code, stdout: out, stderr: err, resultEvent: result, hivemindQueries: hmQueries, hivemindQueryTexts: hmQueryTexts, hivemindResults: hmResults }); }
     };
-    const t = setTimeout(() => { child.kill('SIGKILL'); finish(-2); }, TIMEOUTS[stage] ?? 540_000);
+    const local = new AbortController();
+    let stoppedCode = null;
+    const stop = code => { if (stoppedCode === null) stoppedCode = code; local.abort(new Error('adapter process stopped')); };
+    const t = setTimeout(() => stop(-2), TIMEOUTS[stage] ?? 540_000);
     const tick = setInterval(() => onTick?.(stage === 'plan' ? 'planning…' : stage === 'ground' ? 'freezing the knowledge snapshot…' : 'drafting — researching sources…'), 8000);
-    child.stdout.on('data', (b) => {
+    const onData = (b) => {
       if (done) return; // an aborted/terminal run must not receive late session lines
       out += b;
       lineBuf += b;
@@ -253,11 +255,13 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
           if (sess) onSession?.(sess);
         } catch { /* partial or non-JSON line */ }
       }
-    });
-    child.stderr.on('data', (b) => { if (!done) err += b; });
-    signal?.addEventListener('abort', () => { child.kill('SIGKILL'); finish(-4); }, { once: true });
-    child.on('error', (e) => { err += `spawn error: ${e.code || e.message}`; finish(-1); });
-    child.on('close', (code) => finish(code ?? -1));
+    };
+    signal?.addEventListener('abort', () => stop(-4), { once: true });
+    runCodeOwnedProcess({ runDir: ownedProcessDir, kind: 'claude_maker', command: 'claude', args,
+      cwd, env: claudeDirectEnv(), timeoutMs: TIMEOUTS[stage] ?? 540_000, signal: local.signal,
+      onStdout: onData, onStderr: b => { if (!done) err += b; } })
+      .then(value => finish(stoppedCode ?? value.code ?? -1))
+      .catch(e => { err += `spawn error: ${e.code || e.message}`; finish(stoppedCode ?? -1); });
   });
 
   if (exitCode === -1) return fail(`failed to spawn claude (${stderr.trim() || 'unknown'}) — check the Claude Code CLI is installed and on PATH`);
@@ -304,7 +308,7 @@ export async function runClaude({ prompt, stage = 'make', cwd, signal, onTick, o
 // the SAME fail-closed normalizeReview as codex — unparseable, incomplete, or
 // self-inconsistent output is an infra error, never a clean verdict. No MCP,
 // no web, no repo access: the reviewer judges the draft it was handed.
-export async function runClaudeReview({ prompt, model, cwd, signal, onTick, onSession, receiptDir, claims = [], criteria = [], thresholds = [] }) {
+export async function runClaudeReview({ prompt, model, cwd, signal, onTick, onSession, receiptDir, ownedProcessDir = null, claims = [], criteria = [], thresholds = [] }) {
   const { normalizeReview } = await import('./codex.mjs');
   const infra = (error) => ({
     ran: false, error, verdict: 'ERROR', findings: [], questions: [],
@@ -330,7 +334,6 @@ export async function runClaudeReview({ prompt, model, cwd, signal, onTick, onSe
   // thinking one — killed, and an infra error, never a wait until the hard cap.
   const idleKillMs = Number(process.env.REVIEW_IDLE_MS || 300_000);
   const { exitCode, stdout, stderr, resultEvent } = await new Promise((resolvePromise) => {
-    const child = spawn('claude', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: claudeDirectEnv() });
     let out = '';
     let err = '';
     let lineBuf = '';
@@ -339,11 +342,14 @@ export async function runClaudeReview({ prompt, model, cwd, signal, onTick, onSe
     const finish = (code) => {
       if (!done) { done = true; clearTimeout(t); clearTimeout(idleT); clearInterval(tick); resolvePromise({ exitCode: code, stdout: out, stderr: err, resultEvent: result }); }
     };
-    const t = setTimeout(() => { child.kill('SIGKILL'); finish(-2); }, 480_000);
-    let idleT = setTimeout(() => { child.kill('SIGKILL'); finish(-3); }, idleKillMs);
-    const poke = () => { clearTimeout(idleT); idleT = setTimeout(() => { child.kill('SIGKILL'); finish(-3); }, idleKillMs); };
+    const local = new AbortController();
+    let stoppedCode = null;
+    const stop = code => { if (stoppedCode === null) stoppedCode = code; local.abort(new Error('adapter process stopped')); };
+    const t = setTimeout(() => stop(-2), 480_000);
+    let idleT = setTimeout(() => stop(-3), idleKillMs);
+    const poke = () => { clearTimeout(idleT); idleT = setTimeout(() => stop(-3), idleKillMs); };
     const tick = setInterval(() => onTick?.('reviewer reading and drafting findings…'), 8000);
-    child.stdout.on('data', (b) => {
+    const onData = (b) => {
       if (done) return;
       poke();
       out += b;
@@ -359,11 +365,13 @@ export async function runClaudeReview({ prompt, model, cwd, signal, onTick, onSe
           if (sess) onSession?.(sess);
         } catch { /* partial or non-JSON line */ }
       }
-    });
-    child.stderr.on('data', (b) => { if (!done) { poke(); err += b; } });
-    signal?.addEventListener('abort', () => { child.kill('SIGKILL'); finish(-4); }, { once: true });
-    child.on('error', (e) => { err += `spawn error: ${e.code || e.message}`; finish(-1); });
-    child.on('close', (code) => finish(code ?? -1));
+    };
+    signal?.addEventListener('abort', () => stop(-4), { once: true });
+    runCodeOwnedProcess({ runDir: ownedProcessDir, kind: 'claude_reviewer', command: 'claude', args,
+      cwd, env: claudeDirectEnv(), timeoutMs: 480_000, signal: local.signal,
+      onStdout: onData, onStderr: b => { if (!done) { poke(); err += b; } } })
+      .then(value => finish(stoppedCode ?? value.code ?? -1))
+      .catch(e => { err += `spawn error: ${e.code || e.message}`; finish(stoppedCode ?? -1); });
   });
 
   if (exitCode === -1) return infra(`failed to spawn claude (${stderr.trim() || 'unknown'}) — check the Claude Code CLI is installed and on PATH`);

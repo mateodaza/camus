@@ -210,8 +210,8 @@ export async function runNativeHarness({ executor, prompt, model, effort, backen
       env.GROK_SUBAGENTS = '0'; env.GROK_TOOL_SEARCH = '0'; env.GROK_WEB_FETCH = '0'; env.GROK_LSP_TOOLS = '0';
       for (const vendor of ['CLAUDE', 'CURSOR']) for (const feature of ['SKILLS', 'RULES', 'AGENTS', 'MCPS', 'HOOKS']) env[`GROK_${vendor}_${feature}_ENABLED`] = '0';
     }
-    const harnessVersion = await assertNativeHarnessVersion({ executor, policy, env, signal: local.signal });
-    await preflightNativeHarness({ policy, env, gateway, sourcePath, receiptsDir, signal: local.signal });
+    const harnessVersion = await assertNativeHarnessVersion({ executor, policy, env, signal: local.signal, ownedProcessDir: receiptsDir });
+    await preflightNativeHarness({ policy, env, gateway, sourcePath, receiptsDir, signal: local.signal, ownedProcessDir: receiptsDir });
     if (stopReason) throw new Error(stopReason);
     if (nativeSession && (nativeSession.version !== HARNESS_POLICY_VERSION || nativeSession.executor !== executor
         || nativeSession.policyHash !== policy.hash || nativeSession.model !== model || nativeSession.harnessVersion !== harnessVersion
@@ -246,7 +246,7 @@ export async function runNativeHarness({ executor, prompt, model, effort, backen
       : grokArgs({ policy, model, effort, prompt, session });
     dispatched = true;
     const run = await processRunner({ command: '/usr/bin/sandbox-exec', args: ['-p', policy.profile, policy.harness, ...args], cwd: policy.cwd,
-      env, timeoutMs, signal: local.signal, jsonl: true, onFrame: handle });
+      env, timeoutMs, signal: local.signal, jsonl: true, onFrame: handle, ownedProcessDir: receiptsDir });
     let grokReportedError = false;
     if (grokProtocol) {
       const completed = grokProtocol.finish(); terminal = completed.terminal; result = completed.result; grokReportedError = completed.reportedError;

@@ -91,11 +91,13 @@ test('CLI makes live consent literal and keeps all other operations provider-fre
   assert.equal(parseCodeEvalArgs(['fixture', '--case', 'balanced-job-event-scheduler', '--json']).case, 'balanced-job-event-scheduler');
   assert.throws(() => parseCodeEvalArgs(['fixture', '--allow-provider-calls']), /accepts only --case and --json/);
   assert.equal(parseCodeEvalArgs(['plan', ...common]).command, 'plan');
+  assert.equal(parseCodeEvalArgs(['summarize', ...common]).command, 'summarize');
   assert.throws(() => parseCodeEvalArgs(['plan', '--case', 'balanced-job-event-scheduler', ...common]), /does not accept --case/);
   assert.throws(() => parseCodeEvalArgs(['run', ...common]), /allow-provider-calls/);
   assert.throws(() => parseCodeEvalArgs(['run', '--allow-provider-calls', '--max-cells', '2', ...common]), /max-cells 1/);
   assert.equal(parseCodeEvalArgs(['run', '--allow-provider-calls', '--max-cells', '1', ...common]).command, 'run');
   assert.throws(() => parseCodeEvalArgs(['status', '--allow-provider-calls', ...common]), /does not accept provider-call authority/);
+  assert.throws(() => parseCodeEvalArgs(['summarize', '--max-cells', '1', ...common]), /does not accept provider-call authority/);
   assert.throws(() => parseCodeEvalArgs(['recover', '--action', 'retry', ...common]), /seal-infra/);
 });
 
@@ -169,7 +171,7 @@ test('one fake shared-engine cell observes the marker first, seals once and neve
       assert.equal((await adapters.reviewer({})).noModelCalled, true);
       return {
         status: 'needs_decision', completion: 'candidate_ready_for_acceptance',
-        candidate: { fingerprint }, verificationBinding: fingerprint, reviewBinding: fingerprint,
+        candidate: { worktree: repoPath, fingerprint }, verificationBinding: fingerprint, reviewBinding: fingerprint,
         verification: { ran: true, pass: true }, review: { verdict: 'APPROVED' },
         seats: {
           maker: { observed: { identity: 'dashscope:fixture-model', turns: [{ usage: { input_tokens: 10, output_tokens: 4 } }] } },
@@ -197,9 +199,9 @@ test('plain model labels cannot satisfy exact provider-qualified identity eviden
     createVerifier: () => async () => ({ ran: true, pass: true }),
     readCheckpoint: async () => ({ nativeSession: { executor: item.campaign.treatment.executor,
       model: item.campaign.treatment.maker.model, version: HARNESS_POLICY_VERSION, harnessVersion: '0.22.3' } }),
-    runSeats: async () => ({
+    runSeats: async ({ repoPath }) => ({
       status: 'needs_decision', completion: 'candidate_ready_for_acceptance',
-      candidate: { fingerprint }, verificationBinding: fingerprint, reviewBinding: fingerprint,
+      candidate: { worktree: repoPath, fingerprint }, verificationBinding: fingerprint, reviewBinding: fingerprint,
       verification: { ran: true, pass: true }, review: { verdict: 'APPROVED' },
       seats: {
         maker: { observed: { identity: 'fixture-model', turns: [{ usage: { input_tokens: 10, output_tokens: 4 } }] } },
@@ -248,12 +250,12 @@ test('OpenRouter route is bound before spend and normalized evidence reaches the
     readCheckpoint: async () => ({ nativeSession: { executor: item.campaign.treatment.executor,
       model: item.campaign.treatment.maker.model, version: HARNESS_POLICY_VERSION, harnessVersion: '0.22.3',
       routeObservation } }),
-    runSeats: async ({ adapters }) => {
+    runSeats: async ({ repoPath, adapters }) => {
       await adapters.nativeMaker({ onNativeProgress: () => null });
       await adapters.reviewer({});
       return {
         status: 'needs_decision', completion: 'candidate_ready_for_acceptance',
-        candidate: { fingerprint }, verificationBinding: fingerprint, reviewBinding: fingerprint,
+        candidate: { worktree: repoPath, fingerprint }, verificationBinding: fingerprint, reviewBinding: fingerprint,
         verification: { ran: true, pass: true }, review: { verdict: 'APPROVED' },
         seats: {
           maker: { observed: { identity: 'openrouter:fixture-model', turns: [{ usage: { input_tokens: 10, output_tokens: 4 } }] } },
@@ -271,39 +273,37 @@ test('OpenRouter route is bound before spend and normalized evidence reaches the
   assert.equal(JSON.stringify(receipt.observedIdentity.makerRoute).includes('raw'), false);
 });
 
-test('test-file mutation fails the mechanical candidate-integrity floor', async t => {
+test('the production shared engine checks the actual candidate before verifier and reviewer standing', async t => {
   const item = await setup(t); await planCodeEval(item, item.dependencies);
-  const fingerprint = hex('8');
-  let verifierRan = false;
-  item.prepared.adapters.nativeMaker = async options => { options.onNativeProgress({ responses: 1 }); };
-  item.prepared.adapters.reviewer = async () => {};
+  const measured = { input_tokens: 10, cached_input_tokens: 0, output_tokens: 4, total_tokens: 14 };
+  let verifierRan = false, reviewerRan = false;
+  item.prepared.adapters.nativeMaker = async options => {
+    await writeFile(join(options.worktree, 'test', 'bounded-parser.test.mjs'), '/* weakened by candidate */\n');
+    const nativeSession = { executor: item.campaign.treatment.executor,
+      model: item.campaign.treatment.maker.model, version: HARNESS_POLICY_VERSION, harnessVersion: '0.22.3' };
+    options.onNativeSession(nativeSession);
+    options.onNativeProgress({ usage: measured, responses: 1, actions: 1 });
+    return { ok: true, definitiveTurnEnd: true, usage: measured, nativeSession,
+      text: JSON.stringify({ actions: [], done: true, summary: 'candidate ready' }),
+      modelActual: 'dashscope:fixture-model', modelReported: 'fixture-model',
+      modelActualEvidence: 'native_gateway_observed_response' };
+  };
+  item.prepared.adapters.reviewer = async () => { reviewerRan = true; return {
+    ran: true, verdict: 'APPROVED', findings: [], usage: { input_tokens: 8, output_tokens: 2 },
+    reviewerIdentity: 'openai:fixture-reviewer-model',
+  }; };
   const result = await runCodeEval({ ...item, consent: true, maxCells: 1 }, {
     ...item.dependencies,
-    createVerifier: () => async () => { verifierRan = true; return { ran: true, pass: true }; },
-    readCheckpoint: async () => ({ nativeSession: { executor: item.campaign.treatment.executor,
-      model: item.campaign.treatment.maker.model, version: HARNESS_POLICY_VERSION, harnessVersion: '0.22.3' } }),
-    runSeats: async ({ repoPath, adapters, verify }) => {
-      await writeFile(join(repoPath, 'test', 'bounded-parser.test.mjs'), '/* weakened by candidate */\n');
-      await adapters.nativeMaker({ onNativeProgress: () => null });
-      await adapters.reviewer({});
-      const verification = await verify({ worktree: repoPath, fingerprint });
-      return {
-        status: 'needs_decision', completion: 'candidate_ready_for_acceptance',
-        candidate: { fingerprint }, verificationBinding: fingerprint, reviewBinding: fingerprint,
-        verification, review: { verdict: 'APPROVED' },
-        seats: {
-          maker: { observed: { identity: 'dashscope:fixture-model', turns: [{ usage: { input_tokens: 10, output_tokens: 4 } }] } },
-          reviewer: { observed: { identity: 'openai:fixture-reviewer-model', usage: { input_tokens: 8, output_tokens: 2 } } },
-        },
-        usage: { calls: 2 },
-      };
-    },
+    createVerifier: () => Object.assign(async () => { verifierRan = true; return { ran: true, pass: true }; },
+      { repeatable: true, command: 'synthetic verifier' }),
   });
   assert.equal(result.standing, 'failed');
   const receipt = JSON.parse((await readFile(item.ledgerPath, 'utf8')).trim());
   assert.equal(verifierRan, false);
+  assert.equal(reviewerRan, false);
   assert.equal(receipt.quality.candidateIntegrityPassed, false);
   assert.equal(receipt.quality.verificationPassed, null);
+  assert.equal(receipt.quality.reviewVerdict, null);
   assert.equal(receipt.quality.mechanicalFloorPassed, false);
 });
 

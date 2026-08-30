@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { runClaude, runClaudeReview, claudeDirectEnv, claudeFailureDiagnostic } from './claude.mjs';
 import { seatIdentityFacts } from '../models.mjs';
 import { consultClaudeRoute } from '../grandfather.mjs';
+import { codeOwnedProcessCleanupStatus } from '../code-owned-process-registry.mjs';
 
 let passed = 0;
 const ok = (name, fn) => { fn(); passed += 1; if (process.env.VERBOSE) console.log('  ok', name); };
@@ -219,6 +220,22 @@ try {
     });
     ok('runClaudeReview: isolated env + empty --setting-sources, proven against an unisolated control', () => {
       assertIsolated('runClaudeReview', readCapture(cwd), controlSpawn('review'));
+    });
+  })();
+
+  // Shared Build supplies one private process registry. Both direct CLI role
+  // paths must return only after their trusted supervisors attest cleanup.
+  await (async () => {
+    const ownedProcessDir = freshDir('owned-run');
+    const makerCwd = freshDir('owned-make');
+    const reviewerCwd = freshDir('owned-review');
+    await runClaude({ prompt: 'draft it', stage: 'make', cwd: makerCwd,
+      model: 'test-maker-model', toolPolicy: 'none', ownedProcessDir });
+    await runClaudeReview({ prompt: 'judge it', model: 'test-reviewer-model', cwd: reviewerCwd, ownedProcessDir });
+    ok('shared Build Claude maker/reviewer paths durably attest process cleanup', () => {
+      const cleanup = codeOwnedProcessCleanupStatus(ownedProcessDir);
+      assert.equal(cleanup.complete, true);
+      assert.deepEqual(cleanup.intents.map(intent => intent.kind), ['claude_maker', 'claude_reviewer']);
     });
   })();
 

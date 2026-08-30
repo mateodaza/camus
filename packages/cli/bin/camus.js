@@ -76,10 +76,11 @@ usage: npx camus-cli <command>
                build --help · build --models · --task "..." --contract "..."
                build --setup file.json · --qualify backend:model --role maker|reviewer
                build --status ID · --stop ID · --resume ID [budget extensions]
-  code-eval [...] one-cell Qwen Code/Grok Build execution smoke with frozen
-               identity, fixture, verifier and budget evidence. plan/status/recover
-               are provider-free; run requires --allow-provider-calls --max-cells 1.
-               No ranking, routing, admission, Git landing, or publication authority.
+  code-eval [...] bounded native smoke or same-model raw/native pair with frozen
+               identity, fixture, verifier, and budget evidence. plan/status/recover/
+               summarize are provider-free; each run requires fresh
+               --allow-provider-calls --max-cells 1 consent. Pair summaries are
+               case-only: no winner, routing, admission, landing, or publication.
   install      copy skill + workflows into ~/.claude (frozen copy, not symlink)
   check        preflight: installed gate in sync with package? (run before any auto/feat run)
   auto-setup   opt-in: install the narrow scoped auto-mode profile (zero-click runs)

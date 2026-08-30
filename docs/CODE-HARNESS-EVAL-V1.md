@@ -1,6 +1,6 @@
 # Technical Specification: Code Harness Evaluation v1
 
-**Document status:** North-star contract; only the v1a native-smoke cut below is approved for implementation  
+**Document status:** North-star contract; v1a is released and the bounded v1b isolation-pair cut below is approved for implementation
 **Provider campaign status:** Pending an explicit operator-owned call and budget authorization  
 **Version:** 1.0  
 **Date:** 2026-08-29  
@@ -38,6 +38,27 @@ calibration, recommendations, and routing are v1b+ work. The second fixture
 allows one balanced native-smoke observation; it does not implement a comparison
 or satisfy balanced-class coverage. V1a cannot write model settings, admission,
 routing, Git refs, publication state, or a winner claim.
+
+## Implementation decision: bounded v1b isolation pair
+
+The approved v1b cut adds one exact case, one raw/native isolation pair, one
+repeat, and exactly two scheduled cells. It keeps v1a evidence readable under its
+original schema and writes v1b evidence as a separate generation; it never
+reinterprets or upgrades a v1a receipt in place.
+
+Each live invocation still requires fresh literal provider-call consent and
+`--max-cells 1`. The failed, unknown, or successful first arm remains in the
+denominator and the second invocation can run only the deterministic next arm.
+One global in-flight marker prevents concurrent spend and recovery always seals
+the cell embedded in that marker rather than guessing from the next schedule row.
+
+The only aggregate conclusion added by this cut is `paired_observation`, and only
+when both exact same-case cells have complete isolation evidence and pass the
+mechanical floor. It is explicitly `coverageScope: "case_only"` with
+`taskClassCoverage: false`. The summary cannot name a winner, claim efficiency
+when either floor failed, recommend or admit a model, change routing, or imply
+production readiness. Reviewer screen evidence remains separately labeled and
+provisional until calibrated.
 
 ## Executive summary
 
@@ -279,6 +300,14 @@ Validation requirements:
 - Canonical JSON produces `campaign1:<sha256>` over the complete normalized
   campaign.
 
+For the bounded v1b cut, the closed campaign shape is deliberately narrower than
+the general arrays above: it contains singular `case` and `pair` fields, the pair
+contains singular shared `maker` and `reviewer` seats plus exactly the `raw` and
+`native` arms, and controls require `repeatsPerArmCase: 1` and
+`maximumCells: 2`. Arrays are deferred because exposing them would imply an
+unimplemented multi-case campaign platform. This protocol is identified as
+`code-harness-eval-v1b`; its objects never share an evidence directory with v1a.
+
 ### 7.2 Case contract
 
 Each case binds:
@@ -364,6 +393,12 @@ with the same complete maker/reviewer seat fields and one arm whose executor is
 `qwen_native` or `grok_native`. It exists only to prove a bounded live execution
 and receipt path before buying a comparison. Its result cannot be paired, ranked,
 or used as task-class coverage.
+
+In the bounded v1b cut, built-in backend names do not determine pair eligibility.
+The exact prepared maker seat must support both `file_actions` and the requested
+native executor, and both arms bind the same backend, provider, model,
+qualification, connection, and route. The execution snapshot carries exactly two
+arm records: a raw protocol/policy binding and a native harness/policy binding.
 
 Isolation rules:
 
@@ -765,8 +800,11 @@ camus code-eval recover --action seal-infra \
 Recovery is spend-free and supports one action in v1: `seal-infra`.
 
 - If a valid receipt already exists, clear the stale marker idempotently.
-- If no receipt exists, first prove the owned maker/reviewer/verifier process groups
-  are dead. If liveness is inconclusive, refuse recovery.
+- If no receipt exists, first prove the Build lease is released and every
+  maker/reviewer/verifier intent in the run-bound durable process registry has
+  reached terminal cleanup. The trusted supervisor records exact process birth
+  identities and removes the target plus observed descendants. If the registry,
+  ownership, or liveness proof is incomplete, refuse recovery.
 - Append one `interrupted_unknown`/`infrastructure_failed` receipt for the marked
   cell with possible billing and usage unknown.
 - Clear the marker only after the receipt is fsynced.
@@ -826,20 +864,25 @@ effect.
 
 ### 13.3 V1 standing vocabulary
 
-The summary derives one of:
+The bounded v1b isolation-pair summary derives one of:
 
 - `no_attempts`;
-- `smoke_incomplete`;
-- `execution_observed`;
 - `isolation_invalid`;
 - `paired_coverage_incomplete`;
 - `mechanical_floor_not_met`;
-- `screen_evidence_only`;
 - `paired_observation`.
 
-`paired_observation` requires both arms on every registered case/repeat in the
-current task-class campaign, exact identity and isolation invariants, no unreadable
-receipts, and complete mechanical evidence. It still names no winner.
+Zero receipts produce `no_attempts`; one valid receipt produces
+`paired_coverage_incomplete`; two receipts with false or incomplete assignment,
+identity, or isolation evidence produce `isolation_invalid`; and an exact pair
+where either mechanical floor is not true produces `mechanical_floor_not_met`.
+`paired_observation` requires both exact same-case arms, stable isolation, and two
+true mechanical floors. It is case-only evidence and still names no winner.
+
+The v1a per-cell receipt standings `execution_observed`, `failed`, and `unknown`
+remain valid only for v1a compatibility. Reviewer screen results are reported as
+separate fields rather than a `screen_evidence_only` campaign standing, whose
+derivation was previously ambiguous.
 
 The following standings are forbidden in v1 output:
 
@@ -886,7 +929,7 @@ Recovery cases:
 | --- | --- |
 | Before marker fsync | Cell remains pending; no call was authorized. |
 | After marker, before provider call | Seal infrastructure/unknown; do not infer zero calls. |
-| During maker/reviewer/verifier | Prove owned groups dead, then seal unknown; do not replay. |
+| During maker/reviewer/verifier | Require released Build lease plus terminal cleanup for every durable process intent, then seal unknown; do not replay. |
 | After terminal, before receipt fsync | Seal from an independently validated durable Build report only if all bindings match; otherwise seal unknown. |
 | After receipt fsync, before marker clear | Valid receipt wins; clear marker idempotently. |
 | After marker clear | Receipt makes the cell complete. |
@@ -1149,7 +1192,7 @@ All default tests are network-free and provider-free.
 
 ## 19. Staged rollout
 
-### Stage 0 — Readiness patch (approved now; spend-free)
+### Stage 0 — Readiness patch (v1a released; bounded v1b approved, spend-free)
 
 Implement:
 
@@ -1290,8 +1333,8 @@ uncertainty, or drift resistance.
 
 ## 23. Implementation boundary and completion criteria
 
-This specification is **approved for Stage 0 spend-free implementation only**.
-Stage 0 is complete when:
+This specification is **approved for the bounded v1b Stage 0 spend-free
+implementation only**. Stage 0 is complete when:
 
 - the versioned contracts and all P0 validators exist;
 - the shared Build engine is reused without a protocol fork;
@@ -1304,6 +1347,7 @@ Stage 0 is complete when:
 - the normal CLI/Studio/root regression suites remain green;
 - documentation states that no real model/harness quality claim has been made.
 
-Provider-backed Stage 1 remains pending an explicit operator-owned budget after
-that implementation is reviewed. No approval in this document authorizes a real
-provider call.
+The already completed v1a provider-backed native smokes do not authorize a v1b
+pair. A real raw/native pair remains pending a fresh operator-owned budget after
+the bounded v1b implementation is reviewed. No approval in this document
+authorizes a real provider call.

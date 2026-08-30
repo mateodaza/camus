@@ -182,15 +182,15 @@ export async function nativeHarnessPolicy({ executor, worktree, scratch, harness
     profile: profileFor({ cwd, scratch: temp, harness: dirname(binary), nodeRoot, home, port: gatewayPort, deniedPaths }) };
 }
 
-export async function assertNativeHarnessVersion({ executor, policy, env, signal }) {
+export async function assertNativeHarnessVersion({ executor, policy, env, signal, ownedProcessDir = null }) {
   const result = await runNativeProcess({ command: '/usr/bin/sandbox-exec', args: ['-p', policy.profile, policy.harness, '--version'],
-    cwd: policy.cwd, env, timeoutMs: 10_000, signal, maxBytes: 64 * 1024 });
+    cwd: policy.cwd, env, timeoutMs: 10_000, signal, maxBytes: 64 * 1024, ownedProcessDir });
   if (result.code !== 0) throw new Error(`${executor === QWEN_NATIVE_EXECUTOR ? 'Qwen Code 0.22.3' : 'Grok Build 1.0.5'} is required; no model was called.`);
   try { return normalizeNativeHarnessVersion(executor, result.stdout); }
   catch { throw new Error(`${executor === QWEN_NATIVE_EXECUTOR ? 'Qwen Code 0.22.3' : 'Grok Build 1.0.5'} is required; no model was called.`); }
 }
 
-export async function preflightNativeHarness({ policy, env, gateway, sourcePath, receiptsDir, signal }) {
+export async function preflightNativeHarness({ policy, env, gateway, sourcePath, receiptsDir, signal, ownedProcessDir = null }) {
   const nonce = randomBytes(16).toString('hex');
   const sentinel = join(receiptsDir, `native-harness-private-${nonce}`);
   const escapedWrite = join(receiptsDir, `native-harness-write-${nonce}`);
@@ -209,7 +209,7 @@ const own='.camus-native-isolation-${nonce}';fs.writeFileSync(own,'ok',{flag:'wx
 Promise.all([fetch(${JSON.stringify(`${gateway.url}/models`)},{headers:{authorization:'Bearer '+process.env.CAMUS_NATIVE_GATEWAY_TOKEN}}).then(r=>a.equal(r.status,200)),new Promise((ok,bad)=>{const s=net.connect({host:'127.0.0.1',port:${canaryPort}});s.once('connect',()=>bad(Error('network escape')));s.once('error',e=>{try{a(denied(e));ok()}catch(x){bad(x)}})})]).then(()=>console.log('camus-native-harness-isolation-v1')).catch(()=>process.exit(3));`;
   try {
     const result = await runNativeProcess({ command: '/usr/bin/sandbox-exec', args: ['-p', policy.profile, policy.node, '-e', probe],
-      cwd: policy.cwd, env, timeoutMs: 10_000, signal, maxBytes: 64 * 1024 });
+      cwd: policy.cwd, env, timeoutMs: 10_000, signal, maxBytes: 64 * 1024, ownedProcessDir });
     if (result.code !== 0 || !result.stdout?.includes('camus-native-harness-isolation-v1')) throw new Error('Native harness isolation preflight failed; no model was called.');
   } finally {
     canary.close(); await unlink(sentinel).catch(() => {}); await unlink(escapedWrite).catch(() => {});

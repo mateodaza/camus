@@ -369,7 +369,7 @@ export function openAiCompatMaker(entry) {
     let lastReported = 0;
     try {
       const budget = makerRequestBudget(stage, depth);
-      const { text, usage, responseModel, reportedModels, finishReason } = await streamChatCompletion({
+      const { text, usage, responseModel, reportedModels, finishReason, openRouterRouteEvidence } = await streamChatCompletion({
         entry,
         model,
         prompt,
@@ -410,6 +410,16 @@ export function openAiCompatMaker(entry) {
         // asserted_pin) so a configurable seat is observation-eligible.
         modelReported: responseModel ?? null,
         modelActualEvidence: evidence,
+        ...(openRouterRouteEvidence ? { routeObservation: {
+          requestEnforced: {
+            upstreamProvider: entry.route.upstreamProvider,
+            allowFallbacks: false,
+          },
+          metadataObserved: [{
+            provider: openRouterRouteEvidence.selectedProvider,
+            attempt: openRouterRouteEvidence.attempt,
+          }],
+        } } : {}),
         hivemindQueried: false,
         hivemindQueries: 0,
         hivemindQueryTexts: [],

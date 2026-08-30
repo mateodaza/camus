@@ -235,11 +235,12 @@ Choose the cheapest path that can meet the task contract:
    `balanced-job-event-scheduler` with
    `camus code-eval fixture --case balanced-job-event-scheduler --json`. One
    executed cell is one balanced-case observation, not balanced-class evidence.
-4. **Implement matched raw/native pairs before claiming a comparison.** The
-   current runner remains native-smoke-only. Once the raw arm and isolation-pair
-   scheduler exist, start with Qwen3.8 Max, then Grok 4.6, using the same model,
-   route, reviewer, verifier, fixture, and budget. Keep failures and human
-   interventions in the denominator.
+4. **Use the bounded matched raw/native evaluator before claiming a comparison.**
+   The provider-free v1b implementation now freezes one exact case and
+   counterbalances its raw/native arms, but no new live v1b pair has run. After
+   release, start with Qwen3.8 Max, then Grok 4.6, using the same model, route,
+   reviewer, verifier, fixture, and budget. Keep failures and human interventions
+   in the denominator; the strongest result is still case-only, not a winner.
 5. **Add difficult-task evidence only after the balanced treatment is sound.**
    Expand repetitions before comparing cross-model combinations.
 6. **Route automatically only after enough evidence exists.** Routing must be

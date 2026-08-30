@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { makerRequestBudget, streamChatCompletion } from './openai-compat.mjs';
+import { makerRequestBudget, openAiCompatMaker, streamChatCompletion } from './openai-compat.mjs';
 
 await assert.rejects(
   streamChatCompletion({
@@ -97,6 +97,13 @@ try {
   assert.equal(openRouterRequest.headers['X-OpenRouter-Metadata'], 'enabled');
   assert.equal(openRouterRequest.body.max_tokens, 321);
   assert.deepEqual(result.openRouterRouteEvidence, { attempt: 1, strategy: 'direct', selectedProvider: 'Alibaba', requested: 'qwen/qwen3.5' });
+  const maker = await openAiCompatMaker(openRouterEntry)({
+    prompt: 'test', model: 'qwen/qwen3.5', toolPolicy: 'research',
+  });
+  assert.deepEqual(maker.routeObservation, {
+    requestEnforced: { upstreamProvider: 'alibaba', allowFallbacks: false },
+    metadataObserved: [{ provider: 'Alibaba', attempt: 1 }],
+  }, 'the successful raw maker result preserves normalized verified OpenRouter route evidence');
 
   globalThis.fetch = async () => ({ ok: true, body: new ReadableStream({ start(controller) {
     const frames = [

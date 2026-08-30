@@ -5,11 +5,11 @@
 // normalization: unparseable, empty, or self-inconsistent output is an infra
 // error, never a clean verdict.
 
-import { spawn } from 'node:child_process';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getModels } from '../models.mjs';
+import { runCodeOwnedProcess } from '../code-owned-process.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = join(__dirname, '..', '..', 'checks', 'review.schema.json');
@@ -165,7 +165,7 @@ export function normalizeReview(raw, exitCode, expectedClaims = [], expectedCrit
   };
 }
 
-export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSession, receiptDir, model, claims = [], criteria = [], thresholds = [], emptyAssessmentLedgers = false }) {
+export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSession, receiptDir, ownedProcessDir = null, model, claims = [], criteria = [], thresholds = [], emptyAssessmentLedgers = false }) {
   effort ||= getModels().reviewer.effort;
   model ||= getModels().reviewer.model;
   // codex resolves -o against ITS cwd, not ours — the path must be absolute.
@@ -191,13 +191,14 @@ export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSe
   let unexpectedTool = null;
   const startedAt = Date.now();
   const exitCode = await new Promise((done_) => {
-    const child = spawn('codex', args, { cwd: resolve(cwd), stdio: ['ignore', 'pipe', 'pipe'], env: childEnv });
     let done = false;
     const finish = (code) => { if (!done) { done = true; clearTimeout(hardT); clearTimeout(idleT); done_(code); } };
-
-    const hardT = setTimeout(() => { child.kill('SIGKILL'); finish(-2); }, TOTAL_TIMEOUT_MS[effort] ?? 600_000);
-    let idleT = setTimeout(() => { child.kill('SIGKILL'); finish(-3); }, IDLE_KILL_MS);
-    const poke = () => { clearTimeout(idleT); idleT = setTimeout(() => { child.kill('SIGKILL'); finish(-3); }, IDLE_KILL_MS); };
+    const local = new AbortController();
+    let stoppedCode = null;
+    const stop = code => { if (stoppedCode === null) stoppedCode = code; local.abort(new Error('adapter process stopped')); };
+    const hardT = setTimeout(() => stop(-2), TOTAL_TIMEOUT_MS[effort] ?? 600_000);
+    let idleT = setTimeout(() => stop(-3), IDLE_KILL_MS);
+    const poke = () => { clearTimeout(idleT); idleT = setTimeout(() => stop(-3), IDLE_KILL_MS); };
 
     let lastTick = 0;
     let lineBuf = '';
@@ -217,8 +218,7 @@ export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSe
         if (rogue && !unexpectedTool) {
           unexpectedTool = rogue;
           onSession?.(`REFUSED: unexpected ${rogue.itemType} tool event${rogue.detail ? ` (${rogue.detail})` : ''}`);
-          child.kill('SIGKILL');
-          finish(-5);
+          stop(-5);
           return;
         }
         usage = usageFromCodexEvent(line) ?? usage;
@@ -230,11 +230,13 @@ export async function runCodexReview({ prompt, cwd, effort, signal, onTick, onSe
         onTick?.(summarizeEvent(line));
       }
     };
-    child.stdout.on('data', onData);
-    child.stderr.on('data', (b) => { if (!done) { poke(); stderrTail = (stderrTail + b).slice(-400); } });
-    signal?.addEventListener('abort', () => { child.kill('SIGKILL'); finish(-4); }, { once: true });
-    child.on('error', (e) => { stderrTail = `spawn error: ${e.code || e.message}`; finish(-1); });
-    child.on('close', (code) => finish(code ?? -1));
+    signal?.addEventListener('abort', () => stop(-4), { once: true });
+    runCodeOwnedProcess({ runDir: ownedProcessDir, kind: 'codex_reviewer', command: 'codex', args,
+      cwd: resolve(cwd), env: childEnv, timeoutMs: TOTAL_TIMEOUT_MS[effort] ?? 600_000,
+      signal: local.signal, onStdout: onData,
+      onStderr: b => { if (!done) { poke(); stderrTail = (stderrTail + b).slice(-400); } } })
+      .then(result => finish(stoppedCode ?? result.code ?? -1))
+      .catch(e => { stderrTail = `spawn error: ${e.code || e.message}`; finish(stoppedCode ?? -1); });
   });
 
   const failed = (message) => ({ ...infraError(message), usage, durationMs: Date.now() - startedAt });
@@ -392,7 +394,7 @@ export function scrubbedEnv(env = process.env, onStrip = null) {
 // The session line claims only what the sandbox actually enforces: read-only
 // blocks WRITES; codex's own tool surface (shell, user-configured MCP) can
 // still run, which is why the environment is scrubbed above.
-export async function runCodexMaker({ prompt, stage = 'make', model, effort = 'medium', cwd, signal, onTick, onSession }) {
+export async function runCodexMaker({ prompt, stage = 'make', model, effort = 'medium', cwd, signal, onTick, onSession, ownedProcessDir = null }) {
   const fail = (error) => ({ ok: false, error, text: null, costUsd: 0 });
   if (!model) return fail('codex maker needs an explicit model — the account default is not a decision');
   if (!['low', 'medium', 'high', 'xhigh'].includes(effort)) return fail('codex maker effort must be low, medium, high, or xhigh');
@@ -417,14 +419,16 @@ export async function runCodexMaker({ prompt, stage = 'make', model, effort = 'm
   let unexpectedTool = null;
   const startedAt = Date.now();
   const exitCode = await new Promise((done_) => {
-    const child = spawn('codex', args, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], env: childEnv });
     let done = false;
     const finish = (code) => { if (!done) { done = true; clearTimeout(hardT); clearTimeout(idleT); done_(code); } };
-    const hardT = setTimeout(() => { child.kill('SIGKILL'); finish(-2); }, MAKER_TIMEOUTS[stage] ?? 540_000);
-    let idleT = setTimeout(() => { child.kill('SIGKILL'); finish(-3); }, IDLE_KILL_MS);
-    const poke = () => { clearTimeout(idleT); idleT = setTimeout(() => { child.kill('SIGKILL'); finish(-3); }, IDLE_KILL_MS); };
+    const local = new AbortController();
+    let stoppedCode = null;
+    const stop = code => { if (stoppedCode === null) stoppedCode = code; local.abort(new Error('adapter process stopped')); };
+    const hardT = setTimeout(() => stop(-2), MAKER_TIMEOUTS[stage] ?? 540_000);
+    let idleT = setTimeout(() => stop(-3), IDLE_KILL_MS);
+    const poke = () => { clearTimeout(idleT); idleT = setTimeout(() => stop(-3), IDLE_KILL_MS); };
     let lineBuf = '';
-    child.stdout.on('data', (buf) => {
+    const onData = (buf) => {
       if (done) return;
       poke();
       lineBuf += buf;
@@ -440,18 +444,20 @@ export async function runCodexMaker({ prompt, stage = 'make', model, effort = 'm
         if (rogue && !unexpectedTool) {
           unexpectedTool = rogue;
           onSession?.(`REFUSED: unexpected ${rogue.itemType} tool event${rogue.detail ? ` (${rogue.detail})` : ''}`);
-          child.kill('SIGKILL');
-          finish(-5);
+          stop(-5);
           return;
         }
         usage = usageFromCodexEvent(line) ?? usage;
       }
       onTick?.(stage === 'plan' ? 'planning…' : 'drafting (text only)…');
-    });
-    child.stderr.on('data', (b) => { if (!done) { poke(); stderrTail = (stderrTail + b).slice(-400); } });
-    signal?.addEventListener('abort', () => { child.kill('SIGKILL'); finish(-4); }, { once: true });
-    child.on('error', (e) => { stderrTail = `spawn error: ${e.code || e.message}`; finish(-1); });
-    child.on('close', (code) => finish(code ?? -1));
+    };
+    signal?.addEventListener('abort', () => stop(-4), { once: true });
+    runCodeOwnedProcess({ runDir: ownedProcessDir, kind: 'codex_maker', command: 'codex', args,
+      cwd: dir, env: childEnv, timeoutMs: MAKER_TIMEOUTS[stage] ?? 540_000,
+      signal: local.signal, onStdout: onData,
+      onStderr: b => { if (!done) { poke(); stderrTail = (stderrTail + b).slice(-400); } } })
+      .then(result => finish(stoppedCode ?? result.code ?? -1))
+      .catch(e => { stderrTail = `spawn error: ${e.code || e.message}`; finish(stoppedCode ?? -1); });
   });
 
   if (exitCode === -1) return fail(`failed to spawn codex (${stderrTail || 'unknown'}) — check the codex CLI is installed and on PATH`);
