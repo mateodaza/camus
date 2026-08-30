@@ -149,6 +149,45 @@ test('gateway turns a local model-call refusal into one immediate harness stop',
   assert.equal((await request()).status, 429); assert.equal(stops.length, 1, 'the stop notification is idempotent');
 });
 
+test('gateway withholds action N+1 while preserving structured terminals and provider accounting', async t => {
+  const stops = []; let upstreamCalls = 0;
+  const streamedTool = ({ id, nameParts, args }) => new Response([
+    ...nameParts.map((name, index) => `data: ${JSON.stringify({ model: 'm', choices: [{ index: 0, delta: { tool_calls: [{
+      index: 0, ...(index === 0 ? { id, type: 'function' } : {}), function: { name, ...(index === nameParts.length - 1 ? { arguments: args } : {}) },
+    }] }, finish_reason: null }] })}\n\n`),
+    'data: {"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+    'data: {"model":"m","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',
+    'data: [DONE]\n\n',
+  ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const responses = [
+    streamedTool({ id: 'allowed', nameParts: ['run_', 'shell_command'], args: '{"command":"allowed"}' }),
+    streamedTool({ id: 'terminal', nameParts: ['structured_', 'output'], args: '{"done":true}' }),
+    streamedTool({ id: 'refused', nameParts: ['run_shell_command'], args: '{"command":"credential-shaped-secret"}' }),
+  ];
+  const gateway = await startNativeGateway({ entry: { name: 'fixture', kind: 'openai_compat', provider: 'fixture', auth: { kind: 'none' }, baseUrl: 'http://127.0.0.1:9/v1' },
+    model: 'm', maxCalls: 4, maxToolCalls: 1, remainingTokens: 100, onStop: reason => stops.push(reason),
+    fetchImpl: async () => { upstreamCalls++; return responses.shift(); } });
+  t.after(() => gateway.close());
+  const request = () => fetch(`${gateway.url}/chat/completions`, { method: 'POST', headers: {
+    authorization: `Bearer ${gateway.capability}`, 'content-type': 'application/json' },
+  body: JSON.stringify({ model: 'm', stream: true, messages: [] }) });
+
+  assert.equal((await request()).status, 200, 'the first operative tool call is forwarded');
+  assert.equal((await request()).status, 200, 'the schema terminal does not consume an action');
+  const refused = await request();
+  assert.equal(refused.status, 429);
+  const publicBody = await refused.text();
+  assert.match(publicBody, /Native tool-action budget exhausted/);
+  assert.doesNotMatch(publicBody, /credential-shaped-secret|run_shell_command/);
+  assert.equal(gateway.state.actionToolCalls, 1);
+  assert.equal(gateway.state.refusedActionToolCalls, 1);
+  assert.equal(gateway.state.accountedCalls, 3, 'the billed provider response remains accounted');
+  assert.equal(gateway.state.usage.total_tokens, 6);
+  assert.deepEqual(stops, ['Native tool-action budget exhausted.']);
+  assert.equal((await request()).status, 429);
+  assert.equal(upstreamCalls, 3, 'the stopped gateway makes no fourth provider call');
+});
+
 test('gateway emits the provider-specific completion field and never widens a harness limit', async t => {
   const rows = [
     [{ provider: 'xai' }, 'grok-4.6', 'max_tokens'],

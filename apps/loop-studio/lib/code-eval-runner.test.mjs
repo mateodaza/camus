@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseCodeEvalArgs } from '../code-eval.mjs';
-import { loadCodeEvalFixture } from './code-eval-fixture.mjs';
+import { loadCodeEvalFixtureForCase } from './code-eval-fixture.mjs';
 import { codeEvalRuntimeIdentity, planCodeEval, recoverCodeEval, runCodeEval, statusCodeEval } from './code-eval-runner.mjs';
 import { acquireCodeEvalEvidenceLock, codeEvalEvidencePaths, createCodeEvalInflightMarker, reserveCodeEvalCell } from './code-eval-ledger.mjs';
 import { createCodeEvalCell } from './code-eval-contract.mjs';
@@ -12,20 +12,22 @@ import { HARNESS_POLICY_VERSION } from './native-harness-policy.mjs';
 
 const hex = character => character.repeat(64);
 
-async function setup(t, executor = 'qwen_native', { openRouter = false } = {}) {
+async function setup(t, executor = 'qwen_native', {
+  openRouter = false, caseId = 'simple-bounded-parser-fix',
+} = {}) {
   const root = await mkdtemp(join(tmpdir(), 'camus-code-eval-runner-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const fixture = await loadCodeEvalFixture();
+  const fixture = await loadCodeEvalFixtureForCase(caseId);
   const campaign = {
     schemaVersion: 1,
     treatmentProtocol: 'code-harness-eval-v1a',
-    campaignId: `${executor.replace('_native', '')}-simple-smoke-v1`,
+    campaignId: `${executor.replace('_native', '')}-${fixture.manifest.taskClass}-smoke-v1`,
     campaignMode: 'native_smoke',
     standing: 'exploratory_only',
     case: {
       caseId: fixture.manifest.caseId,
       caseVersion: 1,
-      taskClass: 'simple',
+      taskClass: fixture.manifest.taskClass,
       fixtureId: fixture.fixtureId,
       fixtureTreeDigest: fixture.baseTreeDigest,
       baseCommitDigest: fixture.baseTreeDigest,
@@ -80,14 +82,16 @@ async function setup(t, executor = 'qwen_native', { openRouter = false } = {}) {
       platform: 'darwin', architecture: 'arm64', nodeVersion: '22.0.0' }),
     env: {},
   };
-  return { root, campaign, campaignPath, statePath, ledgerPath, dependencies, prepared, freshPrepared };
+  return { root, campaign, campaignPath, statePath, ledgerPath, dependencies, fixture, prepared, freshPrepared };
 }
 
 test('CLI makes live consent literal and keeps all other operations provider-free', () => {
   const common = ['--campaign', 'campaign.json', '--state', 'state.json', '--ledger', 'receipts.jsonl'];
   assert.equal(parseCodeEvalArgs(['fixture', '--json']).command, 'fixture');
-  assert.throws(() => parseCodeEvalArgs(['fixture', '--allow-provider-calls']), /accepts only --json/);
+  assert.equal(parseCodeEvalArgs(['fixture', '--case', 'balanced-job-event-scheduler', '--json']).case, 'balanced-job-event-scheduler');
+  assert.throws(() => parseCodeEvalArgs(['fixture', '--allow-provider-calls']), /accepts only --case and --json/);
   assert.equal(parseCodeEvalArgs(['plan', ...common]).command, 'plan');
+  assert.throws(() => parseCodeEvalArgs(['plan', '--case', 'balanced-job-event-scheduler', ...common]), /does not accept --case/);
   assert.throws(() => parseCodeEvalArgs(['run', ...common]), /allow-provider-calls/);
   assert.throws(() => parseCodeEvalArgs(['run', '--allow-provider-calls', '--max-cells', '2', ...common]), /max-cells 1/);
   assert.equal(parseCodeEvalArgs(['run', '--allow-provider-calls', '--max-cells', '1', ...common]).command, 'run');
@@ -126,6 +130,18 @@ test('plan/status are spend-free, private and idempotently freeze one exact cell
   assert.equal((await readFile(item.ledgerPath, 'utf8').catch(error => error.code)), 'ENOENT');
 });
 
+test('plan resolves and binds the balanced fixture selected by the campaign', async t => {
+  const item = await setup(t, 'qwen_native', { caseId: 'balanced-job-event-scheduler' });
+  const planned = await planCodeEval(item, item.dependencies);
+  assert.deepEqual(planned.fixture, {
+    caseId: 'balanced-job-event-scheduler',
+    taskClass: 'balanced',
+    base: 'red',
+    reference: 'green',
+  });
+  assert.equal(planned.providerCallsMade, 0);
+});
+
 test('one fake shared-engine cell observes the marker first, seals once and never replays', async t => {
   const item = await setup(t); await planCodeEval(item, item.dependencies);
   let calls = 0;
@@ -145,6 +161,7 @@ test('one fake shared-engine cell observes the marker first, seals once and neve
       calls++;
       await stat(join(item.root, 'evidence', 'inflight.json'));
       assert.match(await readFile(join(repoPath, 'src', 'bounded-parser.mjs'), 'utf8'), /parsed >= max/);
+      await writeFile(join(repoPath, 'src', 'bounded-parser.mjs'), item.fixture.referenceFiles[0].content);
       assert.equal((await stat(join(repoPath, '.git'))).isDirectory(), true);
       await adapters.nativeMaker({ maxModelCalls: 99, onNativeProgress: () => null });
       assert.equal((await adapters.nativeMaker({ maxModelCalls: 99, onNativeProgress: () => null })).noModelCalled, true);
@@ -176,6 +193,7 @@ test('plain model labels cannot satisfy exact provider-qualified identity eviden
   const result = await runCodeEval({ ...item, consent: true, maxCells: 1 }, {
     ...item.dependencies,
     materializeSource: async (_fixture, path) => mkdir(path, { recursive: true, mode: 0o700 }),
+    inspectCandidateIntegrity: async () => true,
     createVerifier: () => async () => ({ ran: true, pass: true }),
     readCheckpoint: async () => ({ nativeSession: { executor: item.campaign.treatment.executor,
       model: item.campaign.treatment.maker.model, version: HARNESS_POLICY_VERSION, harnessVersion: '0.22.3' } }),
@@ -225,6 +243,7 @@ test('OpenRouter route is bound before spend and normalized evidence reaches the
   const result = await runCodeEval({ ...item, consent: true, maxCells: 1 }, {
     ...item.dependencies,
     materializeSource: async (_fixture, path) => mkdir(path, { recursive: true, mode: 0o700 }),
+    inspectCandidateIntegrity: async () => true,
     createVerifier: () => async () => ({ ran: true, pass: true }),
     readCheckpoint: async () => ({ nativeSession: { executor: item.campaign.treatment.executor,
       model: item.campaign.treatment.maker.model, version: HARNESS_POLICY_VERSION, harnessVersion: '0.22.3',
@@ -250,6 +269,42 @@ test('OpenRouter route is bound before spend and normalized evidence reaches the
   assert.deepEqual(receipt.observedIdentity.makerRoute, routeObservation);
   assert.equal(receipt.observedIdentity.fallbackDetected, false);
   assert.equal(JSON.stringify(receipt.observedIdentity.makerRoute).includes('raw'), false);
+});
+
+test('test-file mutation fails the mechanical candidate-integrity floor', async t => {
+  const item = await setup(t); await planCodeEval(item, item.dependencies);
+  const fingerprint = hex('8');
+  let verifierRan = false;
+  item.prepared.adapters.nativeMaker = async options => { options.onNativeProgress({ responses: 1 }); };
+  item.prepared.adapters.reviewer = async () => {};
+  const result = await runCodeEval({ ...item, consent: true, maxCells: 1 }, {
+    ...item.dependencies,
+    createVerifier: () => async () => { verifierRan = true; return { ran: true, pass: true }; },
+    readCheckpoint: async () => ({ nativeSession: { executor: item.campaign.treatment.executor,
+      model: item.campaign.treatment.maker.model, version: HARNESS_POLICY_VERSION, harnessVersion: '0.22.3' } }),
+    runSeats: async ({ repoPath, adapters, verify }) => {
+      await writeFile(join(repoPath, 'test', 'bounded-parser.test.mjs'), '/* weakened by candidate */\n');
+      await adapters.nativeMaker({ onNativeProgress: () => null });
+      await adapters.reviewer({});
+      const verification = await verify({ worktree: repoPath, fingerprint });
+      return {
+        status: 'needs_decision', completion: 'candidate_ready_for_acceptance',
+        candidate: { fingerprint }, verificationBinding: fingerprint, reviewBinding: fingerprint,
+        verification, review: { verdict: 'APPROVED' },
+        seats: {
+          maker: { observed: { identity: 'dashscope:fixture-model', turns: [{ usage: { input_tokens: 10, output_tokens: 4 } }] } },
+          reviewer: { observed: { identity: 'openai:fixture-reviewer-model', usage: { input_tokens: 8, output_tokens: 2 } } },
+        },
+        usage: { calls: 2 },
+      };
+    },
+  });
+  assert.equal(result.standing, 'failed');
+  const receipt = JSON.parse((await readFile(item.ledgerPath, 'utf8')).trim());
+  assert.equal(verifierRan, false);
+  assert.equal(receipt.quality.candidateIntegrityPassed, false);
+  assert.equal(receipt.quality.verificationPassed, null);
+  assert.equal(receipt.quality.mechanicalFloorPassed, false);
 });
 
 test('an uncertain native terminal preserves complete gateway usage instead of sealing false zero', async t => {

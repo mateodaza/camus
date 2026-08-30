@@ -21,7 +21,8 @@ const fixture = (character = 'f') => `fixture1:${character.repeat(64)}`;
 const qualification = (character = '1') => `qual1:${character.repeat(64)}`;
 const clone = (value) => JSON.parse(JSON.stringify(value));
 
-function campaign({ executor = 'qwen_native', campaignId = 'qwen-native-smoke-v1' } = {}) {
+function campaign({ executor = 'qwen_native', campaignId = 'qwen-native-smoke-v1',
+  caseId = 'simple-bounded-parser-fix', taskClass = 'simple' } = {}) {
   return {
     schemaVersion: 1,
     treatmentProtocol: 'code-harness-eval-v1a',
@@ -29,9 +30,9 @@ function campaign({ executor = 'qwen_native', campaignId = 'qwen-native-smoke-v1
     campaignMode: 'native_smoke',
     standing: 'exploratory_only',
     case: {
-      caseId: 'simple-bounded-parser-fix',
+      caseId,
       caseVersion: 1,
-      taskClass: 'simple',
+      taskClass,
       fixtureId: fixture('f'),
       fixtureTreeDigest: hash('1'),
       baseCommitDigest: hash('2'),
@@ -208,6 +209,15 @@ test('campaign, execution, cell, and receipt identities are canonical and exact'
   validateCodeEvalExecution(e, c);
   validateCodeEvalCell(cell, c, e);
   validateCodeEvalReceipt(receipt, c, e, cell);
+});
+
+test('a balanced campaign preserves its task class and case identity in the cell', () => {
+  const c = campaign({ caseId: 'balanced-job-event-scheduler', taskClass: 'balanced' });
+  const e = execution(c);
+  const cell = createCodeEvalCell(c, e);
+  assert.equal(cell.taskClass, 'balanced');
+  assert.equal(cell.caseId, 'balanced-job-event-scheduler');
+  validateCodeEvalCell(cell, c, e);
 });
 
 test('every v1a schema refuses unknown fields and binding drift', () => {

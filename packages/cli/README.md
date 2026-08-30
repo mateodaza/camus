@@ -2,10 +2,11 @@
 
 **A coding loop that proves every change.**
 
-**New in 0.4.10:** the deliberately narrow `camus code-eval` v1a
-native-smoke evidence path; it requires fresh consent for one Qwen Code or Grok
-Build cell and has no ranking, routing, admission, Git-landing, or publication
-authority. See the [coding-seat guide](https://github.com/mateodaza/camus/blob/main/docs/INDEPENDENT-CODE-SEATS.md#bounded-native-smoke-evidence-experimental).
+**New in 0.4.11:** `camus code-eval fixture --case` adds a deterministic
+balanced repair case, and candidate integrity now refuses any edit outside the
+fixture's declared solution files before verification. The evaluator still runs
+only one native smoke cell and has no comparison, ranking, routing, admission,
+Git-landing, or publication authority. See the [coding-seat guide](https://github.com/mateodaza/camus/blob/main/docs/INDEPENDENT-CODE-SEATS.md#bounded-native-smoke-evidence-experimental).
 
 **New in 0.4.9:** the [Productive Loop](https://github.com/mateodaza/camus/blob/main/docs/PRODUCTIVE-LOOP-PLAN.md)
 adds bounded repair, shared CLI/Studio recovery, CLI connection setup, and explicit
@@ -34,10 +35,10 @@ compatibility: `/camus-plan` turns a raw request into a quality-gated task list,
 v2; v1 remains archived at [mateodaza/nightcrawler](https://github.com/mateodaza/nightcrawler).
 Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMUS-SPEC.md).
 
-> **0.4.10:** bounded native-smoke evidence is available through `camus
-> code-eval`. It preserves failed and uncertain paid cells, binds exact routes
-> and harness artifacts, and cannot promote a model or land work. See the
-> [0.4.10 release notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.10.md).
+> **0.4.11:** bounded native-smoke evidence now includes simple and balanced
+> fixtures plus a mechanical candidate-edit boundary. It preserves failed and
+> uncertain paid cells and cannot promote a model or land work. See the
+> [0.4.11 release notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.11.md).
 >
 > **Existing native infrastructure (introduced in 0.4.7):** The Hybrid Kernel can evaluate a Studio-configured Grok, Qwen,
 > or other OpenAI-compatible reviewer on the exact code candidate before Codex performs the final
@@ -424,7 +425,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.4.10
+npm i -g camus-cli@0.4.11
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)

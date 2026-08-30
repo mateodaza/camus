@@ -47,6 +47,28 @@ function requestedOutputLimit(body) {
   return values.length ? Math.min(...values) : null;
 }
 
+function actionToolCalls(events) {
+  const calls = new Map();
+  for (const event of events) {
+    for (const [choicePosition, choice] of (event?.choices ?? []).entries()) {
+      const choiceIndex = Number.isSafeInteger(choice?.index) ? choice.index : choicePosition;
+      const toolCalls = choice?.delta?.tool_calls ?? choice?.message?.tool_calls ?? [];
+      if (!Array.isArray(toolCalls)) continue;
+      for (const [callPosition, call] of toolCalls.entries()) {
+        if (!call || typeof call !== 'object') continue;
+        const callIndex = Number.isSafeInteger(call.index) || typeof call.index === 'string'
+          ? call.index : call.id ?? callPosition;
+        const key = `${choiceIndex}:${callIndex}`;
+        const prior = calls.get(key) ?? '';
+        calls.set(key, prior + (typeof call.function?.name === 'string' ? call.function.name : ''));
+      }
+    }
+  }
+  // Only the schema terminal is non-operative. Missing or unfamiliar names
+  // fail closed as actions so a malformed stream cannot evade the ceiling.
+  return [...calls.values()].filter(name => name !== 'structured_output').length;
+}
+
 function inspectProviderBody(buffer, contentType, allowedModels, entry = null) {
   const text = buffer.toString('utf8');
   const events = [];
@@ -72,17 +94,18 @@ function inspectProviderBody(buffer, contentType, allowedModels, entry = null) {
   }
   if (!reported.size || [...reported].some(model => !allowedModels.has(model))) throw new Error('Provider model identity did not match the selected native seat.');
   const routerEvidence = entry ? verifyOpenRouterMetadata(entry, openRouterMetadata) : null;
-  return { reportedModels: [...reported], usage,
+  return { reportedModels: [...reported], usage, actionToolCalls: actionToolCalls(events),
     ...(routerEvidence ? { openRouterRouteEvidence: routerEvidence } : {}) };
 }
 
 // A native harness sees only this one-run capability. The real provider secret
 // remains in the host process; request headers are rebuilt from scratch and the
 // selected model/path are enforced before any upstream traffic is possible.
-export async function startNativeGateway({ entry, model, expectedReported, signal, maxCalls = 32, remainingTokens,
+export async function startNativeGateway({ entry, model, expectedReported, signal, maxCalls = 32, maxToolCalls = 32, remainingTokens,
   onProgress = () => {}, onTick = () => {}, onStop = () => {}, fetchImpl = fetch, tunnelManager = getSharedTunnelManager() }) {
   if (!entry || entry.kind !== 'openai_compat') throw new Error('Native gateway requires a frozen OpenAI-compatible backend.');
   if (!Number.isSafeInteger(maxCalls) || maxCalls <= 0) throw new Error('Native gateway requires a positive model-call limit.');
+  if (!Number.isSafeInteger(maxToolCalls) || maxToolCalls < 0) throw new Error('Native gateway requires a non-negative tool-action limit.');
   if (!Number.isSafeInteger(remainingTokens) || remainingTokens <= 0) throw new Error('Native gateway requires a positive remaining token budget.');
   const openRouter = openRouterRequestControls(entry);
   const keyless = entry.auth?.kind === 'none';
@@ -98,7 +121,8 @@ export async function startNativeGateway({ entry, model, expectedReported, signa
   signal?.addEventListener('abort', externalAbort, { once: true });
   if (signal?.aborted) externalAbort();
   const allowedModels = aliases(model, expectedReported);
-  const state = { calls: 0, accountedCalls: 0, usage: zero(), usageIncomplete: false, reportedModels: new Set(), stopped: null,
+  const state = { calls: 0, accountedCalls: 0, actionToolCalls: 0, refusedActionToolCalls: 0,
+    usage: zero(), usageIncomplete: false, reportedModels: new Set(), stopped: null,
     tokenBudget: remainingTokens, tokenAllowanceRemaining: remainingTokens, openRouterRouteEvidence: [] };
   let stopNotified = false;
   const stopFor = reason => {
@@ -183,6 +207,12 @@ export async function startNativeGateway({ entry, model, expectedReported, signa
         // allowance is unknown, so fail closed for this native turn.
         state.usageIncomplete = true; state.tokenAllowanceRemaining = 0;
       }
+      if (state.actionToolCalls + evidence.actionToolCalls > maxToolCalls) {
+        state.refusedActionToolCalls += evidence.actionToolCalls;
+        const reason = 'Native tool-action budget exhausted.';
+        fail(429, reason); stopFor(reason); return;
+      }
+      state.actionToolCalls += evidence.actionToolCalls;
       const reason = onProgress({ usage: evidence.usage ? state.usage : null, responses: state.calls, actions: 0 });
       if (reason) state.stopped = String(reason);
       res.writeHead(200, { 'content-type': contentType, 'cache-control': 'no-store' }); res.end(complete);

@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { CODE_EVAL_FIXTURE_PROTOCOL, DEFAULT_CODE_EVAL_FIXTURE, codeEvalFixtureReadiness,
-  loadCodeEvalFixture, validateCodeEvalFixtureManifest } from './code-eval-fixture.mjs';
+  codeEvalFixturePath, loadCodeEvalFixture, loadCodeEvalFixtureForCase,
+  validateCodeEvalFixtureManifest } from './code-eval-fixture.mjs';
 
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 async function mutableFixture(t) {
@@ -30,6 +31,22 @@ test('tracked v1a fixture is content-bound, base-red/reference-green and spend-f
   assert.equal(readiness.fixtureId, 'fixture1:b9c45077a39e7a30e929af24d9e5ab2cd4732a68bb6245f8b542bc37715f1de6');
   assert.match(readiness.verifierDigest, /^sha256:[a-f0-9]{64}$/);
   assert.doesNotMatch(JSON.stringify(readiness), /camus-code-eval-fixture-|bounded-parser\.mjs|AssertionError|operator/);
+});
+
+test('tracked balanced fixture is independently content-bound, red/green and spend-free', async () => {
+  const caseId = 'balanced-job-event-scheduler';
+  const fixture = await loadCodeEvalFixtureForCase(caseId);
+  assert.equal(fixture.manifest.taskClass, 'balanced');
+  assert.equal(fixture.manifest.caseId, caseId);
+  assert.deepEqual(fixture.baseFiles.map(file => file.path), [
+    'package.json', 'src/job-events.mjs', 'src/runnable-jobs.mjs', 'test/runnable-jobs.test.mjs'
+  ]);
+  assert.deepEqual(fixture.referenceFiles.map(file => file.path), ['src/job-events.mjs', 'src/runnable-jobs.mjs']);
+  const readiness = await codeEvalFixtureReadiness(codeEvalFixturePath(caseId));
+  assert.equal(readiness.ready, true); assert.equal(readiness.base, 'red'); assert.equal(readiness.reference, 'green');
+  assert.equal(readiness.taskClass, 'balanced'); assert.equal(readiness.providerCallsMade, 0);
+  assert.equal(readiness.fixtureId, 'fixture1:798e09b15d8560f2c683d025ced3ec177bf0973884b9270b3fb4104dd49d7fe7');
+  assert.doesNotMatch(JSON.stringify(readiness), /camus-code-eval-fixture-|runnable-jobs\.mjs|AssertionError|operator/);
 });
 
 test('fixture validator refuses unsafe argv, unknown fields and content drift', async t => {

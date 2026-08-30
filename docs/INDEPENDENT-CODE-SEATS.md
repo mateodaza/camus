@@ -148,7 +148,10 @@ outside the harness. The worker receives only a random, short-lived gateway
 capability. The gateway accepts Chat Completions for the one selected model,
 refuses Responses/helper substitution and other paths, rebuilds upstream headers,
 buffers and validates every reported model identity before forwarding output, and
-accounts each provider call. An OpenRouter backend additionally requires one
+accounts each provider call. It also counts operative tool calls in the buffered
+response and withholds an over-limit response before the harness can execute it;
+the `structured_output` schema terminal is explicitly non-operative. An
+OpenRouter backend additionally requires one
 exact upstream provider, disables fallbacks, checks current direct-route metadata
 for every response, and binds normalized route evidence into native-evaluation
 receipts; missing or contradictory route evidence fails closed. Managed SSH backends reuse Camus's tunnel lease and
@@ -181,10 +184,13 @@ the harness. This does not make provider calls free or impose a dollar cap.
   never success. Provider credentials are not inherited by tool processes.
 - Structured app-server usage events are checkpointed while a turn runs. Cached
   input stays separate; resumed thread totals are reduced by the saved baseline.
-  Native response/tool events count against the shared call/action limits. Limits
-  are checked at event boundaries, not provider-enforced hard caps. Incomplete
-  accounting retains an unknown-usage reservation. Reported model identity is the
-  returned **thread configuration**, not independent provider attestation.
+  Native response/tool events count against the shared call/action limits. The
+  Qwen/Grok gateway enforces provider-call and pre-execution tool-action ceilings;
+  Qwen also receives its native CLI action cap. Codex app-server actions are
+  checked at its event boundary rather than by the model provider. Incomplete
+  accounting retains an unknown-usage reservation. Codex's reported model
+  identity is the returned **thread configuration**, not independent provider
+  attestation.
 - A saved completed turn can continue on the same thread/candidate, including
   CLI↔Studio continuation. Cancellation interrupts the bound turn and cleans the
   owned executor/observed descendants, including separate tool process groups.
@@ -226,19 +232,29 @@ combination dogfood remains required before making any performance claim.
 
 `camus code-eval` is the first deliberately small evidence path toward that
 provider-backed dogfood. It runs exactly one Qwen Code or Grok Build cell on one
-tracked synthetic parser fixture through the production Build engine. It cannot
-compare models, name a winner, change routing or admission, touch another
-repository, land Git changes, or publish anything. There is no Studio UI for this
-operator-only smoke yet.
+selected tracked synthetic fixture through the production Build engine. Two
+smoke fixtures are available: the original simple parser repair and a balanced
+job-event scheduler repair. It cannot run a raw arm or matched raw/native
+comparison, compare models, name a winner, change routing or admission, touch
+another repository, land Git changes, or publish anything. There is no Studio UI
+for this operator-only smoke yet.
 
 First obtain the public fixture bindings and this machine's private model catalog.
 Both commands are provider-free; keep the catalog output private because it may
 describe local operator configuration:
 
 ```sh
-camus code-eval fixture --json
+camus code-eval fixture --case simple-bounded-parser-fix --json
+camus code-eval fixture --case balanced-job-event-scheduler --json
 camus models --json > /private/path/models.json
 ```
+
+Omitting `--case` retains the simple fixture default. Use the output from the
+same selected case when authoring its private campaign; the case ID, task class,
+fixture tree, task, contract, and verifier bindings must match exactly. The
+balanced fixture enables one balanced-case observation, not balanced-class
+coverage: at least three materially distinct cases are required before a
+task-class claim. Matched raw/native scheduling remains unimplemented.
 
 Create one private campaign JSON. Replace every `REPLACE_*` value with the exact
 seat fields shown by `camus models --json`; never put a credential value or endpoint
@@ -337,9 +353,16 @@ camus code-eval recover --action seal-infra \
   --ledger /private/path/qwen-evidence/receipts.jsonl --json
 ```
 
+Candidate integrity is also a hard mechanical floor. The evaluator accepts
+candidate edits only at source paths declared by the selected fixture's
+`referenceFiles`; any other changed tracked or untracked path prevents a
+mechanically green standing. This path allowlist does not disclose the reference
+implementation to the maker and does not assert semantic equality with it.
+
 A terminal `execution_observed` means only that this exact native smoke produced
 an identity-bound, independently reviewed, mechanically green candidate. One cell
-does not establish superiority, production readiness, admission, or a route. See
+does not establish task-class coverage, superiority, production readiness,
+admission, or a route. See
 [Code Harness Evaluation v1](CODE-HARNESS-EVAL-V1.md) for the later controlled A/B
 contract that remains intentionally unimplemented.
 

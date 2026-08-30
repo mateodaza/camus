@@ -16,24 +16,28 @@ general experiment platform.
 The approved v1a cut contains only:
 
 - one exact `native_smoke` cell per invocation;
-- a provider-free `fixture` inspection that emits the exact tracked fixture
-  bindings needed to author that cell;
+- a provider-free `fixture` inspection that selects a tracked case and emits the
+  exact fixture bindings needed to author that cell;
 - a frozen model, connection/qualification, harness artifact and version,
   reviewer, verifier, fixture, and budget binding;
 - provider-free `plan` and `status`;
 - `run --allow-provider-calls --max-cells 1` with no wider live default;
 - a durable pre-call marker, terminal receipt, and spend-free `recover
   --action seal-infra` that never replays an uncertain cell;
-- one synthetic base-red/reference-green fixture using the production Build
-  engine, plus fake-provider Qwen/Grok integration tests;
+- two synthetic base-red/reference-green fixtures using the production Build
+  engine: `simple-bounded-parser-fix` and the provider-free
+  `balanced-job-event-scheduler`, plus fake-provider Qwen/Grok integration tests;
+- a mechanical candidate-integrity floor that permits edits only to the source
+  paths declared by the selected fixture's reference files;
 - redacted exact-identity evidence and a single allowed standing:
   `execution_observed`, `failed`, or `unknown`.
 
-Raw arms, isolation pairs, counterbalancing, multi-case scheduling, aggregate
-metrics, `summarize`, task-class coverage, calibration, recommendations, and
-routing are v1b+ work. They begin only after both live native smokes show that
-the harness paths and v1a evidence boundary are useful. V1a cannot write model
-settings, admission, routing, Git refs, publication state, or a winner claim.
+Raw arms, isolation pairs, counterbalancing, matched raw/native execution,
+multi-case scheduling, aggregate metrics, `summarize`, task-class coverage,
+calibration, recommendations, and routing are v1b+ work. The second fixture
+allows one balanced native-smoke observation; it does not implement a comparison
+or satisfy balanced-class coverage. V1a cannot write model settings, admission,
+routing, Git refs, publication state, or a winner claim.
 
 ## Executive summary
 
@@ -316,6 +320,10 @@ Case rules:
 - The verifier command is argv-safe, bounded, credential-scrubbed, and executed
   only against the synthetic fixture candidate.
 - The fixture, task, contract, verifier, and reference result are content-bound.
+- Candidate-integrity checking is mechanical: every changed tracked or untracked
+  path must be listed in the selected fixture's `referenceFiles`. This limits the
+  edit surface; it does not assert that the candidate equals the reference
+  implementation.
 - Cases are globally unique within a campaign.
 - A campaign intended to support a task-class observation eventually contains at
   least three materially distinct cases for that class. A smoke may use one case
@@ -666,12 +674,19 @@ spend-free patch, but the semantics below are normative.
 ### 12.0 `fixture`
 
 ```bash
-camus code-eval fixture --json
+camus code-eval fixture --case simple-bounded-parser-fix --json
+camus code-eval fixture --case balanced-job-event-scheduler --json
 ```
 
-`fixture` runs the tracked base-red/reference-green readiness check and emits
-only its public, content-addressed campaign bindings. It reads no model or
+`fixture` runs the selected tracked base-red/reference-green readiness check and
+emits only its public, content-addressed campaign bindings. Omitting `--case`
+selects `simple-bounded-parser-fix` for compatibility. It reads no model or
 connection configuration and makes zero provider calls.
+
+`balanced-job-event-scheduler` is the second smoke fixture. It supports one
+bounded balanced-case observation only. A task-class claim still requires at
+least three materially distinct balanced cases, and the current v1a runner still
+has no raw arm or matched raw/native comparison.
 
 ### 12.1 `plan`
 
@@ -963,6 +978,7 @@ Acceptance:
 
 - output explicitly reports zero provider calls;
 - qualifications, artifact digests, policies, runtime, and fixture readiness bind;
+- the selected case version and task class match its tracked fixture exactly;
 - no secret or endpoint detail enters public output.
 
 ### FR-4: Deterministic scheduling — P0
@@ -973,6 +989,10 @@ unreceipted cells.
 ### FR-5: Explicit bounded execution — P0
 
 No live cell runs without explicit consent and a positive maximum-cell bound.
+
+Before a mechanically green standing is possible, every candidate edit must be
+limited to the source paths declared by the selected fixture's reference files.
+An unexpected tracked or untracked path fails candidate integrity.
 
 ### FR-6: Crash-safe append-only evidence — P0
 

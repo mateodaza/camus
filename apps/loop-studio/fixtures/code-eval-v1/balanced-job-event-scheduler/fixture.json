@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "fixtureProtocol": "code-eval-fixture/v1a",
+  "caseId": "balanced-job-event-scheduler",
+  "caseVersion": 1,
+  "taskClass": "balanced",
+  "safeForExternalModels": true,
+  "task": "Repair the job-event reducer and runnable-job scheduler. A higher job revision must win regardless of input order; equal revisions are resolved by the later event; and a stale upsert must never resurrect a newer tombstone. Runnable jobs must be pending, have every dependency present and done, honor descending priority with first-seen job order as the tie-breaker, respect the exact positive-integer slot limit, and never mutate caller input.",
+  "acceptanceContract": "The existing Node test suite passes without adding dependencies, network access, generated artifacts, or weakening assertions. Preserve the exported function names and return fresh job objects. Deleted jobs are absent from reduced state, and a zero, negative, or non-integer slot limit returns an empty selection. Inputs conform to the event shape exercised by the tests; additional schema validation is out of scope. Run `node --test test/runnable-jobs.test.mjs` to verify. Make only the source changes needed for this behavior.",
+  "baseFiles": [
+    {
+      "path": "package.json",
+      "sha256": "2d284c8a14d1bf6bc10140b64c79f98453b870a87513fd69b5859b2e14d9240a",
+      "content": "{\n  \"name\": \"camus-code-eval-balanced-job-event-scheduler\",\n  \"private\": true,\n  \"type\": \"module\"\n}\n"
+    },
+    {
+      "path": "src/job-events.mjs",
+      "sha256": "1f552da70b76f8209a92a65d467a8b037fd1aa67ff429a4f9587bbd51171e8fc",
+      "content": "export function reduceJobEvents(events) {\n  const latest = new Map();\n  for (const event of events) {\n    if (event.type === 'delete') {\n      latest.delete(event.id);\n      continue;\n    }\n    latest.set(event.id, { ...event, dependsOn: [...(event.dependsOn ?? [])] });\n  }\n  return [...latest.values()];\n}\n"
+    },
+    {
+      "path": "src/runnable-jobs.mjs",
+      "sha256": "13195fe2d6e919419debacdea2fb9d3f27ecf6db8af3400c35b9cd11fe65ccc6",
+      "content": "import { reduceJobEvents } from './job-events.mjs';\n\nexport function selectRunnableJobIds(events, slots) {\n  const jobs = reduceJobEvents(events);\n  const byId = new Map(jobs.map(job => [job.id, job]));\n  return jobs\n    .filter(job => job.status === 'pending' && job.dependsOn.some(id => byId.get(id)?.status === 'done'))\n    .sort((left, right) => right.priority - left.priority)\n    .slice(0, slots + 1)\n    .map(job => job.id);\n}\n"
+    },
+    {
+      "path": "test/runnable-jobs.test.mjs",
+      "sha256": "3308087254e6b2dd7f34550e5d9ea19ecd3bb224d5dc59a3fa75ee7b1469228f",
+      "content": "import assert from 'node:assert/strict';\nimport { test } from 'node:test';\nimport { reduceJobEvents } from '../src/job-events.mjs';\nimport { selectRunnableJobIds } from '../src/runnable-jobs.mjs';\n\ntest('keeps newer tombstones authoritative against stale updates', () => {\n  const events = [\n    { id: 'gone', revision: 1, type: 'upsert', status: 'pending', priority: 1, dependsOn: [] },\n    { id: 'gone', revision: 3, type: 'delete' },\n    { id: 'gone', revision: 2, type: 'upsert', status: 'pending', priority: 9, dependsOn: [] },\n    { id: 'done', revision: 4, type: 'upsert', status: 'done', priority: 0, dependsOn: [] },\n    { id: 'done', revision: 2, type: 'upsert', status: 'pending', priority: 0, dependsOn: [] },\n    { id: 'tie', revision: 1, type: 'upsert', status: 'pending', priority: 0, dependsOn: [] },\n    { id: 'tie', revision: 1, type: 'upsert', status: 'done', priority: 0, dependsOn: [] }\n  ];\n  assert.deepEqual(reduceJobEvents(events).map(job => [job.id, job.status]), [['done', 'done'], ['tie', 'done']]);\n});\n\ntest('selects only dependency-ready jobs within the exact slot cap', () => {\n  const events = [\n    { id: 'dep', revision: 1, type: 'upsert', status: 'done', priority: 0, dependsOn: [] },\n    { id: 'blocked', revision: 1, type: 'upsert', status: 'pending', priority: 99, dependsOn: ['missing'] },\n    { id: 'partial', revision: 1, type: 'upsert', status: 'pending', priority: 80, dependsOn: ['dep', 'missing'] },\n    { id: 'high', revision: 1, type: 'upsert', status: 'pending', priority: 10, dependsOn: ['dep'] },\n    { id: 'tie-z', revision: 1, type: 'upsert', status: 'pending', priority: 5, dependsOn: [] },\n    { id: 'tie-a', revision: 1, type: 'upsert', status: 'pending', priority: 5, dependsOn: [] }\n  ];\n  assert.deepEqual(selectRunnableJobIds(events, 3), ['high', 'tie-z', 'tie-a']);\n  assert.deepEqual(selectRunnableJobIds(events, 1), ['high']);\n});\n\ntest('rejects invalid slot limits and leaves caller data untouched', () => {\n  const events = [\n    { id: 'later', revision: 2, type: 'upsert', status: 'pending', priority: 1, dependsOn: [] },\n    { id: 'middle', revision: 3, type: 'upsert', status: 'pending', priority: 5, dependsOn: [] },\n    { id: 'first', revision: 1, type: 'upsert', status: 'pending', priority: 9, dependsOn: [] }\n  ];\n  const before = JSON.parse(JSON.stringify(events));\n  assert.deepEqual(selectRunnableJobIds(events, 0), []);\n  assert.deepEqual(selectRunnableJobIds(events, -1), []);\n  assert.deepEqual(selectRunnableJobIds(events, 1.5), []);\n  const reduced = reduceJobEvents(events);\n  reduced[0].dependsOn.push('changed');\n  assert.deepEqual(events, before);\n});\n"
+    }
+  ],
+  "referenceFiles": [
+    {
+      "path": "src/job-events.mjs",
+      "sha256": "9972d41c05ed244e0bcd78854cefbc70130380bf7706d5ed390ed0ae29c51992",
+      "content": "export function reduceJobEvents(events) {\n  const latest = new Map();\n  for (const [index, event] of events.entries()) {\n    const current = latest.get(event.id);\n    if (!current || event.revision >= current.event.revision) {\n      latest.set(event.id, {\n        event: { ...event, dependsOn: [...(event.dependsOn ?? [])] },\n        firstSeen: current?.firstSeen ?? index\n      });\n    }\n  }\n  return [...latest.values()]\n    .filter(({ event }) => event.type !== 'delete')\n    .sort((left, right) => left.firstSeen - right.firstSeen)\n    .map(({ event }) => event);\n}\n"
+    },
+    {
+      "path": "src/runnable-jobs.mjs",
+      "sha256": "14a64841e2c021cb4bdc75b1ab2e04f07d9eee6e174645e9bb076a53a8c94107",
+      "content": "import { reduceJobEvents } from './job-events.mjs';\n\nexport function selectRunnableJobIds(events, slots) {\n  if (!Number.isInteger(slots) || slots <= 0) return [];\n  const jobs = reduceJobEvents(events);\n  const byId = new Map(jobs.map(job => [job.id, job]));\n  const firstSeen = new Map(jobs.map((job, index) => [job.id, index]));\n  return jobs\n    .filter(job => job.status === 'pending' && job.dependsOn.every(id => byId.get(id)?.status === 'done'))\n    .sort((left, right) => right.priority - left.priority || firstSeen.get(left.id) - firstSeen.get(right.id))\n    .slice(0, slots)\n    .map(job => job.id);\n}\n"
+    }
+  ],
+  "verifier": {
+    "runtime": "node",
+    "argv": [
+      "--test",
+      "test/runnable-jobs.test.mjs"
+    ],
+    "timeoutMs": 15000,
+    "outputLimitBytes": 65536,
+    "networkPolicy": "deny",
+    "expectedBase": "red",
+    "expectedReference": "green",
+    "targetedBaseFailure": "keeps newer tombstones authoritative against stale updates"
+  }
+}

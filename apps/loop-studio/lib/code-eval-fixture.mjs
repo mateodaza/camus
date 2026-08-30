@@ -9,8 +9,10 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const CODE_EVAL_FIXTURE_PROTOCOL = 'code-eval-fixture/v1a';
-export const DEFAULT_CODE_EVAL_FIXTURE = fileURLToPath(new URL('../fixtures/code-eval-v1/simple-bounded-parser-fix', import.meta.url));
+export const CODE_EVAL_FIXTURE_ROOT = fileURLToPath(new URL('../fixtures/code-eval-v1', import.meta.url));
+export const DEFAULT_CODE_EVAL_FIXTURE = join(CODE_EVAL_FIXTURE_ROOT, 'simple-bounded-parser-fix');
 const SAFE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const TASK_CLASSES = new Set(['simple', 'balanced', 'difficult']);
 const SAFE_PART = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const MAX_FILE_BYTES = 32 * 1024;
@@ -68,7 +70,7 @@ function validateFileRows(rows, label) {
 export function validateCodeEvalFixtureManifest(value) {
   exactFields(value, MANIFEST_FIELDS, 'fixture manifest');
   if (value.schemaVersion !== 1 || value.fixtureProtocol !== CODE_EVAL_FIXTURE_PROTOCOL || value.caseVersion !== 1) throw new Error('Fixture protocol/version is unsupported.');
-  if (!SAFE_ID.test(value.caseId ?? '') || value.taskClass !== 'simple' || value.safeForExternalModels !== true) throw new Error('Fixture identity or external-safety declaration is invalid.');
+  if (!SAFE_ID.test(value.caseId ?? '') || !TASK_CLASSES.has(value.taskClass) || value.safeForExternalModels !== true) throw new Error('Fixture identity or external-safety declaration is invalid.');
   nonempty(value.task, 'task', 4000); nonempty(value.acceptanceContract, 'acceptanceContract', 4000);
   if (SECRET_CONTENT.test(value.task) || SECRET_CONTENT.test(value.acceptanceContract) || NETWORK_CODE.test(value.task) || NETWORK_CODE.test(value.acceptanceContract)) throw new Error('Fixture task and contract must be public and network-independent.');
   const baseFiles = Object.freeze(validateFileRows(value.baseFiles, 'baseFiles').map(Object.freeze));
@@ -117,6 +119,17 @@ export async function loadCodeEvalFixture(root = DEFAULT_CODE_EVAL_FIXTURE) {
     taskClass: manifest.taskClass, taskSha256, acceptanceContractSha256, baseTreeDigest, referencePatchDigest, referenceTreeDigest, verifierDigest }))}`;
   return Object.freeze({ manifest, baseFiles, referenceFiles, fixtureId, baseTreeDigest, referencePatchDigest, referenceTreeDigest,
     taskSha256, acceptanceContractSha256, verifierDigest });
+}
+
+export function codeEvalFixturePath(caseId, fixtureRoot = CODE_EVAL_FIXTURE_ROOT) {
+  if (typeof caseId !== 'string' || !SAFE_ID.test(caseId)) throw new Error('Fixture case id is invalid.');
+  return join(resolve(fixtureRoot), caseId);
+}
+
+export async function loadCodeEvalFixtureForCase(caseId, fixtureRoot = CODE_EVAL_FIXTURE_ROOT) {
+  const fixture = await loadCodeEvalFixture(codeEvalFixturePath(caseId, fixtureRoot));
+  if (fixture.manifest.caseId !== caseId) throw new Error('Fixture directory and manifest case id differ.');
+  return fixture;
 }
 
 export async function materializeCodeEvalFixture(fixture, destination, { reference = false } = {}) {

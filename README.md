@@ -2,14 +2,20 @@
 
 **Makes it work. Knows when to stop.**
 
-New in 0.4.10: `camus code-eval` v1a adds one tightly bounded, append-only
-Qwen Code or Grok Build execution smoke before Camus attempts a generalized A/B
-platform. Fixture inspection, planning, status, and crash sealing are spend-free;
-each live cell needs fresh literal consent and can make no routing or admission
-claim. See [independent coding seats](docs/INDEPENDENT-CODE-SEATS.md#bounded-native-smoke-evidence-experimental).
+New in 0.4.11: `camus code-eval fixture --case` adds a deterministic balanced
+job-event/scheduler repair beside the original simple parser case. Candidate
+integrity is now mechanical: only the selected fixture's declared solution paths
+may change, and a test, ignored, extra, deleted, or symlinked-file mutation is
+refused before verification. The runner remains a one-cell native smoke—not a
+raw/native comparison, winner, or routing system. See [independent coding seats](docs/INDEPENDENT-CODE-SEATS.md#bounded-native-smoke-evidence-experimental).
 Current evidence-backed model/harness guidance, including the first live Qwen
 raw-versus-native result and the sealed Grok findings, lives in the
 [recommended model and harness setup](docs/RECOMMENDED-MODEL-SETUP.md).
+
+The 0.4.10 release introduced the tightly bounded, append-only Qwen Code or Grok
+Build smoke. Fixture inspection, planning, status, and crash sealing are
+spend-free; each live cell needs fresh literal consent and has no routing or
+admission authority.
 
 The 0.4.9 [Productive Loop](docs/PRODUCTIVE-LOOP-PLAN.md) added bounded repair,
 private checkpoints, shared CLI/Studio continuation, and explicit native maker
@@ -52,7 +58,7 @@ The native proof gate needs [Claude Code](https://code.claude.com) and the
 `camus build` needs only the backends you choose, Node 18.17+, and Git.
 
 ```bash
-npm i -g camus-cli@0.4.10
+npm i -g camus-cli@0.4.11
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 ```
@@ -76,7 +82,7 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.4.10
+### Public alpha: 0.4.11
 
 Choose both coding roles independently in the CLI or Studio: Luna → Claude,
 Claude → Qwen, Grok → Qwen, or any other available, role-qualified pairing.
@@ -101,6 +107,8 @@ Claude usage and allows an explicitly recorded one-round advisory skip.
 
 Code Harness Eval v1a freezes one native smoke cell, exact model/provider
 identity, harness artifact, verifier, reviewer and spend bounds before execution.
+It now offers one simple and one balanced case, with edits mechanically confined
+to each fixture's declared solution paths before the verifier may run.
 Live Qwen/Grok failures remain in the evidence denominator, uncertain turns never
 replay automatically, and the command has no admission, routing, Git-landing or
 publication authority. The first simple-task evidence provisionally favors raw
@@ -108,10 +116,9 @@ Qwen actions; Grok Build produced the exact fix under its harness but exhausted
 the frozen turn budget before a definitive terminal. Neither result is a general
 model ranking.
 
-This release adds bounded live-provider smoke evidence to the hermetic, synthetic
-browser and pinned-harness boundary coverage. No new reviewer admission,
-automatic route or optimal pairing is claimed. See the
-[0.4.10 release notes](docs/RELEASE-0.4.10.md).
+No new reviewer admission, automatic route, matched harness comparison, or
+optimal pairing is claimed. See the
+[0.4.11 release notes](docs/RELEASE-0.4.11.md).
 
 ### Existing admission infrastructure
 
@@ -237,7 +244,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.4.10
+npm i -g camus-cli@0.4.11
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```

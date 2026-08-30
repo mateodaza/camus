@@ -25,7 +25,7 @@ import {
   recoverAbandonedCodeEvalEvidenceLock, recoverCodeEvalCell, reserveCodeEvalCell,
 } from './code-eval-ledger.mjs';
 import {
-  codeEvalFixtureReadiness, loadCodeEvalFixture, materializeCodeEvalFixture,
+  codeEvalFixturePath, codeEvalFixtureReadiness, loadCodeEvalFixture, materializeCodeEvalFixture,
 } from './code-eval-fixture.mjs';
 
 const execFile = promisify(execFileCallback);
@@ -115,6 +115,7 @@ const RUNTIME_SEEDS = Object.freeze([
   'apps/loop-studio/code-build.mjs',
   'apps/loop-studio/code-eval.mjs',
   'apps/loop-studio/fixtures/code-eval-v1/simple-bounded-parser-fix/fixture.json',
+  'apps/loop-studio/fixtures/code-eval-v1/balanced-job-event-scheduler/fixture.json',
   'apps/loop-studio/package.json',
   'apps/loop-studio/checks/models.json',
   'apps/loop-studio/checks/registry.json',
@@ -191,6 +192,8 @@ export async function codeEvalRuntimeIdentity({ runtimeRoot = null, packagePath 
 function assertFixtureMatchesCampaign(campaign, fixture, readiness) {
   const expected = {
     caseId: fixture.manifest.caseId,
+    caseVersion: fixture.manifest.caseVersion,
+    taskClass: fixture.manifest.taskClass,
     fixtureId: fixture.fixtureId,
     fixtureTreeDigest: fixture.baseTreeDigest,
     baseCommitDigest: fixture.baseTreeDigest,
@@ -201,6 +204,8 @@ function assertFixtureMatchesCampaign(campaign, fixture, readiness) {
   };
   const actual = {
     caseId: campaign.case.caseId,
+    caseVersion: campaign.case.caseVersion,
+    taskClass: campaign.case.taskClass,
     fixtureId: campaign.case.fixtureId,
     fixtureTreeDigest: campaign.case.fixtureTreeDigest,
     baseCommitDigest: campaign.case.baseCommitDigest,
@@ -216,8 +221,9 @@ function assertFixtureMatchesCampaign(campaign, fixture, readiness) {
 }
 
 async function buildExecutionSnapshot(campaign, { createdAt = new Date().toISOString() } = {}, dependencies = {}) {
-  const fixture = await (dependencies.loadFixture ?? loadCodeEvalFixture)();
-  const fixtureReadiness = await (dependencies.fixtureReadiness ?? codeEvalFixtureReadiness)();
+  const fixturePath = codeEvalFixturePath(campaign.case.caseId, dependencies.fixtureRoot);
+  const fixture = await (dependencies.loadFixture ?? loadCodeEvalFixture)(fixturePath);
+  const fixtureReadiness = await (dependencies.fixtureReadiness ?? codeEvalFixtureReadiness)(fixturePath);
   assertFixtureMatchesCampaign(campaign, fixture, fixtureReadiness);
   const pairing = campaignPairing(campaign);
   const prepared = await (dependencies.prepareExecution ?? prepareCodeExecution)(pairing);
@@ -288,7 +294,7 @@ function publicPlan(campaign, execution, cell, state = null) {
     providerCallsMade: 0,
     maximumRemainingProviderCalls: state?.canAttempt === false ? 0 : campaign.controls.maximumProviderCallsPerCell,
     maximumTokensReserved: campaign.controls.maximumTokensReserved,
-    fixture: { caseId: campaign.case.caseId, taskClass: 'simple', base: 'red', reference: 'green' },
+    fixture: { caseId: campaign.case.caseId, taskClass: campaign.case.taskClass, base: 'red', reference: 'green' },
     standing: state?.standing ?? null,
     claim: state?.standing ?? 'no_execution_claim',
     dollarCost: null,
@@ -334,6 +340,25 @@ export async function statusCodeEval(pathsInput) {
 
 async function git(args, options = {}) {
   await execFile('git', args, { timeout: 20_000, maxBuffer: 2 * 1024 * 1024, ...options });
+}
+
+export async function codeEvalCandidateIntegrity(fixture, sourcePath) {
+  const allowed = new Set(fixture.referenceFiles.map(file => file.path));
+  try {
+    const options = { timeout: 20_000, maxBuffer: 2 * 1024 * 1024, encoding: 'utf8' };
+    const tracked = await execFile('git', ['-C', sourcePath, 'diff', '--name-only', '-z', 'HEAD', '--'], options);
+    const untracked = await execFile('git', ['-C', sourcePath, 'ls-files', '--others', '--exclude-standard', '-z'], options);
+    const ignored = await execFile('git', ['-C', sourcePath, 'ls-files', '--others', '--ignored', '--exclude-standard', '-z'], options);
+    const changed = [...new Set([...tracked.stdout.split('\0'), ...untracked.stdout.split('\0')].filter(Boolean))];
+    if (ignored.stdout.split('\0').some(Boolean) || !changed.every(path => allowed.has(path))) return false;
+    for (const path of changed) {
+      const info = await lstat(join(sourcePath, path));
+      if (!info.isFile() || info.isSymbolicLink()) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function materializeSource(fixture, path) {
@@ -506,9 +531,11 @@ function assessRouteObservation(campaign, checkpoint, makerCalls) {
   };
 }
 
-function receiptFromBuild({ campaign, execution, cell, prepared, fixtureReadiness, result, checkpoint, reportDigest, startedAt, roleCalls }) {
+function receiptFromBuild({ campaign, execution, cell, prepared, fixtureReadiness, result, checkpoint,
+  candidateIntegrity, reportDigest, startedAt, roleCalls }) {
   const candidateFingerprint = isSha(`sha256:${result?.candidate?.fingerprint ?? ''}`) ? `sha256:${result.candidate.fingerprint}` : null;
   const candidateCurrent = Boolean(candidateFingerprint && result.candidate?.snapshotStatus !== 'unverified_terminal');
+  const candidateIntegrityPassed = candidateCurrent && candidateIntegrity === true;
   const makerRaw = result?.seats?.maker?.observed?.identity ?? null;
   const reviewerRaw = result?.seats?.reviewer?.observed?.identity ?? null;
   const makerExact = exactObservedIdentity(makerRaw, campaign.treatment.maker.provider, campaign.treatment.maker.model);
@@ -527,7 +554,7 @@ function receiptFromBuild({ campaign, execution, cell, prepared, fixtureReadines
   const verificationBindingMatch = candidateCurrent && result?.verificationBinding === result.candidate.fingerprint;
   const reviewBindingMatch = candidateCurrent && result?.reviewBinding === result.candidate.fingerprint;
   const verificationPassed = result?.verification?.pass === true;
-  const mechanicalFloorPassed = candidateCurrent && verificationBindingMatch && verificationPassed;
+  const mechanicalFloorPassed = candidateIntegrityPassed && verificationBindingMatch && verificationPassed;
   const usage = usageTotals(result, checkpoint, roleCalls);
   const providerCalls = Number.isSafeInteger(result?.usage?.calls) ? result.usage.calls : null;
   const callsComplete = providerCalls !== null && providerCalls === roleCalls.maker + roleCalls.reviewer;
@@ -556,8 +583,8 @@ function receiptFromBuild({ campaign, execution, cell, prepared, fixtureReadines
     },
     quality: {
       fixturePreflightPassed: fixtureReadiness.ready === true,
-      candidateIntegrityPassed: candidateCurrent,
-      containmentPassed: candidateCurrent && !['infra_error', 'stopped'].includes(result?.status),
+      candidateIntegrityPassed,
+      containmentPassed: candidateIntegrityPassed && !['infra_error', 'stopped'].includes(result?.status),
       verificationPassed: result?.verification?.ran === true ? result.verification.pass : null,
       reviewVerdict: ['APPROVED', 'REVISE'].includes(result?.review?.verdict) ? result.review.verdict : null,
       humanInterventionDuringRun: false,
@@ -604,9 +631,18 @@ export async function runCodeEval({ campaignPath, statePath, ledgerPath, consent
   try {
     await (dependencies.materializeSource ?? materializeSource)(current.fixture, sourcePath);
     await mkdir(receiptsDir, { recursive: true, mode: STUDIO_DIR_MODE });
-    const verify = (dependencies.createVerifier ?? createCodeVerifier)(verifierCommand(current.fixture), {
+    const inspectCandidateIntegrity = dependencies.inspectCandidateIntegrity ?? codeEvalCandidateIntegrity;
+    const baseVerify = (dependencies.createVerifier ?? createCodeVerifier)(verifierCommand(current.fixture), {
       receiptsDir, timeoutMs: current.fixture.manifest.verifier.timeoutMs, repeatable: true,
     });
+    const verify = async options => {
+      if (await inspectCandidateIntegrity(current.fixture, sourcePath) !== true) {
+        return { ran: false, pass: null, error: 'Candidate changed files outside the fixture solution boundary.' };
+      }
+      return baseVerify(options);
+    };
+    verify.repeatable = baseVerify.repeatable;
+    verify.command = baseVerify.command;
     const bounded = boundedSeatAdapters(current.prepared.adapters, ctx.campaign.controls);
     const result = await (dependencies.runSeats ?? runCodeSeats)({
       repoPath: sourcePath,
@@ -620,16 +656,17 @@ export async function runCodeEval({ campaignPath, statePath, ledgerPath, consent
       authorize: current.prepared.authorize,
       onEvent: dependencies.onEvent,
     });
+    const candidateIntegrity = await inspectCandidateIntegrity(current.fixture, sourcePath);
     let checkpoint = null;
     try { checkpoint = await (dependencies.readCheckpoint ?? readCodeCheckpoint)(receiptsDir); } catch { /* normalized below as failed evidence */ }
     const report = { schemaVersion: 1, campaignDigest: ctx.execution.campaignDigest,
       executionDigest: codeEvalExecutionIdentity(ctx.execution, ctx.campaign),
-      cellId: codeEvalCellIdentity(ctx.cell, ctx.campaign, ctx.execution), result, checkpoint };
+      cellId: codeEvalCellIdentity(ctx.cell, ctx.campaign, ctx.execution), result, checkpoint, candidateIntegrity };
     const serialized = `${JSON.stringify(report, null, 2)}\n`;
     const reportPath = join(receiptsDir, 'code-eval-build-report.json');
     studioAtomicWrite(reportPath, serialized, STUDIO_FILE_MODE);
     receipt = receiptFromBuild({ ...ctx, prepared: current.prepared, fixtureReadiness: current.fixtureReadiness,
-      result, checkpoint, reportDigest: sha256(serialized), startedAt, roleCalls: bounded.calls });
+      result, checkpoint, candidateIntegrity, reportDigest: sha256(serialized), startedAt, roleCalls: bounded.calls });
   } catch {
     // The marker existed before shared-engine entry. Any failure beyond it may
     // have incurred spend; preserve uncertainty instead of guessing or retrying.

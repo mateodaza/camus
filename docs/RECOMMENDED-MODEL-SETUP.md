@@ -1,7 +1,7 @@
 # Recommended model and harness setup
 
 **Status:** Evidence-based operator guidance, not automatic-routing policy  
-**Last updated:** 2026-08-29  
+**Last updated:** 2026-08-30
 **Applies to:** Camus Any-model Build in CLI and Loop Studio  
 
 This document records what Camus should recommend **today**, why, and what is
@@ -27,6 +27,9 @@ task -> maker model + provider -> maker executor -> host verifier
   a short-lived one-model gateway capability.
 - Deterministic verification is the mechanical floor. An LLM review is advisory
   unless separately admitted, and no Any-model candidate lands automatically.
+- Code-eval candidate integrity permits edits only to source paths declared by
+  the selected fixture's reference files; unexpected tracked or untracked paths
+  cannot receive a mechanically green standing.
 - An uncertain paid cell is preserved and never silently replayed.
 
 ## Current recommendations
@@ -163,6 +166,7 @@ enough to reject Qwen Code for larger work.
 | `afd5061` | xAI reasoning usage was rejected as incomplete, and Grok Build's documented event/text boundaries were parsed as one strict final frame. | The gateway accepts only the two documented reasoning-total shapes; Grok's pinned stream vocabulary, bounded reasoning/errors, intermediate response boundaries, and chunked final decision are now validated explicitly. |
 | Native isolation v3 | Grok Build's automatic title consumed one of three frozen maker calls, and the resulting local abort surfaced only as a generic cancellation. | Camus disables every supported optional summary/title side-call, refuses config drift, and retains the exact local stop reason. The unavoidable first-title call remains counted and must receive an explicit budget. |
 | Native path inventory | Grok spent a bounded turn discovering files through a broad command that touched intentionally blocked `.git` metadata. | The host supplies its bounded tracked-path inventory and warns native makers that blocked broad discovery still consumes turn/action budget; the sandbox remains unchanged. |
+| Native pre-action ceiling | Grok Build emitted its tool event only after action N+1 had already changed the disposable candidate, so a host-side event abort was too late to be a hard action limit. | The one-run gateway now counts buffered operative tool calls and withholds an over-limit provider response before the harness can execute it. The exact pinned Grok Build probe proves action 1 succeeds and action 2 leaves no file. |
 
 The Qwen native failure itself is not erased by these fixes. A future campaign
 uses a new generation and must receive fresh authorization.
@@ -227,12 +231,15 @@ Choose the cheapest path that can meet the task contract:
    does not rewrite that outcome.
 2. **Do not blindly repeat Qwen simple.** Its result already answers the simple
    task question and exposed the retry-policy defect.
-3. **Add a balanced fixture in Code Harness Eval v1b.** Use the same model,
-   route, reviewer, verifier, and budget across raw/native arms. The task should
-   be large enough for harness context management to matter but remain synthetic
-   and deterministically gradable.
-4. **Run matched raw/native pairs.** Start with Qwen3.8 Max, then Grok 4.6. Keep
-   failures and human interventions in the denominator.
+3. **Use the provider-free balanced fixture now available.** Inspect
+   `balanced-job-event-scheduler` with
+   `camus code-eval fixture --case balanced-job-event-scheduler --json`. One
+   executed cell is one balanced-case observation, not balanced-class evidence.
+4. **Implement matched raw/native pairs before claiming a comparison.** The
+   current runner remains native-smoke-only. Once the raw arm and isolation-pair
+   scheduler exist, start with Qwen3.8 Max, then Grok 4.6, using the same model,
+   route, reviewer, verifier, fixture, and budget. Keep failures and human
+   interventions in the denominator.
 5. **Add difficult-task evidence only after the balanced treatment is sound.**
    Expand repetitions before comparing cross-model combinations.
 6. **Route automatically only after enough evidence exists.** Routing must be

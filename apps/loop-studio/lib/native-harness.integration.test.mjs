@@ -55,3 +55,47 @@ test('pinned Qwen Code and Grok Build complete through the isolated gateway', { 
   assert.ok(calls.length >= 4); assert.ok(calls.every(call => call.model === model));
   assert.ok(calls.every(call => Number.isSafeInteger(call.maxTokens) && call.maxTokens > 0 && call.maxTokens <= 1000));
 });
+
+test('pinned Grok Build stops attempted action N+1 before candidate mutation', { skip: !enabled, timeout: 60000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'camus-grok-action-bound-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const candidate = join(root, 'candidate'), source = join(root, 'source'), receipts = join(root, 'receipts');
+  for (const dir of [candidate, source, receipts, join(candidate, '.git')]) await mkdir(dir, { recursive: true });
+  await writeFile(join(candidate, '.git', 'HEAD'), 'synthetic');
+  const model = 'camus-native-selected';
+  const provider = createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    const body = JSON.parse(raw), tools = body.tools ?? [];
+    const shell = tools.find(item => ['run_shell_command', 'run_terminal_command'].includes(item.function?.name));
+    const toolResults = (body.messages ?? []).filter(message => message.role === 'tool').length;
+    let toolCalls, content = null;
+    if (shell && toolResults < 2) {
+      const ordinal = toolResults + 1;
+      const command = `${quote(process.execPath)} -e ${quote(`require('fs').writeFileSync('action-${ordinal}.txt','${ordinal}')`)}`;
+      toolCalls = [{ index: 0, id: `call_action_${ordinal}`, type: 'function', function: { name: shell.function.name,
+        arguments: JSON.stringify({ command, description: `Attempt action ${ordinal}.`, timeout: 4000 }) } }];
+    } else {
+      const structured = tools.find(item => item.function?.name === 'structured_output');
+      if (structured) toolCalls = [{ index: 0, id: 'call_final', type: 'function', function: { name: 'structured_output',
+        arguments: JSON.stringify({ done: true, summary: 'Synthetic action-bound run completed.', decision: null }) } }];
+      else content = JSON.stringify({ done: true, summary: 'Synthetic action-bound run completed.', decision: null });
+    }
+    const usage = { prompt_tokens: 20, completion_tokens: 4, total_tokens: 24, prompt_tokens_details: { cached_tokens: 0 } };
+    res.setHeader('content-type', 'text/event-stream');
+    const base = { id: `fixture-${toolResults}`, object: 'chat.completion.chunk', created: 1, model };
+    for (const chunk of [{ ...base, choices: [{ index: 0, delta: { role: 'assistant', ...(toolCalls ? { tool_calls: toolCalls } : { content }) }, finish_reason: null }] },
+      { ...base, choices: [{ index: 0, delta: {}, finish_reason: toolCalls ? 'tool_calls' : 'stop' }] }, { ...base, choices: [], usage }]) res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    res.end('data: [DONE]\n\n');
+  });
+  await new Promise(resolve => provider.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { provider.closeAllConnections(); provider.close(resolve); }));
+  const backend = { name: 'fixture', kind: 'openai_compat', provider: 'fixture', auth: { kind: 'none' },
+    baseUrl: `http://127.0.0.1:${provider.address().port}/v1` };
+  const result = await runNativeGrok({ prompt: 'Attempt both requested writes.', model, backend, expectedReported: [model],
+    worktree: candidate, scratch: join(root, 'grok-scratch'), receiptsDir: receipts, sourcePath: source, timeoutMs: 30000,
+    maxToolCalls: 1, remainingTokens: 1000,
+    onNativeProgress: ({ actions }) => actions > 1 ? 'Synthetic native tool-action limit reached.' : null });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'Native tool-action budget exhausted.');
+  assert.equal(await readFile(join(candidate, 'action-1.txt'), 'utf8'), '1');
+  assert.equal(await readFile(join(candidate, 'action-2.txt'), 'utf8').catch(error => error.code), 'ENOENT');
+});

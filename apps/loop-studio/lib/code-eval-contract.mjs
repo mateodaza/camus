@@ -201,7 +201,7 @@ function validateCase(value) {
   ]);
   string(value.caseId, 'campaign.case.caseId', { pattern: SAFE_NAME, max: 64 });
   integer(value.caseVersion, 'campaign.case.caseVersion', { min: 1, max: 1_000_000 });
-  if (value.taskClass !== 'simple') fail('campaign.case.taskClass', 'must be simple in v1a');
+  if (!['simple', 'balanced', 'difficult'].includes(value.taskClass)) fail('campaign.case.taskClass', 'must be simple, balanced, or difficult');
   string(value.fixtureId, 'campaign.case.fixtureId', { pattern: FIXTURE_ID, max: 73 });
   for (const field of ['fixtureTreeDigest', 'baseCommitDigest', 'taskSha256', 'acceptanceContractSha256']) {
     string(value[field], `campaign.case.${field}`, { pattern: SHA256, max: 71 });
@@ -349,7 +349,7 @@ export function createCodeEvalCell(campaign, execution) {
     schemaVersion: 1,
     campaignDigest,
     executionDigest,
-    taskClass: 'simple',
+    taskClass: campaign.case.taskClass,
     caseId: campaign.case.caseId,
     executor: campaign.treatment.executor,
     ordinal: 1,
@@ -367,7 +367,7 @@ export function validateCodeEvalCell(value, campaign, execution) {
   string(value.executionDigest, 'cell.executionDigest', { pattern: EXECUTION_ID, max: 75 });
   if (value.campaignDigest !== codeEvalCampaignIdentity(campaign)) fail('cell.campaignDigest', 'does not match the campaign');
   if (value.executionDigest !== codeEvalExecutionIdentity(execution, campaign)) fail('cell.executionDigest', 'does not match the execution');
-  if (value.taskClass !== 'simple') fail('cell.taskClass', 'must be simple in v1a');
+  if (value.taskClass !== campaign.case.taskClass) fail('cell.taskClass', 'must match the campaign case');
   if (value.caseId !== campaign.case.caseId) fail('cell.caseId', 'must match the campaign case');
   if (value.executor !== campaign.treatment.executor) fail('cell.executor', 'must match the campaign executor');
   if (value.ordinal !== 1) fail('cell.ordinal', 'must be exactly 1 in v1a');

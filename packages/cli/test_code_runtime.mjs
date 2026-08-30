@@ -41,11 +41,14 @@ try {
     assert(entries.includes(`package/runtime/apps/loop-studio/lib/${name}.mjs`), `tarball includes ${name}`);
   }
   assert(entries.includes('package/runtime/apps/loop-studio/checks/models.json'), 'tarball includes the public model catalog');
-  const publicEvalFixture = 'package/runtime/apps/loop-studio/fixtures/code-eval-v1/simple-bounded-parser-fix/fixture.json';
-  assert(entries.includes(publicEvalFixture), 'tarball includes the one content-bound public code-eval fixture');
+  const publicEvalFixtures = [
+    'package/runtime/apps/loop-studio/fixtures/code-eval-v1/simple-bounded-parser-fix/fixture.json',
+    'package/runtime/apps/loop-studio/fixtures/code-eval-v1/balanced-job-event-scheduler/fixture.json',
+  ];
+  for (const fixture of publicEvalFixtures) assert(entries.includes(fixture), `tarball includes public fixture ${fixture}`);
   for (const entry of entries) {
     assert(!/(?:^|\/)\.env(?:\.|\/|$)/i.test(entry), `private env file leaked into tarball: ${entry}`);
-    assert(entry === publicEvalFixture || !/(?:^|\/)(?:runs|receipts|fixtures)(?:\/|$)/i.test(entry), `runtime artifact leaked into tarball: ${entry}`);
+    assert(publicEvalFixtures.includes(entry) || !/(?:^|\/)(?:runs|receipts|fixtures)(?:\/|$)/i.test(entry), `runtime artifact leaked into tarball: ${entry}`);
     assert(!/\.test\.(?:mjs|js|json)$/i.test(entry), `test source leaked into tarball: ${entry}`);
     assert(!/(?:^|\/)(?:\.camus|\.claude|\.codex)(?:\/|$)/i.test(entry), `private config leaked into tarball: ${entry}`);
   }
@@ -83,6 +86,11 @@ try {
   assert.equal(fixtureReadiness.providerCallsMade, 0);
   assert.equal(fixtureReadiness.base, 'red');
   assert.equal(fixtureReadiness.reference, 'green');
+  const balancedReadiness = JSON.parse((await command(process.execPath,
+    [bin, 'code-eval', 'fixture', '--case', 'balanced-job-event-scheduler', '--json'], { cwd: installed, env })).stdout);
+  assert.equal(balancedReadiness.ready, true);
+  assert.equal(balancedReadiness.taskClass, 'balanced');
+  assert.equal(balancedReadiness.providerCallsMade, 0);
   const runnerUrl = pathToFileURL(join(installed, 'runtime/apps/loop-studio/lib/code-eval-runner.mjs')).href;
   const runtimeIdentity = await import(runnerUrl).then(module => module.codeEvalRuntimeIdentity());
   assert.equal(runtimeIdentity.packageVersion, JSON.parse(await (await import('node:fs/promises')).readFile(join(installed, 'package.json'), 'utf8')).version,
