@@ -2,7 +2,7 @@
 
 **A coding loop that proves every change.**
 
-**New in 0.4.14:** npm releases are tag/main/version-bound and publish through
+**New in 0.4.15:** npm releases are tag/main/version-bound and publish through
 trusted GitHub OIDC with SLSA provenance. The packaged CLI never executes a
 mutable `~/.claude` script override, and verifier-private homes are removed on
 every terminal path. See the [supply-chain audit](https://github.com/mateodaza/camus/blob/main/docs/SUPPLY-CHAIN-AUDIT.md).
@@ -57,10 +57,10 @@ Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMU
 > and conservative case-only summaries cannot promote or route a model. See the
 > [0.4.12 release notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.12.md).
 >
-> **0.4.14:** npm publication now uses short-lived workflow OIDC and emits SLSA
+> **0.4.15:** npm publication now uses short-lived workflow OIDC and emits SLSA
 > provenance. Two concrete Socket findings were remediated without disguising
 > Camus's intentional process and network surfaces. See the
-> [0.4.14 release notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.14.md).
+> [0.4.15 release notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.15.md).
 >
 > **Existing native infrastructure (introduced in 0.4.7):** The Hybrid Kernel can evaluate a Studio-configured Grok, Qwen,
 > or other OpenAI-compatible reviewer on the exact code candidate before Codex performs the final
@@ -447,7 +447,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.4.14
+npm i -g camus-cli@0.4.15
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)

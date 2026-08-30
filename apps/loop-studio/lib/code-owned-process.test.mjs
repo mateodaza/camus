@@ -11,6 +11,7 @@ import {
   initializeCodeOwnedProcessRegistry,
   reconcileCodeOwnedProcessPrelaunch,
 } from './code-owned-process-registry.mjs';
+import { runCodeOwnedProcess } from './code-owned-process.mjs';
 import { runNativeProcess } from './native-process.mjs';
 import { createCodeVerifier } from './code-seat-verify.mjs';
 
@@ -40,6 +41,34 @@ const processAlive = pid => {
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim().startsWith('Z');
   } catch { return false; }
 };
+
+test('direct subprocess cancellation kills a wrapper and its output-holding descendant', {
+  skip: process.platform === 'win32',
+}, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'camus-direct-process-group-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const pidPath = join(root, 'descendant.pid');
+  const targetPath = join(root, 'descendant.mjs');
+  await writeFile(targetPath, `
+    import { writeFileSync } from 'node:fs';
+    writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
+    setInterval(() => {}, 1000);
+  `);
+  const controller = new AbortController();
+  const startedAt = Date.now();
+  const running = runCodeOwnedProcess({ command: '/bin/sh',
+    args: ['-c', `${JSON.stringify(process.execPath)} ${JSON.stringify(targetPath)} & wait`],
+    cwd: root, env: process.env, timeoutMs: 30_000, signal: controller.signal });
+  const descendant = Number(await waitFor(async () => {
+    try { return await readFile(pidPath, 'utf8'); } catch { return null; }
+  }));
+  t.after(() => { try { process.kill(descendant, 'SIGKILL'); } catch {} });
+  assert.equal(processAlive(descendant), true);
+  controller.abort();
+  await running;
+  assert.ok(Date.now() - startedAt < 2_000, 'cancellation does not wait for the descendant');
+  await waitFor(() => !processAlive(descendant));
+});
 
 test('SIGKILL of evaluator with a noisy long-lived reviewer cleans target and descendant before terminal proof', async t => {
   const root = await mkdtemp(join(tmpdir(), 'camus-owned-process-crash-'));

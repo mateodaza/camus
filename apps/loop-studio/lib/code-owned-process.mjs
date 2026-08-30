@@ -10,12 +10,22 @@ export async function runCodeOwnedProcess({ runDir, kind, command, args = [], cw
   // The shared Build engine always passes its private receipts directory and
   // therefore always takes the durable supervisor path below.
   if (!runDir) {
+    // A CLI may be a shell/wrapper that launches the real model process. On POSIX, own a fresh
+    // process group so cancellation reaches every descendant; killing only the wrapper leaves
+    // its child holding stdout/stderr open and turns an idle stop into an unbounded wait.
+    const ownsProcessGroup = process.platform !== 'win32';
     const child = spawn(command, args, { cwd, env,
+      detached: ownsProcessGroup,
       stdio: targetIpc ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'] });
     child.stdout.on('data', onStdout); child.stderr.on('data', onStderr);
     if (targetIpc) child.on('message', onMessage);
     let spawnError = null;
-    const abort = () => child.kill('SIGKILL');
+    const abort = () => {
+      if (ownsProcessGroup && Number.isInteger(child.pid)) {
+        try { process.kill(-child.pid, 'SIGKILL'); return; } catch { /* fall through */ }
+      }
+      try { child.kill('SIGKILL'); } catch { /* already terminal */ }
+    };
     signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
     const code = await new Promise(resolvePromise => {
       child.on('error', error => { spawnError = error; resolvePromise(126); });
