@@ -10,7 +10,7 @@ import { createCodeVerifier } from './lib/code-seat-verify.mjs';
 import { runCodeSeats, prepareCodeReceiptsDir } from './lib/code-seats.mjs';
 import { studioAtomicWrite } from './lib/grandfather.mjs';
 import { codeRunStatus, readCodeCheckpoint, requestCodeStop } from './lib/code-run-state.mjs';
-import { codeRunDirectory, readCodeRunMetadata } from './lib/code-session.mjs';
+import { codeRunDirectory, readCodeRunMetadata, inspectCodeRun, formatCodeInspection } from './lib/code-session.mjs';
 import { configureCodeBackend, qualifyCodeSeat } from './lib/code-setup.mjs';
 import { redactCodeText, diagnosticSecrets } from './lib/code-diagnostics.mjs';
 import { getSharedTunnelManager } from './lib/ssh-tunnel.mjs';
@@ -28,6 +28,7 @@ export const HELP = `camus build — independent maker/reviewer coding (experime
       [--max-repairs 2] [--max-retries 1] [--max-tokens 1000000]
       [--timeout-ms 1200000] [--call-timeout-ms 600000] [--idle-timeout-ms 0]
   camus build --status <run-id> [--json]
+  camus build --inspect <run-id> [--json]
   camus build --stop <run-id>
   camus build --resume <run-id> [budget extensions] [--json]
       [--answer "..." --question <question-id>]
@@ -39,9 +40,11 @@ export const HELP = `camus build — independent maker/reviewer coding (experime
 
 Both roles use Studio's configured catalog, credentials and connections.
 Setup uses Studio's connection/backend schema with env-var references, not keys.
-Qualification requires explicit paid-call consent; status/list/setup are offline.
+Qualification requires explicit paid-call consent; models/status/inspect/setup are offline.
 CLI and Studio share ~/.camus/studio/runs (or STUDIO_RUNS_DIR). Historical runs
-without a checkpoint remain inspect-only. Resume never changes the frozen pair,
+without a checkpoint remain inspect-only. Inspect authenticates one bounded
+read-only projection and never starts a worker, provider, verifier, or Git action.
+Resume never changes the frozen pair,
 contract or verifier. Budget extensions do not reset usage. --max-tokens is a
 pre-call reservation budget, NOT a provider-enforced billing limit; missing usage
 is conservatively reserved, not claimed as measured.
@@ -68,7 +71,7 @@ Legacy camus run and /camus-feat retain their existing Claude/Codex gate.
 export function parseCodeBuildArgs(argv) {
   const flags = new Set(['help', 'models', 'json', 'replace', 'allow-provider-calls', 'verify-repeatable', 'retry-uncertain', 'retry-verification']);
   const valued = new Set(['task', 'task-file', 'contract', 'contract-file', 'repo', 'maker', 'reviewer', 'maker-effort', 'reviewer-effort', 'maker-executor', 'verify',
-    'status', 'stop', 'resume', 'answer', 'question', 'setup', 'qualify', 'role', ...Object.keys(LIMIT_FLAGS)]);
+    'status', 'inspect', 'stop', 'resume', 'answer', 'question', 'setup', 'qualify', 'role', ...Object.keys(LIMIT_FLAGS)]);
   const options = {};
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '-h') { options.help = true; continue; }
@@ -83,12 +86,15 @@ export function parseCodeBuildArgs(argv) {
     }
   }
   for (const key of ['task', 'contract']) if (options[key] && options[`${key}-file`]) throw new Error(`Choose --${key} OR --${key}-file.`);
-  if (['models', 'setup', 'qualify', 'status', 'stop', 'resume'].filter((key) => options[key]).length > 1) throw new Error('Choose one build operation.');
+  if (['models', 'setup', 'qualify', 'status', 'inspect', 'stop', 'resume'].filter((key) => options[key]).length > 1) throw new Error('Choose one build operation.');
+  if (options.inspect && Object.keys(options).some((key) => !['inspect', 'json'].includes(key))) {
+    throw new Error('--inspect is an offline read-only operation and may be combined only with --json.');
+  }
   if (Boolean(options.answer) !== Boolean(options.question) || (options.answer || options['retry-uncertain'] || options['retry-verification']) && !options.resume) throw new Error('Answers/retry authorization require --resume; an answer also requires --question.');
   if (options.resume && ['task', 'task-file', 'contract', 'contract-file', 'repo', 'maker', 'reviewer', 'maker-effort', 'reviewer-effort', 'maker-executor', 'verify', 'verify-repeatable'].some((key) => options[key])) throw new Error('Resume cannot change the frozen contract, repository, pair, executor or verifier.');
   if (options['maker-executor']) {
     if (!['file_actions', ...NATIVE_EXECUTORS].includes(options['maker-executor'])) throw new Error(`--maker-executor must be file_actions, ${NATIVE_EXECUTORS.join(', ')}.`);
-    if (['models', 'setup', 'qualify', 'status', 'stop'].some(key => options[key]) || !options.maker || !options.reviewer) throw new Error('--maker-executor requires a new build with explicit --maker and --reviewer.');
+    if (['models', 'setup', 'qualify', 'status', 'inspect', 'stop'].some(key => options[key]) || !options.maker || !options.reviewer) throw new Error('--maker-executor requires a new build with explicit --maker and --reviewer.');
     if (isNativeExecutor(options['maker-executor']) && (!/^\d+$/.test(options['max-tokens'] ?? '') || Number(options['max-tokens']) < NATIVE_MIN_TOKEN_BUDGET)) {
       throw new Error(`Native execution requires --max-tokens of at least ${NATIVE_MIN_TOKEN_BUDGET} so the first call reservation fits.`);
     }
@@ -115,6 +121,11 @@ export function parseCodeSeat(value) {
 export async function main(argv = process.argv.slice(2)) {
   const options = parseCodeBuildArgs(argv);
   if (options.help || argv.length === 0) { console.log(HELP); return 0; }
+  if (options.inspect) {
+    const result = await inspectCodeRun(codeRunDirectory(options.inspect));
+    console.log(options.json ? JSON.stringify(result, null, 2) : formatCodeInspection(result));
+    return 0;
+  }
   if (options.setup) {
     const raw = await readFile(resolve(options.setup), 'utf8');
     if (raw.length > 256_000) throw new Error('Setup file too large.');

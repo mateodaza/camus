@@ -76,8 +76,17 @@ and distinct current source bodies where they fit, plus recent observations and
 explicitly non-authoritative maker intent. Omitted bodies are named, not represented
 as covered; latest requested reads are never clipped. Safe files, including run-created
 files, remain readable. Three unchanged discovery steps produce a warning in the
-next maker turn; six stop the run with its work preserved. This is a bounded
-no-new-evidence safeguard, not a claim that duration or token output proves progress.
+next maker turn; six stop the run with its work preserved. Four consecutive
+discovery-only steps also warn that implementation must begin, and seven without
+any candidate mutation park the run. This bounds both exact reread loops and
+ever-widening context collection. Broad cross-file work that genuinely needs more
+discovery should use a reviewed native harness or a narrower task contract rather
+than a larger `file_actions` call budget. The mutation runway is a named policy
+bound into every fresh checkpoint. Earlier version-2 checkpoints retain their
+original warning bytes and unchanged-evidence stop, so a paid saved response is
+not invalidated on resume; an unknown or stripped fresh policy refuses before
+authorization or a provider call. These are cost/progress safeguards, not claims
+that duration or token output proves progress.
 Oversized required evidence is refused, never represented as covered.
 Infrastructure failures and interrupted runs clear the terminal diff/fingerprint
 rather than present an older snapshot as current; inspect the retained worktree.
@@ -459,6 +468,7 @@ and token budgeting default off. Set them explicitly when warranted:
 
 ```sh
 camus build --status RUN_ID --json
+camus build --inspect RUN_ID --json
 camus build --stop RUN_ID
 camus build --resume RUN_ID --max-calls 40 --max-steps 20
 camus build --resume RUN_ID --answer 'The required format is plain text.' --question QUESTION_ID
@@ -479,6 +489,33 @@ responses and writes are recovered without repeating them. An in-flight provider
 file-action call with no durable response is uncertain: `--retry-uncertain` (or the matching
 Studio consent) authorizes one bounded retry, with possible duplicate billing.
 No exactly-once billing or provider-session reattachment is promised.
+
+> **Unreleased freeze candidate:** the inspection operation below is not part of
+> the published 0.4.15 package.
+
+`--inspect` is the offline, read-only operator view. It authenticates the same
+version-2 checkpoint used by status/resume, observes the ownership port without
+taking its lease, and returns a bounded projection: state, ownership,
+interruption/resumability, checkpoint revision, candidate identity without diff
+contents, known usage and frozen limits, review/verification standing, a durable
+question/reason, and one `nextSafeAction`. JSON never contains task/contract text,
+provider output, findings, verifier diagnostics, connection details or a candidate
+diff. Durable text is credential-redacted and additionally scrubs endpoints,
+unrestricted paths and labeled provider payloads while preserving ordinary
+source locations such as `file.js:12`. Human output is the same projection in a short form. Inspection does not
+create a worker, call a provider/verifier, touch Git, write a stop marker, or alter
+run/candidate files.
+
+The action vocabulary is deliberately small: `attach_or_status`,
+`answer_question`, `resume_candidate`, `inspect_candidate_for_acceptance`, and
+`investigate_or_start_fresh`. The last action is used for uncertain calls,
+authority/budget questions, refused state and historical metadata-only runs;
+inspection never recommends a retry, budget extension, automatic acceptance,
+commit, merge, push, publication, admission or routing change. A malformed ID uses
+the normal run-ID boundary. Missing/symlinked metadata and malformed, oversized,
+unsupported, symlinked, incomplete or HMAC-invalid checkpoints refuse with a fixed
+diagnostic and no checkpoint content. Metadata-only runs—historical or stopped
+before checkpoint creation—remain honestly inspection-only and cannot resume.
 
 The receipt separates observed tokens, unmeasured calls, model/verification/active
 time, parked time and unknown wall time after a hard crash. Private run directories
@@ -515,10 +552,13 @@ Hermetic tests cover reversed/HTTP/same-origin choices, repair/review cycles,
 diagnostic privacy, forced-kill boundaries for every action kind and verifier cleanup,
 uncertain retries, current-candidate binding, context rollover, budgets, concurrent
 ownership, bound answers, server restart, both directions of CLI/Studio continuation,
-and actual execution/resume from an extracted npm package. Synthetic browser testing
+offline inspection (including integrity/symlink/no-mutation/provider-free cases),
+and actual execution/resume/inspection from an extracted npm package. Synthetic browser testing
 also exercises launch, budget stop, reattachment and same-candidate continuation.
-A [first live Luna maker attempt](DOGFOOD-PRODUCTIVE-LOOP-1.md) stopped before
-verification/review after repeated discovery, with no feature diff. The resulting
-context fix has offline coverage but has not yet passed a fresh live run. A campaign
-across these coding combinations has **not** been run; no optimal-pairing or
-production-gate claim follows from these tests or that unsuccessful attempt.
+The [first live Luna attempt](DOGFOOD-PRODUCTIVE-LOOP-1.md) and the
+[Claude file-action rerun](DOGFOOD-PRODUCTIVE-LOOP-2.md) both stopped before verification/review with no feature
+diff. The latter safely enforced its five-minute call ceiling but exposed broad
+context collection and exact rereads before mutation. The context and progress
+fixes have offline coverage; neither failed run is a model ranking or successful
+feature trial. A campaign across these coding combinations has **not** been run;
+no optimal-pairing or production-gate claim follows.

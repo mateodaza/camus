@@ -2,10 +2,15 @@
 // Keep distinct current sources across rollover instead of only the last action.
 const DISCOVERY_WARNING_STEPS = 3;
 export const DISCOVERY_STALL_STEPS = 6;
+const MUTATION_WARNING_STEPS = 4;
+export const MUTATION_STALL_STEPS = 7;
+export const MAKER_PROGRESS_POLICY = 'bounded_discovery_v1';
 
 export function discoveryProgress(history) {
   const seen = new Set();
   let noNewSteps = 0;
+  let noMutationSteps = 0;
+  let duplicateReads = 0;
   for (const step of history) {
     if (!step.actions?.length) continue;
     let novel = false, discoveryOnly = true;
@@ -14,18 +19,30 @@ export function discoveryProgress(history) {
       const key = action.type === 'read' ? `read:${action.path}:${action.sha256}`
         : JSON.stringify(['list', action.files, action.total]);
       if (!seen.has(key)) novel = true;
+      else if (action.type === 'read') duplicateReads++;
       seen.add(key);
     }
     noNewSteps = discoveryOnly && !novel ? noNewSteps + 1 : 0;
+    noMutationSteps = discoveryOnly ? noMutationSteps + 1 : 0;
   }
-  return { noNewSteps };
+  return { noNewSteps, noMutationSteps, duplicateReads };
 }
 
 export function codeMakerContext(record, { protocolPrompt, sha256 }) {
   const progress = discoveryProgress(record.history);
-  const warning = progress.noNewSteps >= DISCOVERY_WARNING_STEPS ? {
-    hostObservation: `${progress.noNewSteps} discovery steps without new evidence. Use the retained sources to implement, request specifically missing evidence, or stop with a reason. Do not repeat completed discovery.`,
-  } : null;
+  let warning = null;
+  if (record.makerProgressPolicy === MAKER_PROGRESS_POLICY) {
+    const warnings = [];
+    if (progress.noNewSteps >= DISCOVERY_WARNING_STEPS) warnings.push(`${progress.noNewSteps} discovery steps without new evidence; do not repeat completed discovery`);
+    if (progress.noMutationSteps >= MUTATION_WARNING_STEPS) warnings.push(`${progress.noMutationSteps} consecutive discovery-only steps without a mutation; use retained sources to implement now, identify one specifically missing fact, or stop`);
+    warning = warnings.length ? { hostObservation: `${warnings.join('. ')}.` } : null;
+  } else if (progress.noNewSteps >= DISCOVERY_WARNING_STEPS) {
+    // Checkpoint-v2 runs created before the progress policy was introduced must
+    // render byte-for-byte compatible prompts so a paid saved response remains usable.
+    warning = {
+      hostObservation: `${progress.noNewSteps} discovery steps without new evidence. Use the retained sources to implement, request specifically missing evidence, or stop with a reason. Do not repeat completed discovery.`,
+    };
+  }
   const render = (history) => protocolPrompt({ task: record.task, history, limits: record.limits,
     feedback: record.feedback, questionAnswer: record.answer });
   const history = warning ? [...record.history, warning] : record.history;

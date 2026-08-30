@@ -36,10 +36,27 @@ function py(script, args) {
   process.exit(r.status === null ? 1 : r.status);
 }
 
+function sharedRuntime(name) {
+  const bundled = path.join(ROOT, 'runtime/apps/loop-studio', name);
+  const repoRoot = path.resolve(ROOT, '../..');
+  const workspacePackage = path.join(repoRoot, 'packages', 'cli');
+  // Installed execution must not even parse an untrusted consumer root.
+  if (ROOT !== workspacePackage) return bundled;
+  try {
+    const workspace = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+    if (fs.realpathSync(ROOT) === fs.realpathSync(workspacePackage)
+        && workspace.name === 'camus-monorepo' && workspace.private === true) {
+      const source = path.join(repoRoot, 'apps', 'loop-studio', name);
+      if (fs.statSync(source).isFile()) return source;
+    }
+  } catch { /* An installed package has no trusted source-tree fallback. */ }
+  return bundled;
+}
+
 function codeBuild(args) {
-  const source = path.resolve(ROOT, '../../apps/loop-studio/code-build.mjs');
-  const bundled = path.join(ROOT, 'runtime/apps/loop-studio/code-build.mjs');
-  const entry = fs.existsSync(source) ? source : bundled;
+  // Installed packages always execute their bundled runtime. Only the exact
+  // monorepo packages/cli location may use checkout source for development.
+  const entry = sharedRuntime('code-build.mjs');
   if (!fs.existsSync(entry)) {
     console.error('camus build: this package is missing its shared model runtime. Reinstall the release; no model was called.');
     process.exit(1);
@@ -50,9 +67,7 @@ function codeBuild(args) {
 }
 
 function codeEval(args) {
-  const source = path.resolve(ROOT, '../../apps/loop-studio/code-eval.mjs');
-  const bundled = path.join(ROOT, 'runtime/apps/loop-studio/code-eval.mjs');
-  const entry = fs.existsSync(source) ? source : bundled;
+  const entry = sharedRuntime('code-eval.mjs');
   if (!fs.existsSync(entry)) {
     console.error('camus code-eval: this package is missing its shared evaluation runtime. Reinstall the release; no model was called.');
     process.exit(1);
@@ -72,7 +87,8 @@ usage: npx camus-cli <command>
                review, human acceptance required. No automatic merge/publication.
                build --help · build --models · --task "..." --contract "..."
                build --setup file.json · --qualify backend:model --role maker|reviewer
-               build --status ID · --stop ID · --resume ID [budget extensions]
+               build --status ID · --inspect ID [--json] · --stop ID
+               build --resume ID [budget extensions]
   code-eval [...] bounded native smoke or same-model raw/native pair with frozen
                identity, fixture, verifier, and budget evidence. plan/status/recover/
                summarize are provider-free; each run requires fresh

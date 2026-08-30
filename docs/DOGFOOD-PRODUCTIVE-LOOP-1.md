@@ -77,6 +77,10 @@ cases and 15 forced-crash action windows plus verifier cleanup), CLI/Studio
 continuation integration, extracted npm runtime execution, and `git diff --check`.
 Native workflows, trust schemas, provider adapters and admission rules were not changed.
 
-Release remains on hold. A fresh, explicitly bounded run on the corrected revision
-must finish useful code, pass the frozen acceptance check, and receive actual
-review before the productive-loop readiness claim can be reconsidered.
+A second explicitly bounded run on the corrected revision also produced no
+mutation; its distinct context-pressure failure and the bounded offline response
+are recorded in [productive-loop dogfood 2](DOGFOOD-PRODUCTIVE-LOOP-2.md). These
+runs do not support a broad productive-loop readiness claim or a model ranking.
+The infrastructure may be frozen only on deterministic/manual validation with
+that limitation kept explicit; useful model-produced code plus independent review
+remains required evidence before broad file-action productivity is claimed.

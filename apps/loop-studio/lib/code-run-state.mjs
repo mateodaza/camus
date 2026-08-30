@@ -47,17 +47,28 @@ export async function acquireCodeRun(dir) {
   return { generation: randomBytes(12).toString('hex'), release: () => new Promise((resolve) => server.close(resolve)) };
 }
 
-export async function codeRunStatus(dir) {
-  const state = await readCodeCheckpoint(dir);
+async function codeRunOwned(dir) {
   const port = ownershipPort(await realpath(dir));
   // Status must never briefly take the writer's lease and race a real resume.
-  const owned = await new Promise((resolve) => {
+  return new Promise((resolve) => {
     const socket = createConnection({ host: '127.0.0.1', port });
     const finish = (value) => { socket.destroy(); resolve(value); };
     socket.once('connect', () => finish(true));
     socket.once('error', (error) => finish(error.code !== 'ECONNREFUSED'));
     socket.setTimeout(500, () => finish(true)); // uncertain ownership fails closed
   });
+}
+
+// One authenticated read plus the connect-only ownership observation. Consumers
+// that need a richer read-only projection must not race two checkpoint reads or
+// take the writer lease merely to inspect a run.
+export async function readCodeRunSnapshot(dir) {
+  const state = await readCodeCheckpoint(dir);
+  return { state, owned: await codeRunOwned(dir) };
+}
+
+export async function codeRunStatus(dir) {
+  const { state, owned } = await readCodeRunSnapshot(dir);
   return { runId: state.runId, status: state.status, phase: state.phase, owned,
     interrupted: state.status === 'running' && !owned, updatedAt: state.updatedAt,
     revision: state.revision, candidate: { ...state.candidate, diff: undefined }, question: state.question ?? null,

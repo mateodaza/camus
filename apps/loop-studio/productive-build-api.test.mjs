@@ -70,6 +70,19 @@ try {
   const created = await createdResponse.json(); assert.equal(createdResponse.status, 201, JSON.stringify(created));
   const parked = await waitStopped(created.id, 1); assert.equal(parked.question.kind, 'budget');
   const offline = JSON.parse((await cli(['--status', created.id, '--json'])).stdout); assert.equal(offline.usage.calls, 1);
+  const sharedRunDir = join(env.STUDIO_RUNS_DIR, created.id);
+  const beforeInspection = {
+    metadata: await readFile(join(sharedRunDir, 'run.json')),
+    checkpoint: await readFile(join(sharedRunDir, 'code-checkpoint.json')),
+    calls: await readFile(callsPath, 'utf8'),
+  };
+  const parkedInspection = JSON.parse((await cli(['--inspect', created.id, '--json'])).stdout);
+  assert.equal(parkedInspection.runId, created.id);
+  assert.equal(parkedInspection.nextSafeAction.action, 'investigate_or_start_fresh');
+  assert.equal(Object.hasOwn(parkedInspection.candidate, 'diff'), false);
+  assert.deepEqual(await readFile(join(sharedRunDir, 'run.json')), beforeInspection.metadata);
+  assert.deepEqual(await readFile(join(sharedRunDir, 'code-checkpoint.json')), beforeInspection.checkpoint);
+  assert.equal(await readFile(callsPath, 'utf8'), beforeInspection.calls, 'Studio-created run inspection invokes no provider');
   const candidate = parked.candidate.worktree;
   await stopServer();
   const resumedCli = await cli(['--resume', created.id, '--max-calls', '5', '--json']);
@@ -78,6 +91,9 @@ try {
   assert.equal(completed.completion, 'candidate_ready_for_acceptance', completed.error);
   assert.equal(completed.candidate.worktree, candidate); assert.equal(completed.usage.calls, 3);
   assert.equal(completed.models.maker.effort, 'high'); assert.equal(completed.models.reviewer.effort, 'xhigh');
+  const completedInspection = JSON.parse((await cli(['--inspect', created.id, '--json'])).stdout);
+  assert.equal(completedInspection.nextSafeAction.action, 'inspect_candidate_for_acceptance');
+  assert.equal(completedInspection.review.status, 'approved');
   await start();
   const httpReport = await (await fetch(`${base}/api/runs/${created.id}/report`)).json();
   assert.equal(httpReport.models.maker.effort, 'high'); assert.equal(httpReport.models.reviewer.effort, 'xhigh');
@@ -92,6 +108,9 @@ try {
   const final = await waitStopped(second.id, 3); assert.equal(final.phase, 'complete'); assert.equal(final.candidate.worktree, second.candidate.worktree);
   const questionRun = await cli(['--task', `${task} ASK_FORMAT`, '--contract', contract, '--repo', repo, '--json']);
   const q = JSON.parse(questionRun.stdout); assert.equal(q.question.kind, 'judgment');
+  const questionInspection = JSON.parse((await cli(['--inspect', q.id, '--json'])).stdout);
+  assert.equal(questionInspection.nextSafeAction.action, 'answer_question');
+  assert.equal(questionInspection.question.id, q.question.id);
   const unchanged = JSON.parse((await cli(['--resume', q.id, '--json'])).stdout);
   assert.match(unchanged.receiptPath, /report-\d+\.json$/, 'an unchanged resume reports its new immutable receipt, not stale report.json');
   const answered = await post(`runs/${q.id}/answer`, { questionId: q.question.id, answer: 'Plain text is required.' });
@@ -106,6 +125,9 @@ try {
     await new Promise(r => setTimeout(r, 30));
   }
   assert.ok(runningId); assert.equal((await state(runningId)).owned, true);
+  const activeInspection = JSON.parse((await cli(['--inspect', runningId, '--json'])).stdout);
+  assert.equal(activeInspection.owned, true); assert.equal(activeInspection.nextSafeAction.action, 'attach_or_status');
+  assert.equal((await state(runningId)).owned, true, 'concurrent inspection never disturbs the worker lease');
   const exited = once(worker, 'exit'); assert.equal((await post(`runs/${runningId}/stop`)).status, 200); await exited; worker = null;
   assert.equal(JSON.parse(output).status, 'stopped'); assert.equal((await state(runningId)).owned, false);
   assert.equal(execFileSync('git', ['-C', repo, 'status', '--porcelain'], { encoding: 'utf8' }), '');
@@ -133,7 +155,7 @@ try {
   const finalCalls = (await readFile(callsPath, 'utf8')).trim().split('\n').map(JSON.parse);
   assert.equal(finalCalls.filter(c => c.role === 'nativeMaker').length, 2, 'selected native executor used once per candidate, not replayed during resume');
   assert.equal(execFileSync('git', ['-C', repo, 'status', '--porcelain'], { encoding: 'utf8' }), '');
-  console.log('Productive CLI/Studio: same-ID cross-surface continuation, restart, bound answers, ownership, stop, exact selected pair and offline status passed.');
+  console.log('Productive CLI/Studio: same-ID cross-surface continuation, inspect, restart, bound answers, ownership, stop, exact selected pair and offline status passed.');
   if (process.env.CAMUS_TEST_BROWSER === '1') {
     console.log(`Browser fixture: ${base} | repo: ${repo} | pid: ${process.pid}`);
     await once(process, 'SIGTERM');

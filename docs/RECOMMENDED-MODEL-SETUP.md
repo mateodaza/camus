@@ -41,7 +41,7 @@ manual starting point; it does **not** mean Camus has proven it is the winner.
 | --- | --- | --- | --- | --- |
 | Simple, bounded code change | Qwen3.8 Max through OpenRouter, exact Alibaba route | `file_actions` | GPT-5.6 Luna, medium | **Provisional recommendation.** One matched live fixture was exact, verified, and approved with materially less time and usage than Qwen Code. |
 | Balanced work | Operator-selected qualified maker; begin with Qwen3.8 Max raw or the existing Claude incumbent | `file_actions` | Independent Luna/Sol seat appropriate to stakes | **No winner.** Collect matched raw/native and cross-model evidence before routing. |
-| Difficult or repository-wide work | Existing Claude Opus 4.8 maker + GPT-5.6 Sol high reviewer is the conservative incumbent | Existing qualified path | Sol high | **Incumbent only.** No controlled current-vendor campaign proves optimality. |
+| Difficult or repository-wide work | Decompose first; otherwise choose an exact qualified model whose reviewed native harness fits the repository | Native executor where available | Sol high or another independent high-stakes seat | **No preferred model.** Two cross-file `file_actions` dogfoods spent their allowance in discovery and produced no diff; do not treat a larger call cap as the fix. |
 | Qwen Code native | Qwen3.8 Max | `qwen_native` | Luna medium | **Exploratory.** Do not prefer for simple tasks. Test next on balanced/difficult work where harness context may amortize its overhead. |
 | Grok Build native | Grok 4.6 through direct xAI | `grok_native` | Luna medium | **Exploratory; not routed.** The latest bounded cell made the exact fix, but exhausted its frozen turn cap before a definitive terminal or review. This is useful harness evidence, not a formal pass or model ranking. |
 
@@ -154,6 +154,22 @@ enough to reject Qwen Code for larger work.
   tuning away a legitimate model decision.
 - One sample never grants model admission or automatic routing.
 
+### Productive `file_actions` context evidence
+
+- [Dogfood 1](DOGFOOD-PRODUCTIVE-LOOP-1.md) used Luna medium on the cross-file
+  offline-inspection feature. It consumed 14 maker calls and 32 list/read actions,
+  produced no mutation, and exposed a context-rollover defect.
+- [Dogfood 2](DOGFOOD-PRODUCTIVE-LOOP-2.md) used Claude Opus 4.8 medium after
+  rollover and focused-edit fixes. Eight successful responses still used only
+  discovery; eight of 19 reads repeated exact unchanged bodies. The ninth call
+  reached its five-minute ceiling with no durable response. Camus failed closed,
+  but the candidate remained empty and the reviewer never ran.
+- These runs do not rank Luna against Opus. They establish that broad cross-file
+  implementation is currently a poor fit for whole-file `file_actions` retrieval.
+  The loop now warns after four mutation-free discovery steps and parks after
+  seven. For genuinely broad work, decompose or use a reviewed native harness;
+  do not extend a stalled raw-action run by default.
+
 ## Camus defects found and fixed by this dogfood
 
 | Commit | Finding | Resolution |
@@ -167,6 +183,7 @@ enough to reject Qwen Code for larger work.
 | Native isolation v3 | Grok Build's automatic title consumed one of three frozen maker calls, and the resulting local abort surfaced only as a generic cancellation. | Camus disables every supported optional summary/title side-call, refuses config drift, and retains the exact local stop reason. The unavoidable first-title call remains counted and must receive an explicit budget. |
 | Native path inventory | Grok spent a bounded turn discovering files through a broad command that touched intentionally blocked `.git` metadata. | The host supplies its bounded tracked-path inventory and warns native makers that blocked broad discovery still consumes turn/action budget; the sandbox remains unchanged. |
 | Native pre-action ceiling | Grok Build emitted its tool event only after action N+1 had already changed the disposable candidate, so a host-side event abort was too late to be a hard action limit. | The one-run gateway now counts buffered operative tool calls and withholds an over-limit provider response before the harness can execute it. The exact pinned Grok Build probe proves action 1 succeeds and action 2 leaves no file. |
+| Productive loop 2 | A maker could keep collecting novel source through the whole step budget even when it never proposed a mutation. | The host now binds a named progress policy into fresh checkpoints, warns at four consecutive mutation-free discovery steps and parks at seven; exact unchanged-discovery stagnation remains independently bounded, while older v2 prompt hashes remain resumable. |
 
 The Qwen native failure itself is not erased by these fixes. A future campaign
 uses a new generation and must receive fresh authorization.

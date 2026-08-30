@@ -10,6 +10,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { FILE_ACTION_POLICY, runProductiveCodeLoop } from './code-loop.mjs';
+import { MAKER_PROGRESS_POLICY } from './code-context.mjs';
 import { redactCodeText, diagnosticSecrets } from './code-diagnostics.mjs';
 import { NATIVE_MIN_TOKEN_BUDGET } from './code-native-policy.mjs';
 
@@ -469,7 +470,8 @@ function baseResult({ source = null, seats, adapters, backendSnapshot }) {
     candidate: null,
     seats: { maker: { requested: maker, observed: null }, reviewer: { requested: reviewer, observed: null } },
     independence: { independent, reason: !originKnown ? 'provenance_unknown' : (independent ? 'distinct_training_origins' : 'same_training_origin') },
-    protocol: { version: PROTOCOL_VERSION, fileActionPolicy: FILE_ACTION_POLICY, steps: 0, actions: 0 },
+    protocol: { version: PROTOCOL_VERSION, fileActionPolicy: FILE_ACTION_POLICY,
+      makerProgressPolicy: MAKER_PROGRESS_POLICY, steps: 0, actions: 0 },
     review: null,
     verification: null,
     error: null,

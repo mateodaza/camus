@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { runCodeSeats } from './code-seats.mjs';
 import { createCodeVerifier } from './code-seat-verify.mjs';
 import { verificationDiagnostics } from './code-diagnostics.mjs';
-import { codeMakerContext, discoveryProgress } from './code-context.mjs';
+import { codeMakerContext, discoveryProgress, MAKER_PROGRESS_POLICY } from './code-context.mjs';
 import { readCodeCheckpoint, saveCodeCheckpoint, codeRunStatus, requestCodeStop, digest } from './code-run-state.mjs';
 
 const message = (actions = [], extra = {}) => ({ ok: true, text: JSON.stringify({ actions, done: !actions.length, ...extra }), usage: { input_tokens: 10, output_tokens: 5 } });
@@ -96,13 +96,46 @@ test('stop after a saved provider response resumes it without repeating the comp
   assert.equal(turn, 2); assert.equal(resumed.usage.actions, 1); assert.equal(resumed.usage.calls, 3);
 });
 
+test('a pre-progress-policy saved response retains its exact prompt binding and resumes once', async (t) => {
+  let turn = 0; const control = new AbortController();
+  const oldObservation = '3 discovery steps without new evidence. Use the retained sources to implement, request specifically missing evidence, or stop with a reason. Do not repeat completed discovery.';
+  const f = await fixture(t, ({ prompt }) => {
+    turn++;
+    if (turn === 1) return message([{ type: 'read', path: 'README.md' }]);
+    if (turn === 2) {
+      assert.match(prompt, new RegExp(oldObservation.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      assert.doesNotMatch(prompt, /discovery-only steps without a mutation/);
+      control.abort();
+      return message([create('correct')]);
+    }
+    return message();
+  });
+  await f.run({ limits: { maxCalls: 1 } });
+  const state = await f.checkpoint();
+  delete state.makerProgressPolicy;
+  state.binding = digest({ task: f.options.task, seats: f.options.seats,
+    backends: { maker: {}, reviewer: {} }, verifier: null, repeatable: true,
+    fileActionPolicy: state.fileActionPolicy,
+    credentialRevisions: { maker: null, reviewer: null } });
+  const read = { type: 'read', path: 'README.md', sha256: digest('A test project.\n'), content: 'A test project.\n' };
+  state.history = Array.from({ length: 4 }, (_, index) => ({ step: index + 1, actions: [read] }));
+  state.reads = [['README.md', 'A test project.\n']]; state.usage.steps = 4; state.usage.actions = 4;
+  state.phase = 'make'; state.status = 'running'; state.question = null; state.pendingCall = null;
+  await saveCodeCheckpoint(f.options.receiptsDir, state);
+  const stopped = await f.run({ resume: true, limits: { maxCalls: 5 }, signal: control.signal });
+  assert.equal(stopped.status, 'stopped'); assert.ok((await f.checkpoint()).pendingCall?.response);
+  const resumed = await f.run({ resume: true });
+  assert.equal(resumed.completion, 'candidate_ready_for_acceptance', resumed.error);
+  assert.equal(turn, 3, 'the paid saved response was consumed instead of replayed');
+});
+
 test('unknown in-flight call requires explicit retry and conservatively retains spend', async (t) => {
   let turn = 0;
   const f = await fixture(t, () => ++turn === 1 ? message([write('correct')]) : message());
   await f.run({ limits: { maxCalls: 1 } });
   const state = await f.checkpoint(); state.pendingCall = { id: 'maker-uncertain', role: 'maker', promptHash: 'fixture', startedAt: Date.now() };
   state.usage.calls++; state.usage.accountedTokens += state.limits.unknownTokenReserve;
-  saveCodeCheckpoint(f.options.receiptsDir, state);
+  await saveCodeCheckpoint(f.options.receiptsDir, state);
   const parked = await f.run({ resume: true, limits: { maxCalls: 5 } });
   assert.equal(parked.question.kind, 'uncertain_call'); assert.equal(turn, 1);
   const result = await f.run({ resume: true, retryUncertain: true });
@@ -134,6 +167,7 @@ test('a pre-policy in-flight native checkpoint restores conservative accounting 
   await f.run({ limits: { maxTokens: 32768 } });
   const state = await f.checkpoint();
   delete state.fileActionPolicy;
+  delete state.makerProgressPolicy;
   state.binding = digest({ task: f.options.task, seats: f.options.seats,
     backends: { maker: makerBackend, reviewer: {} }, verifier: null, repeatable: true,
     credentialRevisions: { maker: null, reviewer: null } });
@@ -141,7 +175,7 @@ test('a pre-policy in-flight native checkpoint restores conservative accounting 
   state.pendingCall = { id: 'maker-native-1', role: 'maker', promptHash: digest('legacy native prompt'), startedAt: Date.now(), native: true,
     progress: { tokens: 10, responses: 1, actions: 1, reservationReplaced: true } };
   state.usage.calls = 1; state.usage.accountedTokens = 10; state.usage.unmeasuredCalls = 0;
-  saveCodeCheckpoint(f.options.receiptsDir, state);
+  await saveCodeCheckpoint(f.options.receiptsDir, state);
   let authorizations = 0;
   const result = await f.run({ resume: true, authorize: async () => { authorizations++; } });
   assert.equal(result.status, 'needs_decision'); assert.match(result.error, /Native turn outcome is uncertain/);
@@ -210,6 +244,7 @@ test('every file-action maker call receives the bounded host protocol schema', a
   const result = await f.run({ limits: { maxActionsPerStep: 2 } });
   assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
   assert.equal(result.protocol.fileActionPolicy, 'create_replace_v1');
+  assert.equal(result.protocol.makerProgressPolicy, MAKER_PROGRESS_POLICY);
 });
 
 test('a fresh run rejects legacy write before filesystem execution while an explicit retry may use create', async t => {
@@ -488,14 +523,29 @@ test('an unknown or stripped new-run file-action policy refuses before another m
   const f = await fixture(t, () => message([write('correct')]));
   await f.run({ limits: { maxCalls: 1 } });
   const unknown = await f.checkpoint(); unknown.fileActionPolicy = 'future-unreviewed-policy';
-  saveCodeCheckpoint(f.options.receiptsDir, unknown);
+  await saveCodeCheckpoint(f.options.receiptsDir, unknown);
   assert.match((await f.run({ resume: true, limits: { maxCalls: 5 } })).error, /file-action policy is unsupported/);
   assert.equal(f.calls.length, 1);
 
   const stripped = await f.checkpoint(); delete stripped.fileActionPolicy;
-  saveCodeCheckpoint(f.options.receiptsDir, stripped);
+  await saveCodeCheckpoint(f.options.receiptsDir, stripped);
   assert.match((await f.run({ resume: true, limits: { maxCalls: 5 } })).error, /binding changed/);
   assert.equal(f.calls.length, 1);
+});
+
+test('an unknown or stripped maker-progress policy refuses before authorization or another model call', async t => {
+  const f = await fixture(t, () => message([write('correct')]));
+  await f.run({ limits: { maxCalls: 1 } });
+  let authorizations = 0;
+  const unknown = await f.checkpoint(); unknown.makerProgressPolicy = 'future-unreviewed-policy';
+  await saveCodeCheckpoint(f.options.receiptsDir, unknown);
+  assert.match((await f.run({ resume: true, limits: { maxCalls: 5 }, authorize: async () => { authorizations++; } })).error, /maker-progress policy is unsupported/);
+  assert.equal(f.calls.length, 1); assert.equal(authorizations, 0);
+
+  const stripped = await f.checkpoint(); delete stripped.makerProgressPolicy;
+  await saveCodeCheckpoint(f.options.receiptsDir, stripped);
+  assert.match((await f.run({ resume: true, limits: { maxCalls: 5 }, authorize: async () => { authorizations++; } })).error, /binding changed/);
+  assert.equal(f.calls.length, 1); assert.equal(authorizations, 0);
 });
 
 test('a saved legacy write before checkpoint recovery recognizes post-state without executing it twice', async (t) => {
@@ -504,6 +554,7 @@ test('a saved legacy write before checkpoint recovery recognizes post-state with
   await f.run({ limits: { maxCalls: 1 } });
   const state = await f.checkpoint();
   delete state.fileActionPolicy;
+  delete state.makerProgressPolicy;
   state.binding = digest({ task: f.options.task, seats: f.options.seats,
     backends: { maker: {}, reviewer: {} }, verifier: null, repeatable: true,
     credentialRevisions: { maker: null, reviewer: null } });
@@ -514,7 +565,7 @@ test('a saved legacy write before checkpoint recovery recognizes post-state with
   state.result.review = { ran: true, verdict: 'APPROVED' }; state.result.verification = { ran: true, pass: true };
   state.result.reviewBinding = state.candidate.fingerprint; state.result.verificationBinding = state.candidate.fingerprint;
   state.verificationReady = true;
-  saveCodeCheckpoint(f.options.receiptsDir, state);
+  await saveCodeCheckpoint(f.options.receiptsDir, state);
   const parked = await f.run({ resume: true });
   assert.equal(parked.status, 'needs_decision');
   assert.match(parked.error, /Legacy file-action checkpoint recovered and parked/);
@@ -533,6 +584,7 @@ test('a saved legacy maker response is parked before prompt rebinding, authoriza
   await f.run({ limits: { maxCalls: 1 } });
   const state = await f.checkpoint();
   delete state.fileActionPolicy;
+  delete state.makerProgressPolicy;
   state.binding = digest({ task: f.options.task, seats: f.options.seats,
     backends: { maker: {}, reviewer: {} }, verifier: null, repeatable: true,
     credentialRevisions: { maker: null, reviewer: null } });
@@ -541,7 +593,7 @@ test('a saved legacy maker response is parked before prompt rebinding, authoriza
     response: { ok: true, text: JSON.stringify({ actions: [{ type: 'write', path: 'other.txt', content: 'paid legacy response', expected_sha256: null }], done: false }), usage: { total_tokens: 15 } },
     rawResponseRecorded: true };
   state.usage.calls = 2; state.usage.rawProviderResponses = 2;
-  saveCodeCheckpoint(f.options.receiptsDir, state);
+  await saveCodeCheckpoint(f.options.receiptsDir, state);
   let authorizations = 0;
   const parked = await f.run({ resume: true, limits: { maxCalls: 5 }, authorize: async () => { authorizations++; } });
   assert.equal(parked.status, 'needs_decision'); assert.match(parked.error, /Legacy file-action checkpoint recovered and parked/);
@@ -607,6 +659,22 @@ test('repeated discovery with no new evidence stops before spending the whole ca
   assert.equal(result.usage.repairs, 0); assert.equal(result.review, null);
 });
 
+test('novel discovery still parks after a bounded mutation-free runway', async (t) => {
+  let turn = 0, sawWarning = false;
+  const paths = ['README.md', 'one.txt', 'two.txt', 'three.txt', 'four.txt', 'five.txt', 'six.txt'];
+  const f = await fixture(t, ({ prompt }) => {
+    sawWarning ||= /discovery-only steps without a mutation/.test(prompt);
+    return message([{ type: 'read', path: paths[turn++] }]);
+  });
+  for (const path of paths.slice(1)) await writeFile(join(f.options.repoPath, path), `${path}\n`);
+  git(f.options.repoPath, 'add', '.'); git(f.options.repoPath, 'commit', '-qm', 'discovery runway fixture');
+  const result = await f.run({ limits: { maxCalls: 20, maxSteps: 18 } });
+  assert.equal(result.status, 'stopped'); assert.match(result.error, /mutation-free runway/);
+  assert.equal(result.usage.calls, 7); assert.equal(result.usage.actions, 7);
+  assert.equal(sawWarning, true); assert.equal(result.candidate.diff, null, 'stopped terminals do not claim a current snapshot');
+  assert.equal(git(result.candidate.worktree, 'status', '--porcelain'), '', 'the mutation-free candidate is actually clean');
+});
+
 test('bounded source selection names omissions and never truncates a requested body or the contract', () => {
   const old = { type: 'read', path: 'old.txt', content: 'old'.repeat(1000), sha256: digest('old'.repeat(1000)) };
   const current = { type: 'read', path: 'current.txt', content: 'CURRENT_BODY'.repeat(40), sha256: digest('CURRENT_BODY'.repeat(40)) };
@@ -629,9 +697,26 @@ test('new evidence or a host mutation resets only the discovery-stagnation obser
   const read = { type: 'read', path: 'a.txt', sha256: 'same' };
   const repeated = Array.from({ length: 4 }, () => ({ actions: [read] }));
   assert.equal(discoveryProgress(repeated).noNewSteps, 3);
+  assert.equal(discoveryProgress(repeated).noMutationSteps, 4);
+  assert.equal(discoveryProgress(repeated).duplicateReads, 3);
   assert.equal(discoveryProgress([...repeated, { actions: [{ ...read, sha256: 'changed' }] }]).noNewSteps, 0);
   assert.equal(discoveryProgress([...repeated, { actions: [{ type: 'create', path: 'a.txt' }] }]).noNewSteps, 0);
+  assert.equal(discoveryProgress([...repeated, { actions: [{ type: 'create', path: 'a.txt' }] }]).noMutationSteps, 0);
   assert.equal(discoveryProgress([...repeated, { actions: [{ type: 'list', files: ['new.txt'], total: 1 }] }]).noNewSteps, 0);
+});
+
+test('maker progress policy preserves the legacy prompt and binds the mutation-runway warning', () => {
+  const read = { type: 'read', path: 'a.txt', sha256: 'same' };
+  const history = Array.from({ length: 4 }, () => ({ actions: [read] }));
+  const h = { sha256: digest, protocolPrompt: ({ history: projected }) => JSON.stringify(projected) };
+  const state = { task: 'contract', limits: { maxContextBytes: 10000 }, feedback: null, answer: null,
+    candidate: { fingerprint: 'candidate' }, created: [], reads: [], history };
+  const legacy = JSON.parse(codeMakerContext(state, h).prompt).at(-1);
+  assert.equal(legacy.hostObservation,
+    '3 discovery steps without new evidence. Use the retained sources to implement, request specifically missing evidence, or stop with a reason. Do not repeat completed discovery.');
+  const current = JSON.parse(codeMakerContext({ ...state, makerProgressPolicy: MAKER_PROGRESS_POLICY }, h).prompt).at(-1);
+  assert.match(current.hostObservation, /4 consecutive discovery-only steps without a mutation/);
+  assert.notEqual(current.hostObservation, legacy.hostObservation);
 });
 
 test('missing toolchain is environment evidence, and non-repeatable verification needs explicit replay', async (t) => {

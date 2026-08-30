@@ -95,6 +95,14 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
+### Unreleased freeze candidate
+
+`camus build --inspect RUN_ID [--json]` authenticates and projects a bounded
+checkpoint without contacting a provider or mutating the run. File-action builds
+warn after four mutation-free discovery steps and park after seven; broad
+repository work should be decomposed or sent to a reviewed native harness. These
+claims are not part of the published 0.4.15 package.
+
 ### Public alpha: 0.4.15
 
 Choose both coding roles independently in the CLI or Studio: Luna → Claude,

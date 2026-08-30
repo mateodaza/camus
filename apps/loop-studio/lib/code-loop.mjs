@@ -3,7 +3,7 @@ import { join, resolve, basename, dirname } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { acquireCodeRun, readCodeCheckpoint, saveCodeCheckpoint, appendCodeEvent, codeStopRequested, digest, codeCredentialRevision, CODE_RUN_VERSION } from './code-run-state.mjs';
 import { redactCodeText, diagnosticSecrets } from './code-diagnostics.mjs';
-import { codeMakerContext, discoveryProgress, DISCOVERY_STALL_STEPS } from './code-context.mjs';
+import { codeMakerContext, discoveryProgress, DISCOVERY_STALL_STEPS, MUTATION_STALL_STEPS, MAKER_PROGRESS_POLICY } from './code-context.mjs';
 import { NATIVE_EXECUTOR, isNativeExecutor, validateCodeExecutor } from './code-native-policy.mjs';
 import { initializeCodeOwnedProcessRegistry } from './code-owned-process-registry.mjs';
 
@@ -11,6 +11,7 @@ const TRANSIENT = /\b(?:429|502|503|504|ECONNRESET|ETIMEDOUT|rate.limit|temporar
 const TERMINAL = new Set(['complete', 'refused']);
 export const FILE_ACTION_POLICY = 'create_replace_v1';
 const LEGACY_FILE_ACTION_POLICY = 'legacy_write_v1';
+const LEGACY_MAKER_PROGRESS_POLICY = 'unchanged_evidence_v1';
 const clone = (value) => JSON.parse(JSON.stringify(value));
 export const nativeTrackedInventory = record => {
   const paths = Array.isArray(record.tracked) ? record.tracked : [];
@@ -72,6 +73,7 @@ export async function runProductiveCodeLoop(options, h) {
     // malformed paid raw response is still durable economic/identity evidence,
     // even though it authorized zero protocol steps or file actions.
     record.result.protocol = { version: 'code-seats/v2', fileActionPolicy: record.fileActionPolicy ?? LEGACY_FILE_ACTION_POLICY,
+      makerProgressPolicy: record.makerProgressPolicy ?? LEGACY_MAKER_PROGRESS_POLICY,
       rawProviderResponses: native ? null : record.usage.rawProviderResponses,
       steps: record.usage.steps, actions: record.usage.actions };
     let checkpointWriteFailed = false;
@@ -88,9 +90,10 @@ export async function runProductiveCodeLoop(options, h) {
     emit('terminal', { stage: 'code_seats', status, line: reason });
     return value;
   };
-  const bind = (fileActionPolicy) => digest({ task, seats: { maker: seats.maker, reviewer: seats.reviewer }, backends: backendSnapshot,
+  const bind = (fileActionPolicy, makerProgressPolicy) => digest({ task, seats: { maker: seats.maker, reviewer: seats.reviewer }, backends: backendSnapshot,
     verifier: verify?.command ?? null, repeatable: verify?.repeatable !== false,
     ...(fileActionPolicy === undefined ? {} : { fileActionPolicy }),
+    ...(makerProgressPolicy === undefined ? {} : { makerProgressPolicy }),
     credentialRevisions: Object.fromEntries(Object.entries(backendSnapshot).map(([role, backend]) => {
       const name = backend?.auth?.envVar ?? backend?.apiKeyEnv;
       return [role, name ? codeCredentialRevision(process.env[name] ?? '') : null];
@@ -148,7 +151,7 @@ export async function runProductiveCodeLoop(options, h) {
     const reason = budgetReason();
     if (reason) return { budget: reason };
     await checkCandidate();
-    if (bind(record.fileActionPolicy) !== record.binding) throw new Error('Credential or execution binding changed during this run.');
+    if (bind(record.fileActionPolicy, record.makerProgressPolicy) !== record.binding) throw new Error('Credential or execution binding changed during this run.');
     const id = `${role}-${record.usage.calls + 1}`;
     const nativeCall = native && role === 'maker';
     // Capture the budget before replacing the host's unknown-usage reservation.
@@ -316,7 +319,8 @@ export async function runProductiveCodeLoop(options, h) {
     if (resume) {
       record = await readCodeCheckpoint(receiptsDir);
       if (record.fileActionPolicy !== undefined && record.fileActionPolicy !== FILE_ACTION_POLICY) throw new Error('Run file-action policy is unsupported; no model was called.');
-      if (record.source.repoPath !== source || record.binding !== bind(record.fileActionPolicy)) throw new Error('Run contract, model, credential, connection, verification, or file-action policy binding changed; no model was called.');
+      if (record.makerProgressPolicy !== undefined && record.makerProgressPolicy !== MAKER_PROGRESS_POLICY) throw new Error('Run maker-progress policy is unsupported; no model was called.');
+      if (record.source.repoPath !== source || record.binding !== bind(record.fileActionPolicy, record.makerProgressPolicy)) throw new Error('Run contract, model, credential, connection, verification, or execution-policy binding changed; no model was called.');
       if (TERMINAL.has(record.phase)) throw new Error('This run is already closed; inspect its existing receipt. No model was called.');
       limits = { ...record.limits };
       for (const [key, value] of Object.entries(options.limits ?? {})) {
@@ -356,8 +360,8 @@ export async function runProductiveCodeLoop(options, h) {
       const holder = await mkdtemp(join(root, 'candidate-'));
       const worktree = join(holder, 'worktree');
       const branch = `codex/code-seats-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
-      record = { version: CODE_RUN_VERSION, runId: basename(receiptsDir), binding: bind(FILE_ACTION_POLICY), task, seats,
-        fileActionPolicy: FILE_ACTION_POLICY,
+      record = { version: CODE_RUN_VERSION, runId: basename(receiptsDir), binding: bind(FILE_ACTION_POLICY, MAKER_PROGRESS_POLICY), task, seats,
+        fileActionPolicy: FILE_ACTION_POLICY, makerProgressPolicy: MAKER_PROGRESS_POLICY,
         source: { repoPath: source, head: base.stdout.trim() }, candidate: { worktree, branch, head: base.stdout.trim() },
         phase: 'initialize', status: 'running', limits, usage: { calls: 0, rawProviderResponses: 0, steps: 0, actions: 0, repairs: 0, retries: 0, observedTokens: 0, accountedTokens: 0, unmeasuredCalls: 0, activeMs: 0, modelMs: 0, verificationMs: 0, pausedMs: 0 },
         attempts: [], history: [], created: [], reads: [], feedback: null, pendingCall: null, pendingAction: null,
@@ -459,12 +463,18 @@ export async function runProductiveCodeLoop(options, h) {
     while (true) {
       if (abort.signal.aborted) return finish('stopped', cleanError(abort.signal.reason ?? 'code seats stopped'));
       record.result.protocol = { version: 'code-seats/v2', fileActionPolicy: record.fileActionPolicy ?? LEGACY_FILE_ACTION_POLICY,
+        makerProgressPolicy: record.makerProgressPolicy ?? LEGACY_MAKER_PROGRESS_POLICY,
         rawProviderResponses: native ? null : record.usage.rawProviderResponses,
         steps: record.usage.steps, actions: record.usage.actions };
       record.result.source = record.source;
       if (record.phase === 'make') {
-        if (!native && !record.pendingCall?.response && discoveryProgress(record.history).noNewSteps >= DISCOVERY_STALL_STEPS) {
+        const discovery = native ? null : discoveryProgress(record.history);
+        if (!native && !record.pendingCall?.response && discovery.noNewSteps >= DISCOVERY_STALL_STEPS) {
           return finish('stopped', 'Repeated discovery produced no new evidence after a bounded recovery warning; candidate preserved. Increasing the call cap alone is not justified.', 'refused');
+        }
+        if (!native && record.makerProgressPolicy === MAKER_PROGRESS_POLICY
+            && !record.pendingCall?.response && discovery.noMutationSteps >= MUTATION_STALL_STEPS) {
+          return finish('stopped', 'Discovery consumed the bounded mutation-free runway without producing a candidate change; candidate preserved. Use a narrower task or a native harness rather than extending this run.', 'refused');
         }
         if (!record.pendingCall?.response && record.usage.steps >= limits.maxSteps) return question('protocol step cap reached; extend the budget to continue', 'budget');
         const { prompt, context } = native ? { context: { owner: nativeExecutor, sessionReused: Boolean(record.nativeSession) },

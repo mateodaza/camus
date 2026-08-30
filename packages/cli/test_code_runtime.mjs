@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict';
 import { execFile as execFileCb } from 'node:child_process';
-import { cp, mkdir, mkdtemp, rm, writeFile, realpath } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, rm, writeFile, readFile, realpath, symlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -29,7 +29,22 @@ try {
   const unpacked = join(TEMP, 'unpacked');
   await mkdir(unpacked);
   await command('tar', ['-xzf', tarball, '-C', unpacked]);
-  const installed = join(unpacked, 'package');
+  const extracted = join(unpacked, 'package');
+  // Exercise the normal project-local installation layout. A consumer may have
+  // its own apps/ tree, which must never shadow the package's frozen runtime.
+  const consumer = join(TEMP, 'consumer');
+  const installed = join(consumer, 'node_modules', 'camus-cli');
+  await mkdir(dirname(installed), { recursive: true });
+  await cp(extracted, installed, { recursive: true });
+  const shadowMarker = join(TEMP, 'consumer-runtime-ran');
+  const consumerApps = join(consumer, 'apps', 'loop-studio');
+  await mkdir(consumerApps, { recursive: true });
+  await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'camus-monorepo', private: true }));
+  await mkdir(join(consumer, 'packages'), { recursive: true });
+  await symlink(installed, join(consumer, 'packages', 'cli'), 'dir');
+  const hostileRuntime = `import {writeFileSync} from 'node:fs'; writeFileSync(${JSON.stringify(shadowMarker)}, 'unexpected');`;
+  await writeFile(join(consumerApps, 'code-build.mjs'), hostileRuntime);
+  await writeFile(join(consumerApps, 'code-eval.mjs'), hostileRuntime);
 
   const entries = (await command('tar', ['-tzf', tarball])).stdout.trim().split('\n').filter(Boolean);
   assert(entries.includes('package/runtime/apps/loop-studio/code-build.mjs'), 'tarball includes the shared build entry');
@@ -77,7 +92,7 @@ try {
   };
   for (const key of Object.keys(env)) if (/api.?key|token|secret|password|credential|^CLAUDE_MODEL$|^CODEX_MODEL$|^CODEX_EFFORT$|^ROUND_CAP$/i.test(key)) delete env[key];
   const bin = join(installed, 'bin', 'camus.js');
-  assert.equal(existsSync(resolve(installed, '../../apps/loop-studio/code-build.mjs')), false, 'extracted package has no source-checkout fallback');
+  assert.equal(existsSync(resolve(installed, '../../apps/loop-studio/code-build.mjs')), true, 'fixture contains a hostile consumer runtime');
 
   const ambientScripts = join(env.HOME, '.claude', 'skills', 'camus', 'scripts');
   const ambientMarker = join(TEMP, 'ambient-script-ran');
@@ -89,10 +104,29 @@ try {
   const help = await command(process.execPath, [bin, 'build', '--help'], { cwd: installed, env });
   assert.match(help.stdout, /independent maker\/reviewer coding \(experimental\)/);
   assert.match(help.stdout, /--maker-executor file_actions\|codex_native\|qwen_native\|grok_native/);
+  assert.match(help.stdout, /--inspect <run-id> \[--json\]/);
   const evalHelp = await command(process.execPath, [bin, 'code-eval', '--help'], { cwd: installed, env });
   assert.match(evalHelp.stdout, /bounded native-smoke and raw\/native pair evidence/);
   assert.match(evalHelp.stdout, /--allow-provider-calls --max-cells 1/);
   assert.match(evalHelp.stdout, /summarize/);
+  assert.equal(existsSync(shadowMarker), false, 'project-local apps cannot shadow either bundled runtime');
+
+  const sourceCheckout = join(TEMP, 'source-checkout');
+  const sourcePackage = join(sourceCheckout, 'packages', 'cli');
+  await mkdir(dirname(sourcePackage), { recursive: true });
+  await cp(extracted, sourcePackage, { recursive: true });
+  await rm(join(sourcePackage, 'runtime'), { recursive: true, force: true });
+  await writeFile(join(sourceCheckout, 'package.json'), JSON.stringify({ name: 'camus-monorepo', private: true }));
+  const sourceApps = join(sourceCheckout, 'apps', 'loop-studio');
+  const sourceMarker = join(TEMP, 'source-runtime-ran');
+  await mkdir(sourceApps, { recursive: true });
+  await writeFile(join(sourceApps, 'code-build.mjs'), `import {appendFileSync} from 'node:fs'; appendFileSync(${JSON.stringify(sourceMarker)}, 'build\\n'); console.log('source build runtime');`);
+  await writeFile(join(sourceApps, 'code-eval.mjs'), `import {appendFileSync} from 'node:fs'; appendFileSync(${JSON.stringify(sourceMarker)}, 'eval\\n'); console.log('source eval runtime');`);
+  const sourceBin = join(sourcePackage, 'bin', 'camus.js');
+  assert.match((await command(process.execPath, [sourceBin, 'build', '--help'], { cwd: sourceCheckout, env })).stdout, /source build runtime/);
+  assert.match((await command(process.execPath, [sourceBin, 'code-eval', '--help'], { cwd: sourceCheckout, env })).stdout, /source eval runtime/);
+  assert.equal(await readFile(sourceMarker, 'utf8'), 'build\neval\n', 'clean source checkout uses its exact source without generated runtime');
+
   const fixtureReadiness = JSON.parse((await command(process.execPath, [bin, 'code-eval', 'fixture', '--json'], { cwd: installed, env })).stdout);
   assert.equal(fixtureReadiness.ready, true);
   assert.equal(fixtureReadiness.providerCallsMade, 0);
@@ -155,10 +189,11 @@ try {
   // A cold package executes and resumes the real engine, replacing ONLY the
   // provider calls via a test loader. No source checkout or vendor CLI is used.
   const loader = join(TEMP, 'providers.mjs');
+  const providerCalls = join(TEMP, 'provider-calls.jsonl');
   const registry = pathToFileURL(join(installed, 'runtime/apps/loop-studio/lib/adapters/registry.mjs')).href;
-  const fake = `export function resolveSeatAdapters(models,backends){return {makerBackend:backends.maker,reviewerBackend:backends.reviewer,
-    maker:async({prompt,effort})=>{if(effort!=='high')throw new Error('maker effort was not pinned');return {ok:true,text:JSON.stringify(prompt.includes('Complete host action history')?{actions:[],done:true}:{actions:[{type:'create',path:'answer.txt',content:'correct',expected_sha256:null}],done:false})}},
-    reviewer:async({effort})=>{if(effort!=='low')throw new Error('reviewer effort was not pinned');return {ran:true,verdict:'APPROVED',findings:[]}}};}`;
+  const fake = `import {appendFile} from 'node:fs/promises'; export function resolveSeatAdapters(models,backends){return {makerBackend:backends.maker,reviewerBackend:backends.reviewer,
+    maker:async({prompt,effort})=>{await appendFile(${JSON.stringify(providerCalls)},'maker\\n');if(effort!=='high')throw new Error('maker effort was not pinned');return {ok:true,text:JSON.stringify(prompt.includes('Complete host action history')?{actions:[],done:true}:{actions:[{type:'create',path:'answer.txt',content:'correct',expected_sha256:null}],done:false})}},
+    reviewer:async({effort})=>{await appendFile(${JSON.stringify(providerCalls)},'reviewer\\n');if(effort!=='low')throw new Error('reviewer effort was not pinned');return {ran:true,verdict:'APPROVED',findings:[]}}};}`;
   await writeFile(loader, `export async function load(url,ctx,next){if(url===${JSON.stringify(registry)})return {format:'module',shortCircuit:true,source:${JSON.stringify(fake)}};return next(url,ctx);}`);
   const runEnv = { ...env, NODE_OPTIONS: `--experimental-loader=${loader}` };
   const repo = join(TEMP, 'project'); await mkdir(repo);
@@ -172,10 +207,43 @@ try {
     '--maker', 'claude:sonnet', '--maker-effort', 'high', '--reviewer', 'claude:sonnet', '--reviewer-effort', 'low', '--max-calls', '1']);
   assert.equal(started.question.kind, 'budget');
   assert.equal((await execute(['--status', started.id])).usage.calls, 1);
+  const runDir = join(env.STUDIO_RUNS_DIR, started.id);
+  const beforeInspect = {
+    metadata: await readFile(join(runDir, 'run.json')),
+    checkpoint: await readFile(join(runDir, 'code-checkpoint.json')),
+    candidate: await readFile(join(started.candidate.worktree, 'answer.txt')),
+    models: await readFile(modelFile),
+    providerCalls: await readFile(providerCalls, 'utf8'),
+  };
+  const inspected = JSON.parse((await command(process.execPath, [bin, 'build', '--inspect', started.id, '--json'], { cwd: installed, env: runEnv })).stdout);
+  assert.deepEqual(Object.keys(inspected).sort(), ['candidate', 'checkpoint', 'interrupted', 'legacy', 'limits', 'nextSafeAction', 'owned', 'phase', 'question', 'reason', 'resumable', 'review', 'runId', 'schemaVersion', 'status', 'usage', 'verification'].sort());
+  assert.equal(inspected.runId, started.id); assert.equal(inspected.nextSafeAction.action, 'investigate_or_start_fresh');
+  assert.equal(Object.hasOwn(inspected.candidate, 'diff'), false); assert.doesNotMatch(JSON.stringify(inspected), /correct|acceptanceContract|targetPath|providerOutput|rawResponseBody/i);
+  assert.deepEqual(await readFile(join(runDir, 'run.json')), beforeInspect.metadata);
+  assert.deepEqual(await readFile(join(runDir, 'code-checkpoint.json')), beforeInspect.checkpoint);
+  assert.deepEqual(await readFile(join(started.candidate.worktree, 'answer.txt')), beforeInspect.candidate);
+  assert.deepEqual(await readFile(modelFile), beforeInspect.models, 'inspect leaves model configuration byte-identical');
+  assert.equal(await readFile(providerCalls, 'utf8'), beforeInspect.providerCalls, 'inspect invokes no provider adapter');
+  assert.equal(existsSync(join(runDir, 'code-stop.json')), false, 'inspect creates no stop marker');
+  const humanInspect = await command(process.execPath, [bin, 'build', '--inspect', started.id], { cwd: installed, env: runEnv });
+  assert.match(humanInspect.stdout, new RegExp(`Run: ${started.id}`)); assert.match(humanInspect.stdout, /Next: investigate_or_start_fresh/);
+  assert.equal(await readFile(providerCalls, 'utf8'), beforeInspect.providerCalls, 'human inspection is provider-free too');
+  await assert.rejects(command(process.execPath, [bin, 'build', '--inspect', started.id, '--status', started.id], { cwd: installed, env: runEnv }), error => /Choose one build operation/.test(error.stderr));
   const done = await execute(['--resume', started.id, '--max-calls', '5']);
   assert.equal(done.completion, 'candidate_ready_for_acceptance', done.error);
   assert.equal(done.protocol.fileActionPolicy, 'create_replace_v1');
   assert.equal(done.candidate.worktree, started.candidate.worktree); assert.equal(done.usage.calls, 3);
+  const completedInspect = JSON.parse((await command(process.execPath, [bin, 'build', '--inspect', started.id, '--json'], { cwd: installed, env: runEnv })).stdout);
+  assert.equal(completedInspect.nextSafeAction.action, 'inspect_candidate_for_acceptance');
+  assert.equal(completedInspect.review.status, 'approved'); assert.equal(completedInspect.verification.status, 'not_run');
+
+  const legacyId = 'code-packed-legacy';
+  const legacyDir = join(env.STUDIO_RUNS_DIR, legacyId); await mkdir(legacyDir, { recursive: true });
+  await writeFile(join(legacyDir, 'run.json'), JSON.stringify({ id: legacyId, codeMode: 'independent', targetPath: repo,
+    models: { maker: { backend: 'claude', model: 'sonnet' }, reviewer: { backend: 'codex', model: 'gpt-5.6-luna' } } }), { mode: 0o600 });
+  const legacyInspect = JSON.parse((await command(process.execPath, [bin, 'build', '--inspect', legacyId, '--json'], { cwd: installed, env: runEnv })).stdout);
+  assert.equal(legacyInspect.legacy, true); assert.equal(legacyInspect.resumable, false); assert.equal(legacyInspect.candidate, null);
+  await assert.rejects(command(process.execPath, [bin, 'build', '--inspect', 'code-missing'], { cwd: installed, env: runEnv }), error => /Run metadata is missing or invalid/.test(error.stderr));
   console.log('test_code_runtime.mjs: packed any-model runtime is isolated and executable');
 } finally {
   await rm(TEMP, { recursive: true, force: true });

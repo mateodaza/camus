@@ -2,6 +2,15 @@
 
 **A coding loop that proves every change.**
 
+**Unreleased freeze candidate:** `camus build --inspect RUN_ID [--json]` is
+provider-free and read-only. It authenticates the shared CLI/Studio checkpoint,
+reports bounded state and evidence standing without the candidate diff or raw
+model/verifier output, and gives one conservative next action. It never retries
+uncertain work, extends a budget, accepts or lands a candidate, or mutates the
+run. File-action builds also park after seven consecutive discovery-only steps
+without a candidate mutation; use a narrower contract or a native harness for
+genuinely broad repository discovery. This is not part of published 0.4.15.
+
 **New in 0.4.15:** npm releases are tag/main/version-bound and publish through
 trusted GitHub OIDC with SLSA provenance. The packaged CLI never executes a
 mutable `~/.claude` script override, and verifier-private homes are removed on
