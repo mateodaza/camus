@@ -184,6 +184,42 @@ test('every file-action maker call receives the bounded host protocol schema', a
   assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
 });
 
+test('one safe untracked read receives bounded maker feedback while repeats and unsafe paths fail closed', async t => {
+  let turn = 0;
+  const f = await fixture(t, async ({ prompt }) => {
+    if (++turn === 1) return message([{ type: 'list' }], { summary: 'list first' });
+    if (turn === 2) return message([
+      { type: 'read', path: 'README.md' },
+      { type: 'read', path: 'missing-but-safe.mjs' },
+    ], { summary: 'read likely sources' });
+    if (turn === 3) {
+      assert.match(prompt, /not in the host tracked inventory/);
+      assert.match(prompt, /missing-but-safe\.mjs/);
+      return message([write('correct')], { summary: 'write result' });
+    }
+    return message([], { summary: 'ready' });
+  });
+  const result = await f.run();
+  assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+  assert.equal(result.usage.retries, 1);
+  assert.equal(await readFile(join(result.candidate.worktree, 'answer.txt'), 'utf8'), 'correct');
+  const events = (await readFile(join(f.options.receiptsDir, 'code-events.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(events.filter(event => event.type === 'action_refused').length, 1);
+
+  let repeats = 0;
+  const g = await fixture(t, async () => message([{ type: 'read', path: `missing-${++repeats}.mjs` }]));
+  const repeated = await g.run();
+  assert.equal(repeated.status, 'infra_error');
+  assert.equal(repeated.usage.retries, 1);
+  assert.equal(repeats, 2);
+
+  const h = await fixture(t, async () => message([{ type: 'read', path: '../outside' }]));
+  const unsafe = await h.run();
+  assert.equal(unsafe.status, 'infra_error');
+  assert.equal(unsafe.usage.retries, 0);
+  assert.match(unsafe.error, /unsafe path/);
+});
+
 test('non-empty bounded actions safely imply done false while an empty omission still refuses', async t => {
   let turn = 0;
   const f = await fixture(t, async () => ++turn === 1

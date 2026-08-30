@@ -492,6 +492,7 @@ export async function runProductiveCodeLoop(options, h) {
         }
         await log('maker_decision');
       } else if (record.phase === 'apply') {
+        let actionRefused = false;
         while (record.actionIndex < record.actions.length) {
           if (abort.signal.aborted) return finish('stopped', 'code seats stopped during host action');
           const action = record.actions[record.actionIndex];
@@ -504,13 +505,34 @@ export async function runProductiveCodeLoop(options, h) {
             }
             await log('action_started');
           }
-          record.observations.push(await h.applyAction(action, state));
+          try {
+            record.observations.push(await h.applyAction(action, state));
+          } catch (error) {
+            const reason = cleanError(error);
+            // A read of a safe relative path that simply is not in the tracked
+            // inventory cannot mutate or disclose anything. Give the maker one
+            // evidence-bound correction turn instead of classifying a filename
+            // mistake as infrastructure failure. Every unsafe-path refusal,
+            // mutation failure, uncertain pending action, repeat, and exhausted
+            // retry allowance still propagates fail-closed.
+            if (record.pendingAction || reason !== 'reads are limited to tracked or run-created safe source files'
+                || record.usage.retries >= limits.maxRetries) throw error;
+            record.usage.retries++;
+            record.history.push({ step: record.usage.steps, actions: record.observations,
+              summary: record.actionSummary ?? null, actionError: reason,
+              refusedAction: { type: 'read', path: action.path },
+              instruction: 'The requested read was not in the host tracked inventory. Choose an exact listed path. No content was returned and the refused action changed nothing.' });
+            record.actions = []; record.actionIndex = 0; record.observations = [];
+            record.actionSummary = null; record.pendingAction = null; record.phase = 'make';
+            await log('action_refused', { reason }); actionRefused = true; break;
+          }
           if (['write', 'delete'].includes(action.type)) {
             invalidateCandidateEvidence();
           }
           await h.ensureCreatedVisible(state); await snapshot(); record.actionIndex++; record.pendingAction = null;
           await log('action_completed');
         }
+        if (actionRefused) continue;
         record.history.push({ step: record.usage.steps, actions: record.observations, summary: record.actionSummary ?? null });
         // Durable history is bounded independently of the per-call context.
         if (Buffer.byteLength(JSON.stringify(record.history)) > 4 * 1024 * 1024) return question('Journal context budget exhausted; candidate preserved.', 'budget');
