@@ -103,13 +103,15 @@ jobs:
             npm publish
           fi
 
-          for ATTEMPT in 1 2 3 4 5; do
+          # npm may accept the tarball before its public metadata endpoint exposes the attestation.
+          # Keep the job fail-closed, but allow up to 55 seconds for registry propagation.
+          for ATTEMPT in 1 2 3 4 5 6 7 8 9 10 11 12; do
             PUBLISHED_SHA="$(npm view "camus-cli@$VERSION" gitHead 2>/dev/null || true)"
             PROVENANCE="$(npm view "camus-cli@$VERSION" dist.attestations.provenance.predicateType 2>/dev/null || true)"
             if [ "$PUBLISHED_SHA" = "$RELEASE_SHA" ] && [ "$PROVENANCE" = "https://slsa.dev/provenance/v1" ]; then
               break
             fi
-            [ "$ATTEMPT" = 5 ] || sleep 2
+            [ "$ATTEMPT" = 12 ] || sleep 5
           done
           test "$PUBLISHED_SHA" = "$RELEASE_SHA"
           test "$PROVENANCE" = "https://slsa.dev/provenance/v1"
