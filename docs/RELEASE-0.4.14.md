@@ -1,7 +1,12 @@
-# Camus 0.4.13 — provenance-bound npm releases
+# Camus 0.4.14 — provenance-bound npm releases
 
-Camus 0.4.13 hardens the public package boundary. It changes no model admission,
+Camus 0.4.14 hardens the public package boundary. It changes no model admission,
 routing, or product claim.
+
+The `v0.4.13` tag failed closed during pre-publication CI because a test fixture inherited a
+developer Git identity that a clean runner did not have. No npm package or GitHub Release was
+created for that tag. The fixture now owns a repository-local test identity; the tag remains
+unchanged as honest evidence of the failed attempt.
 
 ## What changed
 
@@ -37,7 +42,7 @@ routing, or product claim.
 ## Upgrade
 
 ```sh
-npm install -g camus-cli@0.4.13
+npm install -g camus-cli@0.4.14
 camus install
 camus check
 ```

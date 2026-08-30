@@ -21,6 +21,11 @@ gitq() { git -c user.email=t@t -c user.name=t "$@"; }
 # repo + coherent camus worktree (same shape the guard tests use)
 R="$ROOT/repo"; mkdir -p "$R"; cd "$R"
 gitq init -q
+# This fixture later invokes the real commit gate, which intentionally uses the repository's
+# configured author instead of inventing a Camus identity. Persist a fixture-local identity so
+# the test is hermetic on clean CI runners and never inherits the developer's global config.
+gitq config user.email t@t
+gitq config user.name t
 echo "old" > tracked.txt
 echo "ignored-content" > .gitignore_target
 printf "ignoredfile.txt\n" > .gitignore

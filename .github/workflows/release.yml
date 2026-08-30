@@ -120,9 +120,18 @@ jobs:
           persist-credentials: false
 
       - name: Generate release notes from commits since the previous tag
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF_NAME}"
-          PREV="$(git tag --list 'v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)"
+          PREV=""
+          while IFS= read -r CANDIDATE; do
+            [ "$CANDIDATE" = "$TAG" ] && continue
+            if gh release view "$CANDIDATE" >/dev/null 2>&1; then
+              PREV="$CANDIDATE"
+              break
+            fi
+          done < <(git tag --list 'v*' --sort=-v:refname)
           RANGE="${PREV:+$PREV..}$TAG"
           LOG="$(git log --no-merges --pretty='- %s (%h)' "$RANGE")"
           {
