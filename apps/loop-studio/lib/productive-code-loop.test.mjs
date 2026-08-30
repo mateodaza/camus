@@ -190,6 +190,29 @@ test('non-empty bounded actions safely imply done false while an empty omission 
   assert.equal(refused.protocol.steps, 0);
 });
 
+test('one exact JSON fence is normalized while fenced commentary remains invalid', async t => {
+  let turn = 0;
+  const f = await fixture(t, async () => {
+    const response = ++turn === 1 ? { actions: [write('correct')], done: false, summary: 'write result' }
+      : { actions: [], done: true, summary: 'ready' };
+    return { ok: true, text: `\`\`\`json\n${JSON.stringify(response)}\n\`\`\``,
+      usage: { input_tokens: 10, output_tokens: 5 } };
+  });
+  const result = await f.run({ limits: { maxRetries: 0 } });
+  assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+  assert.equal(result.usage.retries, 0, 'exact fence normalization spends no formatting-repair call');
+  const events = (await readFile(join(f.options.receiptsDir, 'code-events.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(events.filter(event => event.type === 'protocol_normalized'
+    && event.normalization === 'single_json_fence_removed').length, 2);
+
+  const g = await fixture(t, async () => ({ ok: true,
+    text: `Here is the response:\n\`\`\`json\n${JSON.stringify({ actions: [], done: true })}\n\`\`\``,
+    usage: { input_tokens: 10, output_tokens: 5 } }));
+  const refused = await g.run({ limits: { maxRetries: 0 } });
+  assert.equal(refused.status, 'infra_error');
+  assert.match(refused.error, /not one JSON object/);
+});
+
 test('binding, HMAC, candidate drift and concurrent ownership refuse before more model calls', async (t) => {
   const f = await fixture(t, () => message([write('correct')]));
   await f.run({ limits: { maxCalls: 1 } });

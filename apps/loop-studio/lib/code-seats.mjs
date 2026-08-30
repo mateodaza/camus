@@ -150,8 +150,15 @@ function reviewPrompt({ task, diff, reads, verification, independent, readContex
 function parseProtocol(text, limits) {
   if (typeof text !== 'string' || !text.trim()) throw new Error('maker returned empty protocol output');
   if (byteLength(text) > limits.maxResponseBytes) throw new Error('maker protocol response exceeded the response limit');
+  const normalizations = [];
+  let protocolText = text;
+  const fenced = text.trim().match(/^```json\r?\n([\s\S]+)\r?\n```$/);
+  if (fenced) {
+    protocolText = fenced[1];
+    normalizations.push('single_json_fence_removed');
+  }
   let message;
-  try { message = JSON.parse(text); } catch { throw new Error('maker protocol output is not one JSON object'); }
+  try { message = JSON.parse(protocolText); } catch { throw new Error('maker protocol output is not one JSON object'); }
   if (!message || typeof message !== 'object' || Array.isArray(message) || !Array.isArray(message.actions)) {
     throw new Error('maker protocol needs an actions array and boolean done');
   }
@@ -164,10 +171,11 @@ function parseProtocol(text, limits) {
   delete message._hostProtocolNormalization;
   if (message.done === undefined && message.actions.length) {
     message.done = false;
-    Object.defineProperty(message, '_hostProtocolNormalization', {
-      value: 'nonempty_actions_imply_not_done', enumerable: false,
-    });
+    normalizations.push('nonempty_actions_imply_not_done');
   }
+  if (normalizations.length) Object.defineProperty(message, '_hostProtocolNormalization', {
+    value: normalizations.join('+'), enumerable: false,
+  });
   if (typeof message.done !== 'boolean') throw new Error('maker protocol needs an actions array and boolean done');
   if (message.actions.length > limits.maxActionsPerStep) throw new Error('maker requested too many actions in one response');
   if (message.done && message.actions.length) throw new Error('maker cannot combine done with actions');
