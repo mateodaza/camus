@@ -287,10 +287,15 @@ export async function runProductiveCodeLoop(options, h) {
     return record.pendingCall.response;
   };
   const failedCall = async (response, role) => {
+    const nativeDiagnostic = native && role === 'maker' && /^[a-z][a-z0-9_]{0,63}$/.test(response?.failureCode ?? '')
+      ? ` Native diagnostic: ${response.failureCode}.` : '';
     if (response.budget) return question(response.budget, 'budget');
     if (response.uncertain) return native && role === 'maker'
-      ? finish('needs_decision', `${response.stopKind === 'budget' ? `${cleanError(response.error ?? 'Native accounting limit reached').replace(/[.]+$/, '')}. ` : ''}Native turn outcome is uncertain. Candidate preserved for inspection; automatic adoption or replay is refused.`, 'refused')
+      ? finish('needs_decision', `${response.stopKind === 'budget' ? `${cleanError(response.error ?? 'Native accounting limit reached').replace(/[.]+$/, '')}. ` : ''}Native turn outcome is uncertain.${nativeDiagnostic} Candidate preserved for inspection; automatic adoption or replay is refused.`, 'refused')
       : question('Provider completion is uncertain. Explicitly authorize a bounded retry or leave this candidate parked.', 'uncertain_call');
+    if (native && role === 'maker' && response.definitiveTurnEnd && nativeDiagnostic) {
+      return finish('needs_decision', `Native turn ended, but Camus could not validate complete terminal evidence.${nativeDiagnostic} Candidate preserved for inspection; review, automatic adoption, and replay are refused.`, 'refused');
+    }
     if (!(native && role === 'maker') && TRANSIENT.test(response.error ?? '') && record.usage.retries < limits.maxRetries && !abort.signal.aborted) {
       record.usage.retries++; record.pendingCall = null;
       await log('transient_retry', { role });
@@ -298,7 +303,8 @@ export async function runProductiveCodeLoop(options, h) {
       return null;
     }
     record.pendingCall = null;
-    return finish('infra_error', `${role} failed: ${cleanError(response.error ?? 'invalid provider response')}`);
+    const failure = cleanError(response.error ?? 'invalid provider response').replace(/[.]+$/, '');
+    return finish('infra_error', `${role} failed: ${failure}.${nativeDiagnostic}`);
   };
   try {
     if (abort.signal.aborted) return { status: 'stopped', advisory: true, error: 'code seats stopped before preflight' };

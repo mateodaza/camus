@@ -14,7 +14,7 @@
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { spawn, execFile } from 'node:child_process';
-import { readFile, writeFile, appendFile, mkdir, readdir } from 'node:fs/promises';
+import { readFile, writeFile, appendFile, mkdir, readdir, lstat } from 'node:fs/promises';
 import { createReadStream, existsSync } from 'node:fs';
 import { join, dirname, extname, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -108,6 +108,30 @@ function automaticRouteDecision({ taskClass = null, lane = 'freeform', depth = '
 }
 
 const runs = new Map(); // id -> { run, events, subscribers, answer, abort }
+
+function attachedCodeUiEvent(event) {
+  if (!event || !['progress', 'session'].includes(event.type)
+      || !['maker', 'reviewer', 'host', 'gate'].includes(event.actor)
+      || typeof event.line !== 'string') return null;
+  const line = event.line.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]+/gu, ' ').trim().slice(0, 800);
+  return line ? { type: event.type, actor: event.actor, line } : null;
+}
+
+async function attachedCodeEventTail(file, cursor) {
+  let info;
+  try { info = await lstat(file); } catch (error) { if (error?.code === 'ENOENT') return []; throw error; }
+  if (!info.isFile() || info.isSymbolicLink() || info.size > 24 * 1024 * 1024) throw new Error('Independent coding event trail is invalid.');
+  if (info.size === cursor.bytes) return [];
+  const text = await readFile(file, 'utf8');
+  const lines = text.split('\n'); lines.pop();
+  if (info.size < cursor.bytes || lines.length < cursor.lines) cursor.lines = 0;
+  const events = [];
+  for (const line of lines.slice(cursor.lines)) {
+    try { const event = attachedCodeUiEvent(JSON.parse(line)); if (event) events.push(event); } catch { /* a torn or foreign line grants no UI claim */ }
+  }
+  cursor.bytes = info.size; cursor.lines = lines.length;
+  return events;
+}
 
 // ---------------------------------------------------------------------------
 // Doctor
@@ -2307,8 +2331,11 @@ const server = http.createServer(async (req, res) => {
         if (codeMeta && (!state || state.workerFinished)) {
           const send = (ev) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
           let polling = false, closed = false, interval;
+          const codeEventCursor = { bytes: 0, lines: 0 };
+          const codeEventFile = join(RUNS_DIR, id, 'events.jsonl');
           req.on('close', () => { closed = true; clearInterval(interval); });
-          send({ type: 'replay_start', live: false, continuation: await codeContinuation(join(RUNS_DIR, id)) });
+          const initialContinuation = await codeContinuation(join(RUNS_DIR, id));
+          send({ type: 'replay_start', live: initialContinuation.owned, continuation: initialContinuation });
           send({ type: 'run', run: { id, goal: codeMeta.goal ?? codeMeta.task, acceptanceContract: codeMeta.acceptanceContract, lane: 'build', codeMode: 'independent', targetPath: codeMeta.targetPath, verifyCmd: codeMeta.verifyCmd, engine: 'live', pairingView: codeMeta.pairingView } });
           try {
             const report = JSON.parse(await readFile(join(RUNS_DIR, id, 'report.json'), 'utf8'));
@@ -2318,6 +2345,7 @@ const server = http.createServer(async (req, res) => {
             if (polling || closed) return;
             polling = true;
             try {
+              for (const event of await attachedCodeEventTail(codeEventFile, codeEventCursor)) send(event);
               const continuation = await codeContinuation(join(RUNS_DIR, id));
               if (closed) return;
               send({ type: 'code_state', continuation });

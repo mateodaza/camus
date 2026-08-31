@@ -115,6 +115,20 @@ test('hard-crash native writes never silently become an authorized candidate on 
   assert.equal(sealed.pendingCall.progress.reservationRestored, true);
 });
 
+test('a definitive native completion with a missing receipt preserves the candidate and names the diagnostic without replay', async t => {
+  let calls = 0, reviews = 0;
+  const f = await fixture(t, async args => {
+    calls++; await writeFile(join(args.worktree, 'answer.txt'), 'candidate');
+    return { ok: false, definitiveTurnEnd: true, uncertain: false, failureCode: 'terminal_receipt_missing',
+      error: 'Grok subscription model-call receipt is unavailable.', usage: null };
+  }, async () => { reviews++; return { ran: true, verdict: 'APPROVED', findings: [] }; });
+  const result = await f.run();
+  assert.equal(result.status, 'needs_decision'); assert.equal(calls, 1); assert.equal(reviews, 0);
+  assert.match(result.error, /Native diagnostic: terminal_receipt_missing/);
+  assert.ok(result.candidate.fingerprint, 'the closed-turn candidate remains inspectable');
+  assert.equal(await readFile(join(result.candidate.worktree, 'answer.txt'), 'utf8'), 'candidate');
+});
+
 test('native live accounting charges separate model responses without double-counting usage', async t => {
   const f = await fixture(t, async args => {
     args.onNativeProgress({ usage, responses: 1, actions: 1 });

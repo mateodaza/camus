@@ -1,10 +1,12 @@
 # Native harness qualification 1 — stock boundary blocked; Camus isolation follow-up passed
 
-> **Current 0.4.19 runtime contract:** Camus accepts the reviewed
+> **Current 0.4.20 runtime contract:** Camus accepts the reviewed
 > Grok Build **1.0.13** macOS-arm64 binary (`grok 1.0.13 (5e9a58528b76)`,
 > SHA-256 `8669e0fdadceec25b8c159c355f427ffbd82583525d774b6ab1522197ea83b80`).
-> The 1.0.5 observations below remain historical evidence and 1.0.5 is no longer
-> accepted by current runtime policy.
+> Its subscription-native maker uses ACP completion with Camus-hosted bounded
+> tools. The 1.0.5 observations below and later subscription-headless evals remain
+> historical evidence; they do not qualify the ACP v4 transport, and 1.0.5 is no
+> longer accepted by current runtime policy.
 
 Date: 2026-08-28. Branch: `codex/productive-loop`. The observations below are the
 negative stock-harness baseline. A later same-day Camus-owned isolation follow-up

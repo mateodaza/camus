@@ -3,12 +3,9 @@ import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawn } from 'node:child_process';
 import {
   createGrokAcpTools,
-  grokSubscriptionHeadlessPolicy,
   grokSubscriptionPolicy,
-  installHeadlessGuard,
   installGrokSubscriptionAuth,
   preflightGrokSubscriptionTools,
   runNativeGrokSubscription,
@@ -16,20 +13,6 @@ import {
 } from './grok-subscription.mjs';
 
 const darwinAcpPolicy = options => grokSubscriptionPolicy({ ...options, platform: 'darwin', architecture: 'arm64' });
-const darwinHeadlessPolicy = options => grokSubscriptionHeadlessPolicy({ ...options, platform: 'darwin', architecture: 'arm64' });
-
-function runCommand(command, args, event) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '';
-    child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
-    child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
-    child.once('error', reject);
-    child.once('close', code => code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(stderr || `guard exited ${code}`)));
-    child.stdin.end(JSON.stringify(event));
-  });
-}
-const runGuard = (script, event) => runCommand(process.execPath, [script], event);
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'camus-grok-subscription-'));
@@ -44,7 +27,8 @@ async function fixture(t) {
   return { root, worktree, scratch, receiptsDir, harness };
 }
 
-function rpcFactoryFor({ authMethods = [{ id: 'cached_token' }], reportedModel = 'grok-4.6' } = {}) {
+function rpcFactoryFor({ authMethods = [{ id: 'cached_token' }], reportedModel = 'grok-4.6', terminalUsage = true,
+  promptError = null } = {}) {
   const captures = [], requests = [];
   const factory = options => {
     captures.push(options);
@@ -53,13 +37,14 @@ function rpcFactoryFor({ authMethods = [{ id: 'cached_token' }], reportedModel =
         requests.push({ method, params });
         if (method === 'initialize') return { protocolVersion: 1, agentInfo: { version: '1.0.13' }, authMethods };
         if (method === 'authenticate') return {};
-        if (method === 'session/new') return { sessionId: 'subscription-session' };
+        if (method === 'session/new' || method === 'session/load') return { sessionId: 'subscription-session' };
         if (method === 'session/prompt') {
+          if (promptError) throw new Error(promptError);
           options.onNotification('session/update', { sessionId: 'subscription-session', update: {
             sessionUpdate: 'agent_message_chunk', messageId: 'answer', content: { type: 'text', text: '{"done":true,"summary":"ready","decision":null}' },
           } });
           const receiptModel = reportedModel === 'grok-4.6' ? 'grok-4.6-build' : reportedModel;
-          options.onNotification('_x.ai/session/update', { sessionId: 'subscription-session', update: {
+          if (terminalUsage) options.onNotification('_x.ai/session/update', { sessionId: 'subscription-session', update: {
             sessionUpdate: 'turn_completed', usage: { inputTokens: 20, cachedReadTokens: 3, outputTokens: 8, totalTokens: 28,
               modelCalls: 1, modelUsage: { [receiptModel]: { modelCalls: 1 } } },
           } });
@@ -110,88 +95,58 @@ test('subscription turn refuses API-key-only auth and model substitution before 
   assert.equal(substituted.ok, false); assert.match(substituted.error, /model identity receipt/);
 });
 
-test('native subscription maker uses headless hard turn bounds and terminal usage evidence', async t => {
-  const f = await fixture(t); let invocation;
+test('native subscription maker uses ACP completion, Camus-hosted tools and terminal usage evidence', async t => {
+  const f = await fixture(t); const rpcFactory = rpcFactoryFor(); let preflighted = false;
   const result = await runNativeGrokSubscription({ prompt: 'bounded native task', model: 'grok-4.6', effort: 'medium',
     worktree: f.worktree, scratch: f.scratch, receiptsDir: f.receiptsDir, maxModelCalls: 2, maxToolCalls: 1,
     resolveHarness: async () => f.harness, assertArtifact: async () => 'c'.repeat(64),
     installAuth: async home => writeFile(join(home, 'auth.json'), '{"opaque":"login"}\n', { mode: 0o600 }),
-    createPolicy: darwinHeadlessPolicy, processRunner: async options => {
-      invocation = options;
-      const sessionId = options.args[options.args.indexOf('--session-id') + 1];
-      options.onFrame({ type: 'tool_call', toolName: 'read_file' });
-      options.onFrame({ type: 'text', data: '{"done":true,"summary":"ready","decision":null}' });
-      options.onFrame({ type: 'usage' });
-      await writeFile(join(options.env.GROK_HOME, 'camus-action-count'), '1', { mode: 0o600 });
-      options.onFrame({ type: 'end', stopReason: 'end_turn', sessionId,
-        usage: { input_tokens: 20, cache_read_input_tokens: 3, cache_creation_input_tokens: 2,
-          output_tokens: 8, total_tokens: 33 },
-        modelUsage: { 'grok-4.6-build': { inputTokens: 20, cacheReadInputTokens: 3, outputTokens: 8, modelCalls: 1 } } });
-      return { code: 0 };
-    } });
+    createPolicy: darwinAcpPolicy, rpcFactory, sourcePath: f.root,
+    preflightTools: async () => { preflighted = true; } });
   assert.equal(result.ok, true); assert.equal(result.modelReported, 'grok-4.6-build');
-  assert.deepEqual(result.usage, { input_tokens: 20, cached_input_tokens: 3, output_tokens: 8, total_tokens: 33 });
+  assert.deepEqual(result.usage, { input_tokens: 20, cached_input_tokens: 3, output_tokens: 8, total_tokens: 28 });
+  const invocation = rpcFactory.captures[0]; assert.equal(invocation.protocol, 'jsonrpc2');
   assert.equal(invocation.args.includes('--max-turns'), true);
   assert.equal(invocation.args[invocation.args.indexOf('--max-turns') + 1], '2');
-  assert.equal(invocation.args[invocation.args.indexOf('--tools') + 1], 'Read,Edit,Grep');
-  assert.match(invocation.args[invocation.args.indexOf('--disallowed-tools') + 1], /Bash/);
+  assert.equal(typeof invocation.onRequest, 'function'); assert.equal(preflighted, true);
+  const initialize = rpcFactory.requests.find(item => item.method === 'initialize');
+  assert.deepEqual(initialize.params.clientCapabilities, { fs: { readTextFile: true, writeTextFile: true }, terminal: true });
   assert.equal(Object.hasOwn(invocation.env, 'XAI_API_KEY'), false);
-  assert.match(await readFile(join(f.scratch, 'grok-home', 'config.toml'), 'utf8'), /hooks\.PreToolUse/);
-  assert.match(invocation.args.at(-1), /at most 2 model responses and 1 tool actions/);
   await assert.rejects(() => readFile(join(f.scratch, 'grok-home', 'auth.json')), { code: 'ENOENT' });
 });
 
 test('native subscription repair resumes only with tighter remaining bounds', async t => {
-  const f = await fixture(t); const invocations = [];
+  const f = await fixture(t); const rpcFactory = rpcFactoryFor();
   const common = { model: 'grok-4.6', effort: 'medium', worktree: f.worktree, scratch: f.scratch, receiptsDir: f.receiptsDir,
     resolveHarness: async () => f.harness, assertArtifact: async () => 'e'.repeat(64),
     installAuth: async home => writeFile(join(home, 'auth.json'), '{"opaque":"login"}\n', { mode: 0o600 }),
-    createPolicy: darwinHeadlessPolicy,
-    processRunner: async options => {
-      invocations.push(options);
-      const sessionFlag = options.args.includes('--resume') ? '--resume' : '--session-id';
-      const sessionId = options.args[options.args.indexOf(sessionFlag) + 1];
-      options.onFrame({ type: 'text', data: '{"done":true,"summary":"ready","decision":null}' });
-      options.onFrame({ type: 'usage' });
-      options.onFrame({ type: 'end', stopReason: 'end_turn', sessionId,
-        usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
-        modelUsage: { 'grok-4.6-build': { inputTokens: 10, outputTokens: 5, modelCalls: 1 } } });
-      return { code: 0 };
-    } };
+    createPolicy: darwinAcpPolicy, rpcFactory, sourcePath: f.root, preflightTools: async () => {} };
   const initial = await runNativeGrokSubscription({ ...common, prompt: 'make', maxModelCalls: 3, maxToolCalls: 2 });
   assert.equal(initial.ok, true);
   const repair = await runNativeGrokSubscription({ ...common, prompt: 'repair', nativeSession: initial.nativeSession,
     maxModelCalls: 2, maxToolCalls: 1 });
   assert.equal(repair.ok, true);
-  assert.equal(invocations[1].args.includes('--resume'), true);
-  assert.equal(invocations[1].args[invocations[1].args.indexOf('--max-turns') + 1], '2');
-  assert.equal(await readFile(join(f.scratch, 'grok-home', 'camus-action-limit'), 'utf8'), '1');
+  assert.equal(rpcFactory.requests.some(item => item.method === 'session/load'), true);
+  assert.equal(rpcFactory.captures[1].args[rpcFactory.captures[1].args.indexOf('--max-turns') + 1], '2');
   const widened = await runNativeGrokSubscription({ ...common, prompt: 'widen', nativeSession: repair.nativeSession,
     maxModelCalls: 3, maxToolCalls: 1 });
   assert.equal(widened.ok, false); assert.equal(widened.noModelCalled, true);
-  assert.match(widened.error, /session policy changed/); assert.equal(invocations.length, 2);
+  assert.match(widened.error, /session policy changed/); assert.equal(rpcFactory.captures.length, 2);
 });
 
-test('headless guard accepts Grok target_file and charges refused attempts to the action cap', async t => {
-  const f = await fixture(t); const home = join(f.root, 'guard home'); await mkdir(home);
-  const guard = await installHeadlessGuard(home, { cwd: f.worktree }, 2);
-  assert.deepEqual(await runCommand('/bin/sh', ['-c', guard.command],
-    { toolName: 'read_file', toolInput: { target_file: 'package.json' } }), { decision: 'allow' });
-  const refused = await runGuard(guard.script, { toolName: 'unsupported', toolInput: { target_file: 'package.json' } });
-  assert.equal(refused.decision, 'deny'); assert.match(refused.reason, /unsupported Grok tool/);
-  const exhausted = await runGuard(guard.script, { toolName: 'read_file', toolInput: { target_file: 'package.json' } });
-  assert.equal(exhausted.decision, 'deny'); assert.match(exhausted.reason, /action limit reached/);
-  assert.equal(await readFile(guard.counter, 'utf8'), '3');
-});
-
-test('native subscription removes its isolated OAuth copy after a failed process', async t => {
+test('native subscription distinguishes a missing ACP completion from a terminal missing its usage receipt', async t => {
   const f = await fixture(t);
-  const result = await runNativeGrokSubscription({ prompt: 'bounded native task', model: 'grok-4.6',
+  const common = { prompt: 'bounded native task', model: 'grok-4.6',
     worktree: f.worktree, scratch: f.scratch, receiptsDir: f.receiptsDir, maxModelCalls: 1, maxToolCalls: 0,
     resolveHarness: async () => f.harness, assertArtifact: async () => 'd'.repeat(64),
     installAuth: async home => writeFile(join(home, 'auth.json'), '{"opaque":"login"}\n', { mode: 0o600 }),
-    createPolicy: darwinHeadlessPolicy, processRunner: async () => ({ code: 1 }) });
-  assert.equal(result.ok, false);
+    createPolicy: darwinAcpPolicy, sourcePath: f.root, preflightTools: async () => {} };
+  const missingReceipt = await runNativeGrokSubscription({ ...common, rpcFactory: rpcFactoryFor({ terminalUsage: false }) });
+  assert.equal(missingReceipt.ok, false); assert.equal(missingReceipt.uncertain, false);
+  assert.equal(missingReceipt.definitiveTurnEnd, true); assert.equal(missingReceipt.failureCode, 'terminal_receipt_missing');
+  const missingCompletion = await runNativeGrokSubscription({ ...common, rpcFactory: rpcFactoryFor({ promptError: 'fixture transport closed' }) });
+  assert.equal(missingCompletion.ok, false); assert.equal(missingCompletion.uncertain, true);
+  assert.equal(missingCompletion.definitiveTurnEnd, false); assert.equal(missingCompletion.failureCode, 'terminal_missing');
   await assert.rejects(() => readFile(join(f.scratch, 'grok-home', 'auth.json')), { code: 'ENOENT' });
 });
 
@@ -209,7 +164,6 @@ test('subscription policies refuse an unreviewed platform before execution', asy
   const common = { worktree: f.worktree, scratch: f.scratch, harness: f.harness,
     artifactDigest: 'f'.repeat(64), model: 'grok-4.6', platform: 'linux', architecture: 'x64' };
   await assert.rejects(() => grokSubscriptionPolicy(common), /requires macOS arm64/);
-  await assert.rejects(() => grokSubscriptionHeadlessPolicy(common), /requires macOS arm64/);
 });
 
 test('ACP tools refuse traversal, private paths and action-cap overruns', async t => {

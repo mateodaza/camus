@@ -6,17 +6,15 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, unlink, writeFile } from 'node:fs/promises';
 import { CodexRpc } from '../codex-rpc.mjs';
 import { runCodeOwnedProcess } from '../code-owned-process.mjs';
-import { runNativeProcess } from '../native-process.mjs';
 import { verificationEnvironment } from '../code-seat-verify.mjs';
 import { normalizeReview } from './codex.mjs';
-import { createGrokProtocolReducer, validateNativeDecision } from './native-harness.mjs';
 import { resolveNativeHarness, assertNativeHarnessArtifact, GROK_NATIVE_EXECUTOR } from '../native-harness-policy.mjs';
 
-export const GROK_SUBSCRIPTION_POLICY_VERSION = 'grok-subscription-acp/v3';
-export const GROK_SUBSCRIPTION_NATIVE_POLICY_VERSION = 'grok-subscription-headless/v7';
+export const GROK_SUBSCRIPTION_POLICY_VERSION = 'grok-subscription-acp/v4';
+export const GROK_SUBSCRIPTION_NATIVE_POLICY_VERSION = GROK_SUBSCRIPTION_POLICY_VERSION;
 const REQUIRED_VERSION = '1.0.13';
 const REQUIRED_AUTH_METHOD = 'cached_token';
 const PRIVATE_COMPONENT = /^(?:\.git|\.env|\.npmrc|\.netrc|\.camus|\.claude|\.codex|\.qwen|\.grok|\.ssh|\.aws|\.azure)$/i;
@@ -27,7 +25,6 @@ const MAX_OUTPUT_BYTES = 1024 * 1024;
 const zeroUsage = () => ({ inputTokens: 0, cachedReadTokens: 0, outputTokens: 0, totalTokens: 0 });
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const quote = value => JSON.stringify(String(value));
-const shellWord = value => `'${String(value).replaceAll("'", `'"'"'`)}'`;
 const within = (parent, child) => child === parent || child.startsWith(parent + sep);
 
 function validateAuthBytes(bytes) {
@@ -120,69 +117,6 @@ ${denied.map(path => `(deny file-read* (subpath ${quote(join(worktree, path))}))
 ${denied.map(path => `(deny file-write* (subpath ${quote(join(worktree, path))}))`).join('\n')}`;
 }
 
-function headlessProfile({ worktree, scratch, harness, deniedPaths }) {
-  const denied = [...new Set(['.git', '.env', '.npmrc', '.netrc', '.camus', '.claude', '.codex', '.qwen', '.grok', '.ssh', '.aws', '.azure', ...deniedPaths])];
-  const parents = new Set(['/']);
-  for (const path of [worktree, scratch, harness]) {
-    let current = resolve(path);
-    while (current !== '/') { current = dirname(current); parents.add(current); }
-  }
-  return `(version 1)
-(deny default)
-(allow file-read*)
-(deny file-read* (subpath ${quote(homedir())}) (subpath "/Users/Shared") (subpath "/Volumes") (subpath "/private/tmp") (subpath "/private/var/folders"))
-(allow file-read-metadata ${[...parents].map(path => `(literal ${quote(path)})`).join(' ')})
-(allow file-read* (subpath ${quote(worktree)}) (subpath ${quote(scratch)}) (literal ${quote(harness)}))
-${denied.map(path => `(deny file-read* (subpath ${quote(join(worktree, path))}))`).join('\n')}
-(allow file-write* (subpath ${quote(worktree)}) (subpath ${quote(scratch)}) (literal "/dev/stdout") (literal "/dev/stderr") (literal "/dev/null"))
-${denied.map(path => `(deny file-write* (subpath ${quote(join(worktree, path))}))`).join('\n')}
-(allow process-exec)
-(allow process-fork)
-(allow signal (target self))
-(allow sysctl-read)
-(deny sysctl-read (sysctl-name-prefix "kern.proc"))
-(allow file-ioctl (regex #"^/dev/tty.*"))
-(allow network-outbound)`;
-}
-
-function headlessGuardSource({ worktree, counterPath, limitPath }) {
-  // The hook runner fails open on crashes, so the generated guard catches every
-  // error and emits an explicit deny. Its lock makes parallel read batches count
-  // exactly once without racing the shared action budget.
-  return `import fs from 'node:fs';import path from 'node:path';
-const root=${JSON.stringify(worktree)},counter=${JSON.stringify(counterPath)},limit=${JSON.stringify(limitPath)},lock=counter+'.lock';
-const deny=reason=>process.stdout.write(JSON.stringify({decision:'deny',reason}));
-try{let raw='';for await(const chunk of process.stdin){raw+=chunk;if(Buffer.byteLength(raw)>2097152)throw Error('Camus refused an oversized Grok tool request.')}const event=JSON.parse(raw);const input=event?.toolInput;
-let held=false;for(let attempt=0;attempt<500&&!held;attempt++){try{fs.mkdirSync(lock);held=true}catch(error){if(error?.code!=='EEXIST')throw error;Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10)}}if(!held)throw Error('Camus action guard lock timed out.');
-let count,maximum;try{const bound=fs.readFileSync(limit,'utf8');if(!/^(?:0|[1-9]\\d*)$/.test(bound))throw Error('Camus action limit changed.');maximum=Number(bound);count=0;try{const text=fs.readFileSync(counter,'utf8');if(!/^(?:0|[1-9]\\d*)$/.test(text))throw Error('Camus action counter changed.');count=Number(text)}catch(error){if(error?.code!=='ENOENT')throw error}const temp=counter+'.'+process.pid;fs.writeFileSync(temp,String(count+1),{flag:'wx',mode:0o600});fs.renameSync(temp,counter)}finally{fs.rmdirSync(lock)}
-if(count>=maximum)throw Error('Camus action limit reached.');
-const allowed=new Set(['read_file','search_replace','grep','list_dir']);if(!allowed.has(event?.toolName)||!input||typeof input!=='object'||Array.isArray(input))throw Error('Camus refused an unsupported Grok tool.');
-const requested=input.path??input.file_path??input.target_file??input.directory;if(typeof requested!=='string'||!requested||requested.length>2048||requested.includes('\\0'))throw Error('Camus requires one bounded candidate path.');
-const target=path.resolve(root,path.isAbsolute(requested)?path.relative(root,requested):requested),rel=path.relative(root,target);if(rel==='..'||rel.startsWith('..'+path.sep)||path.isAbsolute(rel)||rel.split(path.sep).some(v=>/^\\.(?:git|env|camus|claude|codex|grok|ssh|aws|azure)$/i.test(v)))throw Error('Camus refused a path outside the candidate boundary.');
-let cursor=root;for(const part of rel.split(path.sep).filter(Boolean)){cursor=path.join(cursor,part);try{if(fs.lstatSync(cursor).isSymbolicLink())throw Error('Camus refused a symlink path.')}catch(error){if(error?.code==='ENOENT')break;throw error}}
-process.stdout.write(JSON.stringify({decision:'allow'}))}catch(error){deny(String(error?.message??error).slice(0,200))}`;
-}
-
-export async function installHeadlessGuard(home, policy, maximumActions) {
-  if (!Number.isSafeInteger(maximumActions) || maximumActions < 0) throw new Error('Grok subscription native execution requires an explicit action bound.');
-  const script = join(home, 'camus-pre-tool-guard.mjs'), counter = join(home, 'camus-action-count'), limit = join(home, 'camus-action-limit');
-  const source = headlessGuardSource({ worktree: policy.cwd, counterPath: counter, limitPath: limit });
-  try { await writeFile(script, source, { flag: 'wx', mode: 0o600 }); }
-  catch (error) {
-    if (error?.code !== 'EEXIST') throw error;
-    await privateRegular(script, 'Grok subscription action guard', 128 * 1024);
-    if (await readFile(script, 'utf8') !== source) throw new Error('Grok subscription action guard changed; execution refused.');
-  }
-  await unlink(counter).catch(error => { if (error?.code !== 'ENOENT') throw error; });
-  await rm(`${counter}.lock`, { recursive: false, force: true });
-  const limitTemp = `${limit}.${process.pid}.${randomUUID()}`;
-  await writeFile(limitTemp, String(maximumActions), { flag: 'wx', mode: 0o600 });
-  await rename(limitTemp, limit);
-  const command = `${shellWord(process.execPath)} ${shellWord(script)}`;
-  return { script, counter, limit, command,
-    hook: `\n[[hooks.PreToolUse]]\nhooks = [{ type = "command", command = ${JSON.stringify(command)}, timeout = 10 }]\n` };
-}
-
 export async function grokSubscriptionPolicy({ worktree, scratch, harness, artifactDigest, model, deniedPaths = [],
   platform = process.platform, architecture = process.arch }) {
   if (platform !== 'darwin' || architecture !== 'arm64') throw new Error('The reviewed Grok subscription seat currently requires macOS arm64.');
@@ -198,23 +132,6 @@ export async function grokSubscriptionPolicy({ worktree, scratch, harness, artif
     model, deniedPaths: [...deniedPaths].sort(), auth: 'grok_oauth_cached_token', inference: 'grok_subscription', tools: 'acp_host_sandboxed' };
   return { ...semantic, hash: hash(semantic), home, toolHome,
     processProfile: processProfile({ scratch: temp, harness: binary, worktree: cwd }), toolProfile: toolProfile({ worktree: cwd, scratch: temp, deniedPaths }) };
-}
-
-export async function grokSubscriptionHeadlessPolicy({ worktree, scratch, harness, artifactDigest, model, deniedPaths = [],
-  platform = process.platform, architecture = process.arch }) {
-  if (platform !== 'darwin' || architecture !== 'arm64') throw new Error('The reviewed Grok subscription seat currently requires macOS arm64.');
-  const cwd = await realpath(worktree); await mkdir(scratch, { recursive: true, mode: 0o700 });
-  const temp = await realpath(scratch); const binary = await realpath(harness);
-  if (within(cwd, temp) || within(temp, cwd)) throw new Error('Grok subscription scratch and candidate must be separate.');
-  for (const path of deniedPaths) {
-    if (typeof path !== 'string' || !path || !within(cwd, resolve(cwd, path))) throw new Error('Invalid Grok subscription denied path.');
-  }
-  const home = join(temp, 'grok-home'); await mkdir(home, { recursive: true, mode: 0o700 });
-  const semantic = { version: GROK_SUBSCRIPTION_NATIVE_POLICY_VERSION, executor: GROK_NATIVE_EXECUTOR, cwd, temp, binary, artifactDigest,
-    model, deniedPaths: [...deniedPaths].sort(), auth: 'grok_oauth_cached_token', inference: 'grok_subscription',
-    tools: 'headless_read_edit_grep_guarded', shell: false };
-  return { ...semantic, hash: hash(semantic), home,
-    profile: headlessProfile({ worktree: cwd, scratch: temp, harness: binary, deniedPaths }) };
 }
 
 export function grokSubscriptionEnvironment(policy) {
@@ -419,17 +336,19 @@ export async function runGrokSubscriptionTurn({ prompt, model, effort = 'medium'
   onTick = () => {}, rpcFactory = options => new CodexRpc(options), resolveHarness = resolveNativeHarness,
   assertArtifact = assertNativeHarnessArtifact, installAuth = installGrokSubscriptionAuth,
   preflightTools = preflightGrokSubscriptionTools, createPolicy = grokSubscriptionPolicy }) {
-  const startedAt = Date.now(); let rpc = null, dispatched = false, ended = false, session = nativeSession, toolsHost = null;
-  let textByMessage = new Map(), lastMessage = null, stopReason = null, terminalUsage = null;
+  const startedAt = Date.now(); let rpc = null, dispatched = false, ended = false, session = nativeSession, toolsHost = null, policy = null;
+  let textByMessage = new Map(), lastMessage = null, stopReason = null, terminalUsage = null, terminalStopReason = null;
   try {
     if (!model || !Number.isSafeInteger(maxModelCalls) || maxModelCalls < 1 || !Number.isSafeInteger(maxToolCalls) || maxToolCalls < 0) throw new Error('Grok subscription execution requires explicit bounded model and tool limits.');
     if (signal?.aborted) throw new Error('Grok subscription execution cancelled before preflight.');
     const harness = await resolveHarness(GROK_NATIVE_EXECUTOR); const artifactDigest = await assertArtifact(GROK_NATIVE_EXECUTOR, harness);
-    const policy = await createPolicy({ worktree, scratch, harness, artifactDigest, model, deniedPaths });
+    policy = await createPolicy({ worktree, scratch, harness, artifactDigest, model, deniedPaths });
     if (tools) await preflightTools({ policy, sourcePath, receiptsDir, signal });
     await installAuth(policy.home); await installGrokSubscriptionConfig(policy.home, model);
     if (session && (session.version !== GROK_SUBSCRIPTION_POLICY_VERSION || session.policyHash !== policy.hash
-        || session.model !== model || session.maximumModelCalls !== maxModelCalls
+        || session.model !== model || !Number.isSafeInteger(session.maximumModelCalls) || session.maximumModelCalls < 1
+        || maxModelCalls > session.maximumModelCalls || !Number.isSafeInteger(session.maximumActions) || session.maximumActions < 0
+        || maxToolCalls > session.maximumActions
         || session.harnessVersion !== REQUIRED_VERSION || typeof session.sessionId !== 'string')) {
       throw new Error('Grok subscription session policy changed; start a new explicitly authorized run.');
     }
@@ -471,10 +390,11 @@ export async function runGrokSubscriptionTurn({ prompt, model, effort = 'medium'
     if (opened?.models && opened.models.currentModelId !== model) throw new Error('Grok ACP selected a different model; substitution refused.');
     session = { version: GROK_SUBSCRIPTION_POLICY_VERSION, executor: GROK_NATIVE_EXECUTOR, policyHash: policy.hash, model,
       harnessVersion: REQUIRED_VERSION, sessionId: activeSessionId, maximumModelCalls: maxModelCalls,
+      maximumActions: maxToolCalls,
       billingAuthority: 'grok_subscription', authMethod: methodId };
     onNativeSession(session); dispatched = true;
     const response = await rpc.request('session/prompt', { sessionId: activeSessionId, prompt: [{ type: 'text', text: prompt }] }, timeoutMs);
-    ended = true;
+    ended = true; terminalStopReason = response?.stopReason ?? null;
     if (response?.stopReason !== 'end_turn') throw new Error(`Grok subscription turn stopped as ${response?.stopReason ?? 'unknown'}.`);
     const receipt = modelReceipt({ modelUsage: terminalUsage?.modelUsage }, model);
     const usage = normalizeGrokSubscriptionUsage(terminalUsage);
@@ -486,95 +406,29 @@ export async function runGrokSubscriptionTurn({ prompt, model, effort = 'medium'
     return { ok: true, text, usage, nativeSession: session, definitiveTurnEnd: true, modelActual: `xai:${model}`, modelReported: receipt.reported,
       modelActualEvidence: 'observed_cli_event', billingAuthority: 'grok_subscription', authMethod: methodId, durationMs: Date.now() - startedAt };
   } catch (error) {
-    return { ok: false, error: String(stopReason ?? error?.message ?? error).slice(0, 600), uncertain: dispatched && !ended,
-      noModelCalled: !dispatched, definitiveTurnEnd: ended, usage: null, nativeSession: session,
-      billingAuthority: 'grok_subscription' };
-  } finally { await toolsHost?.cleanup().catch(() => {}); await rpc?.close().catch(() => {}); }
-}
-
-function grokSubscriptionHeadlessArgs({ policy, model, effort, prompt, session, maxModelCalls }) {
-  const boundedPrompt = `Frozen Camus limits: at most ${maxModelCalls} model responses and ${session.maximumActions} tool actions. `
-    + 'Finish the requested task and return the final JSON within those bounds; do not spend a turn running tests unless the task requires it.\n\n'
-    + prompt;
-  return ['--cwd', policy.cwd, '--model', model, '--always-approve', '--tools', 'Read,Edit,Grep',
-    '--disallowed-tools', 'Bash,MCPTool,WebFetch,WebSearch,Task', '--no-plan', '--no-subagents', '--no-ask-user', '--no-memory',
-    '--disable-web-search', '--max-turns', String(maxModelCalls), ...(effort ? ['--reasoning-effort', effort] : []),
-    ...(session.resumed ? ['--resume', session.sessionId] : ['--session-id', session.sessionId]),
-    '--output-format', 'streaming-json', '-p', boundedPrompt];
-}
-
-export async function runNativeGrokSubscription({ prompt, model, effort = 'medium', worktree, scratch, receiptsDir, deniedPaths = [], nativeSession = null,
-  signal, timeoutMs = 600000, maxModelCalls = 32, maxToolCalls = 0, onNativeSession = () => {}, onNativeProgress = () => {}, onTick = () => {},
-  resolveHarness = resolveNativeHarness, assertArtifact = assertNativeHarnessArtifact, installAuth = installGrokSubscriptionAuth,
-  processRunner = runNativeProcess, createPolicy = grokSubscriptionHeadlessPolicy }) {
-  const startedAt = Date.now(); let dispatched = false, terminal = null, responses = 0, actions = 0, session = nativeSession, policy = null;
-  const local = new AbortController(); let stopped = null;
-  const stop = reason => { if (!stopped) stopped = String(reason); local.abort(new Error(stopped)); };
-  const externalAbort = () => stop('Grok subscription execution cancelled.');
-  signal?.addEventListener('abort', externalAbort, { once: true }); if (signal?.aborted) externalAbort();
-  try {
-    if (!model || !Number.isSafeInteger(maxModelCalls) || maxModelCalls < 1 || !Number.isSafeInteger(maxToolCalls) || maxToolCalls < 0) {
-      throw new Error('Grok subscription execution requires explicit bounded model and tool limits.');
-    }
-    const harness = await resolveHarness(GROK_NATIVE_EXECUTOR); const artifactDigest = await assertArtifact(GROK_NATIVE_EXECUTOR, harness);
-    policy = await createPolicy({ worktree, scratch, harness, artifactDigest, model, deniedPaths });
-    if (session && (session.version !== GROK_SUBSCRIPTION_NATIVE_POLICY_VERSION || session.policyHash !== policy.hash
-        || session.model !== model || !Number.isSafeInteger(session.maximumModelCalls) || session.maximumModelCalls < 1
-        || maxModelCalls > session.maximumModelCalls || !Number.isSafeInteger(session.maximumActions) || session.maximumActions < 0
-        || maxToolCalls > session.maximumActions
-        || session.harnessVersion !== REQUIRED_VERSION || typeof session.sessionId !== 'string')) {
-      throw new Error('Grok subscription native session policy changed; start a new explicitly authorized run.');
-    }
-    await installAuth(policy.home); const guard = await installHeadlessGuard(policy.home, policy, maxToolCalls);
-    await installGrokSubscriptionConfig(policy.home, model, { hook: guard.hook });
-    session = { version: GROK_SUBSCRIPTION_NATIVE_POLICY_VERSION, executor: GROK_NATIVE_EXECUTOR, policyHash: policy.hash, model,
-      harnessVersion: REQUIRED_VERSION, sessionId: session?.sessionId ?? randomUUID(), maximumModelCalls: maxModelCalls,
-      maximumActions: maxToolCalls, billingAuthority: 'grok_subscription', authMethod: REQUIRED_AUTH_METHOD, resumed: Boolean(session) };
-    onNativeSession({ ...session, resumed: undefined });
-    const reducer = createGrokProtocolReducer({ onAction: () => { actions++; onTick('Grok subscription maker used a guarded tool.'); } });
-    const progress = usage => { const reason = onNativeProgress({ usage, responses, actions }); if (reason) stop(reason); };
-    const onFrame = frame => {
-      reducer.push(frame);
-      if (frame.type === 'usage') responses++;
-      progress(null);
-    };
-    const env = grokSubscriptionEnvironment(policy);
-    dispatched = true;
-    const run = await processRunner({ command: '/usr/bin/sandbox-exec',
-      args: ['-p', policy.profile, policy.binary, ...grokSubscriptionHeadlessArgs({ policy, model, effort, prompt, session, maxModelCalls })],
-      cwd: policy.cwd, env, timeoutMs, signal: local.signal, jsonl: true, onFrame, ownedProcessDir: receiptsDir });
-    const complete = reducer.finish(); terminal = complete.terminal;
-    let guardedActions = 0;
-    try {
-      const value = await readFile(guard.counter, 'utf8');
-      if (!/^(?:0|[1-9]\d*)$/.test(value)) throw new Error(); guardedActions = Number(value);
-    } catch (error) { if (error?.code !== 'ENOENT' || actions) throw new Error('Grok subscription action receipt is unavailable or changed.'); }
-    if (guardedActions !== actions || actions > maxToolCalls) throw new Error('Grok subscription action receipt does not match the bounded tool stream.');
-    if (run.code !== 0 || terminal?.stopReason !== 'end_turn' || terminal?.sessionId !== session.sessionId || !complete.result || complete.reportedError || stopped) {
-      return { ok: false, error: stopped ?? 'Grok subscription headless turn did not produce a successful terminal.',
-        uncertain: !terminal, definitiveTurnEnd: Boolean(terminal), noModelCalled: !dispatched, nativeSession: { ...session, resumed: undefined },
-        billingAuthority: 'grok_subscription' };
-    }
-    const receipt = modelReceipt(terminal, model);
-    if (receipt.calls > maxModelCalls || responses && receipt.calls !== responses) throw new Error('Grok subscription model-call receipt exceeded or disagreed with the frozen bound.');
-    const usage = normalizeGrokSubscriptionUsage(terminal.usage);
-    progress(usage); if (stopped) throw new Error(stopped);
-    return { ok: true, text: JSON.stringify({ actions: [], ...complete.result }), usage,
-      nativeSession: { ...session, resumed: undefined }, definitiveTurnEnd: true,
-      modelActual: `xai:${model}`, modelReported: receipt.reported,
-      modelActualEvidence: 'observed_cli_terminal', billingAuthority: 'grok_subscription', authMethod: REQUIRED_AUTH_METHOD,
-      durationMs: Date.now() - startedAt };
-  } catch (error) {
-    return { ok: false, error: String(stopped ?? error?.message ?? error).slice(0, 600), uncertain: dispatched && !terminal,
-      noModelCalled: !dispatched, definitiveTurnEnd: Boolean(terminal), nativeSession: session,
+    let usage = null, receipt = null;
+    try { if (terminalUsage) usage = normalizeGrokSubscriptionUsage(terminalUsage); } catch { /* invalid evidence stays unmeasured */ }
+    try { if (terminalUsage) receipt = modelReceipt({ modelUsage: terminalUsage.modelUsage }, model); } catch { /* identity stays unobserved */ }
+    const failureCode = !dispatched ? 'preflight_refused'
+      : !ended ? 'terminal_missing'
+        : terminalUsage === null ? 'terminal_receipt_missing'
+          : terminalStopReason !== 'end_turn' ? 'terminal_non_success' : 'terminal_validation_failed';
+    return { ok: false, error: String(stopReason ?? error?.message ?? error).slice(0, 600), failureCode,
+      uncertain: dispatched && !ended, noModelCalled: !dispatched, definitiveTurnEnd: ended, usage, nativeSession: session,
+      ...(receipt ? { modelActual: `xai:${model}`, modelReported: receipt.reported, modelActualEvidence: 'observed_cli_event' } : {}),
       billingAuthority: 'grok_subscription' };
   } finally {
-    signal?.removeEventListener('abort', externalAbort);
+    await toolsHost?.cleanup().catch(() => {}); await rpc?.close().catch(() => {});
     if (policy) await unlink(join(policy.home, 'auth.json')).catch(error => {
       if (error?.code !== 'ENOENT') throw new Error('The isolated Grok login copy could not be removed; execution refused.');
     });
   }
 }
+
+// Native subscription makers use Grok Build's official ACP completion boundary.
+// The older streaming-json path could close after a valid final inference without
+// emitting its separate `end` frame, leaving Camus unable to prove the turn.
+export const runNativeGrokSubscription = options => runGrokSubscriptionTurn({ ...options, tools: true });
 
 async function withPrivateScratch(root, prefix, callback) {
   if (typeof root !== 'string' || !root) throw new Error('Grok subscription execution requires a private receipt directory.');

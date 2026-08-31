@@ -28,7 +28,14 @@ for the first real candidate, model setup, and honest terminal states.
 > it; configured API credentials remain local and go only to that endpoint.
 
 <details>
-<summary><strong>Current release: 0.4.19</strong></summary>
+<summary><strong>Current release: 0.4.20</strong></summary>
+
+**New in 0.4.20:** the built-in Grok subscription maker now uses Grok
+Build's ACP completion boundary with Camus-hosted bounded filesystem and terminal
+tools. A missing completion remains uncertain; a completed turn with incomplete
+receipt evidence is parked separately with an inspectable candidate and no
+review, replay, or automatic adoption. Studio also relays sanitized progress
+when it attaches to a CLI-owned run instead of showing an empty model-work panel.
 
 **New in 0.4.19:** Studio Flexible Build and `camus build` now use the
 same shared built-in admission rule for the Grok subscription seat. Studio no
@@ -132,6 +139,12 @@ Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMU
 > **0.4.19:** Studio and CLI now share the same Grok built-in admission
 > classification and subscription billing provenance. See the
 > [0.4.19 release notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.19.md).
+>
+> **0.4.20:** Grok subscription-native execution uses ACP completion and
+> Camus-hosted tools; Studio attachments relay the shared safe progress trail.
+> Historical headless evals remain historical and do not admit the new transport.
+> See the
+> [0.4.20 release notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.20.md).
 >
 > **Existing native infrastructure (introduced in 0.4.7):** The Hybrid Kernel can evaluate a Studio-configured Grok, Qwen,
 > or other OpenAI-compatible reviewer on the exact code candidate before Codex performs the final
@@ -525,7 +538,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.4.19
+npm i -g camus-cli@0.4.20
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)

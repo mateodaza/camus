@@ -29,9 +29,9 @@ try {
         await writeFile(worktree+'/answer.txt','correct');
         return {ok:true,definitiveTurnEnd:true,usage:{total_tokens:10},text:JSON.stringify({actions:[],done:true,summary:'Ready.'})};
       }}:{}),
-      maker: async ({prompt, signal, effort}) => {
+      maker: async ({prompt, signal, effort, onTick}) => {
         await appendFile(${JSON.stringify(callsPath)}, JSON.stringify({role:'maker',model:models.maker.model,effort})+'\\n');
-        if(prompt.includes('WAIT_FOR_STOP')) { await new Promise(r=>signal.aborted?r():signal.addEventListener('abort',r,{once:true})); return {ok:false,error:'interrupted'}; }
+        if(prompt.includes('WAIT_FOR_STOP')) { onTick('Fixture maker is waiting safely.'); await new Promise(r=>signal.aborted?r():signal.addEventListener('abort',r,{once:true})); return {ok:false,error:'interrupted'}; }
         const history=prompt.match(/Complete host action history[^\\n]*\\n(\\[.*\\])$/s);
         if(prompt.includes('ASK_FORMAT') && prompt.includes('Bound human answer: null')) return {ok:true,text:JSON.stringify({actions:[],done:false,decision:{action:'human',reason:'Choose the output format.'}})};
         return {ok:true,usage:{total_tokens:10},text:JSON.stringify(history?{actions:[],done:true}:{actions:[{type:'create',path:'answer.txt',expected_sha256:null,content:'correct'}],done:false})};
@@ -131,6 +131,14 @@ try {
   const activeInspection = JSON.parse((await cli(['--inspect', runningId, '--json'])).stdout);
   assert.equal(activeInspection.owned, true); assert.equal(activeInspection.nextSafeAction.action, 'attach_or_status');
   assert.equal((await state(runningId)).owned, true, 'concurrent inspection never disturbs the worker lease');
+  const attached = await fetch(`${base}/api/runs/${runningId}/events`); const reader = attached.body.getReader();
+  const decoder = new TextDecoder(); let attachedText = '';
+  for (let i = 0; i < 12 && !attachedText.includes('Fixture maker is waiting safely.'); i++) {
+    const next = await Promise.race([reader.read(), new Promise((_, reject) => setTimeout(() => reject(new Error('attached event timeout')), 1500))]);
+    if (next.done) break; attachedText += decoder.decode(next.value, { stream: true });
+  }
+  await reader.cancel();
+  assert.match(attachedText, /"type":"progress"/); assert.match(attachedText, /Fixture maker is waiting safely\./);
   const exited = once(worker, 'exit'); assert.equal((await post(`runs/${runningId}/stop`)).status, 200); await exited; worker = null;
   assert.equal(JSON.parse(output).status, 'stopped'); assert.equal((await state(runningId)).owned, false);
   assert.equal(execFileSync('git', ['-C', repo, 'status', '--porcelain'], { encoding: 'utf8' }), '');

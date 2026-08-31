@@ -220,18 +220,19 @@ enough to reject Qwen Code for larger work.
   response is useful diagnosis, but it cannot authorize a paid maker cell or
   predict full-review latency by itself.
 - Earlier subscription cells v1-v6 exposed and pinned deterministic integration
-  contracts: OAuth permission mode, a hard headless `--max-turns` boundary,
-  `target_file` action guarding, attempted-action accounting, exact
-  `grok-4.6-build` identity, and the documented separation between top-level
-  token usage and per-model call identity. Failed historical receipts remain
-  failed; the fixes do not rewrite them.
+  contracts in the retired `streaming-json` transport: OAuth permission mode,
+  a hard `--max-turns` boundary, `target_file` action guarding, attempted-action
+  accounting, exact `grok-4.6-build` identity, and the separation between
+  top-level token usage and per-model call identity. Failed historical receipts
+  remain failed; their evidence does not transfer to the current ACP transport.
 
-This establishes that the subscription-backed maker path is real, bounded,
-measured, and useful on the simple fixture. It does not establish an optimal
-pairing or reviewer standing. Do not buy more identical Grok cells merely to
-probe an unavailable reviewer; first prove the chosen reviewer can complete the
-real hardened, schema-bound review path on a spend-free or maker-free fixture,
-or explicitly select a different independent reviewer.
+That historical evidence established that the retired subscription-headless
+maker was real, bounded, measured, and useful on the simple fixture. The current
+ACP v4 transport has provider-free contract coverage but no fresh paid smoke yet,
+so it inherits no quality, admission, routing, or optimal-pairing claim. Before a
+new paid cell, prove the chosen reviewer can complete the real hardened,
+schema-bound review path on a spend-free or maker-free fixture, or explicitly
+select a different independent reviewer.
 
 ### Productive `file_actions` context evidence
 
@@ -263,7 +264,8 @@ or explicitly select a different independent reviewer.
 | Native path inventory | Grok spent a bounded turn discovering files through a broad command that touched intentionally blocked `.git` metadata. | The host supplies its bounded tracked-path inventory and warns native makers that blocked broad discovery still consumes turn/action budget; the sandbox remains unchanged. |
 | Native pre-action ceiling | Grok Build emitted its tool event only after action N+1 had already changed the disposable candidate, so a host-side event abort was too late to be a hard action limit. | The one-run gateway now counts buffered operative tool calls and withholds an over-limit provider response before the harness can execute it. The exact pinned Grok Build probe proves action 1 succeeds and action 2 leaves no file. |
 | Productive loop 2 | A maker could keep collecting novel source through the whole step budget even when it never proposed a mutation. | The host now binds a named progress policy into fresh checkpoints, warns at four consecutive mutation-free discovery steps and parks at seven; exact unchanged-discovery stagnation remains independently bounded, while older v2 prompt hashes remain resumable. |
-| Subscription path audit | A Grok hook command did not quote paths safely, isolated OAuth copies survived in evidence scratch, a legitimate reviewer-requested repair could not resume with smaller remaining limits, and evaluator receipts still expected the API-gateway native policy. Missing reviewer identity was also mislabeled as substitution. | Hook commands now shell-quote exact paths, the temporary login copy is removed on success and failure, and resumed sessions may only tighten model/action ceilings. The immutable guard reads an atomically replaced per-turn action limit; widening remains refused before launch. Execution and receipt identity now bind the exact subscription-headless policy, while absent role identity remains unknown rather than becoming false substitution evidence. |
+| Subscription path audit | A Grok hook command did not quote paths safely, isolated OAuth copies survived in evidence scratch, a legitimate reviewer-requested repair could not resume with smaller remaining limits, and evaluator receipts still expected the API-gateway native policy. Missing reviewer identity was also mislabeled as substitution. | The retired headless transport quoted exact paths, removed temporary login copies, allowed only tighter repair bounds, and bound its own policy into evidence. Absent role identity remains unknown rather than becoming false substitution evidence. |
+| Grok terminal + CLI-attached Studio field report | Grok Build could finish inference and close while `streaming-json` omitted the separate terminal frame, leaving an honest candidate but no provable turn end or usage receipt. Studio attached to a CLI-owned run showed checkpoints but did not relay its already-sanitized model-progress trail. | The subscription-native maker now uses Grok Build ACP: Camus receives the `session/prompt` completion boundary, hosts every bounded filesystem/terminal tool, preserves valid terminal usage even when later validation fails, and distinguishes `terminal_missing` from `terminal_receipt_missing`. Studio relays only safe `progress`/`session` events from the shared CLI trail. The transport policy advanced to ACP v4, so historical headless evals grant no admission or routing claim; a fresh bounded smoke is required before any new quality claim. |
 
 The Qwen native failure itself is not erased by these fixes. A future campaign
 uses a new generation and must receive fresh authorization.

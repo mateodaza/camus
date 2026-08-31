@@ -237,7 +237,7 @@ test('an absent reviewer identity remains unknown rather than becoming a false s
   assert.equal(receipt.observedIdentity.substitutionDetected, null);
 });
 
-test('subscription Grok receipts bind the headless policy rather than the API-gateway policy', async t => {
+test('subscription Grok receipts bind the ACP policy rather than the API-gateway policy', async t => {
   const item = await setup(t, 'grok_native');
   const maker = { backend: 'grok', provider: 'xai', model: 'grok-4.6', effort: 'medium', trainingOrg: 'xai',
     transport: 'vendor_managed', connection: null, route: null };

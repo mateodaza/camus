@@ -50,9 +50,17 @@ the release history.
 > repositories you trust; Camus is not an OS sandbox and should never run as root.
 
 <details>
-<summary><strong>What ships in 0.4.19 and how current evidence is bounded</strong></summary>
+<summary><strong>What ships in 0.4.20 and how current evidence is bounded</strong></summary>
 
 **Makes it work. Knows when to stop.**
+
+New in 0.4.20: the built-in Grok subscription maker now uses Grok Build's ACP
+completion boundary and Camus-hosted bounded tools. This removes the weaker
+`streaming-json` terminal dependency that could leave completed inference
+unprovable. Missing completion and incomplete terminal receipts remain distinct,
+fail closed, and preserve only an inspectable candidate—never review or automatic
+adoption. Studio also relays sanitized progress from CLI-owned runs, so attaching
+the GUI no longer leaves the model-work panel empty.
 
 New in 0.4.19: Loop Studio and `camus build` now apply the same shared
 vendor-managed built-in admission rule to Grok subscription seats. A qualified
@@ -147,7 +155,7 @@ The native proof gate needs [Claude Code](https://code.claude.com) and the
 `camus build` needs only the backends you choose, Node 18.17+, and Git.
 
 ```bash
-npm i -g camus-cli@0.4.19
+npm i -g camus-cli@0.4.20
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 ```
@@ -171,7 +179,7 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.4.19
+### Public alpha: 0.4.20
 
 `camus build --inspect RUN_ID [--json]` authenticates and projects a bounded
 checkpoint without contacting a provider or mutating the run. File-action builds
@@ -180,7 +188,8 @@ repository work should be decomposed or sent to a reviewed native harness. These
 inspection and file-action contracts shipped in 0.4.16. Version 0.4.18 adds the
 separate subscription-backed Grok path without changing their standing. Version
 0.4.19 makes that same qualified path launchable from Studio and preserves its
-billing provenance there.
+billing provenance there. Version 0.4.20 replaces its native maker transport
+with ACP completion and makes CLI-owned progress visible when Studio attaches.
 
 Choose both coding roles independently in the CLI or Studio: Luna → Claude,
 Claude → Qwen, Grok → Qwen, or any other available, role-qualified pairing.
@@ -212,14 +221,15 @@ to each fixture's declared solution paths before the verifier may run.
 Live Qwen/Grok failures remain in the evidence denominator, uncertain turns never
 replay automatically, and the command has no admission, routing, Git-landing or
 publication authority. The first simple-task evidence provisionally favors raw
-Qwen actions. The new subscription-backed Grok Build path four times produced the
+Qwen actions. The retired subscription-headless Grok Build path four times produced the
 exact verifier-green fix within three maker calls and four guarded actions, with
 measured `grok_subscription` evidence and no API-key fallback. A tiny Luna readiness
 probe returned quickly, but the real schema-bound review still did not return inside
-its five-minute cell, so no end-to-end approval or general model ranking is claimed.
+its five-minute cell. Those results do not transfer to the new ACP v4 transport,
+so no end-to-end approval or general model ranking is claimed.
 
 No new reviewer admission, automatic route, cross-case harness ranking, or
-optimal pairing is claimed. See the [0.4.19 release notes](docs/RELEASE-0.4.19.md)
+optimal pairing is claimed. See the [0.4.20 release notes](docs/RELEASE-0.4.20.md)
 and the underlying [0.4.12 evaluator notes](docs/RELEASE-0.4.12.md).
 
 ### Existing admission infrastructure
@@ -348,7 +358,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.4.19
+npm i -g camus-cli@0.4.20
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```
