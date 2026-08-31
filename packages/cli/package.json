@@ -1,7 +1,7 @@
 {
   "name": "camus-cli",
   "version": "0.4.16",
-  "description": "Independent maker/reviewer choices for experimental coding candidates, plus a Claude/Codex proof gate. Shared CLI/Studio models, isolated worktrees, explicit verification, and honest human handoffs.",
+  "description": "Local control plane for AI-made code: separately selectable maker/reviewer seats, deterministic verification, bounded recovery, and evidence-bound human handoffs.",
   "bin": {
     "camus": "bin/camus.js"
   },
@@ -32,12 +32,17 @@
     "url": "git+https://github.com/mateodaza/camus.git",
     "directory": "packages/cli"
   },
-  "homepage": "https://github.com/mateodaza/camus#readme",
+  "homepage": "https://camus.sh/",
   "bugs": "https://github.com/mateodaza/camus/issues",
   "keywords": [
     "claude",
     "claude-code",
     "codex",
+    "ai-agents",
+    "coding-agents",
+    "agent-orchestration",
+    "llm-evaluation",
+    "model-evaluation",
     "autonomous-agent",
     "code-review",
     "cross-vendor"

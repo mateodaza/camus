@@ -102,6 +102,9 @@ try {
   const freshCli = await cli(['--task', task, '--contract', contract, '--repo', repo, '--max-calls', '1', '--json']);
   assert.equal(freshCli.code, 2, freshCli.stderr);
   const second = JSON.parse(freshCli.stdout); assert.equal(second.usage.calls, 1);
+  const humanCli = await cli(['--task', task, '--contract', contract, '--repo', repo, '--max-calls', '1']);
+  assert.equal(humanCli.code, 2, humanCli.stderr);
+  assert.match(humanCli.stdout, /^Run: code-\d+-[a-f0-9]+$/m, 'human output names the run needed by status and inspect');
   const illegal = await post(`runs/${second.id}/resume`, { verifyCmd: 'true' }); assert.equal(illegal.status, 409);
   const resumedStudio = await post(`runs/${second.id}/resume`, { codeLimits: { maxCalls: 5 } });
   assert.equal(resumedStudio.status, 201, await resumedStudio.clone().text()); assert.equal((await resumedStudio.json()).id, second.id);
@@ -132,7 +135,7 @@ try {
   assert.equal(JSON.parse(output).status, 'stopped'); assert.equal((await state(runningId)).owned, false);
   assert.equal(execFileSync('git', ['-C', repo, 'status', '--porcelain'], { encoding: 'utf8' }), '');
   const calls = (await readFile(callsPath, 'utf8')).trim().split('\n').map(JSON.parse);
-  assert.equal(calls.length, 11, 'reattachment/restart/status do not buy model calls');
+  assert.equal(calls.length, 12, 'reattachment/restart/status do not buy model calls');
   assert.deepEqual(calls.slice(0, 3).map(({ role, effort }) => ({ role, effort })), [
     { role: 'maker', effort: 'high' }, { role: 'maker', effort: 'high' }, { role: 'reviewer', effort: 'xhigh' },
   ], 'Studio start and CLI resume keep the same explicitly frozen effort snapshot');

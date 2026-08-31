@@ -216,6 +216,7 @@ export async function main(argv = process.argv.slice(2)) {
     const receiptPath = result.stateUnchanged ? timestampedReport : canonicalReport;
     if (options.json) console.log(JSON.stringify({ ...report, receiptPath }, null, 2));
     else {
+      console.log(`Run: ${id}`);
       console.log(`Status: ${result.status}. Experimental advisory review; human acceptance required.`);
       if (result.candidate?.worktree) console.log(`Candidate: ${result.candidate.worktree}`);
       if (result.error) console.log(`Reason: ${result.error}`);

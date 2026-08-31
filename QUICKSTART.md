@@ -11,18 +11,67 @@ honest receipt around AI-made work. Choose the smallest surface that fits the jo
 Camus is public-alpha software. Use it only on repositories and test commands you trust,
 never as root. Camus does not push code or open a pull request for you.
 
+## Prove the local gate in 60 seconds
+
+With Node 18.17+, Python 3, and Git installed, run the model-free, provider-free
+canary. It creates a throwaway repository, proves a known-red check fails by name,
+then proves a known-green check is bound to its exact commit:
+
+```bash
+npx camus-cli@latest canary
+```
+
+No model authentication or global Camus installation is required for this first check.
+`camus canary: PASS (red -> green)` is the expected result.
+
 ## Path A: code
 
 ### Flexible maker and reviewer (experimental)
 
 Install `camus-cli@latest`. `camus models` lists the same maker and reviewer catalog
-as Studio; configure and qualify external roles in Studio Settings first. Select
-both independently with `camus build --maker <backend>:<model> --reviewer <backend>:<model>`
+as Studio. Configure external roles in Studio Settings or with `camus build --setup`,
+then qualify the exact role with explicit provider-call consent. Select both roles
+independently with `camus build --maker <backend>:<model> --reviewer <backend>:<model>`
 and supply `--task`, `--contract`, and optionally your trusted `--verify` command.
 In the browser choose **Build → Flexible Build**. Both dropdowns apply.
 Reversed and same-model choices are allowed, but this path always requires human
-acceptance and never auto-lands. Missing verification means untested; it has no
-automatic resume. See the [coding-seat guide](docs/INDEPENDENT-CODE-SEATS.md).
+acceptance and never auto-lands. Missing verification means untested. Continuation
+is never unattended: `--status` and provider-free `--inspect` are read-only, while
+an explicit `--resume` retains the frozen pair, contract, verifier, and accumulated
+usage. See the [coding-seat guide](docs/INDEPENDENT-CODE-SEATS.md).
+
+For one bounded candidate, first enter a clean, committed repository and confirm
+the model IDs available on your machine. Authenticate only the backends you select.
+For the example below, install and sign in to Claude Code and Codex CLI first.
+Claude uses subscription quota; Codex uses ChatGPT quota or API billing according
+to its active authentication. The listed limits are Camus accounting and action
+ceilings, not provider-enforced dollar limits.
+
+```bash
+cd /path/to/your/clean-repo
+npx camus-cli@latest models
+
+npx camus-cli@latest build --repo . \
+  --task "Fix the bounded regression and add focused coverage." \
+  --contract "The focused tests pass and existing behavior remains unchanged." \
+  --maker claude:sonnet \
+  --reviewer codex:gpt-5.6-luna \
+  --verify "npm test" \
+  --verify-repeatable \
+  --max-calls 8 \
+  --max-steps 6 \
+  --max-actions 16 \
+  --max-repairs 1 \
+  --max-retries 0 \
+  --max-tokens 200000
+```
+
+Use those exact model IDs only when `camus models` lists them. A successful Flexible
+Build intentionally reports `needs_decision`, completion
+`candidate_ready_for_acceptance`, and exit code `2`. That is the human checkpoint,
+not a failed run. Camus prints the candidate worktree and receipt; use
+`camus build --inspect <run-id>` and Git to inspect them before deciding whether to
+apply the change. This path never commits, merges, pushes, or publishes for you.
 
 ### Native proof gate
 
@@ -31,18 +80,27 @@ independent reviewer. You can configure the Claude model, Codex model, review ef
 posture, and round cap; the cross-vendor role assignment remains fixed for trusted code
 standing.
 
-### 1. Install once
+### 1. Install the CLI and selected backends
 
-Requirements: Node 18+, Python 3, and Git. Claude Code and Codex CLI sign-in are
+Requirements: Node 18.17+, Python 3, and Git. Claude Code and Codex CLI sign-in are
 required only for seats or proof-gate mode that use them; hosted seats use their
 configured environment credential and explicit qualification.
 
 ```bash
 npm install -g camus-cli@latest
+camus canary
+claude auth status
 codex login
+```
+
+For the admitted Claude → Codex proof gate, install and sign in to both CLIs.
+Flexible Build needs only its selected backends and their authentication. It never
+needs `camus install`. Only install the frozen `/camus-*` compatibility workflows
+when you plan to use them inside Claude Code:
+
+```bash
 camus install
 camus check
-camus canary
 ```
 
 `camus canary` is local and model-free. To exercise the reviewer too, run one small
@@ -243,8 +301,10 @@ camus eval
 - **`done_with_findings`:** a bounded final repair passed deterministic verification but
   was not re-reviewed. Inspect the preserved findings and claimed resolutions.
 - **`needs_human`:** the task contains a decision the owner must make.
-- **`needs_decision`:** deterministic verification may be green, but review did not
-  converge. Accept or refine deliberately.
+- **`needs_decision`:** a human checkpoint. On Flexible Build this is the expected
+  terminal for an approved advisory candidate; elsewhere it can mean review did not
+  converge. Inspect `completion`, the recorded reason or question, candidate, and
+  receipt before accepting or refining deliberately.
 - **`infra_error`:** repair the environment or custody problem and resume with the same
   run identity. Do not finish the implementation manually.
 - **`verify_failed`:** the candidate is not shippable.

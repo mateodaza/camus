@@ -1,6 +1,34 @@
 # Camus
 
-**A local control plane for bounded AI-made code.**
+[![CI](https://github.com/mateodaza/camus/actions/workflows/ci.yml/badge.svg)](https://github.com/mateodaza/camus/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/camus-cli.svg)](https://www.npmjs.com/package/camus-cli)
+[![license: MIT](https://img.shields.io/badge/license-MIT-111827.svg)](https://github.com/mateodaza/camus/blob/main/LICENSE)
+
+**Trust the work, not the model that made it.**
+
+Camus is an open-source local control plane for AI-made code that must be
+verified. One model or coding agent makes the change, another challenges the
+exact candidate, deterministic checks arbitrate what they can, and you decide
+what ships.
+
+Prove the local gate first—model-free, provider-free, on a throwaway repository:
+
+```bash
+npx camus-cli@latest canary
+```
+
+Then choose **Flexible Build** for separately selected advisory maker/reviewer
+seats, or the admitted **Claude → Codex proof gate** for a verified local commit.
+Camus never pushes. Follow the
+[five-minute quickstart](https://github.com/mateodaza/camus/blob/main/QUICKSTART.md)
+for the first real candidate, model setup, and honest terminal states.
+
+> **Public alpha.** Run Camus only on repositories and verification commands you
+> trust, never as root. A selected hosted provider receives the context you send
+> it; configured API credentials remain local and go only to that endpoint.
+
+<details>
+<summary><strong>Current release: 0.4.16</strong></summary>
 
 **New in 0.4.16:** `camus build --inspect RUN_ID [--json]` is
 provider-free and read-only. It authenticates the shared CLI/Studio checkpoint,
@@ -117,6 +145,10 @@ Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMU
 > credential-shaped diagnostics. The Slice G offline harness can append content-addressed
 > attempts and derive conservative admission statistics, but it cannot call providers or enable
 > a backend. See `skills/camus/BENCHMARK.md`.
+
+</details>
+
+## How the admitted proof gate works
 
 ```
 plan → implement → [ Codex review ↔ fix ]* → commit gate → dep prep → verify

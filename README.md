@@ -1,5 +1,43 @@
 # Camus
 
+[![CI](https://github.com/mateodaza/camus/actions/workflows/ci.yml/badge.svg)](https://github.com/mateodaza/camus/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/camus-cli.svg)](https://www.npmjs.com/package/camus-cli)
+[![license: MIT](https://img.shields.io/badge/license-MIT-111827.svg)](LICENSE)
+
+**Trust the work, not the model that made it.**
+
+Camus is an open-source local control plane for AI work you need to verify. A
+model or coding agent makes the work, a separate reviewer challenges the exact
+candidate, configured checks arbitrate what they can, and you decide what ships.
+The deterministic kernel owns state, budgets, Git custody, recovery, and evidence
+so changing models does not change what “trusted” means.
+
+Start with a model-free, provider-free check on a throwaway repository:
+
+```bash
+npx camus-cli@latest canary
+```
+
+Then choose the path that fits the job:
+
+| Path | Roles | Standing | Result |
+| --- | --- | --- | --- |
+| **Flexible Build** | Choose available maker and reviewer seats separately | Experimental and advisory | You inspect and accept; Camus never auto-lands it |
+| **Native proof gate** | Claude maker → Codex reviewer | Admitted code gate | Verified local commit; Camus never pushes |
+| **Loop Studio** | Choose available seats; configurable external seats qualify per exact role | Standing is shown per exact path | Local artifact and evidence pack; publication is opt-in |
+
+[Five-minute quickstart](QUICKSTART.md) · [Open Loop Studio](https://camus.sh/studio/) ·
+[See a documented dogfood case](docs/RECOMMENDED-MODEL-SETUP.md) ·
+[Propose a bounded design-partner pilot](https://github.com/mateodaza/camus/issues/new?template=design-partner.yml)
+
+> **Public alpha.** Orchestration, worktrees, run state, and receipts stay local.
+> A selected hosted provider still receives the context you send it. Credentials
+> remain local and go only to that endpoint. Verification executes commands from
+> repositories you trust; Camus is not an OS sandbox and should never run as root.
+
+<details>
+<summary><strong>What ships in 0.4.16 and how current evidence is bounded</strong></summary>
+
 **Makes it work. Knows when to stop.**
 
 New in 0.4.16: Flexible Build now has a stricter structured maker protocol,
@@ -186,9 +224,11 @@ workflow activation lane now also requires the dispatcher-issued exact `admit1:`
 accepted reviewer binding. See the
 [Slice E status](docs/SLICE-E-STATUS.md) and [Slice G status](docs/SLICE-G-STATUS.md).
 
+</details>
+
 ## Makes it work
 
-- **A competing model reviews every change.** Codex judges, a thin runner relays its
+- **On the admitted proof gate, a competing model reviews every change.** Codex judges, a thin runner relays its
   JSON verbatim, and every round leaves a verdict file plus a full event-stream audit
   dir under `~/.camus/reviews/`.
 - **Your own tests are the last word.** The verifier auto-detects the stack or runs
