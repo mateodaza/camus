@@ -28,7 +28,13 @@ for the first real candidate, model setup, and honest terminal states.
 > it; configured API credentials remain local and go only to that endpoint.
 
 <details>
-<summary><strong>Current release: 0.4.18</strong></summary>
+<summary><strong>Current release: 0.4.19</strong></summary>
+
+**New in 0.4.19:** Studio Flexible Build and `camus build` now use the
+same shared built-in admission rule for the Grok subscription seat. Studio no
+longer rejects a valid `builtin1:` Grok selection through its former
+Claude/Codex-only launch allowlist, and the run preserves
+`grok_subscription` billing provenance.
 
 **New in 0.4.18:** the built-in `grok:grok-4.6` + `grok_native` path now
 uses Grok Build's authenticated subscription inference route, not xAI API
@@ -122,6 +128,10 @@ Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMU
 > subscription without an xAI API fallback, under pinned artifact, tool, budget,
 > custody, and evidence controls. See the
 > [0.4.18 release notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.18.md).
+>
+> **0.4.19:** Studio and CLI now share the same Grok built-in admission
+> classification and subscription billing provenance. See the
+> [0.4.19 release notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.19.md).
 >
 > **Existing native infrastructure (introduced in 0.4.7):** The Hybrid Kernel can evaluate a Studio-configured Grok, Qwen,
 > or other OpenAI-compatible reviewer on the exact code candidate before Codex performs the final
@@ -515,7 +525,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.4.18
+npm i -g camus-cli@0.4.19
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)

@@ -1,8 +1,8 @@
 # Releasing camus-cli
 
-The release pipeline is: a version bump in git → one command to tag → GitHub Actions writes the
-changelog → `npm publish` by hand. The Releases page is the changelog; there is no CHANGELOG.md
-to maintain.
+The release pipeline is: a version bump in git → one command to tag → GitHub Actions verifies the
+exact release, publishes it to npm with trusted-publisher OIDC and provenance, then writes the
+GitHub Release. The Releases page is the changelog; there is no CHANGELOG.md to maintain.
 
 ## The flow
 
@@ -20,14 +20,11 @@ git push
 pnpm release:tag   # tags HEAD as v<packages/cli version>, pushes the tag
                    # refuses a dirty tree or a duplicate tag
 
-# 4. GitHub Actions (.github/workflows/release.yml) fires on the tag push and creates the
-#    GitHub Release, with notes generated from the commit log since the previous tag,
-#    grouped by conventional prefix (feat / fix / web / docs / ...).
+# 4. GitHub Actions (.github/workflows/release.yml) fires on the tag push. It verifies the
+#    exact main/tag/version binding and full repository, publishes once through npm OIDC,
+#    verifies SLSA provenance, then creates the GitHub Release from conventional commits.
 
-# 5. Publish to npm — deliberately manual, like install:
-cd packages/cli && npm publish
-
-# 6. Web deploy is separate: pnpm web:build → deploy apps/web/out
+# 5. Web deploy is separate: pnpm web:build → deploy apps/web/out
 ```
 
 ## Commit style (it writes your changelog)

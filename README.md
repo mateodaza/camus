@@ -50,9 +50,15 @@ the release history.
 > repositories you trust; Camus is not an OS sandbox and should never run as root.
 
 <details>
-<summary><strong>What ships in 0.4.18 and how current evidence is bounded</strong></summary>
+<summary><strong>What ships in 0.4.19 and how current evidence is bounded</strong></summary>
 
 **Makes it work. Knows when to stop.**
+
+New in 0.4.19: Loop Studio and `camus build` now apply the same shared
+vendor-managed built-in admission rule to Grok subscription seats. A qualified
+`grok:grok-4.6` seat can launch directly from Studio instead of being refused by
+a stale Claude/Codex-only UI allowlist, and the run snapshot preserves its
+`grok_subscription` billing authority.
 
 New in 0.4.18: the built-in `grok:grok-4.6` + `grok_native` seat now
 preserves Grok Build's authenticated subscription inference path instead of
@@ -141,7 +147,7 @@ The native proof gate needs [Claude Code](https://code.claude.com) and the
 `camus build` needs only the backends you choose, Node 18.17+, and Git.
 
 ```bash
-npm i -g camus-cli@0.4.18
+npm i -g camus-cli@0.4.19
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 ```
@@ -165,14 +171,16 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.4.18
+### Public alpha: 0.4.19
 
 `camus build --inspect RUN_ID [--json]` authenticates and projects a bounded
 checkpoint without contacting a provider or mutating the run. File-action builds
 warn after four mutation-free discovery steps and park after seven; broad
 repository work should be decomposed or sent to a reviewed native harness. These
 inspection and file-action contracts shipped in 0.4.16. Version 0.4.18 adds the
-separate subscription-backed Grok path without changing their standing.
+separate subscription-backed Grok path without changing their standing. Version
+0.4.19 makes that same qualified path launchable from Studio and preserves its
+billing provenance there.
 
 Choose both coding roles independently in the CLI or Studio: Luna → Claude,
 Claude → Qwen, Grok → Qwen, or any other available, role-qualified pairing.
@@ -211,7 +219,7 @@ probe returned quickly, but the real schema-bound review still did not return in
 its five-minute cell, so no end-to-end approval or general model ranking is claimed.
 
 No new reviewer admission, automatic route, cross-case harness ranking, or
-optimal pairing is claimed. See the [0.4.18 release notes](docs/RELEASE-0.4.18.md)
+optimal pairing is claimed. See the [0.4.19 release notes](docs/RELEASE-0.4.19.md)
 and the underlying [0.4.12 evaluator notes](docs/RELEASE-0.4.12.md).
 
 ### Existing admission infrastructure
@@ -340,7 +348,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.4.18
+npm i -g camus-cli@0.4.19
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```
