@@ -19,8 +19,8 @@ export function SiteFooter() {
         <div className="foot-links">
           <span>
             Camus. Formerly{' '}
-            <a href="https://github.com/mateodaza/nightcrawler">Nightcrawler v2</a>. Open source,
-            trusted-code tool.
+            <a href="https://github.com/mateodaza/nightcrawler">Nightcrawler v2</a>. Open-source
+            local agent control plane.
           </span>
           <span>
             <a href="https://github.com/mateodaza/camus">github</a>

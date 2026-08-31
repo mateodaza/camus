@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/mateodaza/camus/security/advisories/new
+    about: Never post credentials, private source, exploit details, or sensitive diagnostics in a public issue.

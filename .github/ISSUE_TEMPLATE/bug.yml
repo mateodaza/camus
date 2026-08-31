@@ -1,0 +1,76 @@
+name: Bug report
+description: Report a reproducible Camus CLI or Loop Studio defect.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Camus. This issue is public: **do not paste API keys, credentials, private source, raw receipts, full environment dumps, or sensitive diagnostics.**
+
+        If the problem could expose data or credentials, bypass authorization or containment, forge evidence, cause an unapproved external action, or replay spend, stop here and use [private vulnerability reporting](https://github.com/mateodaza/camus/security/advisories/new).
+
+  - type: input
+    id: version
+    attributes:
+      label: Camus version
+      placeholder: 0.4.16
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - CLI trusted workflow
+        - CLI Flexible Build
+        - Loop Studio
+        - Model qualification or connection
+        - Receipt or run inspection
+        - Documentation or installation
+        - Something else
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Keep this narrow; never paste an environment or process dump.
+      placeholder: macOS 15; Node 24; pnpm 9
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: List the smallest safe sequence that reproduces the problem. Redact private paths and values.
+      placeholder: |-
+        1. Run `camus ...` with a disposable fixture.
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: Expected and actual behavior
+      placeholder: |-
+        Expected: the run stops before a provider call.
+        Actual: the UI remains waiting without a terminal explanation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: safe_evidence
+    attributes:
+      label: Safe supporting evidence
+      description: Optional, redacted error text or a minimal public fixture only. Do not post raw receipts, private code, credentials, or broad diagnostics.
+
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: Public-report check
+      options:
+        - label: I removed credentials, private source, raw receipts, local paths, and sensitive diagnostics.
+          required: true

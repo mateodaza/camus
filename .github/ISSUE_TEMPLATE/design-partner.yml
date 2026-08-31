@@ -1,0 +1,62 @@
+name: Design-partner pilot
+description: Bring one real task for an evidence-bound Camus run.
+title: "[Pilot] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Camus is in public alpha. Bring one bounded task and we will help configure a maker/reviewer run, preserve failures as evidence, and record where human judgment was actually needed.
+
+        This issue is public. **Do not paste credentials, private source, raw diagnostics, local paths, or an unreviewed receipt.** For a security concern, use [private vulnerability reporting](https://github.com/mateodaza/camus/security/advisories/new).
+
+  - type: textarea
+    id: task_and_acceptance
+    attributes:
+      label: What real task should Camus attempt?
+      description: Describe the outcome and two to four things that must be true before you would accept it. Keep private material out of the issue.
+      placeholder: |-
+        Task: Add a provider timeout without changing retry behavior.
+        I would accept it if:
+        - the existing tests still pass
+        - a timeout regression is covered
+        - no new network authority is introduced
+    validations:
+      required: true
+
+  - type: input
+    id: setup
+    attributes:
+      label: Your setup
+      description: Enough context to plan the run; exact versions can be collected privately if needed.
+      placeholder: Loop Studio or CLI; macOS/Linux; language and build tool
+
+  - type: dropdown
+    id: primary_goal
+    attributes:
+      label: What do you most want to learn?
+      options:
+        - Whether independent review catches meaningful mistakes
+        - Whether a mixed model or harness pair completes useful work
+        - Whether a longer task survives interruption and resume
+        - Whether the evidence and receipt make acceptance easier
+        - Whether Camus reduces human supervision
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: What limits must Camus respect?
+      description: Examples include no network, no publication, no writes outside one path, a preferred pair, or a time/cost ceiling. Never paste API keys.
+      placeholder: No publication; five-minute ceiling; run only the repository's existing verifier.
+
+  - type: checkboxes
+    id: acknowledgements
+    attributes:
+      label: Before submitting
+      options:
+        - label: I removed credentials, private source, raw diagnostics, local paths, and unreviewed receipts from this public issue.
+          required: true
+        - label: I understand Flexible Build is experimental and advisory; I remain responsible for accepting changes, and Camus will not push or publish them automatically.
+          required: true

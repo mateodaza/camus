@@ -1,0 +1,64 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.15.0'
+          package-manager-cache: false
+
+      - name: Install the pinned workspace package manager
+        run: npm install --global pnpm@9.15.0
+
+      - name: Install the locked workspace
+        run: pnpm install --frozen-lockfile
+
+      - name: Run root and CLI verification
+        run: pnpm test
+
+      - name: Run Studio verification
+        run: pnpm --filter camus-loop-studio test
+
+      - name: Build the public landing and hosted Studio
+        run: pnpm --filter web build
+
+      - name: Run trust-package verification
+        run: pnpm --filter camus-trust test
+
+      - name: Refuse high-severity production dependency advisories
+        run: pnpm audit --prod --audit-level=high
+
+      - name: Pack and smoke-test the exact CLI payload
+        working-directory: packages/cli
+        shell: bash
+        run: |
+          PACK_DIR="$(mktemp -d)"
+          INSTALL_DIR="$(mktemp -d)"
+          npm pack --pack-destination "$PACK_DIR" >/dev/null
+          TARBALL="$(find "$PACK_DIR" -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          test -n "$TARBALL"
+          npm install --ignore-scripts --no-audit --no-fund --prefix "$INSTALL_DIR" "$TARBALL"
+          EXPECTED_VERSION="$(node -p "require('./package.json').version")"
+          test "$("$INSTALL_DIR/node_modules/.bin/camus" --version)" = "$EXPECTED_VERSION"
+          "$INSTALL_DIR/node_modules/.bin/camus" --help >/dev/null
+          "$INSTALL_DIR/node_modules/.bin/camus" build --help >/dev/null

@@ -38,9 +38,9 @@ const FAVICON =
 // Override per-environment with NEXT_PUBLIC_SITE_URL (e.g. a preview deploy).
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://camus.sh';
 
-const TITLE = 'Camus: the local control plane for AI-made work';
+const TITLE = 'Camus: verify AI-made work across models and agents';
 const DESCRIPTION =
-  'One model makes the work and a separately chosen model reviews it. Camus records identities, configured checks, evidence, budgets, and human decisions against the exact result.';
+  'Choose one model or coding agent to make the work and another to challenge it. Camus keeps the control plane local and binds checks, identities, evidence, budgets, and human decisions to the exact result.';
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -58,7 +58,7 @@ export const metadata: Metadata = {
         url: '/og.png',
         width: 1200,
         height: 630,
-        alt: 'Camus, model review and exact-result evidence for AI-made work.',
+        alt: 'Camus, a local control plane for independently reviewed AI-made work.',
       },
     ],
   },

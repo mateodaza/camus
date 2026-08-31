@@ -19,21 +19,21 @@ export default function Home() {
               <span className="tagline">Trust the work, not the model that made it.</span>
             </h1>
             <p className="hero-sub">
-              One model does the work. A separate reviewer challenges it against
-              what you said must be true. Cross-vendor review, tests, and captured
-              sources strengthen the result when configured. The receipt records
-              what actually happened.
+              Camus is the local control plane for AI work you need to verify.
+              Choose one model or coding agent to make it and another to challenge
+              it against your contract. Camus runs the checks you configure, keeps
+              control local, and binds the evidence to the exact result before you
+              decide to ship.
             </p>
             <div className="cta-row">
-              <a className="cta" href="/studio/">Open Loop Studio</a>
-              <a className="cta-ghost" href="#proof">See a sanitized catch ↓</a>
+              <a className="cta" href="#run">Install the CLI ↓</a>
+              <a className="cta-ghost" href="#proof">See a documented run ↓</a>
             </div>
             <div className="hero-proof" aria-label="What Camus gives you">
-              <b>public alpha</b>
-              <b>local control plane</b>
+              <b>open-source public alpha</b>
+              <b>control stays local</b>
               <b>maker and reviewer chosen separately</b>
-              <b>checks and sources recorded when used</b>
-              <b>receipts bound to the exact result</b>
+              <b>you decide what ships</b>
             </div>
           </div>
         </header>
@@ -43,11 +43,11 @@ export default function Home() {
             <Reveal>
               <div className="sec-head sec-head--wide">
                 <div>
-                  <h2 className="sec-h2">A confident answer is not the same as a trustworthy one.</h2>
+                  <h2 className="sec-h2">Models are multiplying. Accountability isn’t.</h2>
                   <p className="sec-sub">
-                    The model that made the work shares its own assumptions, omissions,
-                    and incentives. Asking it to check itself can produce a more polished
-                    version of the same blind spot.
+                    Claude, GPT, Grok, Qwen, open weights, and native agent harnesses
+                    improve on different curves. Switching models is easy. Proving what
+                    ran, under which budget, against which exact artifact, is not.
                   </p>
                 </div>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -57,23 +57,26 @@ export default function Home() {
 
             <div className="value-grid">
               <Reveal className="value-card">
-                <h3>The maker can miss its own mistake.</h3>
-                <p>Stronger models make better work, but confidence is still not evidence.</p>
+                <h3>Better models still miss their own mistakes.</h3>
+                <p>Capability improves the work. It does not turn confidence into evidence.</p>
               </Reveal>
               <Reveal className="value-card">
-                <h3>Self-review shares the blind spot.</h3>
-                <p>The same model family tends to defend the choices and style it already produced.</p>
+                <h3>A harness changes more than the model.</h3>
+                <p>Context, tools, retries, and side calls can change the result and its cost.</p>
               </Reveal>
               <Reveal className="value-card">
-                <h3>Review can detach from the final result.</h3>
-                <p>A clean verdict is meaningless if the artifact changes after the reviewer saw it.</p>
+                <h3>Review can detach from the final artifact.</h3>
+                <p>A clean verdict means little if the work changes after the reviewer saw it.</p>
               </Reveal>
             </div>
 
             <Reveal>
               <p className="thesis-line">
-                Camus keeps the artifact, the evidence, the recorded verdict, and
-                the human decision bound together.
+                Change the models without changing what “trusted” means.
+              </p>
+              <p className="thesis-support">
+                Camus keeps the contract, artifact, identities, evidence, verdict,
+                and human decision bound together while the model layer changes.
               </p>
             </Reveal>
           </div>
@@ -84,12 +87,13 @@ export default function Home() {
             <Reveal>
               <div className="sec-head sec-head--wide">
                 <div>
-                  <h2 className="sec-h2">In one private run, the first model sounded right. The second model checked.</h2>
+                  <h2 className="sec-h2">Camus records the fix—and refuses to launder the failure around it.</h2>
                   <p className="sec-sub">
-                    This sanitized reconstruction preserves the finding while withholding
-                    the private corpus and receipt. Sonnet drafted a plausible strategy;
-                    GPT-5.4 found unsupported claims, including a raw search score rewritten
-                    as “Relevance: 76%” after the contract forbade that interpretation.
+                    In one bounded dogfood run documented in the public model-setup
+                    report, Qwen3.8 Max through Camus file actions made the exact fix,
+                    the host verifier passed, and GPT-5.6 Luna approved it. The same
+                    fixture through native Qwen Code retained the right-looking change
+                    but never closed the harness session, so its sealed standing remained failed.
                   </p>
                 </div>
               </div>
@@ -99,41 +103,42 @@ export default function Home() {
               <Reveal className="proof-story">
                 <div className="proof-row">
                   <span>Made</span>
-                  <p>Sonnet produced the initial strategy using the frozen research context.</p>
+                  <p>Qwen3.8 Max made the canonical one-line fix in five responses and six actions.</p>
                 </div>
-                <div className="proof-row proof-row--caught">
-                  <span>Caught</span>
-                  <p>GPT-5.4 blocked unsupported interpretations instead of rewarding persuasive prose.</p>
+                <div className="proof-row proof-row--verified">
+                  <span>Verified</span>
+                  <p>The frozen host check passed against the exact candidate.</p>
                 </div>
                 <div className="proof-row">
-                  <span>Human</span>
-                  <p>One decision reached the human: authorize one more repair round.</p>
+                  <span>Reviewed</span>
+                  <p>A separately selected Luna reviewer approved with no findings.</p>
                 </div>
-                <div className="proof-row proof-row--sealed">
-                  <span>Sealed</span>
-                  <p>The repaired result passed verification and earned an independent clean audit.</p>
+                <div className="proof-row proof-row--refused">
+                  <span>Refused</span>
+                  <p>The native path kept a correct-looking edit but no definitive terminal, so Camus did not upgrade it.</p>
                 </div>
               </Reveal>
 
               <Reveal className="proof-receipt">
-                <p className="receipt-kicker">The result did not merely say “done.”</p>
-                <Artifact tone="dark" path="sanitized receipt view" label="A sanitized Camus evidence receipt">
-{`standing       `}<span className="ok">verified</span>{`
-execution      completed
-verification   passed
-audit          independent_clean
-publication    not_published
-
-executor       anthropic:sonnet
-reviewer       openai:gpt-5.4
-artifact       [private]
-receipt        [private]`}
+                <p className="receipt-kicker">The useful result remained advisory.</p>
+                <Artifact tone="dark" path="documented dogfood summary" label="A documented Camus dogfood summary">
+{`task_class      simple_bounded_code
+maker           qwen/qwen3.8-max
+executor        file_actions
+reviewer        codex:gpt-5.6-luna
+verification    `}<span className="ok">passed</span>{`
+review          approved_no_findings
+human_accept    required
+maker_time      83.8s
+maker_tokens    7,445`}
                 </Artifact>
                 <p className="receipt-note">
-                  The original receipt preserves the acceptance contract, exact model
-                  identities, human decisions, checks, findings, and evidence bundle.
-                  Current public dogfood evidence is documented in the{' '}
-                  <a className="inline-link" href="https://github.com/mateodaza/camus/blob/main/docs/RECOMMENDED-MODEL-SETUP.md">model setup report ↗</a>.
+                  The fixture and report are public; the underlying run receipt remains
+                  private, so this is a documented case rather than independently
+                  replayable evidence. It is not a model ranking. Inspect the{' '}
+                  <a className="inline-link" href="https://github.com/mateodaza/camus/blob/main/apps/loop-studio/fixtures/code-eval-v1/simple-bounded-parser-fix/fixture.json">fixture ↗</a>
+                  {' '}and the{' '}
+                  <a className="inline-link" href="https://github.com/mateodaza/camus/blob/main/docs/RECOMMENDED-MODEL-SETUP.md">dogfood report ↗</a>.
                 </p>
               </Reveal>
             </div>
@@ -145,9 +150,9 @@ receipt        [private]`}
             <Reveal>
               <h2 className="sec-h2">Four parts. One honest result.</h2>
               <p className="sec-sub">
-                Models handle semantic work. A deterministic local kernel owns state,
-                budgets, Git custody, and evidence. No model gets to award itself trusted
-                standing.
+                Camus is not another agent. Models handle semantic work; a deterministic
+                local kernel owns state, budgets, Git custody, recovery, and evidence.
+                No model gets to award itself trusted standing.
               </p>
             </Reveal>
 
@@ -160,7 +165,7 @@ receipt        [private]`}
               <Reveal className="flow-step">
                 <span>2</span>
                 <h3>Let the maker work</h3>
-                <p>A durable model session owns the semantic work. The local kernel handles the plumbing.</p>
+                <p>A qualified model or native coding harness owns the semantic work. The local kernel handles the plumbing.</p>
               </Reveal>
               <Reveal className="flow-step">
                 <span>3</span>
@@ -209,10 +214,10 @@ receipt        [private]`}
           <div className="wrap">
             <Reveal>
               <div className="direction-head">
-                <h2 className="sec-h2">What ships now—and what Camus refuses to pretend.</h2>
+                <h2 className="sec-h2">What is trusted today—and what remains evidence-gated.</h2>
                 <p className="sec-sub">
-                  The control plane is stable across models. Standing still depends on
-                  the exact path, checks, review identity, and evidence that actually ran.
+                  Camus applies versioned contracts across supported paths. Each exact
+                  path earns only the standing its checks, identity, and evidence support.
                 </p>
               </div>
             </Reveal>
@@ -227,7 +232,7 @@ receipt        [private]`}
                 </p>
               </Reveal>
               <Reveal className="direction-card direction-card--experimental">
-                <p className="direction-tag">Experimental</p>
+                <p className="direction-tag">Advisory path</p>
                 <h3>Flexible Build</h3>
                 <p>
                   Choose any qualified maker and reviewer pair, then use Camus file
@@ -236,12 +241,12 @@ receipt        [private]`}
                 </p>
               </Reveal>
               <Reveal className="direction-card direction-card--evidence">
-                <p className="direction-tag">Evidence-gated</p>
-                <h3>A/B learning and routing</h3>
+                <p className="direction-tag">Evaluation infrastructure</p>
+                <h3>Automatic routing stays off</h3>
                 <p>
-                  Studio freezes two Claude writing arms and supports blinded human calibration.
-                  Automatic routing stays off without sufficient calibrated evidence;
-                  Camus makes no universal “best model” claim.
+                  Matched evals and blinded human calibration can accumulate task-class
+                  evidence. No model is promoted and no universal “best model” is claimed
+                  until that evidence earns it.
                 </p>
               </Reveal>
             </div>
@@ -258,31 +263,15 @@ receipt        [private]`}
         <section className="sec" id="studio">
           <div className="wrap">
             <Reveal>
-              <h2 className="sec-h2">Built for work you stake your name on.</h2>
+              <h2 className="sec-h2">One control plane. Two ways to work.</h2>
               <p className="sec-sub">
-                One control plane, with standing that stays honest about the path you chose.
+                Camus starts with code, where trusted tests can arbitrate; the same
+                control plane extends to evidence-heavy research and writing. Use the
+                CLI for repositories or the browser for documents and investigations.
               </p>
             </Reveal>
 
             <div className="audience-grid">
-              <Reveal className="audience-card">
-                <p className="audience-kicker">For research and marketing</p>
-                <h3>Loop Studio</h3>
-                <p>
-                  Write a memo, investigate competitors, or turn Hivemind knowledge
-                  into a grounded deliverable. Use plain language, inspect every
-                  objection, and step in only for real judgment calls.
-                </p>
-                <ul>
-                  <li>browser interface, no JSON noise</li>
-                  <li>the full acceptance contract in your own words</li>
-                  <li>capability-qualified Claude, GPT, Grok, Qwen, or local seats</li>
-                  <li>Hivemind grounding through your Claude MCP</li>
-                  <li>explicit publication consent and sealed receipts</li>
-                </ul>
-                <a className="cta" href="/studio/">Open Loop Studio</a>
-              </Reveal>
-
               <Reveal className="audience-card audience-card--code">
                 <p className="audience-kicker">For developers</p>
                 <h3>Camus CLI</h3>
@@ -300,6 +289,26 @@ receipt        [private]`}
                 </ul>
                 <a className="cta-ghost audience-link" href="https://www.npmjs.com/package/camus-cli">View camus-cli on npm ↗</a>
               </Reveal>
+
+              <Reveal className="audience-card">
+                <p className="audience-kicker">For research and marketing</p>
+                <h3>Loop Studio</h3>
+                <p>
+                  Write a memo, investigate competitors, or turn Hivemind knowledge
+                  into a grounded deliverable. Use plain language, inspect every
+                  objection, and step in only for real judgment calls.
+                </p>
+                <ul>
+                  <li>browser interface, no JSON noise</li>
+                  <li>the full acceptance contract in your own words</li>
+                  <li>connections for Claude, GPT, Grok, Qwen, and OpenAI-compatible or local seats</li>
+                  <li>built-in Claude/Codex seats use versioned qualification contracts; configurable seats require exact local qualification</li>
+                  <li>native harness artifacts separately prove readiness and policy compatibility</li>
+                  <li>Hivemind grounding through your Claude MCP</li>
+                  <li>explicit publication consent and sealed receipts</li>
+                </ul>
+                <a className="cta" href="/studio/">Open Loop Studio</a>
+              </Reveal>
             </div>
           </div>
         </section>
@@ -309,12 +318,14 @@ receipt        [private]`}
             <Reveal>
               <div className="sec-head">
                 <div>
-                  <h2 className="sec-h2">Your machine keeps custody.</h2>
+                  <h2 className="sec-h2">The control plane stays on your machine.</h2>
                   <p className="sec-sub">
-                    Orchestration and receipts stay on your machine. Built-in CLI seats
-                    use your existing sessions; configurable API seats use credentials
-                    held by the local service. Native Qwen and Grok workers can reach only
-                    the selected model through a host-owned one-model gateway.
+                    Orchestration, budgets, run state, and receipts stay local. Configurable
+                    API credentials are held by the local service and sent only to the
+                    selected provider endpoint; they are never sent to camus.sh or exposed
+                    to native workers. Providers still receive the context you choose to
+                    send. Native Qwen and Grok workers can reach only the selected model
+                    through a host-owned one-model gateway.
                   </p>
                 </div>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -331,7 +342,7 @@ $ camus build --maker <backend>:<model> \\
     --reviewer <backend>:<model> --task "..." --contract "..." \\
     --verify "pnpm test"
 
-`}<span className="g">✓</span>{` exact seats qualified on this machine
+`}<span className="g">✓</span>{` selected seats authorized for launch (built-in or qualified)
 `}<span className="g">✓</span>{` candidate isolated from your branch
 `}<span className="g">✓</span>{` trusted verifier passed
 `}<span className="r">!</span>{` clean advisory review; human acceptance still required
@@ -344,10 +355,30 @@ $ camus build --inspect <runId>
 
             <Reveal>
               <div className="cta-row cta-row--left">
-                <a className="cta" href="/studio/">Try the visual Studio</a>
+                <a className="cta" href="https://github.com/mateodaza/camus/blob/main/QUICKSTART.md">Install from the quick start ↗</a>
+                <a className="cta-ghost" href="/studio/">Try the visual Studio</a>
                 <a className="cta-ghost" href="https://github.com/mateodaza/camus">Read the source ↗</a>
-                <a className="cta-ghost" href="https://github.com/mateodaza/camus/issues/new?title=Design%20partner%20pilot">Join the design-partner pilot ↗</a>
               </div>
+            </Reveal>
+          </div>
+        </section>
+
+        <section className="sec sec--pilot" id="pilot">
+          <div className="wrap pilot-grid">
+            <Reveal>
+              <h2 className="sec-h2">Bring one real task. Leave with a receipt—or an honest refusal.</h2>
+              <p className="sec-sub">
+                Camus is in public alpha. Run it yourself, or bring one bounded code,
+                research, or launch-critical content workflow to a design-partner session.
+                We will record what worked, what stopped safely, and where human judgment
+                was actually needed.
+              </p>
+            </Reveal>
+            <Reveal className="pilot-actions">
+              <a className="cta" href="https://github.com/mateodaza/camus/issues/new?template=design-partner.yml">Propose a pilot ↗</a>
+              <a className="cta-ghost" href="/studio/">Open Loop Studio</a>
+              <a className="cta-ghost" href="https://www.npmjs.com/package/camus-cli">Install Camus ↗</a>
+              <p className="pilot-note">Do not post credentials, private source, raw diagnostics, or unreviewed receipts.</p>
             </Reveal>
           </div>
         </section>
