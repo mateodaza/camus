@@ -36,11 +36,11 @@ Then choose the path that fits the job:
 > repositories you trust; Camus is not an OS sandbox and should never run as root.
 
 <details>
-<summary><strong>What ships in 0.4.17 and how current evidence is bounded</strong></summary>
+<summary><strong>What ships in 0.4.18 and how current evidence is bounded</strong></summary>
 
 **Makes it work. Knows when to stop.**
 
-New in 0.4.17: the built-in `grok:grok-4.6` + `grok_native` seat now
+New in 0.4.18: the built-in `grok:grok-4.6` + `grok_native` seat now
 preserves Grok Build's authenticated subscription inference path instead of
 spending xAI API credits. Camus pins the reviewed Grok Build artifact, strips
 API credentials, exposes only bounded tools, cleans its private OAuth copy, and
@@ -127,7 +127,7 @@ The native proof gate needs [Claude Code](https://code.claude.com) and the
 `camus build` needs only the backends you choose, Node 18.17+, and Git.
 
 ```bash
-npm i -g camus-cli@0.4.17
+npm i -g camus-cli@0.4.18
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 ```
@@ -151,13 +151,13 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.4.17
+### Public alpha: 0.4.18
 
 `camus build --inspect RUN_ID [--json]` authenticates and projects a bounded
 checkpoint without contacting a provider or mutating the run. File-action builds
 warn after four mutation-free discovery steps and park after seven; broad
 repository work should be decomposed or sent to a reviewed native harness. These
-inspection and file-action contracts shipped in 0.4.16. Version 0.4.17 adds the
+inspection and file-action contracts shipped in 0.4.16. Version 0.4.18 adds the
 separate subscription-backed Grok path without changing their standing.
 
 Choose both coding roles independently in the CLI or Studio: Luna → Claude,
@@ -197,7 +197,7 @@ reviewer did not return inside any of the five-minute cells, so no end-to-end ap
 or general model ranking is claimed.
 
 No new reviewer admission, automatic route, cross-case harness ranking, or
-optimal pairing is claimed. See the [0.4.17 release notes](docs/RELEASE-0.4.17.md)
+optimal pairing is claimed. See the [0.4.18 release notes](docs/RELEASE-0.4.18.md)
 and the underlying [0.4.12 evaluator notes](docs/RELEASE-0.4.12.md).
 
 ### Existing admission infrastructure
@@ -326,7 +326,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.4.17
+npm i -g camus-cli@0.4.18
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```

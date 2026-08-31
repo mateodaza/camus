@@ -6,12 +6,17 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import {
   createGrokAcpTools,
+  grokSubscriptionHeadlessPolicy,
+  grokSubscriptionPolicy,
   installHeadlessGuard,
   installGrokSubscriptionAuth,
   preflightGrokSubscriptionTools,
   runNativeGrokSubscription,
   runGrokSubscriptionTurn,
 } from './grok-subscription.mjs';
+
+const darwinAcpPolicy = options => grokSubscriptionPolicy({ ...options, platform: 'darwin', architecture: 'arm64' });
+const darwinHeadlessPolicy = options => grokSubscriptionHeadlessPolicy({ ...options, platform: 'darwin', architecture: 'arm64' });
 
 function runCommand(command, args, event) {
   return new Promise((resolve, reject) => {
@@ -74,7 +79,8 @@ test('subscription turn proves OAuth, exact model and subscription billing witho
   const f = await fixture(t); const rpcFactory = rpcFactoryFor();
   const result = await runGrokSubscriptionTurn({ prompt: 'bounded task', model: 'grok-4.6', effort: 'medium',
     worktree: f.worktree, scratch: f.scratch, receiptsDir: f.receiptsDir, maxModelCalls: 2, maxToolCalls: 0,
-    rpcFactory, resolveHarness: async () => f.harness, assertArtifact: async () => 'a'.repeat(64), installAuth: async () => {} });
+    rpcFactory, resolveHarness: async () => f.harness, assertArtifact: async () => 'a'.repeat(64), installAuth: async () => {},
+    createPolicy: darwinAcpPolicy });
   assert.equal(result.ok, true); assert.equal(result.billingAuthority, 'grok_subscription');
   assert.equal(result.authMethod, 'cached_token'); assert.equal(result.modelActual, 'xai:grok-4.6');
   assert.equal(result.modelReported, 'grok-4.6-build');
@@ -96,7 +102,8 @@ test('subscription turn refuses API-key-only auth and model substitution before 
   const f = await fixture(t);
   const common = { prompt: 'bounded task', model: 'grok-4.6', worktree: f.worktree, scratch: f.scratch,
     receiptsDir: f.receiptsDir, maxModelCalls: 1, maxToolCalls: 0,
-    resolveHarness: async () => f.harness, assertArtifact: async () => 'b'.repeat(64), installAuth: async () => {} };
+    resolveHarness: async () => f.harness, assertArtifact: async () => 'b'.repeat(64), installAuth: async () => {},
+    createPolicy: darwinAcpPolicy };
   const apiOnly = await runGrokSubscriptionTurn({ ...common, rpcFactory: rpcFactoryFor({ authMethods: [{ id: 'xai.api_key' }] }) });
   assert.equal(apiOnly.ok, false); assert.equal(apiOnly.noModelCalled, true); assert.match(apiOnly.error, /API-key fallback remains refused/);
   const substituted = await runGrokSubscriptionTurn({ ...common, rpcFactory: rpcFactoryFor({ reportedModel: 'grok-other' }) });
@@ -109,7 +116,7 @@ test('native subscription maker uses headless hard turn bounds and terminal usag
     worktree: f.worktree, scratch: f.scratch, receiptsDir: f.receiptsDir, maxModelCalls: 2, maxToolCalls: 1,
     resolveHarness: async () => f.harness, assertArtifact: async () => 'c'.repeat(64),
     installAuth: async home => writeFile(join(home, 'auth.json'), '{"opaque":"login"}\n', { mode: 0o600 }),
-    processRunner: async options => {
+    createPolicy: darwinHeadlessPolicy, processRunner: async options => {
       invocation = options;
       const sessionId = options.args[options.args.indexOf('--session-id') + 1];
       options.onFrame({ type: 'tool_call', toolName: 'read_file' });
@@ -139,6 +146,7 @@ test('native subscription repair resumes only with tighter remaining bounds', as
   const common = { model: 'grok-4.6', effort: 'medium', worktree: f.worktree, scratch: f.scratch, receiptsDir: f.receiptsDir,
     resolveHarness: async () => f.harness, assertArtifact: async () => 'e'.repeat(64),
     installAuth: async home => writeFile(join(home, 'auth.json'), '{"opaque":"login"}\n', { mode: 0o600 }),
+    createPolicy: darwinHeadlessPolicy,
     processRunner: async options => {
       invocations.push(options);
       const sessionFlag = options.args.includes('--resume') ? '--resume' : '--session-id';
@@ -182,7 +190,7 @@ test('native subscription removes its isolated OAuth copy after a failed process
     worktree: f.worktree, scratch: f.scratch, receiptsDir: f.receiptsDir, maxModelCalls: 1, maxToolCalls: 0,
     resolveHarness: async () => f.harness, assertArtifact: async () => 'd'.repeat(64),
     installAuth: async home => writeFile(join(home, 'auth.json'), '{"opaque":"login"}\n', { mode: 0o600 }),
-    processRunner: async () => ({ code: 1 }) });
+    createPolicy: darwinHeadlessPolicy, processRunner: async () => ({ code: 1 }) });
   assert.equal(result.ok, false);
   await assert.rejects(() => readFile(join(f.scratch, 'grok-home', 'auth.json')), { code: 'ENOENT' });
 });
@@ -194,6 +202,14 @@ test('OAuth evidence must be a private regular file and never accepts an empty r
   await writeFile(source, '{"issuer":{"key":"opaque"}}\n', { mode: 0o644 });
   await chmod(source, 0o644);
   await assert.rejects(() => installGrokSubscriptionAuth(home, { source }), /private regular file/);
+});
+
+test('subscription policies refuse an unreviewed platform before execution', async t => {
+  const f = await fixture(t);
+  const common = { worktree: f.worktree, scratch: f.scratch, harness: f.harness,
+    artifactDigest: 'f'.repeat(64), model: 'grok-4.6', platform: 'linux', architecture: 'x64' };
+  await assert.rejects(() => grokSubscriptionPolicy(common), /requires macOS arm64/);
+  await assert.rejects(() => grokSubscriptionHeadlessPolicy(common), /requires macOS arm64/);
 });
 
 test('ACP tools refuse traversal, private paths and action-cap overruns', async t => {

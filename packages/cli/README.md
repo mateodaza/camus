@@ -28,9 +28,9 @@ for the first real candidate, model setup, and honest terminal states.
 > it; configured API credentials remain local and go only to that endpoint.
 
 <details>
-<summary><strong>Current release: 0.4.17</strong></summary>
+<summary><strong>Current release: 0.4.18</strong></summary>
 
-**New in 0.4.17:** the built-in `grok:grok-4.6` + `grok_native` path now
+**New in 0.4.18:** the built-in `grok:grok-4.6` + `grok_native` path now
 uses Grok Build's authenticated subscription inference route, not xAI API
 credits. It pins the reviewed 1.0.13 artifact, removes API credentials from the
 worker, limits tools and calls, cleans run-private OAuth state, and binds the
@@ -118,10 +118,10 @@ Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMU
 > routing. See the
 > [0.4.16 release notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.16.md).
 >
-> **0.4.17:** the built-in Grok Build seat can use the operator's Grok
+> **0.4.18:** the built-in Grok Build seat can use the operator's Grok
 > subscription without an xAI API fallback, under pinned artifact, tool, budget,
 > custody, and evidence controls. See the
-> [0.4.17 release notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.17.md).
+> [0.4.18 release notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.18.md).
 >
 > **Existing native infrastructure (introduced in 0.4.7):** The Hybrid Kernel can evaluate a Studio-configured Grok, Qwen,
 > or other OpenAI-compatible reviewer on the exact code candidate before Codex performs the final
@@ -515,7 +515,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.4.17
+npm i -g camus-cli@0.4.18
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)

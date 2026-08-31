@@ -183,8 +183,9 @@ export async function installHeadlessGuard(home, policy, maximumActions) {
     hook: `\n[[hooks.PreToolUse]]\nhooks = [{ type = "command", command = ${JSON.stringify(command)}, timeout = 10 }]\n` };
 }
 
-export async function grokSubscriptionPolicy({ worktree, scratch, harness, artifactDigest, model, deniedPaths = [], platform = process.platform }) {
-  if (platform !== 'darwin' || process.arch !== 'arm64') throw new Error('The reviewed Grok subscription seat currently requires macOS arm64.');
+export async function grokSubscriptionPolicy({ worktree, scratch, harness, artifactDigest, model, deniedPaths = [],
+  platform = process.platform, architecture = process.arch }) {
+  if (platform !== 'darwin' || architecture !== 'arm64') throw new Error('The reviewed Grok subscription seat currently requires macOS arm64.');
   const cwd = await realpath(worktree); await mkdir(scratch, { recursive: true, mode: 0o700 });
   const temp = await realpath(scratch); const binary = await realpath(harness);
   if (within(cwd, temp) || within(temp, cwd)) throw new Error('Grok subscription scratch and candidate must be separate.');
@@ -199,8 +200,9 @@ export async function grokSubscriptionPolicy({ worktree, scratch, harness, artif
     processProfile: processProfile({ scratch: temp, harness: binary, worktree: cwd }), toolProfile: toolProfile({ worktree: cwd, scratch: temp, deniedPaths }) };
 }
 
-export async function grokSubscriptionHeadlessPolicy({ worktree, scratch, harness, artifactDigest, model, deniedPaths = [], platform = process.platform }) {
-  if (platform !== 'darwin' || process.arch !== 'arm64') throw new Error('The reviewed Grok subscription seat currently requires macOS arm64.');
+export async function grokSubscriptionHeadlessPolicy({ worktree, scratch, harness, artifactDigest, model, deniedPaths = [],
+  platform = process.platform, architecture = process.arch }) {
+  if (platform !== 'darwin' || architecture !== 'arm64') throw new Error('The reviewed Grok subscription seat currently requires macOS arm64.');
   const cwd = await realpath(worktree); await mkdir(scratch, { recursive: true, mode: 0o700 });
   const temp = await realpath(scratch); const binary = await realpath(harness);
   if (within(cwd, temp) || within(temp, cwd)) throw new Error('Grok subscription scratch and candidate must be separate.');
@@ -416,14 +418,14 @@ export async function runGrokSubscriptionTurn({ prompt, model, effort = 'medium'
   signal, timeoutMs = 600000, maxModelCalls = 32, maxToolCalls = 0, tools = false, onNativeSession = () => {}, onNativeProgress = () => {},
   onTick = () => {}, rpcFactory = options => new CodexRpc(options), resolveHarness = resolveNativeHarness,
   assertArtifact = assertNativeHarnessArtifact, installAuth = installGrokSubscriptionAuth,
-  preflightTools = preflightGrokSubscriptionTools }) {
+  preflightTools = preflightGrokSubscriptionTools, createPolicy = grokSubscriptionPolicy }) {
   const startedAt = Date.now(); let rpc = null, dispatched = false, ended = false, session = nativeSession, toolsHost = null;
   let textByMessage = new Map(), lastMessage = null, stopReason = null, terminalUsage = null;
   try {
     if (!model || !Number.isSafeInteger(maxModelCalls) || maxModelCalls < 1 || !Number.isSafeInteger(maxToolCalls) || maxToolCalls < 0) throw new Error('Grok subscription execution requires explicit bounded model and tool limits.');
     if (signal?.aborted) throw new Error('Grok subscription execution cancelled before preflight.');
     const harness = await resolveHarness(GROK_NATIVE_EXECUTOR); const artifactDigest = await assertArtifact(GROK_NATIVE_EXECUTOR, harness);
-    const policy = await grokSubscriptionPolicy({ worktree, scratch, harness, artifactDigest, model, deniedPaths });
+    const policy = await createPolicy({ worktree, scratch, harness, artifactDigest, model, deniedPaths });
     if (tools) await preflightTools({ policy, sourcePath, receiptsDir, signal });
     await installAuth(policy.home); await installGrokSubscriptionConfig(policy.home, model);
     if (session && (session.version !== GROK_SUBSCRIPTION_POLICY_VERSION || session.policyHash !== policy.hash
@@ -504,7 +506,7 @@ function grokSubscriptionHeadlessArgs({ policy, model, effort, prompt, session, 
 export async function runNativeGrokSubscription({ prompt, model, effort = 'medium', worktree, scratch, receiptsDir, deniedPaths = [], nativeSession = null,
   signal, timeoutMs = 600000, maxModelCalls = 32, maxToolCalls = 0, onNativeSession = () => {}, onNativeProgress = () => {}, onTick = () => {},
   resolveHarness = resolveNativeHarness, assertArtifact = assertNativeHarnessArtifact, installAuth = installGrokSubscriptionAuth,
-  processRunner = runNativeProcess }) {
+  processRunner = runNativeProcess, createPolicy = grokSubscriptionHeadlessPolicy }) {
   const startedAt = Date.now(); let dispatched = false, terminal = null, responses = 0, actions = 0, session = nativeSession, policy = null;
   const local = new AbortController(); let stopped = null;
   const stop = reason => { if (!stopped) stopped = String(reason); local.abort(new Error(stopped)); };
@@ -515,7 +517,7 @@ export async function runNativeGrokSubscription({ prompt, model, effort = 'mediu
       throw new Error('Grok subscription execution requires explicit bounded model and tool limits.');
     }
     const harness = await resolveHarness(GROK_NATIVE_EXECUTOR); const artifactDigest = await assertArtifact(GROK_NATIVE_EXECUTOR, harness);
-    policy = await grokSubscriptionHeadlessPolicy({ worktree, scratch, harness, artifactDigest, model, deniedPaths });
+    policy = await createPolicy({ worktree, scratch, harness, artifactDigest, model, deniedPaths });
     if (session && (session.version !== GROK_SUBSCRIPTION_NATIVE_POLICY_VERSION || session.policyHash !== policy.hash
         || session.model !== model || !Number.isSafeInteger(session.maximumModelCalls) || session.maximumModelCalls < 1
         || maxModelCalls > session.maximumModelCalls || !Number.isSafeInteger(session.maximumActions) || session.maximumActions < 0

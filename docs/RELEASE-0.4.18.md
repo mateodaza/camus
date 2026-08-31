@@ -1,6 +1,6 @@
-# Camus 0.4.17 — Grok Build on your subscription
+# Camus 0.4.18 — Grok Build on your subscription
 
-Camus 0.4.17 adds a true subscription-backed Grok Build maker path. Selecting
+Camus 0.4.18 adds a true subscription-backed Grok Build maker path. Selecting
 the built-in `grok:grok-4.6` seat with `grok_native` preserves Grok Build's own
 authenticated inference route and consumes the operator's Grok subscription
 allowance. It does not use `XAI_API_KEY`, spend xAI API credits, or silently fall
@@ -44,11 +44,13 @@ candidate.
 - Targeted evaluator/native regression suite: 55 passed.
 - npm payload dry run: 125 files, including the subscription adapter.
 - Secret-pattern scan, OAuth scratch cleanup check, and `git diff --check`.
+- Linux release verification exercises the injected-runner behavior while the
+  production runtime still refuses every platform except reviewed macOS arm64.
 
 ## Upgrade
 
 ```sh
-npm install -g camus-cli@0.4.17
+npm install -g camus-cli@0.4.18
 camus install
 camus check
 ```
