@@ -10,12 +10,20 @@ export function Reveal({ children, className }: { children: ReactNode; className
 
   useEffect(() => {
     const el = ref.current;
-    if (!el) return;
+    if (!el || !('IntersectionObserver' in window)) return;
+    // The server-rendered default is visible. Enhance only content below the
+    // current viewport, so a script or hydration failure never blanks the page.
+    if (el.getBoundingClientRect().top < window.innerHeight) {
+      el.classList.add('is-in');
+      return;
+    }
+    el.classList.add('is-pending');
     const io = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
           if (entry.isIntersecting) {
             el.classList.add('is-in');
+            el.classList.remove('is-pending');
             io.disconnect();
           }
         }

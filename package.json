@@ -13,7 +13,9 @@
   },
   "pnpm": {
     "overrides": {
-      "postcss": "^8.4.47"
+      "nanoid": "^3.3.18",
+      "postcss": "^8.5.18",
+      "sharp": "^0.35.0"
     }
   }
 }

@@ -1914,7 +1914,7 @@ const server = http.createServer(async (req, res) => {
       try { codeLimits = independentBuild ? validateCodeLimits(body.codeLimits) : undefined; }
       catch (error) { return json(res, 400, { error: String(error.message || error).slice(0, 300) }); }
       if (body.verifyRepeatable !== undefined && typeof body.verifyRepeatable !== 'boolean') return json(res, 400, { error: 'verifyRepeatable must be a boolean' });
-      if (independentBuild && ENGINE === 'mock') return json(res, 400, { error: 'Any-model Build needs the live engine and a real isolated Git candidate; rehearsal does not execute it.' });
+      if (independentBuild && ENGINE === 'mock') return json(res, 400, { error: 'Flexible Build needs the live engine and a real isolated Git candidate; rehearsal does not execute it.' });
       const evaluationProfile = body.evaluationProfile == null ? null : String(body.evaluationProfile).trim();
       if (evaluationProfile !== null && !EVALUATION_PROFILES.has(evaluationProfile)) {
         return json(res, 400, { error: 'evaluationProfile must be simple, balanced, or difficult' });
@@ -2563,7 +2563,7 @@ const server = http.createServer(async (req, res) => {
         if (meta.lane !== 'build') return json(res, 400, { error: 'only build runs and incomplete comparisons can resume' });
         if (meta.codeMode === 'independent') {
           try { return json(res, 201, { id: await resumeIndependentCode(id, body) }); }
-          catch (error) { return json(res, 409, { error: error.code === 'ENOENT' ? 'This historical run has no authenticated checkpoint; inspection only. It cannot resume through the legacy gate.' : String(error.message || error).slice(0, 600) }); }
+          catch (error) { return json(res, 409, { error: error.code === 'ENOENT' ? 'This historical run has no authenticated checkpoint; inspection only. It cannot resume through the proof gate.' : String(error.message || error).slice(0, 600) }); }
         }
         if (!meta.idSalt) return json(res, 400, { error: 'this run predates resumable receipts. Start a fresh build run instead.' });
         // A run that started before verifyCmd existed — or one whose auto-detected

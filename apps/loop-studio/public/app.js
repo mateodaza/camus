@@ -175,10 +175,13 @@ function reflectLaneControls() {
   const build = state.lane === 'build';
   const independent = build && $('build-mode').value === 'independent';
   $('code-policy').classList.toggle('hidden', !independent);
-  $('step-pairing-label').innerHTML = `<span class="step-n">3</span> ${build && !independent ? 'Review the Build gate, then run' : 'Choose maker and auditor, then run'}`;
+  $('code-executor-wrap').classList.toggle('hidden', !independent);
+  $('step-pairing-label').innerHTML = `<span class="step-n">4</span> ${build && !independent ? 'Review the proof gate, then run' : 'Choose maker and reviewer, then run'}`;
   $('build-gate-note').classList.toggle('hidden', !build);
   $('pairing').classList.toggle('hidden', build && !independent);
   $('pairing-note').classList.toggle('hidden', build && !independent);
+  $('open-compare').classList.toggle('hidden', build);
+  if (build) $('open-compare').setAttribute('aria-expanded', 'false');
   if (independent) {
     $('build-gate-note').textContent = 'Both selected seats will run. Experimental code feedback is advisory, even for a clean review. Inspect the candidate and test result before accepting it; same-model and same-provider choices do not count as independent review.';
   } else if (build && state.serverModels) {
@@ -267,7 +270,7 @@ async function boot() {
     const buildLane = $('lane-build');
     if (buildLane && s.gate && !s.gate.installed) {
       buildLane.classList.remove('disabled');
-      buildLane.title = 'Any-model candidates do not require the legacy gate. Install the gate only to use Legacy proof gate mode.';
+      buildLane.title = 'Flexible Build does not require the proof gate. Install the gate only to use Claude → Codex proof-gate mode.';
     }
     if (s.engine !== 'mock') {
       // Live engine: quietly check the machine and surface the setup panel
@@ -345,7 +348,7 @@ const CLAUDE_SETUP_PROMPT = `Set up Camus Loop Studio on my machine and start it
 
 1. If ~/camus does not exist: git clone --depth 1 https://github.com/mateodaza/camus.git ~/camus. Otherwise run git -C ~/camus pull.
 2. Start the studio server and keep it running: node ~/camus/apps/loop-studio/server.mjs (it listens on http://localhost:1913).
-3. Run node ~/camus/apps/loop-studio/server.mjs --doctor and fix anything it flags; it prints the exact commands (the Claude Code CLI and the Codex CLI must be installed and signed in once each).
+3. Run node ~/camus/apps/loop-studio/server.mjs --doctor and fix the requirements for the seats I intend to use. Claude and Codex CLIs are required only for seats or proof-gate mode that use them; hosted seats use their configured environment credential and explicit qualification.
 4. When http://localhost:1913/api/status answers, tell me; the page at camus.sh/studio connects to it automatically.`;
 
 const MANUAL_SETUP = `git clone --depth 1 https://github.com/mateodaza/camus.git ~/camus
@@ -373,14 +376,14 @@ function renderInstall() {
 
   box.appendChild(el('div', 'lbl', 'Get it running'));
   box.appendChild(el('p', 'install-note',
-    'The studio runs on your machine; this page is only the glass. The hosted page never receives your credentials — the local server signs in to Claude, Codex, and Hivemind directly with your own logins.'));
+    'The studio runs on your machine; this page is only the glass. The local server calls only the seats and connectors you configure, and your credentials never reach camus.sh.'));
 
-  // Path 1: let Claude do it
-  box.appendChild(el('div', 's-label install-head', 'Have Claude set it up'));
-  box.appendChild(el('p', 'install-note', 'Copy this prompt into Claude Code (or the Claude app with terminal access) and it will install, start, and check everything:'));
+  // Path 1: let a coding agent do it
+  box.appendChild(el('div', 's-label install-head', 'Have a coding agent set it up'));
+  box.appendChild(el('p', 'install-note', 'Copy this prompt into a coding agent with terminal access. It installs, starts, and checks the local service without assuming which model seats you want:'));
   const promptPre = el('pre', 'install-block', CLAUDE_SETUP_PROMPT);
   box.appendChild(promptPre);
-  box.appendChild(copyButton('Copy the prompt for Claude', CLAUDE_SETUP_PROMPT));
+  box.appendChild(copyButton('Copy the setup prompt', CLAUDE_SETUP_PROMPT));
 
   // Path 2: by hand
   box.appendChild(el('div', 's-label install-head', 'Or run it yourself'));
@@ -464,7 +467,7 @@ function auditComparisonCard(entry) {
     row.appendChild(el('span', 'arm-effort', `requested ${facts.effortRequested}`));
     const cells = [
       facts.effortActual === 'not reported' ? 'actual not reported' : `actual ${facts.effortActual}`,
-      facts.auditorActual ? `auditor ${facts.auditorActual}` : 'auditor not recorded',
+      facts.auditorActual ? `reviewer ${facts.auditorActual}` : 'reviewer not recorded',
       facts.findings === null ? 'findings not recorded' : `${facts.findings} finding${facts.findings === 1 ? '' : 's'}`,
       facts.outputTokens === null ? 'tokens not recorded' : `${facts.outputTokens.toLocaleString()} out`,
       facts.durationSeconds === null ? 'duration not recorded' : `${facts.durationSeconds}s`,
@@ -615,6 +618,15 @@ function fillSeatPicker(sel, entries, current) {
 }
 const EXECUTOR_LABELS = { file_actions: 'Camus file actions (default)', codex_native: 'Native Codex tools',
   qwen_native: 'Qwen Code tools', grok_native: 'Grok Build tools' };
+function reflectCodeExecutorBudget() {
+  const executor = $('code-maker-executor').value;
+  const minimumTokens = state.codeChoices?.minimumNativeTokenBudget ?? 32768;
+  const tokenInput = $('code-maxTokens');
+  if (executor !== 'file_actions' && Number(tokenInput.value) < minimumTokens) {
+    tokenInput.value = String(minimumTokens);
+    $('code-maker-executor-note').textContent += ` Token budget set to the required ${minimumTokens.toLocaleString()} minimum; review all limits before running.`;
+  }
+}
 function reflectCodeExecutors() {
   const select = $('code-maker-executor');
   const maker = seatOf($('pair-maker'));
@@ -631,11 +643,19 @@ function reflectCodeExecutors() {
   const readiness = state.codeChoices?.nativeHarnesses ?? {};
   const minimumTokens = state.codeChoices?.minimumNativeTokenBudget ?? 32768;
   const unavailable = Object.values(readiness).filter(item => !item.ready);
+  const readinessSummary = unavailable.map((item) => {
+    const explanation = String(item.remedy || item.detail || '')
+      .replace(/https?:\/\/\S+/g, 'Setup has the exact link')
+      .slice(0, 160);
+    return `${item.label}: ${String(item.status).replaceAll('_', ' ')}${explanation ? ' (setup required)' : ''}`;
+  });
   const note = $('code-maker-executor-note');
   if (note) note.textContent = unavailable.length
-    ? `Spend-free native readiness: ${unavailable.map(item => `${item.label} ${item.status}${item.remedy || item.detail ? ` — ${item.remedy || item.detail}` : ''}`).join(' ')} Raw Camus file actions remain available.`
-    : `Spend-free native readiness passed for Qwen Code and Grok Build. Provider/model qualification is separate. Native still needs a token budget of at least ${minimumTokens}; raw Camus file actions remain available.`;
+    ? `Native readiness: ${readinessSummary.join(' · ')}. Open Setup for exact remedies. Camus file actions remain available.`
+    : `Native readiness passed for Qwen Code and Grok Build. Provider/model qualification is separate. Native needs at least ${minimumTokens.toLocaleString()} accounted tokens; Camus file actions remain available.`;
+  reflectCodeExecutorBudget();
 }
+$('code-maker-executor').addEventListener('change', reflectCodeExecutors);
 const seatOf = (sel) => {
   try {
     const [backend, model] = JSON.parse(sel.value);
@@ -898,8 +918,8 @@ function renderSettingsConfig(c) {
   $('set-depth').value = state.depth;
   const notes = ['Settings save to local operator state under ~/.camus; tracked public defaults stay unchanged.'];
   if (c.envOverrides.length) notes.push(`${c.envOverrides.join(', ')} set in the environment. Env wins over these fields this session.`);
-  if (!makerOffered) notes.push(`current maker "${c.maker.backend}:${c.maker.model}" is not admitted on this machine — qualify it or pick an enabled option to save.`);
-  if (!reviewerOffered) notes.push(`current reviewer "${c.reviewer.backend}:${c.reviewer.model}" is not admitted on this machine — qualify it or pick an enabled option to save.`);
+  if (!makerOffered) notes.push(`current maker "${c.maker.backend}:${c.maker.model}" is not qualified on this machine — qualify it or pick an enabled option to save.`);
+  if (!reviewerOffered) notes.push(`current reviewer "${c.reviewer.backend}:${c.reviewer.model}" is not qualified on this machine — qualify it or pick an enabled option to save.`);
   if (c.seats?.reviewerSource === 'fallback') notes.push('the codex list is a default: codex has no model cache to read on this machine, so those entries are not CLI-verified.');
   $('settings-env').textContent = notes.join(' ');
   renderQualificationCatalog(c);
@@ -974,7 +994,7 @@ async function reflectPairingNote(prefix = '') {
   const reviewer = seatEntry(state.seats?.reviewer, seatOf($('pair-reviewer')));
   const note = $('pairing-note');
   if (!maker || !reviewer) {
-    note.textContent = 'One model makes the work. A different one tries to break it.';
+    note.textContent = 'One model makes the work. A separate reviewer tries to break it; independence is earned only when the recorded identities support it.';
     return;
   }
   const request = ++pairingPresentationRequest;
@@ -995,7 +1015,7 @@ async function reflectPairingNote(prefix = '') {
     const facts = el('div', 'pairing-presentation-facts');
     facts.appendChild(el('strong', null, 'Maker '));
     appendSeatBadges(facts, presentation.makerBadges ?? []);
-    facts.appendChild(el('strong', null, 'Auditor '));
+    facts.appendChild(el('strong', null, 'Reviewer '));
     appendSeatBadges(facts, presentation.reviewerBadges ?? []);
     note.appendChild(facts);
   } catch {
@@ -1025,7 +1045,7 @@ async function refreshPairing() {
         !makerOffered && `maker "${c.maker.backend}:${c.maker.model}"`,
         !reviewerOffered && `reviewer "${c.reviewer.backend}:${c.reviewer.model}"`,
       ].filter(Boolean).join(' and ');
-      prefix = `The saved ${missing} is not admitted on this machine, so the run uses exactly the pairing shown here (recorded as a run request). `;
+      prefix = `The saved ${missing} is not qualified on this machine, so the run uses exactly the pairing shown here (recorded as a run request). `;
     }
     await reflectPairingNote(prefix);
     await reflectAutomaticRouting();
@@ -1105,7 +1125,11 @@ $('lanes').addEventListener('click', (e) => {
   const btn = e.target.closest('.lane');
   if (!btn || btn.classList.contains('disabled')) return;
   state.lane = btn.dataset.lane;
-  document.querySelectorAll('.lane').forEach((l) => l.classList.toggle('selected', l === btn));
+  document.querySelectorAll('.lane').forEach((l) => {
+    const selected = l === btn;
+    l.classList.toggle('selected', selected);
+    l.setAttribute('aria-pressed', String(selected));
+  });
   $('target-wrap').classList.toggle('hidden', state.lane !== 'build');
   // Build runs the gate inside the target repo and never runs a grounding
   // stage, so offering Hivemind there would promise something that cannot
@@ -1132,7 +1156,11 @@ $('rungoal').addEventListener('keydown', (e) => {
 
 $('open-compare').addEventListener('click', async () => {
   const panel = $('compare-panel');
-  if (!panel.classList.contains('hidden')) { panel.classList.add('hidden'); return; }
+  if (!panel.classList.contains('hidden')) {
+    panel.classList.add('hidden');
+    $('open-compare').setAttribute('aria-expanded', 'false');
+    return;
+  }
   if (state.lane === 'build') {
     $('form-error').textContent = 'Compare & Learn currently runs research arms, not two repository mutations.';
     return;
@@ -1140,6 +1168,7 @@ $('open-compare').addEventListener('click', async () => {
   $('compare-note').textContent = 'loading the frozen catalog…';
   $('start-compare').disabled = false;
   panel.classList.remove('hidden');
+  $('open-compare').setAttribute('aria-expanded', 'true');
   try {
     const res = await fetch(`${API}/api/config`);
     if (!res.ok) throw new Error('model catalog unavailable');
@@ -1217,7 +1246,7 @@ $('start-compare').addEventListener('click', async () => {
     $('compare-note').textContent = 'Choose two distinct executor models.';
     return;
   }
-  if (state.serverEngine !== 'mock' && !confirm('Run two single-pass executor/auditor arms? Each gets one draft and one review, with no repair. Knowledge and model decisions will freeze now.')) return;
+  if (state.serverEngine !== 'mock' && !confirm('Run two single-pass maker/reviewer arms? Each gets one draft and one review, with no repair. Knowledge and model decisions will freeze now.')) return;
   $('start-compare').disabled = true;
   $('compare-note').textContent = 'freezing the manifest…';
   try {
@@ -1255,7 +1284,7 @@ $('start').addEventListener('click', async () => {
     // the standing record — the user changed a picker, or the record was not
     // offerable and the picker substituted a real option. Untouched, offerable
     // pickers send nothing, leaving the record and its provenance in charge.
-    // Independent Build always sends the displayed pair. The legacy gate
+    // Flexible Build always sends the displayed pair. The proof gate
     // retains its own decisions and refuses an override.
     const pairMaker = seatOf($('pair-maker'));
     const pairReviewer = seatOf($('pair-reviewer'));
@@ -1325,6 +1354,7 @@ function attach(id, goal) {
   state.reviewRounds = 0;
   $('launch').classList.add('hidden');
   $('runview').classList.remove('hidden');
+  $('runview').focus();
   setRunGoal(goal || id);
   $('run-cost').textContent = ''; // don't carry the previous run's spend
   $('run-timer').textContent = '0:00';
@@ -1514,6 +1544,7 @@ $('back').addEventListener('click', () => {
   stopTimer();
   $('runview').classList.add('hidden');
   $('launch').classList.remove('hidden');
+  $('launch').focus();
   loadRecents();
 });
 
@@ -1755,11 +1786,11 @@ async function renderEvidenceReceipt(standing) {
     ['artifact', shortId(pack.artifact_id)],
     ['receipt', shortId(pack.receipt_id)],
     ...(modelFree
-      ? [['models', 'none — no maker or auditor ran, and no model calls were made']]
+      ? [['models', 'none — no maker or reviewer ran, and no model calls were made']]
       : [
           ['executor actual', pack.pairing.executor.actual],
-          ['auditor actual', pack.pairing.auditor.actual],
-          ['auditor effort', auditorEconomics?.effort ?? 'not recorded'],
+          ['reviewer actual', pack.pairing.auditor.actual],
+          ['reviewer effort', auditorEconomics?.effort ?? 'not recorded'],
         ]),
     ...(state.sealedLineage ? [
       ['recovered from', state.sealedLineage.sourceRunId ?? 'not recorded'],
@@ -1998,11 +2029,18 @@ function stopTimer() { clearInterval(state.timerHandle); }
 // Feed rendering
 // ---------------------------------------------------------------------------
 
-function feed(node) {
+function feed(node, { revealStart = false } = {}) {
   const f = $('feed');
   const stick = f.scrollHeight - f.scrollTop - f.clientHeight < 80;
   f.appendChild(node);
-  if (stick) f.scrollTop = f.scrollHeight;
+  if (revealStart) {
+    requestAnimationFrame(() => {
+      node.scrollIntoView({ block: 'start' });
+      node.focus?.({ preventScroll: true });
+    });
+  } else if (stick) {
+    f.scrollTop = f.scrollHeight;
+  }
 }
 
 function handle(ev) {
@@ -2020,7 +2058,7 @@ function handle(ev) {
           const facts = el('div', 'pairing-presentation-facts');
           facts.appendChild(el('strong', null, 'Maker '));
           appendSeatBadges(facts, view.makerBadges ?? []);
-          facts.appendChild(el('strong', null, 'Auditor '));
+          facts.appendChild(el('strong', null, 'Reviewer '));
           appendSeatBadges(facts, view.reviewerBadges ?? []);
           pairing.appendChild(facts);
         }
@@ -2060,7 +2098,7 @@ function handle(ev) {
       if (state.simulated) {
         const sb = $('sim-banner');
         // Static literal — no user input — so innerHTML is safe here.
-        sb.innerHTML = '<b>REHEARSAL: SIMULATED.</b> A scripted demo of the loop. No models run, your brief is not processed, your target files and repository are not changed, and no model spend occurs. Studio saves a local simulation trace under runs/; every draft, verdict, branch, commit, and gate receipt shown is scripted and is not evidence of real work.';
+        sb.innerHTML = '<b>REHEARSAL — SCRIPTED, NO MODEL SPEND.</b> Your brief is not processed and repositories are not changed. The local trace exists only for UX testing; it is not evidence of real work.';
         sb.classList.remove('hidden');
         $('run-cost').textContent = 'rehearsal · no real spend';
       }
@@ -2068,7 +2106,7 @@ function handle(ev) {
       if (!['build', 'comparison'].includes(ev.run?.lane) && ev.run && !ev.run.ground) state.stageEls.get('ground')?.remove();
       if (ev.run?.lane === 'build') $('doc').textContent = state.runCodeMode === 'independent' ? 'The selected pair works on an isolated candidate. Its checkpoint and advisory report appear here; nothing is landed.' : 'The gate works inside the target repo. The session below is the live view; its report lands here.';
       if (ev.run?.lane === 'comparison') {
-        $('doc').innerHTML = '<div class="doc-empty">Each arm keeps its own artifact and receipt. Open an arm card as it finishes. Camus will not name a winner until the separate blinded-comparison step exists.</div>';
+        $('doc').innerHTML = '<div class="doc-empty">Each arm keeps its own artifact and receipt. Open an arm card as it finishes. This launch comparison never names a winner; blinded labels belong to the separate calibration campaign.</div>';
         $('download-report').textContent = 'Experiment';
       }
       break;
@@ -2222,8 +2260,13 @@ function handle(ev) {
       setStatus('needs_human');
       const c = el('div', 'qcard');
       c.dataset.qid = ev.id;
+      c.tabIndex = -1;
+      c.setAttribute('role', 'region');
       c.appendChild(el('div', 'qlabel', 'THE LOOP IS ASKING YOU'));
-      c.appendChild(el('div', 'qtext', ev.text));
+      const question = el('div', 'qtext', ev.text);
+      question.id = `question-${String(ev.id).replace(/[^A-Za-z0-9_-]/g, '-')}`;
+      c.setAttribute('aria-labelledby', question.id);
+      c.appendChild(question);
       if (ev.options?.length) {
         const opts = el('div', 'qopts');
         for (const o of ev.options) {
@@ -2248,7 +2291,7 @@ function handle(ev) {
         c.appendChild(ta);
         c.appendChild(send);
       }
-      feed(c);
+      feed(c, { revealStart: !state.replaying });
       break;
     }
 
@@ -2273,7 +2316,24 @@ function handle(ev) {
       state.revs.push({ rev: ev.rev, markdown: ev.markdown });
       const tabs = $('revtabs');
       const b = el('button', null, `rev ${ev.rev}`);
+      b.id = `revision-tab-${ev.rev}`;
+      b.setAttribute('role', 'tab');
+      b.setAttribute('aria-controls', 'doc');
+      b.setAttribute('aria-selected', 'false');
       b.onclick = () => { state.selectedRev = ev.rev; state.followRev = ev.rev === state.revs[state.revs.length - 1].rev; renderRev(); };
+      b.onkeydown = (event) => {
+        const buttons = [...tabs.querySelectorAll('[role="tab"]')];
+        const currentIndex = buttons.indexOf(b);
+        let nextIndex;
+        if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % buttons.length;
+        else if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + buttons.length) % buttons.length;
+        else if (event.key === 'Home') nextIndex = 0;
+        else if (event.key === 'End') nextIndex = buttons.length - 1;
+        else return;
+        event.preventDefault();
+        buttons[nextIndex].click();
+        buttons[nextIndex].focus();
+      };
       tabs.appendChild(b);
       if (state.followRev) state.selectedRev = ev.rev;
       renderRev();
@@ -2490,7 +2550,7 @@ function markAnswered(card, text) {
 async function answer(qid, text, card) {
   const showError = (msg) => {
     let e = card.querySelector('.qerr');
-    if (!e) { e = el('div', 'qerr'); card.appendChild(e); }
+    if (!e) { e = el('div', 'qerr'); e.setAttribute('role', 'alert'); card.appendChild(e); }
     e.textContent = msg;
   };
   try {
@@ -2510,7 +2570,14 @@ async function answer(qid, text, card) {
 function renderRev() {
   const r = current();
   if (!r) return;
-  document.querySelectorAll('#revtabs button').forEach((b, i) => b.classList.toggle('selected', state.revs[i]?.rev === (state.selectedRev ?? r.rev)));
+  document.querySelectorAll('#revtabs button').forEach((b, i) => {
+    const selected = state.revs[i]?.rev === (state.selectedRev ?? r.rev);
+    b.classList.toggle('selected', selected);
+    b.setAttribute('aria-selected', String(selected));
+    b.tabIndex = selected ? 0 : -1;
+  });
+  const selectedTab = document.querySelector('#revtabs [role="tab"][aria-selected="true"]');
+  if (selectedTab) $('doc').setAttribute('aria-labelledby', selectedTab.id);
   $('doc').innerHTML = renderMd(r.markdown);
 }
 

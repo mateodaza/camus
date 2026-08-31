@@ -3,8 +3,8 @@
 Camus adds independent review, deterministic verification, bounded recovery, and an
 honest receipt around AI-made work. Choose the smallest surface that fits the job:
 
-- **Code, choose both models:** use experimental `camus build` or Studio Any-model Build.
-- **Code, native proof gate:** use `camus start` + `camus run`; legacy workflows remain compatible.
+- **Code, choose both models:** use experimental `camus build` or Studio Flexible Build.
+- **Code, admitted proof gate:** use `camus start` + `camus run`; the Claude → Codex path remains compatible.
 - **Written or research work:** run Loop Studio locally in the browser.
 - **Agent-supervised work:** let another agent operate Camus, but not implement beside it.
 
@@ -13,13 +13,13 @@ never as root. Camus does not push code or open a pull request for you.
 
 ## Path A: code
 
-### Independent maker and reviewer (experimental, 0.4.8)
+### Flexible maker and reviewer (experimental)
 
-Install `camus-cli@0.4.8`. `camus models` lists the same maker and reviewer catalog
+Install `camus-cli@latest`. `camus models` lists the same maker and reviewer catalog
 as Studio; configure and qualify external roles in Studio Settings first. Select
 both independently with `camus build --maker <backend>:<model> --reviewer <backend>:<model>`
 and supply `--task`, `--contract`, and optionally your trusted `--verify` command.
-In the browser choose **Build → Any-model candidate**. Both dropdowns apply.
+In the browser choose **Build → Flexible Build**. Both dropdowns apply.
 Reversed and same-model choices are allowed, but this path always requires human
 acceptance and never auto-lands. Missing verification means untested; it has no
 automatic resume. See the [coding-seat guide](docs/INDEPENDENT-CODE-SEATS.md).
@@ -33,10 +33,12 @@ standing.
 
 ### 1. Install once
 
-Requirements: Node 18+, Claude Code signed in, Codex CLI signed in, Python 3, and Git.
+Requirements: Node 18+, Python 3, and Git. Claude Code and Codex CLI sign-in are
+required only for seats or proof-gate mode that use them; hosted seats use their
+configured environment credential and explicit qualification.
 
 ```bash
-npm install -g camus-cli@0.4.8
+npm install -g camus-cli@latest
 codex login
 camus install
 camus check
@@ -190,8 +192,8 @@ Open <http://localhost:1913>, then:
 4. Start the run and intervene only when Studio presents a real question or material fault.
 5. Finish on the trust card and evidence pack, not on a model’s prose claim.
 
-Studio's **Any-model candidate** mode selects both coding roles independently.
-**Legacy proof gate** retains Claude maker plus Codex reviewer and can resume an
+Studio's **Flexible Build** mode selects both coding roles independently.
+The **Claude → Codex proof gate** retains its fixed roles and can resume an
 eligible parked candidate through verification only, without repeating earlier phases.
 
 ## Path C: another agent supervises Camus
@@ -259,7 +261,7 @@ For native proof-gated code, require:
 Then the human or an authorized agent handles GitHub, release, or deployment. Camus keeps
 those external mutations outside the gate.
 
-For Any-model Build, hand back the uncommitted candidate path, advisory review,
+For Flexible Build, hand back the uncommitted candidate path, advisory review,
 verification result (or explicit absence), and receipt. A clean advisory review
 is still a human checkpoint, not `done` or an admitted gate.
 

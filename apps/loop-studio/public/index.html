@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Camus Loop Studio</title>
-  <meta name="description" content="Choose maker and reviewer for research and experimental coding candidates, or use the native Claude/Codex proof gate. Verification and honest human handoffs stay explicit. Orchestration and receipts stay on your machine." />
+  <meta name="description" content="Choose a maker and reviewer for research or code. Camus keeps the contract, identities, checks, findings, and human decisions attached to the exact result." />
   <meta property="og:title" content="Camus Loop Studio" />
   <meta property="og:description" content="Makes it work. Knows when to stop. The Camus loop on words and code, watchable in a browser. Orchestration and receipts stay on your machine." />
   <meta property="og:url" content="https://www.camus.sh/studio" />
@@ -17,7 +17,7 @@
 </head>
 <body>
   <!-- ============ Launch view ============ -->
-  <main id="launch" class="launch">
+  <main id="launch" class="launch" tabindex="-1">
     <header class="brand">
       <div class="wordmark"><span class="serif">Camus</span> Loop Studio</div>
       <div class="tagline">Makes it work. Knows when to stop.</div>
@@ -29,7 +29,7 @@
         <span id="pill-claude-auth" class="pill hidden">claude: checking…</span>
         <span id="pill-codex-auth" class="pill hidden">codex: checking…</span>
       </div>
-      <p class="scope">The camus loop, watchable: research and analysis, independently selected maker/reviewer coding candidates, or the native proof gate on your own code. Marketing is the tuned vertical, grounded in Myosin's Hivemind.</p>
+      <p class="scope">Choose a maker and reviewer for research or code. Camus keeps the contract, identities, checks, findings, and human decisions attached to the exact result. Experimental code never lands without you.</p>
       <div class="tools">
         <button id="open-setup" class="ghost">setup</button>
         <button id="open-settings" class="ghost">settings</button>
@@ -45,19 +45,19 @@
     <section id="settings-panel" class="card panel hidden" aria-label="Run settings">
       <div class="panel-head">
         <span class="lbl">Run settings: decisions, recorded</span>
-        <span id="settings-note" class="hint"></span>
+        <span id="settings-note" class="hint" role="status" aria-live="polite"></span>
       </div>
       <div class="settings-grid">
         <!-- Model choices are PICKERS over the machine's real options (the
              server's catalog), never free text: a model nobody can run is not
              a decision anyone made. Options are filled when the panel opens. -->
-        <label>maker (words + Any-model Build; legacy gate uses Claude)
+        <label>maker (words + Flexible Build; proof gate uses Claude)
           <select id="set-maker"></select>
         </label>
-        <label>reviewer (words + Any-model Build; legacy gate uses Codex)
+        <label>reviewer (words + Flexible Build; proof gate uses Codex)
           <select id="set-reviewer"></select>
         </label>
-        <label>reviewer effort (supported seats; legacy gate pins this every round)
+        <label>reviewer effort (supported seats; proof gate pins this every round)
           <select id="set-effort">
             <option>low</option><option>medium</option><option>high</option><option>xhigh</option>
           </select>
@@ -78,8 +78,8 @@
         <span id="settings-env" class="hint">Saved locally under ~/.camus; tracked public defaults stay unchanged.</span>
       </div>
       <div class="settings-subsection">
-        <div class="trust-title">MODEL ADMISSION</div>
-        <div class="hint">Declarations are not trust. A configurable model becomes selectable only after this machine demonstrates the exact maker or reviewer tuple. Launch checks it again.</div>
+        <div class="trust-title">MODEL QUALIFICATION</div>
+        <div class="hint">Qualification proves that this machine can reach the exact maker or reviewer tuple and parse its output. It is not a quality endorsement or production-review admission. Launch checks it again.</div>
         <div id="qualification-list" class="qualification-list"></div>
       </div>
       <details class="settings-subsection template-gallery">
@@ -93,13 +93,13 @@
           <span class="trust-title" id="connection-editor-title">CONNECTION DECLARATION</span>
           <button id="close-connection-editor" class="ghost" type="button">close</button>
         </div>
-        <div class="hint">This is the exact declaration written locally. It may contain an environment-variable name, never a credential value. Transport and lineage standing are derived server-side.</div>
+        <div class="hint">This exact declaration is written locally. It may contain an environment-variable name, never a credential value. Transport and lineage facts are derived by the local server.</div>
         <textarea id="connection-json" rows="18" spellcheck="false" aria-label="Connection and backend declaration JSON"></textarea>
         <div id="connection-preview" class="connection-preview hint"></div>
         <label class="replace-declaration"><input id="replace-connection" type="checkbox" /> Replace an existing connection/backend with the same name</label>
         <div class="panel-actions">
           <button id="save-connection" class="primary" type="button">Save declaration</button>
-          <span id="connection-note" class="hint"></span>
+          <span id="connection-note" class="hint" role="status" aria-live="polite"></span>
         </div>
       </section>
     </section>
@@ -126,7 +126,27 @@
         <button type="button" class="preset" data-clause="Plain language: no hype, no unsupported superlatives.">no hype</button>
       </div>
 
-      <label class="lbl step" id="step-pairing-label"><span class="step-n">3</span> Choose maker and auditor, then run</label>
+      <div class="lbl step"><span class="step-n">3</span> Choose the kind of work</div>
+      <div class="lanes" id="lanes" aria-label="Run lane">
+        <button type="button" class="lane selected" data-lane="research_memo" aria-pressed="true">
+          <strong>Research memo</strong>
+          <span>A question becomes an answer you can defend, every stat traced to a live source.</span>
+        </button>
+        <button type="button" class="lane" data-lane="competitor_teardown" aria-pressed="false">
+          <strong>Competitor teardown</strong>
+          <span>Positioning, channels, and what we take from it.</span>
+        </button>
+        <button type="button" class="lane" data-lane="freeform" aria-pressed="false">
+          <strong>Freeform</strong>
+          <span>Loop whatever you're into. Generic checks only.</span>
+        </button>
+        <button type="button" class="lane" data-lane="build" id="lane-build" aria-pressed="false">
+          <strong>Build: code</strong>
+          <span>Code in an isolated worktree. Choose both models, inspect their review and your tests, then accept the candidate.</span>
+        </button>
+      </div>
+
+      <div class="lbl step" id="step-pairing-label"><span class="step-n">4</span> Choose maker and reviewer, then run</div>
       <!-- The two-model pairing is the whole thesis, so it is DECIDED on the
            launch screen: these pickers offer the server's seat catalog, default
            to the standing decision in Settings, and a changed value rides the
@@ -136,10 +156,10 @@
       <div class="pairing" id="pairing">
         <span class="pairing-role"><span class="pairing-lbl">maker</span> <select id="pair-maker" class="mono" aria-label="Maker for this run"></select></span>
         <span class="pairing-arrow" aria-hidden="true">→</span>
-        <span class="pairing-role"><span class="pairing-lbl">auditor</span> <select id="pair-reviewer" class="mono" aria-label="Auditor for this run"></select></span>
+        <span class="pairing-role"><span class="pairing-lbl">reviewer</span> <select id="pair-reviewer" class="mono" aria-label="Reviewer for this run"></select></span>
         <button type="button" id="pairing-change" class="ghost">settings</button>
       </div>
-      <div class="hint" id="pairing-note">One model makes the work. A different one tries to break it.</div>
+      <div class="hint" id="pairing-note">One model makes the work. A separate reviewer tries to break it; independence is earned only when the recorded identities support it.</div>
       <label class="checkline" id="model-routing-control">
         <input type="checkbox" id="model-routing-auto">
         <span>Auto-route from calibrated A/B evidence</span>
@@ -156,48 +176,30 @@
       <div class="hint" id="model-routing-note">Off. The pairing shown above stays in control.</div>
       <div class="hint hidden" id="build-gate-note"></div>
 
-      <label class="lbl sub-lbl">Lane</label>
-      <div class="lanes" id="lanes">
-        <button class="lane selected" data-lane="research_memo">
-          <strong>Research memo</strong>
-          <span>A question becomes an answer you can defend, every stat traced to a live source.</span>
-        </button>
-        <button class="lane" data-lane="competitor_teardown">
-          <strong>Competitor teardown</strong>
-          <span>Positioning, channels, and what we take from it.</span>
-        </button>
-        <button class="lane" data-lane="freeform">
-          <strong>Freeform</strong>
-          <span>Loop whatever you're into. Generic checks only.</span>
-        </button>
-        <button class="lane" data-lane="build" id="lane-build">
-          <strong>Build: code</strong>
-          <span>Code in an isolated worktree. Choose both models, inspect their review and your tests, then accept the candidate.</span>
-        </button>
-      </div>
-
       <div id="target-wrap" class="hidden">
         <label class="lbl" for="build-mode">Build execution</label>
         <select id="build-mode" class="path-input">
-          <option value="independent">Any-model candidate — experimental, human acceptance</option>
-          <option value="gate">Legacy proof gate — saved Claude maker + Codex reviewer</option>
+          <option value="independent">Flexible Build — choose qualified models (experimental; advisory)</option>
+          <option value="gate">Claude → Codex proof gate — review + verification gate</option>
         </select>
         <label class="lbl" for="target-path">Target repository</label>
         <input id="target-path" class="path-input" placeholder="~/path/to/a/git/repo" autocomplete="off" />
-        <div class="hint">Any-model Build uses both selected seats. Start from a clean repository. Changes stay in a separate worktree; review is advisory and nothing is automatically committed, merged or published. Stop and resume preserve the same candidate, contract and budget usage.</div>
+        <div class="hint">Flexible Build uses both selected seats. Start from a clean repository. Changes stay in a separate worktree; review is advisory and nothing is automatically committed, merged, or published. Stop and resume preserve the same candidate, contract, and budget usage.</div>
         <!-- Filled from the doctor's auth preflight when a CLI is proven signed out;
              a warning, not a gate — the probes can be stale in either direction. -->
         <div id="preflight-note" class="hint preflight hidden"></div>
         <label class="lbl" for="verify-cmd">Verify command (optional)</label>
         <input id="verify-cmd" class="path-input" placeholder="e.g. dotnet test Tests/App.Tests/App.Tests.csproj -f net10.0" autocomplete="off" />
-        <div class="hint">Any-model mode: empty means untested. Supply your test command to verify the candidate. It executes locally with credential environment variables removed, not in an OS sandbox; use trusted projects. The legacy gate can detect the stack. No <code>$</code>, backticks, quotes, backslashes or newlines: put complex commands in a script.</div>
-        <details id="code-policy">
-          <summary>Any-model executor, recovery and budget</summary>
-          <label class="lbl" for="code-maker-executor">Maker executor</label>
+        <div class="hint">Flexible mode: empty means untested. Supply your test command to verify the candidate. It executes locally with credential environment variables removed, not in an OS sandbox; use trusted projects. The proof gate can detect the stack. No <code>$</code>, backticks, quotes, backslashes, or newlines: put complex commands in a script.</div>
+        <div id="code-executor-wrap" class="code-executor-wrap">
+          <label class="lbl" for="code-maker-executor">Maker harness</label>
           <select id="code-maker-executor" class="path-input">
             <option value="file_actions">Camus file actions (default, any offered model)</option>
           </select>
-          <div class="hint" id="code-maker-executor-note">Native needs a token budget of at least 32768. Codex uses its existing ChatGPT login. Qwen Code and Grok Build are offered only after a spend-free local version and artifact check. The selected qualified endpoint runs through Camus's one-model gateway: the provider key stays in the host. Native tools cannot access arbitrary network, Git metadata, Camus receipts, or source credentials. An uncertain crashed turn is preserved, never automatically replayed.</div>
+          <div class="hint" id="code-maker-executor-note">Camus offers a native harness only after a spend-free local version and artifact check. Provider/model qualification is separate; credentials remain in the host-owned one-model gateway.</div>
+        </div>
+        <details id="code-policy">
+          <summary>Recovery and budget limits</summary>
           <label class="toggle"><input id="code-verify-repeatable" type="checkbox" /><span>This check is safe to repeat after fixes or interruption</span></label>
           <div class="hint">Without this authorization, an additional verification pauses for permission. No changed contract or model is allowed on resume. These are global run limits, not per-round allowances.</div>
           <div class="row">
@@ -217,6 +219,7 @@
           </div>
           <div class="hint">Token limits reserve capacity before a call; they are not provider-enforced billing caps. Unreported usage remains unknown. Inactivity detection is off by default: a quiet model may still be working.</div>
         </details>
+        <div class="hint inspect-hint">After a run, inspect its receipt without a provider call: <code>camus build --inspect RUN_ID</code>.</div>
       </div>
 
       <!-- Depth moved into Settings: it is a run preference, not a briefing
@@ -246,11 +249,11 @@
 
       <div class="launch-actions">
         <button id="start" class="primary">Run the loop</button>
-        <button id="open-compare" class="ghost">Compare two models</button>
+        <button id="open-compare" class="ghost" aria-controls="compare-panel" aria-expanded="false">Compare two Claude writing models</button>
       </div>
       <div id="compare-panel" class="compare-panel hidden">
-        <div class="trust-title">SAME BRIEF, TWO MODELS</div>
-        <div class="hint">Both models get the same frozen brief, trust contract, and reviewer. Each arm runs exactly one draft and one review: no live tools, repairs, re-review, publication, or content answers. This measures first-pass quality and velocity instead of letting one arm buy more attempts.</div>
+        <div class="trust-title">SAME BRIEF, TWO CLAUDE MODELS</div>
+        <div class="hint">This words-only comparison uses the built-in Claude maker catalog and one saved Codex reviewer. Both arms get the same frozen brief and contract, then exactly one draft and one review: no live tools, repairs, re-review, publication, or content answers. Build harnesses are not compared here.</div>
         <div class="compare-controls">
           <label>model A<select id="compare-maker-a"></select></label>
           <label>model B<select id="compare-maker-b"></select></label>
@@ -259,20 +262,20 @@
         </div>
         <div class="panel-actions">
           <button id="start-compare" class="primary">Run the comparison</button>
-          <span id="compare-note" class="hint"></span>
+          <span id="compare-note" class="hint" role="status" aria-live="polite"></span>
         </div>
       </div>
-      <div id="form-error" class="form-error"></div>
+      <div id="form-error" class="form-error" role="alert" aria-live="polite"></div>
     </section>
 
     <section id="recents" class="recents" tabindex="-1" aria-label="Recent runs"></section>
 
     <footer class="foot">
-      One model makes the work. Another reviews it. Verification and review stay separate; experimental code still needs human acceptance. Private receipts default to <code>~/.camus/studio/runs/</code>.
+      One model makes the work. A separate model reviews it. Verification and review stay distinct; experimental code still needs human acceptance. Private receipts default to <code>~/.camus/studio/runs/</code>.
     </footer>
   </main>
 
-  <main id="calibration" class="calibration hidden" aria-label="Blinded calibration workspace">
+  <main id="calibration" class="calibration hidden" tabindex="-1" aria-label="Blinded calibration workspace">
     <header class="cal-head"><div><div class="lbl">BLINDED CALIBRATION</div><h1>Judge the artifact, not its maker.</h1><p id="cal-subtitle" class="hint">Private workspace · no model calls</p></div><button id="close-calibration" class="ghost">back to Studio</button></header>
     <section id="cal-status" class="cal-card" aria-live="polite"></section>
     <section id="cal-empty" class="cal-card hidden"></section>
@@ -301,7 +304,7 @@
   </main>
 
   <!-- ============ Run view ============ -->
-  <main id="runview" class="runview hidden">
+  <main id="runview" class="runview hidden" tabindex="-1">
     <header class="runbar">
       <button id="back" class="ghost" title="Back to launch" aria-label="Back to launch">←</button>
       <div class="rungoal" id="rungoal" tabindex="0" role="button" aria-expanded="false"></div>
@@ -327,7 +330,7 @@
       </section>
       <section class="doc-wrap">
         <div class="doc-head">
-          <div class="revtabs" id="revtabs"></div>
+          <div class="revtabs" id="revtabs" role="tablist" aria-label="Deliverable revisions"></div>
           <div class="doc-actions">
             <button id="toggle-run-story" class="ghost hidden" aria-expanded="false" aria-controls="run-story-card" title="Show the completed run summary">Run summary</button>
             <button id="copy" class="ghost" title="Copy markdown">Copy</button>
@@ -336,7 +339,7 @@
             <button id="audit-replay" class="ghost hidden" title="Run a new independent audit over this unchanged artifact">Re-audit</button>
           </div>
         </div>
-        <article class="doc" id="doc"><div class="doc-empty">The deliverable appears here as the loop drafts it.</div></article>
+        <article class="doc" id="doc" role="tabpanel"><div class="doc-empty">The deliverable appears here as the loop drafts it.</div></article>
       </section>
     </div>
   </main>

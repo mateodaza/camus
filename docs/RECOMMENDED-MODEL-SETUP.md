@@ -2,7 +2,7 @@
 
 **Status:** Evidence-based operator guidance, not automatic-routing policy  
 **Last updated:** 2026-08-30
-**Applies to:** Camus Any-model Build in CLI and Loop Studio  
+**Applies to:** Camus Flexible Build in CLI and Loop Studio
 
 This document records what Camus should recommend **today**, why, and what is
 still unknown. It must not silently become a model admission or routing rule.
@@ -15,7 +15,7 @@ Models, providers, harnesses, and reviewers are separate choices:
 
 ```text
 task -> maker model + provider -> maker executor -> host verifier
-     -> independent advisory reviewer -> human acceptance when required
+     -> separately selected reviewer -> human acceptance when required
 ```
 
 - `file_actions` is the compact, host-mediated default.
@@ -23,10 +23,10 @@ task -> maker model + provider -> maker executor -> host verifier
 - Camus freezes the exact model, provider/route, harness artifact, candidate,
   verifier, reviewer, credential revision, and budget before spend.
 - OpenRouter experiments pin one upstream provider and disable fallbacks.
-- Provider credentials remain in the host process; native workers receive only
-  a short-lived one-model gateway capability.
+- Configurable-seat provider credentials remain in the host process; native
+  workers receive only a short-lived one-model gateway capability.
 - Deterministic verification is the mechanical floor. An LLM review is advisory
-  unless separately admitted, and no Any-model candidate lands automatically.
+  unless separately admitted, and no Flexible Build candidate lands automatically.
 - Code-eval candidate integrity permits edits only to source paths declared by
   the selected fixture's reference files; unexpected tracked or untracked paths
   cannot receive a mechanically green standing.

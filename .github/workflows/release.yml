@@ -57,8 +57,14 @@ jobs:
       - name: Run Studio verification
         run: pnpm --filter camus-loop-studio test
 
+      - name: Build the public landing and hosted Studio
+        run: pnpm --filter web build
+
       - name: Run trust-package verification
         run: pnpm --filter camus-trust test
+
+      - name: Refuse high-severity production dependency advisories
+        run: pnpm audit --prod --audit-level=high
 
       - name: Inspect the exact npm payload
         working-directory: packages/cli

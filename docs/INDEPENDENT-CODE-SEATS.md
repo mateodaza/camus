@@ -3,7 +3,7 @@
 Model selection shipped in **0.4.8**. Productive repair/recovery and the opt-in
 native maker controls below ship in **0.4.9**.
 
-`camus build` and Studio's **Build → Any-model candidate** use the same model
+`camus build` and Studio's **Build → Flexible Build** use the same model
 catalog, connection definitions, adapters, and host-mediated coding engine.
 Choose maker and reviewer independently: Claude, Codex (including Luna when
 offered by your account), or a configured OpenAI-compatible model such as Grok,
@@ -135,7 +135,7 @@ node packages/cli/bin/camus.js build --repo /path/to/project \
 ```
 
 Studio exposes the same model/executor pairing and recovery controls under
-**Any-model executor, recovery and budget**; the explicit maker-effort override
+**Flexible Build recovery and budget**; the explicit maker-effort override
 is currently a CLI control.
 A token budget of at least 32,768 is mandatory for every native executor. Camus
 reserves that amount for any call whose harness does not report usage and also
@@ -461,7 +461,7 @@ setup nor transport qualification grants code-gate admission.
 
 ## Budgets, stop, answer, resume
 
-CLI flags and Studio's **Any-model executor, recovery and budget** control the same limits:
+CLI flags and Studio's **Flexible Build recovery and budget** control the same limits:
 32 total model calls, 12 maker steps, 32 file actions, 2 repairs, 1 recovery retry,
 20 minutes active time and 10 minutes per model call by default. Inactivity timeout
 and token budgeting default off. Set them explicitly when warranted:
@@ -490,8 +490,8 @@ file-action call with no durable response is uncertain: `--retry-uncertain` (or 
 Studio consent) authorizes one bounded retry, with possible duplicate billing.
 No exactly-once billing or provider-session reattachment is promised.
 
-> **Unreleased freeze candidate:** the inspection operation below is not part of
-> the published 0.4.15 package.
+> **Available in 0.4.16:** the inspection operation below is provider-free and
+> read-only; it grants no retry, acceptance, landing, admission, or routing authority.
 
 `--inspect` is the offline, read-only operator view. It authenticates the same
 version-2 checkpoint used by status/resume, observes the ownership port without
@@ -541,7 +541,7 @@ not create a native gate evidence pack or contribute a successful autonomous
 trial to admission/routing. Studio's admitted-gate audit dimension remains
 `not_run`; the experimental advisory review is retained separately.
 
-`camus run`, `/camus-feat` and **Legacy proof gate** are unchanged: their maker
+`camus run`, `/camus-feat` and the **Claude → Codex proof gate** are unchanged: their maker
 remains Claude Code and the normal gate remains Codex. Use `camus build` for
 independent coding-seat choices. External gate admission still requires its
 separate Slice G campaign and genuine human calibration.

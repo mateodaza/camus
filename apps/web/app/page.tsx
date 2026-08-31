@@ -8,10 +8,9 @@ export default function Home() {
   return (
     <>
       <SiteNav />
-      <main id="top">
+      <main id="top" tabIndex={-1}>
         <header className="hero">
           <div className="wrap hero-in">
-            <p className="hero-kicker">Independent review for work made by AI</p>
             <h1 className="hero-h1">
               <span className="lockup">
                 <ClimbLoop />
@@ -20,19 +19,20 @@ export default function Home() {
               <span className="tagline">Trust the work, not the model that made it.</span>
             </h1>
             <p className="hero-sub">
-              One AI does the work. Another, from a different company, checks it
-              against what you said must be true. Tests and sources settle what they
-              can. You make the calls they should not.
+              One model does the work. A separate reviewer challenges it against
+              what you said must be true. Cross-vendor review, tests, and captured
+              sources strengthen the result when configured. The receipt records
+              what actually happened.
             </p>
             <div className="cta-row">
               <a className="cta" href="/studio/">Open Loop Studio</a>
-              <a className="cta-ghost" href="#proof">See a real catch ↓</a>
+              <a className="cta-ghost" href="#proof">See a sanitized catch ↓</a>
             </div>
             <div className="hero-proof" aria-label="What Camus gives you">
-              <b>public alpha 0.4.4</b>
-              <b>deterministic local control</b>
-              <b>an independent second opinion</b>
-              <b>tests and sources attached</b>
+              <b>public alpha</b>
+              <b>local control plane</b>
+              <b>maker and reviewer chosen separately</b>
+              <b>checks and sources recorded when used</b>
               <b>receipts bound to the exact result</b>
             </div>
           </div>
@@ -41,7 +41,6 @@ export default function Home() {
         <section className="sec sec--soft" id="why">
           <div className="wrap">
             <Reveal>
-              <p className="section-label">The problem</p>
               <div className="sec-head sec-head--wide">
                 <div>
                   <h2 className="sec-h2">A confident answer is not the same as a trustworthy one.</h2>
@@ -52,23 +51,20 @@ export default function Home() {
                   </p>
                 </div>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img className="sec-art" src="/brand/covers/the-glare.svg" alt="An original Camus cover study" width="400" height="600" />
+                <img className="sec-art" src="/brand/covers/the-glare.svg" alt="" width="400" height="600" />
               </div>
             </Reveal>
 
             <div className="value-grid">
               <Reveal className="value-card">
-                <span className="card-num">01</span>
                 <h3>The maker can miss its own mistake.</h3>
                 <p>Stronger models make better work, but confidence is still not evidence.</p>
               </Reveal>
               <Reveal className="value-card">
-                <span className="card-num">02</span>
                 <h3>Self-review shares the blind spot.</h3>
                 <p>The same model family tends to defend the choices and style it already produced.</p>
               </Reveal>
               <Reveal className="value-card">
-                <span className="card-num">03</span>
                 <h3>Review can detach from the final result.</h3>
                 <p>A clean verdict is meaningless if the artifact changes after the reviewer saw it.</p>
               </Reveal>
@@ -76,7 +72,7 @@ export default function Home() {
 
             <Reveal>
               <p className="thesis-line">
-                Camus keeps the artifact, the evidence, the independent verdict, and
+                Camus keeps the artifact, the evidence, the recorded verdict, and
                 the human decision bound together.
               </p>
             </Reveal>
@@ -86,15 +82,14 @@ export default function Home() {
         <section className="sec" id="proof">
           <div className="wrap">
             <Reveal>
-              <p className="section-label">A live example</p>
               <div className="sec-head sec-head--wide">
                 <div>
-                  <h2 className="sec-h2">The first model sounded right. The second model checked.</h2>
+                  <h2 className="sec-h2">In one private run, the first model sounded right. The second model checked.</h2>
                   <p className="sec-sub">
-                    In a real research run, Sonnet drafted a plausible strategy from
-                    Hivemind material. GPT-5.4 found claims the source did not support,
-                    including a raw search score rewritten as “Relevance: 76%” after
-                    the contract explicitly forbade interpreting score semantics.
+                    This sanitized reconstruction preserves the finding while withholding
+                    the private corpus and receipt. Sonnet drafted a plausible strategy;
+                    GPT-5.4 found unsupported claims, including a raw search score rewritten
+                    as “Relevance: 76%” after the contract forbade that interpretation.
                   </p>
                 </div>
               </div>
@@ -122,7 +117,7 @@ export default function Home() {
 
               <Reveal className="proof-receipt">
                 <p className="receipt-kicker">The result did not merely say “done.”</p>
-                <Artifact tone="dark" path="sealed evidence pack" label="A compact Camus evidence receipt">
+                <Artifact tone="dark" path="sanitized receipt view" label="A sanitized Camus evidence receipt">
 {`standing       `}<span className="ok">verified</span>{`
 execution      completed
 verification   passed
@@ -130,13 +125,15 @@ audit          independent_clean
 publication    not_published
 
 executor       anthropic:sonnet
-auditor        openai:gpt-5.4
-artifact       59ee19193b8b
-receipt        0b8960d2e40d`}
+reviewer       openai:gpt-5.4
+artifact       [private]
+receipt        [private]`}
                 </Artifact>
                 <p className="receipt-note">
-                  The full receipt also preserves the acceptance contract, exact model
+                  The original receipt preserves the acceptance contract, exact model
                   identities, human decisions, checks, findings, and evidence bundle.
+                  Current public dogfood evidence is documented in the{' '}
+                  <a className="inline-link" href="https://github.com/mateodaza/camus/blob/main/docs/RECOMMENDED-MODEL-SETUP.md">model setup report ↗</a>.
                 </p>
               </Reveal>
             </div>
@@ -146,7 +143,6 @@ receipt        0b8960d2e40d`}
         <section className="sec sec--ink" id="how">
           <div className="wrap">
             <Reveal>
-              <p className="section-label">How Camus works</p>
               <h2 className="sec-h2">Four parts. One honest result.</h2>
               <p className="sec-sub">
                 Models handle semantic work. A deterministic local kernel owns state,
@@ -168,8 +164,8 @@ receipt        0b8960d2e40d`}
               </Reveal>
               <Reveal className="flow-step">
                 <span>3</span>
-                <h3>Challenge it independently</h3>
-                <p>A different model audits the artifact. Tests and captured sources arbitrate where possible.</p>
+                <h3>Challenge it separately</h3>
+                <p>The selected reviewer tries to break the artifact. Recorded identities determine whether that review is independent; configured tests and sources arbitrate what they can.</p>
               </Reveal>
               <Reveal className="flow-step">
                 <span>4</span>
@@ -183,7 +179,6 @@ receipt        0b8960d2e40d`}
         <section className="sec" id="human">
           <div className="wrap">
             <Reveal>
-              <p className="section-label">Human in the loop</p>
               <h2 className="sec-h2">You are not removed from the loop. You are removed from babysitting it.</h2>
             </Reveal>
 
@@ -213,33 +208,40 @@ receipt        0b8960d2e40d`}
         <section className="sec sec--direction" id="direction">
           <div className="wrap">
             <Reveal>
-              <p className="section-label">Where Camus goes next</p>
               <div className="direction-head">
-                <h2 className="sec-h2">Better models make Camus more useful, not less.</h2>
+                <h2 className="sec-h2">What ships now—and what Camus refuses to pretend.</h2>
                 <p className="sec-sub">
-                  Frontier models are becoming excellent orchestrators. Camus will let
-                  them own the workers while it compares what they produce under one
-                  contract and keeps any model from awarding itself trusted standing.
+                  The control plane is stable across models. Standing still depends on
+                  the exact path, checks, review identity, and evidence that actually ran.
                 </p>
               </div>
             </Reveal>
 
             <div className="direction-grid">
               <Reveal className="direction-card direction-card--now">
-                <p className="direction-tag">Available now</p>
-                <h3>Hybrid control, independent trust</h3>
+                <p className="direction-tag">Trusted path</p>
+                <h3>Claude → Codex proof gate</h3>
                 <p>
-                  Models plan, make, and review. The 0.4.4 driver keeps dispatch, budgets,
-                  Git, verification, recovery, and sealed evidence out of model context.
+                  Fixed cross-vendor roles, isolated Git custody, HEAD-bound verification,
+                  bounded recovery, and a review bound to the exact candidate.
                 </p>
               </Reveal>
-              <Reveal className="direction-card">
-                <p className="direction-tag">Available in Studio</p>
-                <h3>Controlled comparison</h3>
+              <Reveal className="direction-card direction-card--experimental">
+                <p className="direction-tag">Experimental</p>
+                <h3>Flexible Build</h3>
                 <p>
-                  Freeze one goal, contract, reviewer, and knowledge snapshot across
-                  two or three executor arms. Keep every success and failure in the
-                  parent receipt. Blinded winner selection remains the next slice.
+                  Choose any qualified maker and reviewer pair, then use Camus file
+                  actions or an eligible native Codex, Qwen Code, or Grok Build harness.
+                  The candidate stays advisory and never lands without human acceptance.
+                </p>
+              </Reveal>
+              <Reveal className="direction-card direction-card--evidence">
+                <p className="direction-tag">Evidence-gated</p>
+                <h3>A/B learning and routing</h3>
+                <p>
+                  Studio freezes two Claude writing arms and supports blinded human calibration.
+                  Automatic routing stays off without sufficient calibrated evidence;
+                  Camus makes no universal “best model” claim.
                 </p>
               </Reveal>
             </div>
@@ -256,10 +258,9 @@ receipt        0b8960d2e40d`}
         <section className="sec" id="studio">
           <div className="wrap">
             <Reveal>
-              <p className="section-label">Two ways in</p>
               <h2 className="sec-h2">Built for work you stake your name on.</h2>
               <p className="sec-sub">
-                The trust protocol is the same. The interface meets you where the work lives.
+                One control plane, with standing that stays honest about the path you chose.
               </p>
             </Reveal>
 
@@ -275,9 +276,9 @@ receipt        0b8960d2e40d`}
                 <ul>
                   <li>browser interface, no JSON noise</li>
                   <li>the full acceptance contract in your own words</li>
-                  <li>qualified Claude, GPT, Grok, Kimi, Qwen, or local model seats</li>
+                  <li>capability-qualified Claude, GPT, Grok, Qwen, or local seats</li>
                   <li>Hivemind grounding through your Claude MCP</li>
-                  <li>verification-only recovery for parked code</li>
+                  <li>explicit publication consent and sealed receipts</li>
                 </ul>
                 <a className="cta" href="/studio/">Open Loop Studio</a>
               </Reveal>
@@ -287,15 +288,15 @@ receipt        0b8960d2e40d`}
                 <h3>Camus CLI</h3>
                 <p>
                   Give an agent a real repository without giving up custody. Work stays
-                  isolated, reviews bind to exact commits, tests have the final word,
-                  and every change reaches your branch with its actual standing attached.
+                  isolated, reviews bind to exact candidates, and tests arbitrate what
+                  they can. Flexible Build remains advisory until you accept it.
                 </p>
                 <ul>
                   <li>isolated worktrees and controlled merge</li>
                   <li>deterministic feature state and bounded budgets</li>
-                  <li>cross-vendor code review</li>
+                  <li>maker and reviewer selectable independently</li>
                   <li>HEAD-bound verification</li>
-                  <li>crash-safe resume and named human halts</li>
+                  <li>provider-free receipt inspection</li>
                 </ul>
                 <a className="cta-ghost audience-link" href="https://www.npmjs.com/package/camus-cli">View camus-cli on npm ↗</a>
               </Reveal>
@@ -306,36 +307,37 @@ receipt        0b8960d2e40d`}
         <section className="sec sec--soft" id="run">
           <div className="wrap">
             <Reveal>
-              <p className="section-label">Run it locally</p>
               <div className="sec-head">
                 <div>
                   <h2 className="sec-h2">Your machine keeps custody.</h2>
                   <p className="sec-sub">
-                    Orchestration and receipts stay on your machine. Model and Hivemind
-                    requests go to the services you already authenticate. Camus does
-                    not bundle or proxy your subscriptions.
+                    Orchestration and receipts stay on your machine. Built-in CLI seats
+                    use your existing sessions; configurable API seats use credentials
+                    held by the local service. Native Qwen and Grok workers can reach only
+                    the selected model through a host-owned one-model gateway.
                   </p>
                 </div>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img className="sec-art" src="/brand/covers/the-descent.svg" alt="An original Camus cover study" width="400" height="600" />
+                <img className="sec-art" src="/brand/covers/the-descent.svg" alt="" width="400" height="600" />
               </div>
             </Reveal>
 
             <Reveal>
               <div className="term">
                 <pre>
-{`$ npm i -g camus-cli@0.4.8
-$ camus install
-$ camus check
+{`$ npm i -g camus-cli@latest
+$ camus models
+$ camus build --maker <backend>:<model> \\
+    --reviewer <backend>:<model> --task "..." --contract "..." \\
+    --verify "pnpm test"
 
-$ camus start feature.json
-`}<span className="g">✓</span>{` feature initialized without a model turn
-$ camus run <featId>
+`}<span className="g">✓</span>{` exact seats qualified on this machine
+`}<span className="g">✓</span>{` candidate isolated from your branch
+`}<span className="g">✓</span>{` trusted verifier passed
+`}<span className="r">!</span>{` clean advisory review; human acceptance still required
 
-`}<span className="g">✓</span>{` durable maker finished in an isolated worktree
-`}<span className="r">✗</span>{` independent review found a missing guard
-`}<span className="g">✓</span>{` repair passed 163 tests
-`}<span className="g">✓</span>{` verified receipt bound to commit a1f9c2e`}
+$ camus build --inspect <runId>
+`}<span className="g">✓</span>{` receipt inspected without a provider call`}
                 </pre>
               </div>
             </Reveal>
@@ -344,6 +346,7 @@ $ camus run <featId>
               <div className="cta-row cta-row--left">
                 <a className="cta" href="/studio/">Try the visual Studio</a>
                 <a className="cta-ghost" href="https://github.com/mateodaza/camus">Read the source ↗</a>
+                <a className="cta-ghost" href="https://github.com/mateodaza/camus/issues/new?title=Design%20partner%20pilot">Join the design-partner pilot ↗</a>
               </div>
             </Reveal>
           </div>
@@ -354,12 +357,11 @@ $ camus run <featId>
             <Reveal>
               <figure className="closing-mark">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src="/brand/covers/the-climb.svg" alt="The Camus loop, held as a still" width="400" height="600" />
+                <img src="/brand/covers/the-climb.svg" alt="" width="400" height="600" />
                 <figcaption>Camus</figcaption>
               </figure>
             </Reveal>
             <Reveal className="closing-copy">
-              <p className="section-label">The principle</p>
               <h2 className="sec-h2">No intelligence should be the only judge of its own work.</h2>
               <p className="sec-sub">
                 Models will change. The need for independent judgment, inspectable

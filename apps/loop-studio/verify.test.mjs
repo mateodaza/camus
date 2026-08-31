@@ -390,18 +390,42 @@ Community-led growth compounds where paid cannot. Retention differs by cohort or
   const { readFileSync } = await import('node:fs');
   const html = readFileSync(new URL('./public/index.html', import.meta.url), 'utf8');
   assert.ok(
-    html.includes('reviewer effort (supported seats; legacy gate pins this every round)'),
-    'effort applies to supported seats and remains pinned every round in the legacy gate',
+    html.includes('reviewer effort (supported seats; proof gate pins this every round)'),
+    'effort applies to supported seats and remains pinned every round in the proof gate',
   );
   assert.equal(
     html.includes('reviewer effort (words lanes)'), false,
     'the bare "(words lanes)" scope — which implied Build ignores effort — must not return',
   );
   assert.ok(
-    html.includes('maker (words + Any-model Build; legacy gate uses Claude)') && html.includes('reviewer (words + Any-model Build; legacy gate uses Codex)'),
-    'both roles apply to Any-model Build; only the legacy gate has fixed provider roles',
+    html.includes('maker (words + Flexible Build; proof gate uses Claude)') && html.includes('reviewer (words + Flexible Build; proof gate uses Codex)'),
+    'both roles apply to Flexible Build; only the proof gate has fixed provider roles',
   );
   assert.ok(!html.includes('Build pins Claude') && !html.includes('Build pins Codex'), 'Build must not appear to have fixed roles across both execution modes');
+  assert.ok(html.includes('MODEL QUALIFICATION') && !html.includes('MODEL ADMISSION'), 'transport qualification is never mislabeled production admission');
+  assert.match(html, /id="lanes"[^>]*aria-label="Run lane"/);
+  assert.match(html, /data-lane="research_memo" aria-pressed="true"/);
+  assert.match(html, /id="form-error"[^>]*role="alert"/);
+  for (const id of ['settings-note', 'connection-note', 'compare-note']) {
+    assert.match(html, new RegExp(`id="${id}"[^>]*role="status"[^>]*aria-live="polite"`), `${id} announces asynchronous status`);
+  }
+  assert.match(html, /Compare two Claude writing models/);
+  assert.match(html, /id="code-executor-wrap"/, 'the maker harness has a dedicated visibility boundary');
+  assert.match(html, /id="doc" role="tabpanel"/, 'the deliverable is labelled as the revision tab panel');
+  for (const id of ['launch', 'calibration', 'runview']) {
+    assert.match(html, new RegExp(`id="${id}"[^>]*tabindex="-1"`), `${id} can receive focus after a view switch`);
+  }
+  const app = readFileSync(new URL('./public/app.js', import.meta.url), 'utf8');
+  assert.match(app, /'open-compare'\)\.classList\.toggle\('hidden', build\)/, 'Build hides the words-only comparison control');
+  assert.match(app, /'code-executor-wrap'\)\.classList\.toggle\('hidden', !independent\)/, 'the maker harness is shown only for Flexible Build');
+  assert.match(app, /feed\(c, \{ revealStart: !state\.replaying \}\)/, 'a live human checkpoint scrolls to the start of its question card');
+  assert.match(app, /setAttribute\('aria-pressed', String\(selected\)\)/, 'lane selection is announced, not only painted');
+  for (const key of ['ArrowRight', 'ArrowLeft', 'Home', 'End']) {
+    assert.ok(app.includes(`event.key === '${key}'`), `revision tabs support ${key} navigation`);
+  }
+  assert.match(app, /setAttribute\('aria-labelledby', selectedTab\.id\)/, 'the revision panel follows the selected tab');
+  assert.match(app, /'runview'\)\.focus\(\)/, 'starting or opening a run moves focus into the run view');
+  assert.match(app, /'launch'\)\.focus\(\)/, 'leaving a run restores focus to the launch view');
 }
 
 // --- unit: Build gate phase strip (pure policy) -----------------------------

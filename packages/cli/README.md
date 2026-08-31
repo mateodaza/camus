@@ -1,15 +1,16 @@
 # Camus
 
-**A coding loop that proves every change.**
+**A local control plane for bounded AI-made code.**
 
-**Unreleased freeze candidate:** `camus build --inspect RUN_ID [--json]` is
+**New in 0.4.16:** `camus build --inspect RUN_ID [--json]` is
 provider-free and read-only. It authenticates the shared CLI/Studio checkpoint,
 reports bounded state and evidence standing without the candidate diff or raw
 model/verifier output, and gives one conservative next action. It never retries
 uncertain work, extends a budget, accepts or lands a candidate, or mutates the
 run. File-action builds also park after seven consecutive discovery-only steps
 without a candidate mutation; use a narrower contract or a native harness for
-genuinely broad repository discovery. This is not part of published 0.4.15.
+genuinely broad repository discovery. Structured maker output, bounded safe reads,
+hash-bound replacement, and owned-process cleanup harden the same loop.
 
 **New in 0.4.15:** npm releases are tag/main/version-bound and publish through
 trusted GitHub OIDC with SLSA provenance. The packaged CLI never executes a
@@ -33,18 +34,20 @@ adds bounded repair, shared CLI/Studio recovery, CLI connection setup, and expli
 native Codex/Qwen Code/Grok Build maker executors. Run `camus build --help` for
 `--setup`, `--qualify`, `--status`, `--stop`, `--resume`, bound answers and budgets.
 
-**New in 0.4.8:** `camus build` uses the same independent maker and
-reviewer selection as Studio's Any-model Build. Run `camus build --help` and
+**New in 0.4.8:** `camus build` uses the same separately selectable maker and
+reviewer selection as Studio's Flexible Build. Run `camus build --help` and
 `camus models` to see the command and this machine's catalog. Reversed, same-model,
 and qualified OpenAI-compatible combinations produce an isolated candidate with
 advisory review and a human checkpoint; they cannot automatically commit, merge,
 publish, or gain gate admission. `camus run` retains the native gate below.
 See the [coding-seat guide](https://github.com/mateodaza/camus/blob/main/docs/INDEPENDENT-CODE-SEATS.md).
 
-No agent grades its own work. Camus runs a coding task from plan to verified commit
-without you watching: Claude writes the code, Codex (a competing model) reviews
-every change, and your repo's own type-check and tests have the final word. Nothing in
-the loop, Claude included, can approve itself. The pairing is the point.
+No agent grades its own work. On the admitted proof-gate path, Camus can carry a
+task toward a verified commit: Claude writes the code, Codex (a competing model)
+reviews each candidate, and your repo's own type-check and tests have the final
+word. When that path cannot continue safely, it stops with a named human decision
+instead of inventing success. Nothing in the loop, Claude included, can approve
+itself. The pairing is the point.
 
 For native proof-gated work, `camus start` creates a feature from
 JSON without a model turn, and `camus run` gives one kernel-owned worktree to a durable
@@ -70,6 +73,11 @@ Full design: [`CAMUS-SPEC.md`](https://github.com/mateodaza/camus/blob/main/CAMU
 > provenance. Two concrete Socket findings were remediated without disguising
 > Camus's intentional process and network surfaces. See the
 > [0.4.15 release notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.15.md).
+>
+> **0.4.16:** Flexible Build adds provider-free authenticated inspection and a
+> more reliable bounded file-action protocol without changing model admission or
+> routing. See the
+> [0.4.16 release notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.16.md).
 >
 > **Existing native infrastructure (introduced in 0.4.7):** The Hybrid Kernel can evaluate a Studio-configured Grok, Qwen,
 > or other OpenAI-compatible reviewer on the exact code candidate before Codex performs the final
@@ -459,7 +467,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.4.15
+npm i -g camus-cli@0.4.16
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)
