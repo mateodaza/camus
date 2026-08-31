@@ -30,6 +30,20 @@ Then choose the path that fits the job:
 [See a documented dogfood case](docs/RECOMMENDED-MODEL-SETUP.md) ·
 [Propose a bounded design-partner pilot](https://github.com/mateodaza/camus/issues/new?template=design-partner.yml)
 
+### Product direction after 0.4.18
+
+Camus is testing a sharper product wedge: the independent acceptance and proof layer for
+agent-written work. The next approved phase is discovery plus a thin design-partner pilot that asks
+whether an editable acceptance contract and evidence-bound handoff improve real pull-request
+decisions. It does **not** authorize automatic routing, remote workers, a portfolio control plane, or
+an event-sourcing rewrite.
+
+The binding plan is [Camus Intelligence RFC v0.2](docs/CAMUS-INTELLIGENCE-PLATFORM-RFC.md). Its
+assumptions, competitive threats, success gates, and kill criteria are recorded in the
+[moat battle test](docs/CAMUS-MOAT-BATTLE-TEST.md); the stable product principles live in
+[PRODUCT.md](PRODUCT.md). Future implementation should begin there rather than infer direction from
+the release history.
+
 > **Public alpha.** Orchestration, worktrees, run state, and receipts stay local.
 > A selected hosted provider still receives the context you send it. Credentials
 > remain local and go only to that endpoint. Verification executes commands from
