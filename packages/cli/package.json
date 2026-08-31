@@ -1,6 +1,6 @@
 {
   "name": "camus-cli",
-  "version": "0.4.16",
+  "version": "0.4.17",
   "description": "Local control plane for AI-made code: separately selectable maker/reviewer seats, deterministic verification, bounded recovery, and evidence-bound human handoffs.",
   "bin": {
     "camus": "bin/camus.js"

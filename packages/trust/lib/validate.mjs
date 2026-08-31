@@ -270,12 +270,12 @@ function validatePairingSemanticsV3(pairing, statuses, path) {
   }
 
   // R3 qualification namespace, applied independently to each seat. The built-in
-  // backend is decided SOLELY by the requested provider prefix (claude|codex),
+  // backend is decided SOLELY by the requested provider prefix (claude|codex|grok),
   // never executor_kind. builtin1 is legal iff built-in AND vendor_managed; every
   // other seat requires qual1.
   for (const [role, seat] of [['executor', exec], ['auditor', aud]]) {
     const provider = seat.requested.split(':')[0];
-    const builtinBackend = provider === 'claude' || provider === 'codex';
+    const builtinBackend = provider === 'claude' || provider === 'codex' || provider === 'grok';
     const vendorManagedBuiltin = builtinBackend && seat.transport === 'vendor_managed';
     const isBuiltinFingerprint = seat.qualification.fingerprint.startsWith('builtin1:');
     if (vendorManagedBuiltin && !isBuiltinFingerprint) return err(`${pp}.${role}.qualification.fingerprint`, 'a vendor-managed built-in backend must carry a builtin1 fingerprint, not qual1');

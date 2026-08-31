@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { isIP } from 'node:net';
-import { deriveLineageSource, executorOrgFamily, originConfidence } from './identity.mjs';
+import { deriveLineageSource, executorOrgFamily, originConfidence, VENDOR_MANAGED_BUILTIN_BACKENDS } from './identity.mjs';
 import { initGrandfather, consult, consultClaudeRoute, studioAtomicWrite, STUDIO_FILE_MODE } from './grandfather.mjs';
 import { validateSshTunnelConfig } from './ssh-tunnel.mjs';
 import { normalizeOpenRouterRoute } from './openrouter-route.mjs';
@@ -51,7 +51,9 @@ export const EFFORTS = ['low', 'medium', 'high', 'xhigh'];
 const BUILTIN_BACKENDS = {
   claude: { name: 'claude', kind: 'claude_cli', provider: 'anthropic', seats: ['maker', 'reviewer'], effort: false },
   codex: { name: 'codex', kind: 'codex_cli', provider: 'openai', seats: ['maker', 'reviewer'], effort: true },
+  grok: { name: 'grok', kind: 'grok_cli', provider: 'xai', models: ['grok-4.6'], seats: ['maker', 'reviewer'], effort: true },
 };
+const BUILTIN_BILLING = Object.freeze({ claude: 'claude_subscription', codex: 'chatgpt_subscription', grok: 'grok_subscription' });
 
 function required(value, name) {
   if (!value || typeof value !== 'string') {
@@ -523,8 +525,8 @@ const UNKNOWN_IDENTITY = Object.freeze({
 // derived mechanically from that source — no expectation is ever a frozen literal.
 export function seatIdentityFacts(backend, model) {
   // Built-in CLI backends: vendor-managed session, registry-backed org/family.
-  if (backend.name === 'claude' || backend.name === 'codex') {
-    const executorKind = backend.kind; // claude_cli / codex_cli
+  if (VENDOR_MANAGED_BUILTIN_BACKENDS.includes(backend.name)) {
+    const executorKind = backend.kind;
     const orgFamily = executorOrgFamily(executorKind) || {};
     // §9.1's recorded interim path remains real even after claude_cli earns the
     // stronger isolation-backed registry tier. If isolation is unproven, only a
@@ -544,7 +546,8 @@ export function seatIdentityFacts(backend, model) {
       protocol: 'vendor_session',
       trainingOrg: orgFamily.org ?? 'unknown',
       modelFamily: orgFamily.family ?? 'unknown',
-      inferenceOperator: backend.provider, // anthropic / openai
+      inferenceOperator: backend.provider, // anthropic / openai / xai
+      billingAuthority: BUILTIN_BILLING[backend.name],
       lineage: { source, derivedFrom: null },
       originConfidence: originConfidence(source),
     };
@@ -561,6 +564,7 @@ export function seatIdentityFacts(backend, model) {
       trainingOrg: backend.trainingOrg,
       modelFamily: backend.modelFamily,
       inferenceOperator: backend.inferenceOperator ?? 'unknown',
+      billingAuthority: 'configured_api_backend',
       lineage: { source, derivedFrom: backend.derivedFrom ?? null },
       originConfidence: originConfidence(source),
     };
@@ -573,6 +577,7 @@ export function seatIdentityFacts(backend, model) {
     ...UNKNOWN_IDENTITY,
     transport: backend.connectionDetails?.kind === 'legacy_http' ? 'legacy_http' : 'unknown',
     connection: backend.connection ?? null,
+    billingAuthority: 'unknown',
     lineage: { source: 'unknown', derivedFrom: null },
     originConfidence: originConfidence('unknown'),
   };

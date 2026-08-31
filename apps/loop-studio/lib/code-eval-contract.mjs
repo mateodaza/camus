@@ -189,7 +189,11 @@ function validateSeat(seat, path, { reviewer = false } = {}) {
   string(seat.trainingOrg, `${path}.trainingOrg`, { pattern: SAFE_NAME, max: 64 });
   if (!reviewer) {
     enumValue(seat.transport, `${path}.transport`, TRANSPORTS);
-    string(seat.connection, `${path}.connection`, { pattern: SAFE_NAME, max: 64 });
+    if (seat.transport === 'vendor_managed') {
+      if (seat.connection !== null) fail(`${path}.connection`, 'must be null for vendor_managed transport');
+    } else {
+      string(seat.connection, `${path}.connection`, { pattern: SAFE_NAME, max: 64 });
+    }
     validateRoute(seat.route, seat.provider, `${path}.route`);
   }
 }

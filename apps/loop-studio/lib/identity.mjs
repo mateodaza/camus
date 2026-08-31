@@ -34,7 +34,7 @@ function readRegistry() {
 // an inherited ANTHROPIC_BASE_URL (or any redirect var) can no longer re-point
 // it. That flip is justified by the green lib/adapters/claude.test.mjs isolation
 // acceptance test; never edit this table without such a proof.
-const REDIRECT_ISOLATION = Object.freeze({ codex_cli: true, claude_cli: true });
+const REDIRECT_ISOLATION = Object.freeze({ codex_cli: true, claude_cli: true, grok_cli: true });
 export function redirectIsolationProven(executorKind) {
   return REDIRECT_ISOLATION[executorKind] === true;
 }
@@ -198,6 +198,12 @@ export function deriveIndependence({ maker, reviewer } = {}) {
 // (§9.2/§10.8.1). A plain string, never a probe of the live installation.
 export const BUILTIN_ADAPTER_CONTRACT_VERSION = '1';
 
+export const VENDOR_MANAGED_BUILTIN_BACKENDS = Object.freeze(['claude', 'codex', 'grok']);
+const BUILTIN_EXECUTORS = Object.freeze({ claude: 'claude_cli', codex: 'codex_cli', grok: 'grok_cli' });
+const BUILTIN_BILLING = Object.freeze({ claude: 'claude_subscription', codex: 'chatgpt_subscription', grok: 'grok_subscription' });
+export const isVendorManagedBuiltin = (backend, transport) =>
+  VENDOR_MANAGED_BUILTIN_BACKENDS.includes(backend) && transport === 'vendor_managed';
+
 const fpHash = (parts) => createHash('sha256').update(parts.map((p) => String(p ?? '')).join('\x00'), 'utf8').digest('hex');
 
 const QUAL1_RE = /^qual1:[0-9a-f]{64}$/;
@@ -217,7 +223,7 @@ export function qualificationForSeat({
   gateScope = null,
   contractVersion = null,
 } = {}) {
-  const builtin = (backend === 'claude' || backend === 'codex') && transport === 'vendor_managed';
+  const builtin = isVendorManagedBuiltin(backend, transport);
   if (builtin) {
     // builtin1 = hash over (built-in backend name, adapter contract version, and —
     // for gate seats — review-contract version + scope). A fingerprintable,
@@ -259,12 +265,13 @@ export function resolveSeatIdentityFacts(seat = null, { backend, provider } = {}
       trainingOrg: seat.trainingOrg ?? 'unknown',
       modelFamily: seat.modelFamily ?? 'unknown',
       inferenceOperator: seat.inferenceOperator ?? p ?? 'unknown',
+      billingAuthority: seat.billingAuthority ?? 'unknown',
       lineage: { source: seat.lineage?.source ?? 'unknown', derivedFrom: seat.lineage?.derivedFrom ?? null },
       originConfidence: seat.originConfidence ?? originConfidence(seat.lineage?.source ?? 'unknown'),
     };
   }
-  if (b === 'claude' || b === 'codex') {
-    const executorKind = b === 'claude' ? 'claude_cli' : 'codex_cli';
+  if (VENDOR_MANAGED_BUILTIN_BACKENDS.includes(b)) {
+    const executorKind = BUILTIN_EXECUTORS[b];
     const of = executorOrgFamily(executorKind) || {};
     const source = deriveLineageSource({ executorKind, transport: 'vendor_managed' });
     return {
@@ -272,6 +279,7 @@ export function resolveSeatIdentityFacts(seat = null, { backend, provider } = {}
       executor: executorKind, transport: 'vendor_managed', connection: null,
       trainingOrg: of.org ?? 'unknown', modelFamily: of.family ?? 'unknown',
       inferenceOperator: p ?? 'unknown',
+      billingAuthority: BUILTIN_BILLING[b],
       lineage: { source, derivedFrom: null },
       originConfidence: originConfidence(source),
     };
@@ -280,6 +288,7 @@ export function resolveSeatIdentityFacts(seat = null, { backend, provider } = {}
     backend: b, provider: p, model,
     executor: 'http_client', transport: 'vendor_managed', connection: seat?.connection ?? null,
     trainingOrg: 'unknown', modelFamily: 'unknown', inferenceOperator: p ?? 'unknown',
+    billingAuthority: seat?.billingAuthority ?? 'unknown',
     lineage: { source: 'unknown', derivedFrom: null }, originConfidence: 'unknown',
   };
 }

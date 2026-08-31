@@ -1278,7 +1278,7 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
     delete absentQual.pairing.auditor.qualification;
     refuses(seal(absentQual), /qualification/, 'R3 absent qualification refused');
 
-    // A vendor-managed built-in backend (provider prefix claude|codex) carries
+    // A vendor-managed built-in backend (provider prefix claude|codex|grok) carries
     // builtin1. Both built-in providers accept.
     const builtinExec = (provider) => {
       const b = build3();
@@ -1288,7 +1288,7 @@ import { validateStatus, validatePairingManifest, validateEvidencePack, validate
       e.qualification.fingerprint = builtin1('a');
       return b;
     };
-    for (const provider of ['claude', 'codex']) {
+    for (const provider of ['claude', 'codex', 'grok']) {
       assert.ok(validateEvidencePack(seal(builtinExec(provider))).ok, `R3 accepts vendor-managed ${provider} built-in with builtin1`);
     }
     // builtin1 on a loopback (non-vendor-managed) built-in refuses.

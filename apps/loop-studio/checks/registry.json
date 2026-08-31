@@ -6,7 +6,8 @@
   ],
   "executors": {
     "claude_cli": { "org": "anthropic", "family": "claude" },
-    "codex_cli": { "org": "openai", "family": "gpt" }
+    "codex_cli": { "org": "openai", "family": "gpt" },
+    "grok_cli": { "org": "xai", "family": "grok" }
   },
   "families": {
     "gpt": "openai",

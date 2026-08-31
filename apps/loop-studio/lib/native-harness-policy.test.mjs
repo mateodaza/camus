@@ -41,7 +41,7 @@ test('native harness readiness is spend-free, bounded and path-private', async (
 
 test('reviewed Qwen and Grok banners normalize to the frozen semantic version', () => {
   assert.equal(normalizeNativeHarnessVersion(QWEN_NATIVE_EXECUTOR, '0.22.3\n'), '0.22.3');
-  assert.equal(normalizeNativeHarnessVersion(GROK_NATIVE_EXECUTOR, 'grok 1.0.5 (5115b46bc909)\n'), '1.0.5');
+  assert.equal(normalizeNativeHarnessVersion(GROK_NATIVE_EXECUTOR, 'grok 1.0.13 (5e9a58528b76)\n'), '1.0.13');
   assert.throws(() => normalizeNativeHarnessVersion(GROK_NATIVE_EXECUTOR, 'grok 1.0.4'), /required version/);
 });
 

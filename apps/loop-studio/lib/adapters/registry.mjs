@@ -16,16 +16,19 @@ import { validateCodeExecutor, NATIVE_EXECUTOR, QWEN_NATIVE_EXECUTOR, GROK_NATIV
 import { runNativeCodex } from './codex-native.mjs';
 import { runNativeQwen } from './qwen-native.mjs';
 import { runNativeGrok } from './grok-native.mjs';
+import { runGrokSubscriptionMaker, runGrokSubscriptionReview } from './grok-subscription.mjs';
 
 function makerFor(backend) {
   if (backend.kind === 'claude_cli') return runClaude;
   if (backend.kind === 'codex_cli') return runCodexMaker;
+  if (backend.kind === 'grok_cli') return runGrokSubscriptionMaker;
   return openAiCompatMaker(backend);
 }
 
 function reviewerFor(backend) {
   if (backend.kind === 'claude_cli') return runClaudeReview;
   if (backend.kind === 'codex_cli') return runCodexReview;
+  if (backend.kind === 'grok_cli') return runGrokSubscriptionReview;
   return openAiCompatReviewer(backend);
 }
 

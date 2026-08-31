@@ -239,6 +239,11 @@ maker_tokens    7,445`}
                   actions or an eligible native Codex, Qwen Code, or Grok Build harness.
                   The candidate stays advisory and never lands without human acceptance.
                 </p>
+                <p>
+                  The built-in Grok seat can use a pinned Grok Build subscription
+                  path. Repeated simple-task maker evidence is verifier-green, but
+                  the path remains unrouted and advisory until review evidence closes.
+                </p>
               </Reveal>
               <Reveal className="direction-card direction-card--evidence">
                 <p className="direction-tag">Evaluation infrastructure</p>
@@ -324,8 +329,11 @@ maker_tokens    7,445`}
                     API credentials are held by the local service and sent only to the
                     selected provider endpoint; they are never sent to camus.sh or exposed
                     to native workers. Providers still receive the context you choose to
-                    send. Native Qwen and Grok workers can reach only the selected model
-                    through a host-owned one-model gateway.
+                    send. Native Qwen and configured API-backed Grok workers can reach
+                    only the selected model through a host-owned one-model gateway. The
+                    built-in Grok subscription seat keeps Grok Build's own login and
+                    inference route, strips API keys, pins the reviewed artifact, and
+                    applies Camus's bounded tool policy.
                   </p>
                 </div>
                 {/* eslint-disable-next-line @next/next/no-img-element */}

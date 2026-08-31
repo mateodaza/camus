@@ -1,5 +1,11 @@
 # Native harness qualification 1 — stock boundary blocked; Camus isolation follow-up passed
 
+> **Current 0.4.17 runtime contract:** Camus accepts the reviewed
+> Grok Build **1.0.13** macOS-arm64 binary (`grok 1.0.13 (5e9a58528b76)`,
+> SHA-256 `8669e0fdadceec25b8c159c355f427ffbd82583525d774b6ab1522197ea83b80`).
+> The 1.0.5 observations below remain historical evidence and 1.0.5 is no longer
+> accepted by current runtime policy.
+
 Date: 2026-08-28. Branch: `codex/productive-loop`. The observations below are the
 negative stock-harness baseline. A later same-day Camus-owned isolation follow-up
 is recorded at the end and released experimentally in 0.4.9.
@@ -134,3 +140,42 @@ This changes the enablement decision to **experimental maker adapters may ship**
 on qualified macOS arm64 installations. It does not erase the stock negative
 result, admit either model for gating, prove provider-backed quality/latency, or
 remove human acceptance. Those claims require later combination dogfood/evals.
+
+## Current Grok subscription path
+
+Grok Build now has two explicit Camus billing contracts. They share the harness
+name but do not share credentials or billing:
+
+| Selection | Inference authority | Billing authority |
+| --- | --- | --- |
+| built-in `grok:grok-4.6` + `grok_native` | Grok Build's authenticated ACP session | Grok/SuperGrok subscription allowance |
+| configured `xai:grok-4.6` + `grok_native` | Camus one-model gateway → `api.x.ai` | xAI API credits/invoicing |
+
+The built-in path never reads or forwards `XAI_API_KEY` and never falls back to
+the API path. It copies only the existing private Grok login record into
+run-private scratch, requires the ACP `cached_token` auth method, and
+records `billingAuthority: grok_subscription`. Grok owns model inference and
+context; Camus owns bounded filesystem and terminal RPCs, candidate custody,
+verification, review, and the human handoff.
+
+Install the reviewed 1.0.13 artifact, authenticate it in your normal operator
+session, and then use the built-in seat:
+
+```sh
+grok --version
+grok login
+
+camus build --repo /path/to/project \
+  --task 'Fix the bounded regression.' \
+  --contract 'The named tests pass without weakening assertions.' \
+  --maker grok:grok-4.6 --maker-effort medium \
+  --maker-executor grok_native --max-tokens 100000 \
+  --reviewer codex:gpt-5.6-luna --reviewer-effort medium \
+  --verify 'npm test'
+```
+
+`camus build --models` and Studio Setup perform only artifact/version readiness
+checks. A real subscription smoke still needs an explicit bounded model-call
+authorization. See xAI's [Grok Build overview](https://docs.x.ai/build/overview),
+[headless/ACP guide](https://docs.x.ai/build/cli/headless-scripting), and
+[separate consumer/API billing FAQ](https://docs.x.ai/console/faq/accounts).

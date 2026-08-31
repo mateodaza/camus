@@ -220,6 +220,23 @@ test('a balanced campaign preserves its task class and case identity in the cell
   validateCodeEvalCell(cell, c, e);
 });
 
+test('vendor-managed native smoke seats bind the absence of an operator connection', () => {
+  const c = campaign({ executor: 'grok_native', campaignId: 'grok-subscription-native-smoke' });
+  c.treatment.maker.backend = 'grok';
+  c.treatment.maker.model = 'grok-4.6';
+  c.treatment.maker.transport = 'vendor_managed';
+  c.treatment.maker.connection = null;
+  assert.doesNotThrow(() => validateCodeEvalCampaign(c));
+
+  const named = clone(c);
+  named.treatment.maker.connection = 'xai-primary';
+  assert.throws(() => validateCodeEvalCampaign(named), /must be null for vendor_managed/);
+
+  const unbound = campaign({ executor: 'grok_native', campaignId: 'grok-api-native-smoke' });
+  unbound.treatment.maker.connection = null;
+  assert.throws(() => validateCodeEvalCampaign(unbound), /must be a non-empty trimmed string/);
+});
+
 test('every v1a schema refuses unknown fields and binding drift', () => {
   const c = campaign();
   const unknownCampaign = clone(c);

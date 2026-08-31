@@ -100,13 +100,17 @@ The maker executor is independent from the maker model/backend:
   ChatGPT CLI login.
 - `qwen_native` uses Qwen Code 0.22.3 with any exact, qualified
   OpenAI-compatible maker backend.
-- `grok_native` uses Grok Build 1.0.5 with any exact, qualified
-  OpenAI-compatible maker backend.
+- `grok_native` has two explicit modes. The built-in `grok:grok-4.6` maker uses
+  Grok Build 1.0.13 with its OAuth login and Grok subscription allowance. A
+  qualified OpenAI-compatible maker uses the existing Camus gateway and that
+  backend's API billing. Neither mode may fall back to the other.
 
-This makes model + harness combinations explicit: for example, Qwen Code with a
-qualified Qwen endpoint, Grok Build with xAI, or either harness with a compatible
-self-hosted/SSH endpoint. The reviewer is still selected independently. All three
-native adapters are **maker-only** and experimental; no native reviewer is implied.
+This makes model + harness combinations explicit: for example, subscription-backed
+Grok Build, Qwen Code with a qualified Qwen endpoint, or either API-backed harness
+with a compatible self-hosted/SSH endpoint. The reviewer is still selected
+independently. Native executors are **maker-only** and experimental; the built-in
+Grok seat can separately serve as a tool-less reviewer through the same subscription
+login, but that does not grant gate admission.
 No model or executor is silently substituted, and existing raw API choices remain.
 Camus still owns the frozen task, isolated candidate, budgets, deterministic
 verification, advisory review and final human handoff.
@@ -151,7 +155,7 @@ also requires Node 22+:
 
 ```sh
 # Follow docs/NATIVE-HARNESS-QUALIFICATION-1.md to verify and unpack the exact
-# Qwen Code 0.22.3 and Grok Build 1.0.5 artifacts without executing installers.
+# Qwen Code 0.22.3 and Grok Build 1.0.13 artifacts without executing installers.
 # Then set CAMUS_QWEN_CODE_BIN and CAMUS_GROK_BUILD_BIN to those private paths.
 
 camus build --repo /path/to/project \
@@ -161,12 +165,13 @@ camus build --repo /path/to/project \
   --reviewer codex:gpt-5.6-luna --max-tokens 1000000 --verify 'npm test'
 ```
 
-The normal executable names are `qwen` and `grok`. A nonstandard private install
+The normal executable names are `qwen` and `grok`. Authenticate subscription-backed
+Grok once with `grok login`. A nonstandard private install
 can be selected with `CAMUS_QWEN_CODE_BIN=/absolute/path` or
 `CAMUS_GROK_BUILD_BIN=/absolute/path`; the resolved path and exact artifact digest
 are frozen into the native session. Changed artifacts refuse before any model call.
 
-For Qwen/Grok, a host-owned one-run gateway keeps the real provider credential
+For API-backed Qwen/Grok, a host-owned one-run gateway keeps the real provider credential
 outside the harness. The worker receives only a random, short-lived gateway
 capability. The gateway accepts Chat Completions for the one selected model,
 refuses Responses/helper substitution and other paths, rebuilds upstream headers,

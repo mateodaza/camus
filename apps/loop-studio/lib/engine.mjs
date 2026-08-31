@@ -8,7 +8,7 @@
 import { planPrompt, groundingPrompt, groundingRetryPrompt, makePrompt, reviewPrompt, fixPrompt } from './prompts.mjs';
 import { runVerify, extractThresholdLines, bindThresholdAssessments } from './verify.mjs';
 import { getModels } from './models.mjs';
-import { deriveIndependence, qualificationForSeat, resolveSeatIdentityFacts } from './identity.mjs';
+import { deriveIndependence, qualificationForSeat, resolveSeatIdentityFacts, isVendorManagedBuiltin } from './identity.mjs';
 import { extractClaimCandidates } from './claims.mjs';
 import { extractContractCriteria } from './contract.mjs';
 import { knowledgeSnapshotMatches, sealKnowledgeSnapshot } from './comparison.mjs';
@@ -139,7 +139,7 @@ export async function runLoop(run, ctx) {
   const pairingQualified = makerQualification !== null && reviewerQualification !== null;
   const actualEvidenceClasses = new Set(['observed_api_response', 'observed_cli_event', 'asserted_pin', 'mapped_by_operator_docs']);
   const observationReady = (facts, evidenceClass) => (
-    ((facts.backend === 'claude' || facts.backend === 'codex') && facts.transport === 'vendor_managed')
+    isVendorManagedBuiltin(facts.backend, facts.transport)
     || actualEvidenceClasses.has(evidenceClass)
   );
   const reviewPairingFacts = (review) => {

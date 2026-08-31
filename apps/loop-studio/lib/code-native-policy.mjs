@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { scrubbedEnv } from './adapters/codex.mjs';
-import { HARNESS_NATIVE_EXECUTORS, isHarnessNativeExecutor } from './native-harness-policy.mjs';
+import { HARNESS_NATIVE_EXECUTORS, GROK_NATIVE_EXECUTOR, isHarnessNativeExecutor } from './native-harness-policy.mjs';
 export { HARNESS_NATIVE_EXECUTORS, QWEN_NATIVE_EXECUTOR, GROK_NATIVE_EXECUTOR } from './native-harness-policy.mjs';
 
 export const NATIVE_EXECUTOR = 'codex_native';
@@ -22,6 +22,12 @@ export const toml = value => Array.isArray(value) ? `[${value.map(toml).join(','
 
 export function validateCodeExecutor(seat, backend, role = 'maker') {
   const executor = seat?.codeExecutor;
+  if (backend?.kind === 'grok_cli') {
+    if (executor === undefined) return; // tool-less words maker/reviewer; Build injects grok_native before validation
+    if (role === 'maker' && executor === GROK_NATIVE_EXECUTOR) return;
+    if (role === 'reviewer' && (executor === undefined || executor === 'file_actions')) return;
+    throw new Error('The built-in Grok maker uses grok_native with Grok subscription authentication; no API or file-actions fallback was made.');
+  }
   if (executor === undefined || executor === 'file_actions') return;
   if (isHarnessNativeExecutor(executor)) {
     if (role !== 'maker' || backend?.kind !== 'openai_compat') throw new Error(`${executor} is available only for an explicitly qualified OpenAI-compatible maker; no fallback was made.`);

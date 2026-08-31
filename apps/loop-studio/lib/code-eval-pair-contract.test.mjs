@@ -145,7 +145,7 @@ function execution(c, { createdAt = '2026-08-30T12:00:00.000Z' } = {}) {
         executor,
         harness: {
           name: executor === 'qwen_native' ? 'qwen_code' : 'grok_build',
-          version: executor === 'qwen_native' ? '0.22.3' : '1.0.5',
+          version: executor === 'qwen_native' ? '0.22.3' : '1.0.13',
           artifactDigest: hash('f'),
           parserVersion: 'native-harness-v1',
           outerSandboxPolicyDigest: hash('0'),

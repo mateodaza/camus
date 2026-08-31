@@ -30,6 +30,18 @@ test('RPC refuses reverse authority requests, malformed frames and raw provider 
   }
 });
 
+test('ACP mode serves only the explicitly installed bounded reverse handler', async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'camus-rpc-acp-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const server = `let first=null,buf='';process.stdin.on('data',chunk=>{buf+=chunk;const lines=buf.split('\\n');buf=lines.pop();for(const line of lines){if(!line)continue;const msg=JSON.parse(line);if(!first){first=msg;if(msg.jsonrpc!==\"2.0\")process.exit(9);process.stdout.write(JSON.stringify({jsonrpc:\"2.0\",id:\"tool-1\",method:\"fs/read_text_file\",params:{sessionId:\"s\",path:\"safe.txt\"}})+'\\n');}else if(msg.id===\"tool-1\"){process.stdout.write(JSON.stringify({jsonrpc:\"2.0\",id:first.id,result:msg.result})+'\\n');}}});`;
+  const calls = [];
+  const rpc = new CodexRpc({ command: process.execPath, args: ['-e', server], cwd, env: { PATH: process.env.PATH }, timeoutMs: 5000,
+    protocol: 'jsonrpc2', onRequest: async (method, params) => { calls.push([method, params.path]); return { content: 'bounded' }; } });
+  t.after(() => rpc.close());
+  assert.deepEqual(await rpc.request('fixture'), { content: 'bounded' });
+  assert.deepEqual(calls, [['fs/read_text_file', 'safe.txt']]);
+});
+
 test('RPC timeout closes an unresponsive child without retaining stderr', async t => {
   const rpc = await peer(t, `process.stderr.write('do-not-log');setInterval(()=>{},1000);`);
   await assert.rejects(rpc.request('fixture', {}, 50), /timed out/);

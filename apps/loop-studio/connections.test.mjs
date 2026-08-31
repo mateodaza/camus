@@ -48,7 +48,7 @@ const write = (value) => writeFileSync(modelsPath, `${JSON.stringify(value, null
 const validXai = () => ({
   connections: { xai: { kind: 'direct_https', baseUrl: 'https://api.x.ai/v1' } },
   backends: {
-    grok: {
+    grok_api: {
       kind: 'openai_compat', provider: 'xai', connection: 'xai', protocol: 'chat_completions',
       trainingOrg: 'xai', modelFamily: 'grok', inferenceOperator: 'xai',
       derivedFrom: null,
@@ -111,7 +111,7 @@ try {
   check('an undeclared connection refuses with the declaration fix', () => {
     const fixture = validXai();
     assert.doesNotThrow(() => listBackends(decision(fixture)), 'valid control loads');
-    fixture.backends.grok.connection = 'missing_xai';
+    fixture.backends.grok_api.connection = 'missing_xai';
     assert.throws(
       () => listBackends(decision(fixture)),
       (error) => /undeclared connection "missing_xai"/.test(error.message) && /top-level connections/.test(error.message),
@@ -187,7 +187,7 @@ try {
   });
 
   check('new connection backends carry declared identity and connection transport', () => {
-    const backend = listBackends(decision(validXai())).grok;
+    const backend = listBackends(decision(validXai())).grok_api;
     assert.equal(backend.transport, 'direct_https');
     assert.equal(backend.connection, 'xai');
     assert.equal(backend.trainingOrg, 'xai');
@@ -238,32 +238,32 @@ try {
     assert.doesNotThrow(() => listBackends(decision(fixture)), 'complete declaration control loads');
     for (const field of ['trainingOrg', 'modelFamily']) {
       const missing = structuredClone(fixture);
-      delete missing.backends.grok[field];
+      delete missing.backends.grok_api[field];
       assert.throws(() => listBackends(decision(missing)), new RegExp(field));
       const unknown = structuredClone(fixture);
-      unknown.backends.grok[field] = 'unknown';
+      unknown.backends.grok_api[field] = 'unknown';
       assert.throws(() => listBackends(decision(unknown)), /reserved for legacy entries/);
     }
     const wrongProtocol = structuredClone(fixture);
-    wrongProtocol.backends.grok.protocol = 'responses';
+    wrongProtocol.backends.grok_api.protocol = 'responses';
     assert.throws(() => listBackends(decision(wrongProtocol)), /protocol must be "chat_completions"/);
     const missingLineage = structuredClone(fixture);
-    delete missingLineage.backends.grok.derivedFrom;
-    assert.throws(() => listBackends(decision(missingLineage)), /missing backends\.grok\.derivedFrom/);
+    delete missingLineage.backends.grok_api.derivedFrom;
+    assert.throws(() => listBackends(decision(missingLineage)), /missing backends\.grok_api\.derivedFrom/);
   });
 
   check('lineage.source in config refuses even when null', () => {
     const fixture = validXai();
     assert.doesNotThrow(() => listBackends(decision(fixture)), 'declarations without source are valid');
-    fixture.backends.grok.lineage = { source: null };
+    fixture.backends.grok_api.lineage = { source: null };
     assert.throws(() => listBackends(decision(fixture)), /lineage\.source is derived, never configured/);
   });
 
   check('a declaration contradicting the registry refuses and names both facts', () => {
     const fixture = validXai();
     assert.doesNotThrow(() => listBackends(decision(fixture)), 'matching declarations derive registry');
-    fixture.backends.grok.trainingOrg = 'openai';
-    fixture.backends.grok.modelFamily = 'gpt';
+    fixture.backends.grok_api.trainingOrg = 'openai';
+    fixture.backends.grok_api.modelFamily = 'gpt';
     assert.throws(
       () => listBackends(decision(fixture)),
       (error) => /declared openai\/gpt/.test(error.message) && /registry xai\/grok/.test(error.message),
@@ -288,8 +288,8 @@ try {
     const after = JSON.parse(readFileSync(modelsPath, 'utf8'));
     assert.deepEqual(after.connections, before.connections, 'connection declarations remain untouched');
     assert.deepEqual(after.backends, before.backends, 'no dual-write fields or defaults are injected without an edit');
-    assert.equal(Object.hasOwn(after.backends.grok, 'baseUrl'), false);
-    assert.equal(Object.hasOwn(after.backends.grok, 'apiKeyEnv'), false);
+    assert.equal(Object.hasOwn(after.backends.grok_api, 'baseUrl'), false);
+    assert.equal(Object.hasOwn(after.backends.grok_api, 'apiKeyEnv'), false);
   });
 
   check('updateModels dual-writes the complete real legacy surface for keyed and keyless entries', () => {
@@ -299,7 +299,7 @@ try {
       xai: { kind: 'direct_https', baseUrl: 'https://api.x.ai/v1', resolvedBaseUrl: runtimeUrl, localPort: 49177 },
       local: { kind: 'loopback', port: 11434, basePath: '/v1', resolvedPort: 49177 },
     };
-    const xai = validXai().backends.grok;
+    const xai = validXai().backends.grok_api;
     const qwen = {
       kind: 'openai_compat', provider: 'local-lab', connection: 'local', protocol: 'chat_completions',
       trainingOrg: 'alibaba', modelFamily: 'qwen', inferenceOperator: 'self_hosted',
@@ -307,9 +307,9 @@ try {
       auth: { kind: 'none' }, models: ['qwen3-coder'], seats: ['reviewer'],
       resolvedBaseUrl: runtimeUrl, resolvedPort: 49177,
     };
-    updateModels({ connections, backends: { grok: xai, qwen } });
+    updateModels({ connections, backends: { grok_api: xai, qwen } });
     const persisted = JSON.parse(readFileSync(modelsPath, 'utf8'));
-    for (const name of ['grok', 'qwen']) {
+    for (const name of ['grok_api', 'qwen']) {
       const entry = persisted.backends[name];
       assert.doesNotThrow(() => validateLegacyCompatEntry(name, entry), `${name} loads under the real pre-connection validator`);
       assert.equal(entry.kind, 'openai_compat');
@@ -319,8 +319,8 @@ try {
       assert.ok(entry.models.length);
       assert.ok(entry.seats.length);
     }
-    assert.equal(persisted.backends.grok.apiKeyEnv, 'CAMUS_TEST_XAI_KEY');
-    assert.deepEqual(persisted.backends.grok.auth, { kind: 'env', envVar: 'CAMUS_TEST_XAI_KEY' });
+    assert.equal(persisted.backends.grok_api.apiKeyEnv, 'CAMUS_TEST_XAI_KEY');
+    assert.deepEqual(persisted.backends.grok_api.auth, { kind: 'env', envVar: 'CAMUS_TEST_XAI_KEY' });
     assert.equal(persisted.backends.qwen.apiKeyEnv, 'CAMUS_NO_AUTH');
     assert.deepEqual(persisted.backends.qwen.auth, { kind: 'none' });
     assert.equal(persisted.backends.qwen.baseUrl, 'http://127.0.0.1:11434/v1');
@@ -379,17 +379,17 @@ try {
   check('dual-write conflicts name both values instead of silently choosing one', () => {
     write(decision());
     const fixture = validXai();
-    fixture.backends.grok.baseUrl = 'https://example.com/wrong';
+    fixture.backends.grok_api.baseUrl = 'https://example.com/wrong';
     assert.throws(
       () => updateModels({ connections: fixture.connections, backends: fixture.backends }),
-      (error) => /backends\.grok\.baseUrl/.test(error.message) && /connections\.xai\.baseUrl/.test(error.message) && /conflicts/.test(error.message),
+      (error) => /backends\.grok_api\.baseUrl/.test(error.message) && /connections\.xai\.baseUrl/.test(error.message) && /conflicts/.test(error.message),
     );
     write(decision());
     const authConflict = validXai();
-    authConflict.backends.grok.apiKeyEnv = 'DIFFERENT_ENV_NAME';
+    authConflict.backends.grok_api.apiKeyEnv = 'DIFFERENT_ENV_NAME';
     assert.throws(
       () => updateModels({ connections: authConflict.connections, backends: authConflict.backends }),
-      (error) => /backends\.grok\.apiKeyEnv/.test(error.message) && /backends\.grok\.auth\.envVar/.test(error.message) && /conflicts/.test(error.message),
+      (error) => /backends\.grok_api\.apiKeyEnv/.test(error.message) && /backends\.grok_api\.auth\.envVar/.test(error.message) && /conflicts/.test(error.message),
     );
   });
 
@@ -397,7 +397,7 @@ try {
     write(decision());
     const fixture = validXai();
     const planted = ['sk', 'planted', 'value'].join('-');
-    fixture.backends.grok.auth.value = planted;
+    fixture.backends.grok_api.auth.value = planted;
     assert.throws(
       () => updateModels({ connections: fixture.connections, backends: fixture.backends }),
       (error) => /credential values are forbidden/.test(error.message) && !error.message.includes(planted),
@@ -406,7 +406,7 @@ try {
     write(decision());
     const urlCredential = validXai();
     const password = ['pass', 'word', 'fixture'].join('-');
-    urlCredential.backends.grok.baseUrl = `https://user:${password}@api.x.ai/v1`;
+    urlCredential.backends.grok_api.baseUrl = `https://user:${password}@api.x.ai/v1`;
     assert.throws(
       () => updateModels({ connections: urlCredential.connections, backends: urlCredential.backends }),
       (error) => /must not contain credentials/.test(error.message) && !error.message.includes(password),
@@ -415,7 +415,7 @@ try {
     write(decision());
     const envCredential = validXai();
     const token = ['bearer', 'fixture', 'value'].join('-');
-    envCredential.backends.grok.apiKeyEnv = token;
+    envCredential.backends.grok_api.apiKeyEnv = token;
     assert.throws(
       () => updateModels({ connections: envCredential.connections, backends: envCredential.backends }),
       (error) => /env-var NAME/.test(error.message) && !error.message.includes(token),
@@ -425,17 +425,17 @@ try {
   check('a connection edit preserves a backend expected-reported mapping (§6.2)', () => {
     write(decision());
     const fixture = validXai();
-    fixture.backends.grok.expectedReported = { 'grok-4.6': ['grok-4-latest'] };
+    fixture.backends.grok_api.expectedReported = { 'grok-4.6': ['grok-4-latest'] };
     updateModels({ connections: fixture.connections, backends: fixture.backends });
     // Re-editing ONLY the referenced connection must not strip the mapping.
     updateModels({ connections: fixture.connections });
     const persisted = JSON.parse(readFileSync(modelsPath, 'utf8'));
     assert.deepEqual(
-      persisted.backends.grok.expectedReported,
+      persisted.backends.grok_api.expectedReported,
       { 'grok-4.6': ['grok-4-latest'] },
       'the operator-declared alias mapping survives a connection-only edit',
     );
-    assert.deepEqual(listBackends().grok.expectedReported, { 'grok-4.6': ['grok-4-latest'] });
+    assert.deepEqual(listBackends().grok_api.expectedReported, { 'grok-4.6': ['grok-4-latest'] });
   });
 
   check('seat aliases clear on identity changes and survive identity-neutral edits', () => {

@@ -94,7 +94,7 @@ const writeModels = (value) => writeFileSync(modelsPath, `${JSON.stringify(value
 const pick = (obj, keys) => Object.fromEntries(keys.map((k) => [k, obj[k]]));
 const identityKeys = new Set([
   'executor', 'transport', 'connection', 'protocol', 'trainingOrg', 'modelFamily',
-  'inferenceOperator', 'lineage', 'originConfidence',
+  'inferenceOperator', 'lineage', 'originConfidence', 'billingAuthority',
 ]);
 const withoutIdentity = (entry) => Object.fromEntries(
   Object.entries(entry).filter(([key]) => !identityKeys.has(key)),
@@ -111,11 +111,11 @@ const legacySurface = (models, catalog) => ({
   },
   seatCatalog: {
     ...catalog,
-    maker: catalog.maker.map(withoutIdentity),
-    reviewer: catalog.reviewer.map(withoutIdentity),
+    maker: catalog.maker.filter((entry) => entry.backend !== 'grok').map(withoutIdentity),
+    reviewer: catalog.reviewer.filter((entry) => entry.backend !== 'grok').map(withoutIdentity),
     // The historical golden stays byte-frozen. Task 11 deliberately adds these
     // read-only consumer fields and asserts them below, outside the old surface.
-    backends: catalog.backends.map(withoutTask11BackendFields),
+    backends: catalog.backends.filter((entry) => entry.name !== 'grok').map(withoutTask11BackendFields),
   },
 });
 

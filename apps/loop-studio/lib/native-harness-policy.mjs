@@ -10,16 +10,16 @@ export const QWEN_NATIVE_EXECUTOR = 'qwen_native';
 export const GROK_NATIVE_EXECUTOR = 'grok_native';
 export const HARNESS_NATIVE_EXECUTORS = Object.freeze([QWEN_NATIVE_EXECUTOR, GROK_NATIVE_EXECUTOR]);
 export const HARNESS_POLICY_VERSION = 'native-harness-isolation/v3';
-const versions = { [QWEN_NATIVE_EXECUTOR]: /^0\.22\.3(?:\s|$)/, [GROK_NATIVE_EXECUTOR]: /(?:^|\s)1\.0\.5(?:\s|$)/ };
+const versions = { [QWEN_NATIVE_EXECUTOR]: /^0\.22\.3(?:\s|$)/, [GROK_NATIVE_EXECUTOR]: /(?:^|\s)1\.0\.13(?:\s|$)/ };
 const artifactPins = { [QWEN_NATIVE_EXECUTOR]: '51e46da04cbf833fedf0426ba8903a98f1ac269c0298a23df00b4c40a377300d',
-  [GROK_NATIVE_EXECUTOR]: '3dfa7f04fbb5427a8fbead286591543aaecb478b3a0ab222c4329eca1a3b2f86' };
+  [GROK_NATIVE_EXECUTOR]: '8669e0fdadceec25b8c159c355f427ffbd82583525d774b6ab1522197ea83b80' };
 const defaults = { [QWEN_NATIVE_EXECUTOR]: 'qwen', [GROK_NATIVE_EXECUTOR]: 'grok' };
 const overrides = { [QWEN_NATIVE_EXECUTOR]: 'CAMUS_QWEN_CODE_BIN', [GROK_NATIVE_EXECUTOR]: 'CAMUS_GROK_BUILD_BIN' };
 const labels = { [QWEN_NATIVE_EXECUTOR]: 'Qwen Code', [GROK_NATIVE_EXECUTOR]: 'Grok Build' };
-const requiredVersions = { [QWEN_NATIVE_EXECUTOR]: '0.22.3', [GROK_NATIVE_EXECUTOR]: '1.0.5' };
+const requiredVersions = { [QWEN_NATIVE_EXECUTOR]: '0.22.3', [GROK_NATIVE_EXECUTOR]: '1.0.13' };
 const remedies = {
   [QWEN_NATIVE_EXECUTOR]: 'Follow https://github.com/mateodaza/camus/blob/main/docs/NATIVE-HARNESS-QUALIFICATION-1.md to verify and unpack the pinned Qwen npm artifact without dependencies, then set CAMUS_QWEN_CODE_BIN to its absolute cli-entry.js path.',
-  [GROK_NATIVE_EXECUTOR]: 'Follow https://github.com/mateodaza/camus/blob/main/docs/NATIVE-HARNESS-QUALIFICATION-1.md to download and verify the pinned Grok artifact, then set CAMUS_GROK_BUILD_BIN to that executable.',
+  [GROK_NATIVE_EXECUTOR]: 'Install and verify Grok Build 1.0.13 with https://github.com/mateodaza/camus/blob/main/docs/NATIVE-HARNESS-QUALIFICATION-1.md, then run `grok login` or point CAMUS_GROK_BUILD_BIN at the reviewed 1.0.13 artifact.',
 };
 const readinessProfile = '(version 1)\n(allow default)\n(deny network*)\n(deny file-write*)';
 const quote = value => JSON.stringify(String(value));
@@ -185,9 +185,9 @@ export async function nativeHarnessPolicy({ executor, worktree, scratch, harness
 export async function assertNativeHarnessVersion({ executor, policy, env, signal, ownedProcessDir = null }) {
   const result = await runNativeProcess({ command: '/usr/bin/sandbox-exec', args: ['-p', policy.profile, policy.harness, '--version'],
     cwd: policy.cwd, env, timeoutMs: 10_000, signal, maxBytes: 64 * 1024, ownedProcessDir });
-  if (result.code !== 0) throw new Error(`${executor === QWEN_NATIVE_EXECUTOR ? 'Qwen Code 0.22.3' : 'Grok Build 1.0.5'} is required; no model was called.`);
+  if (result.code !== 0) throw new Error(`${executor === QWEN_NATIVE_EXECUTOR ? 'Qwen Code 0.22.3' : 'Grok Build 1.0.13'} is required; no model was called.`);
   try { return normalizeNativeHarnessVersion(executor, result.stdout); }
-  catch { throw new Error(`${executor === QWEN_NATIVE_EXECUTOR ? 'Qwen Code 0.22.3' : 'Grok Build 1.0.5'} is required; no model was called.`); }
+  catch { throw new Error(`${executor === QWEN_NATIVE_EXECUTOR ? 'Qwen Code 0.22.3' : 'Grok Build 1.0.13'} is required; no model was called.`); }
 }
 
 export async function preflightNativeHarness({ policy, env, gateway, sourcePath, receiptsDir, signal, ownedProcessDir = null }) {

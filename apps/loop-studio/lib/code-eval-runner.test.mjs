@@ -9,6 +9,7 @@ import { codeEvalRuntimeIdentity, planCodeEval, recoverCodeEval, runCodeEval, st
 import { acquireCodeEvalEvidenceLock, codeEvalEvidencePaths, createCodeEvalInflightMarker, reserveCodeEvalCell } from './code-eval-ledger.mjs';
 import { createCodeEvalCell } from './code-eval-contract.mjs';
 import { HARNESS_POLICY_VERSION } from './native-harness-policy.mjs';
+import { GROK_SUBSCRIPTION_NATIVE_POLICY_VERSION } from './adapters/grok-subscription.mjs';
 
 const hex = character => character.repeat(64);
 
@@ -75,7 +76,7 @@ async function setup(t, executor = 'qwen_native', {
     adapters: prepared.adapters, authorize: prepared.authorize });
   const dependencies = {
     prepareExecution: async () => freshPrepared(),
-    harnessReadiness: async () => ({ ready: true, status: 'ready', label: executor, requiredVersion: executor === 'qwen_native' ? '0.22.3' : '1.0.5' }),
+    harnessReadiness: async () => ({ ready: true, status: 'ready', label: executor, requiredVersion: executor === 'qwen_native' ? '0.22.3' : '1.0.13' }),
     resolveHarness: async () => '/synthetic/private/harness',
     assertArtifact: async () => hex('3'),
     runtimeIdentity: async () => ({ packageVersion: '0.4.9', treeDigest: `sha256:${hex('4')}`,
@@ -158,7 +159,7 @@ test('one fake shared-engine cell observes the marker first, seals once and neve
     createVerifier: () => async () => ({ ran: true, pass: true }),
     readCheckpoint: async () => ({ nativeSession: { executor: item.campaign.treatment.executor,
       model: item.campaign.treatment.maker.model, version: HARNESS_POLICY_VERSION,
-      harnessVersion: item.campaign.treatment.executor === 'qwen_native' ? '0.22.3' : '1.0.5' } }),
+      harnessVersion: item.campaign.treatment.executor === 'qwen_native' ? '0.22.3' : '1.0.13' } }),
     runSeats: async ({ repoPath, adapters }) => {
       calls++;
       await stat(join(item.root, 'evidence', 'inflight.json'));
@@ -189,8 +190,8 @@ test('one fake shared-engine cell observes the marker first, seals once and neve
   assert.equal(calls, 1);
 });
 
-test('plain model labels cannot satisfy exact provider-qualified identity evidence', async t => {
-  const item = await setup(t); await planCodeEval(item, item.dependencies);
+async function syntheticIdentityReceipt(item, seats) {
+  await planCodeEval(item, item.dependencies);
   const fingerprint = hex('6');
   const result = await runCodeEval({ ...item, consent: true, maxCells: 1 }, {
     ...item.dependencies,
@@ -198,19 +199,62 @@ test('plain model labels cannot satisfy exact provider-qualified identity eviden
     inspectCandidateIntegrity: async () => true,
     createVerifier: () => async () => ({ ran: true, pass: true }),
     readCheckpoint: async () => ({ nativeSession: { executor: item.campaign.treatment.executor,
-      model: item.campaign.treatment.maker.model, version: HARNESS_POLICY_VERSION, harnessVersion: '0.22.3' } }),
+      model: item.campaign.treatment.maker.model,
+      version: item.prepared.frozenBackends.maker.kind === 'grok_cli'
+        ? GROK_SUBSCRIPTION_NATIVE_POLICY_VERSION : HARNESS_POLICY_VERSION,
+      harnessVersion: item.campaign.treatment.executor === 'grok_native' ? '1.0.13' : '0.22.3' } }),
     runSeats: async ({ repoPath }) => ({
-      status: 'needs_decision', completion: 'candidate_ready_for_acceptance',
-      candidate: { worktree: repoPath, fingerprint }, verificationBinding: fingerprint, reviewBinding: fingerprint,
-      verification: { ran: true, pass: true }, review: { verdict: 'APPROVED' },
-      seats: {
-        maker: { observed: { identity: 'fixture-model', turns: [{ usage: { input_tokens: 10, output_tokens: 4 } }] } },
-        reviewer: { observed: { identity: 'openai:fixture-reviewer-model', usage: { input_tokens: 8, output_tokens: 2 } } },
-      },
-      usage: { calls: 2 },
+      status: seats.reviewer?.observed ? 'needs_decision' : 'stopped', completion: 'candidate_ready_for_acceptance',
+      candidate: seats.reviewer?.observed ? { worktree: repoPath, fingerprint } : null,
+      verificationBinding: seats.reviewer?.observed ? fingerprint : null,
+      reviewBinding: seats.reviewer?.observed ? fingerprint : null,
+      verification: { ran: true, pass: true }, review: seats.reviewer?.observed ? { verdict: 'APPROVED' } : null,
+      seats, usage: { calls: 2 },
     }),
   });
+  return { result, receipt: JSON.parse((await readFile(item.ledgerPath, 'utf8')).trim()) };
+}
+
+test('plain model labels cannot satisfy exact provider-qualified identity evidence', async t => {
+  const item = await setup(t);
+  const { result, receipt } = await syntheticIdentityReceipt(item, {
+    maker: { observed: { identity: 'fixture-model', turns: [{ usage: { input_tokens: 10, output_tokens: 4 } }] } },
+    reviewer: { observed: { identity: 'openai:fixture-reviewer-model', usage: { input_tokens: 8, output_tokens: 2 } } },
+  });
   assert.equal(result.standing, 'failed');
+  assert.equal(receipt.observedIdentity.substitutionDetected, true);
+});
+
+test('an absent reviewer identity remains unknown rather than becoming a false substitution', async t => {
+  const item = await setup(t);
+  const { result, receipt } = await syntheticIdentityReceipt(item, {
+    maker: { observed: { identity: 'dashscope:fixture-model', turns: [{ usage: { input_tokens: 10, output_tokens: 4 } }] } },
+    reviewer: { observed: null },
+  });
+  assert.equal(result.standing, 'failed');
+  assert.equal(receipt.observedIdentity.makerModel, 'fixture-model');
+  assert.equal(receipt.observedIdentity.reviewerModel, null);
+  assert.equal(receipt.observedIdentity.substitutionDetected, null);
+});
+
+test('subscription Grok receipts bind the headless policy rather than the API-gateway policy', async t => {
+  const item = await setup(t, 'grok_native');
+  const maker = { backend: 'grok', provider: 'xai', model: 'grok-4.6', effort: 'medium', trainingOrg: 'xai',
+    transport: 'vendor_managed', connection: null, route: null };
+  item.campaign.treatment.maker = maker;
+  item.prepared.models.maker = { ...maker, codeExecutor: 'grok_native',
+    qualification: { fingerprint: `builtin1:${hex('7')}` } };
+  item.prepared.frozenBackends.maker = { name: 'grok', kind: 'grok_cli', provider: 'xai',
+    transport: 'vendor_managed', connection: null, auth: { kind: 'none' } };
+  await writeFile(item.campaignPath, `${JSON.stringify(item.campaign, null, 2)}\n`);
+  const { result, receipt } = await syntheticIdentityReceipt(item, {
+    maker: { observed: { identity: 'xai:grok-4.6', turns: [{ usage: { input_tokens: 10, output_tokens: 4 } }] } },
+    reviewer: { observed: { identity: 'openai:fixture-reviewer-model', usage: { input_tokens: 8, output_tokens: 2 } } },
+  });
+  assert.equal(result.standing, 'execution_observed');
+  assert.equal(receipt.observedIdentity.executor, 'grok_native');
+  assert.equal(receipt.observedIdentity.identityStable, true);
+  assert.equal(receipt.observedIdentity.substitutionDetected, false);
 });
 
 test('OpenRouter route is bound before spend and normalized evidence reaches the receipt', async t => {

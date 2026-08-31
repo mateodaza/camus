@@ -118,6 +118,7 @@ function cleanSeat(seat, backend = {}) {
     connectionFingerprint: typeof fingerprint === 'string' && /^[a-z0-9:_-]{8,160}$/i.test(fingerprint) ? fingerprint : null,
     trainingOrg: typeof seat?.trainingOrg === 'string' && seat.trainingOrg !== 'unknown' ? seat.trainingOrg : null,
     lineageSource: typeof seat?.lineage?.source === 'string' && seat.lineage.source !== 'unknown' ? seat.lineage.source : null,
+    billingAuthority: typeof seat?.billingAuthority === 'string' ? seat.billingAuthority : null,
   };
 }
 function observedMaker(result, requested, previous = null) {
@@ -125,6 +126,7 @@ function observedMaker(result, requested, previous = null) {
     identity: result?.modelActual ?? null,
     reportedModel: result?.modelReported ?? null,
     evidence: result?.modelActualEvidence ?? null,
+    billingAuthority: result?.billingAuthority ?? null,
     usage: result?.usage ?? null,
     durationMs: Number.isFinite(result?.durationMs) ? result.durationMs : null,
   };

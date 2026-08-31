@@ -1,7 +1,8 @@
 # Recommended model and harness setup
 
 **Status:** Evidence-based operator guidance, not automatic-routing policy  
-**Last updated:** 2026-08-30
+**Last updated:** 2026-08-31
+
 **Applies to:** Camus Flexible Build in CLI and Loop Studio
 
 This document records what Camus should recommend **today**, why, and what is
@@ -32,6 +33,12 @@ task -> maker model + provider -> maker executor -> host verifier
   cannot receive a mechanically green standing.
 - An uncertain paid cell is preserved and never silently replayed.
 
+Grok has two intentionally different paths. `grok:grok-4.6` with `grok_native`
+preserves Grok Build OAuth and uses the operator's Grok subscription allowance.
+A configured xAI backend with `grok_native` uses xAI API credits through Camus's
+one-model gateway. Camus records the billing authority and never substitutes one
+for the other.
+
 ## Current recommendations
 
 These are deliberately conservative. “Incumbent” means the pair is a sensible
@@ -43,11 +50,34 @@ manual starting point; it does **not** mean Camus has proven it is the winner.
 | Balanced work | Operator-selected qualified maker; begin with Qwen3.8 Max raw or the existing Claude incumbent | `file_actions` | Independent Luna/Sol seat appropriate to stakes | **No winner.** Collect matched raw/native and cross-model evidence before routing. |
 | Difficult or repository-wide work | Decompose first; otherwise choose an exact qualified model whose reviewed native harness fits the repository | Native executor where available | Sol high or another independent high-stakes seat | **No preferred model.** Two cross-file `file_actions` dogfoods spent their allowance in discovery and produced no diff; do not treat a larger call cap as the fix. |
 | Qwen Code native | Qwen3.8 Max | `qwen_native` | Luna medium | **Exploratory.** Do not prefer for simple tasks. Test next on balanced/difficult work where harness context may amortize its overhead. |
-| Grok Build native | Grok 4.6 through direct xAI | `grok_native` | Luna medium | **Exploratory; not routed.** The latest bounded cell made the exact fix, but exhausted its frozen turn cap before a definitive terminal or review. This is useful harness evidence, not a formal pass or model ranking. |
+| Grok Build native | Built-in `grok:grok-4.6` for subscription; configured xAI for API credits | `grok_native` | Separately selected reviewer | **Exploratory; not routed.** The subscription maker now has repeated exact, measured, verifier-green evidence. The selected Luna reviewer did not return within the five-minute cell, so there is still no end-to-end approved receipt or comparative claim. |
 
 Kimi and Gemini remain second-round candidates by operator decision. Grok and
 Qwen are current priorities; that priority does not waive qualification,
 containment, or evidence requirements.
+
+## Other subscription-backed candidates
+
+Camus should name the billing authority explicitly rather than treating every
+vendor login as the same kind of subscription:
+
+- Claude Code and Codex already use the operator's Claude/ChatGPT account
+  sessions; built-in Grok now does the same through Grok Build OAuth.
+- Qwen Code's former free Qwen OAuth route was discontinued on 2026-04-15.
+  Alibaba ModelStudio's Coding Plan is the relevant subscription-like route: a
+  fixed monthly plan with its own subscription key and endpoint, not the normal
+  DashScope pay-as-you-go key and not consumer OAuth. It needs a distinct
+  `billingAuthority` before Camus can represent it honestly.
+- GitHub Copilot CLI can authenticate with GitHub OAuth and consume an eligible
+  Copilot plan. It is a strong future native-harness candidate, but must pass the
+  same artifact, isolation, identity, usage, and cancellation qualification.
+- Gemini CLI can use Google sign-in/Code Assist allowance and remains the agreed
+  second-round candidate. It must not be represented as an API-key seat when that
+  login route is selected.
+
+No subscription route may fall back to API credits. An unavailable, exhausted,
+or changed account session must refuse and ask the operator to choose another
+explicit route.
 
 ## Live evidence behind the recommendation
 
@@ -129,9 +159,10 @@ enough to reject Qwen Code for larger work.
   confirm that its first title is a separate model call. This is harness overhead,
   not hidden provider fallback or a substitute model, and must remain visible in
   call and billing evidence.
-- Native isolation v3 now disables the supported optional `title_refresh`,
+- Historical API-backed native isolation v3 on Grok Build 1.0.5 disabled the
+  supported optional `title_refresh`,
   `turn_summary`, and `session_recap` model side-calls in both the private config
-  and higher-precedence environment. Grok Build 1.0.5 does not expose a supported
+  and higher-precedence environment. That 1.0.5 artifact did not expose a supported
   switch for the initial title call, so Camus does not patch session files or
   pretend the call did not happen. A campaign must budget that fixed title call
   separately and leave a work turn after the final tool result for a definitive
@@ -153,6 +184,40 @@ enough to reject Qwen Code for larger work.
   Camus-created source of wasted native turns without relaxing `.git` isolation or
   tuning away a legitimate model decision.
 - One sample never grants model admission or automatic routing.
+
+### Grok 4.6 through Grok Build subscription
+
+- Campaign v7 ran the built-in `grok:grok-4.6` seat through Grok Build 1.0.13
+  with `XAI_API_KEY` absent. The terminal identified `xai:grok-4.6`, reported
+  `grok-4.6-build`, and sealed `billingAuthority: grok_subscription`.
+- Grok made the canonical one-line inclusive-bound fix in three subscription
+  calls and four guarded actions. Camus measured 13,416 total tokens and 11.1
+  seconds of maker time; candidate containment and the frozen verifier passed.
+- Campaign v8 independently repeated the exact fix in three calls, four actions,
+  13,360 measured tokens, and 16.6 seconds of maker time. Campaign v9 repeated
+  it under the hardened v7 policy in three calls, four actions, 13,597 measured
+  tokens, and 14.7 seconds of maker time. The verifier passed in all three cells.
+  None used an API-key fallback, repair, retry, Git landing, publication,
+  admission, or routing change.
+- v7's one Luna-medium review produced no terminal before its 240-second call
+  bound. v8 and v9 each gave the same reviewer the rest of an unchanged
+  five-minute cell; neither produced a terminal. A separate 60-second, tiny
+  read-only Luna diagnostic also produced no measured response. Those outcomes
+  are reviewer availability/latency evidence, not a Grok quality loss and not an
+  approval. The v9 sealed receipt is
+  `codebench1:c06ea446fb9792223916816622af594add524baf2f9a82ca19ffa26848dae8f3`.
+- Earlier subscription cells v1-v6 exposed and pinned deterministic integration
+  contracts: OAuth permission mode, a hard headless `--max-turns` boundary,
+  `target_file` action guarding, attempted-action accounting, exact
+  `grok-4.6-build` identity, and the documented separation between top-level
+  token usage and per-model call identity. Failed historical receipts remain
+  failed; the fixes do not rewrite them.
+
+This establishes that the subscription-backed maker path is real, bounded,
+measured, and useful on the simple fixture. It does not establish an optimal
+pairing or reviewer standing. Do not buy more identical Grok cells merely to
+probe an unavailable reviewer; first prove the chosen reviewer can complete a
+small read-only call, or explicitly select a different independent reviewer.
 
 ### Productive `file_actions` context evidence
 
@@ -184,6 +249,7 @@ enough to reject Qwen Code for larger work.
 | Native path inventory | Grok spent a bounded turn discovering files through a broad command that touched intentionally blocked `.git` metadata. | The host supplies its bounded tracked-path inventory and warns native makers that blocked broad discovery still consumes turn/action budget; the sandbox remains unchanged. |
 | Native pre-action ceiling | Grok Build emitted its tool event only after action N+1 had already changed the disposable candidate, so a host-side event abort was too late to be a hard action limit. | The one-run gateway now counts buffered operative tool calls and withholds an over-limit provider response before the harness can execute it. The exact pinned Grok Build probe proves action 1 succeeds and action 2 leaves no file. |
 | Productive loop 2 | A maker could keep collecting novel source through the whole step budget even when it never proposed a mutation. | The host now binds a named progress policy into fresh checkpoints, warns at four consecutive mutation-free discovery steps and parks at seven; exact unchanged-discovery stagnation remains independently bounded, while older v2 prompt hashes remain resumable. |
+| Subscription path audit | A Grok hook command did not quote paths safely, isolated OAuth copies survived in evidence scratch, a legitimate reviewer-requested repair could not resume with smaller remaining limits, and evaluator receipts still expected the API-gateway native policy. Missing reviewer identity was also mislabeled as substitution. | Hook commands now shell-quote exact paths, the temporary login copy is removed on success and failure, and resumed sessions may only tighten model/action ceilings. The immutable guard reads an atomically replaced per-turn action limit; widening remains refused before launch. Execution and receipt identity now bind the exact subscription-headless policy, while absent role identity remains unknown rather than becoming false substitution evidence. |
 
 The Qwen native failure itself is not erased by these fixes. A future campaign
 uses a new generation and must receive fresh authorization.
@@ -200,8 +266,13 @@ export XAI_API_KEY='<operator secret>'
 
 # Private, digest-reviewed artifacts; examples only.
 export CAMUS_QWEN_CODE_BIN='/absolute/path/to/qwen-code-0.22.3/cli-entry.js'
-export CAMUS_GROK_BUILD_BIN='/absolute/path/to/grok-build-1.0.5/grok'
+export CAMUS_GROK_BUILD_BIN='/absolute/path/to/grok-build-1.0.13/grok'
 ```
+
+`XAI_API_KEY` is only for the configured xAI API backend. To use the Grok plan,
+run `grok login` and select built-in `grok:grok-4.6`; do not configure an
+API key for that seat. The two accounts may share an identity, but xAI documents
+their billing as separate.
 
 Use [Native harness qualification](NATIVE-HARNESS-QUALIFICATION-1.md) before
 setting either binary path. Camus refuses changed artifacts. Use Studio Settings
@@ -216,13 +287,24 @@ For OpenRouter Qwen:
 - fallbacks remain disabled;
 - route metadata must be present and stable for every measured response.
 
-For xAI Grok:
+For xAI API Grok:
 
 - use the direct `https://api.x.ai/v1` connection currently declared by the
   operator;
 - requalify if the credential, model, endpoint, adapter contract, or observed
   server anchors drift;
 - keep Grok as a maker experiment until separate reviewer admission exists.
+
+For Grok subscription:
+
+- install the exact reviewed Grok Build 1.0.13 artifact and run `grok login`;
+- select `grok:grok-4.6` with `grok_native` (the CLI also defaults that built-in
+  maker to `grok_native` rather than silently choosing `file_actions`);
+- expect `billingAuthority: grok_subscription` in execution evidence;
+- keep `XAI_API_KEY` absent from subscription evaluations and verify the observed
+  model, measured token receipt, guarded action count, and no-fallback evidence;
+- treat v7-v9 as maker-path evidence only. A fresh cell is worthwhile after the
+  selected reviewer passes a spend-bounded readiness check, not before.
 
 ## How to choose raw versus native
 
@@ -242,10 +324,10 @@ Choose the cheapest path that can meet the task contract:
 
 ## Next evidence sequence
 
-1. **Do not rerun the simple Grok smoke.** v2–v4 are sealed and together answer
-   the integration, accounting, and simple-task behavior questions. The v4
-   candidate was correct but lacked a definitive terminal; manual verification
-   does not rewrite that outcome.
+1. **Do not rerun the simple Grok smoke while Luna is unavailable.** Subscription
+   v7-v9 already produced the exact change, measured identity/usage, containment,
+   and green verification three times. Their missing review terminals remain failed
+   evidence and manual verification does not rewrite them.
 2. **Do not blindly repeat Qwen simple.** Its result already answers the simple
    task question and exposed the retry-policy defect.
 3. **Use the provider-free balanced fixture now available.** Inspect

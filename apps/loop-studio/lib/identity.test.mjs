@@ -41,6 +41,7 @@ ok('registry.json is EXACTLY the required shape (whole-file pin)', () => {
     executors: {
       claude_cli: { org: 'anthropic', family: 'claude' },
       codex_cli: { org: 'openai', family: 'gpt' },
+      grok_cli: { org: 'xai', family: 'grok' },
     },
     families: {
       gpt: 'openai',
@@ -55,6 +56,7 @@ ok('registry.json is EXACTLY the required shape (whole-file pin)', () => {
 ok('registry pins executor rows', () => {
   assert.deepEqual(executorOrgFamily('claude_cli'), { org: 'anthropic', family: 'claude' });
   assert.deepEqual(executorOrgFamily('codex_cli'), { org: 'openai', family: 'gpt' });
+  assert.deepEqual(executorOrgFamily('grok_cli'), { org: 'xai', family: 'grok' });
   assert.equal(executorOrgFamily('http_client'), null);
 });
 ok('registry pins family table', () => {
@@ -112,9 +114,10 @@ ok('registry lookups ignore prototype properties', () => {
 // claude_cli flipped to true once lib/adapters/claude.test.mjs proved both seats
 // spawn with claudeDirectEnv() + empty --setting-sources. Non-built-ins stay
 // false: an http_client backend has no proven scrubbed spawn.
-ok('redirectIsolationProven table covers both built-ins', () => {
+ok('redirectIsolationProven table covers all built-ins', () => {
   assert.equal(redirectIsolationProven('codex_cli'), true);
   assert.equal(redirectIsolationProven('claude_cli'), true);
+  assert.equal(redirectIsolationProven('grok_cli'), true);
   assert.equal(redirectIsolationProven('http_client'), false);
   assert.equal(redirectIsolationProven(undefined), false);
 });
@@ -132,6 +135,8 @@ const LADDER = [
     { connectionKind: 'loopback' }, 'unknown'],
   ['codex_cli vendor_managed built-in -> registry',
     { transport: 'vendor_managed', executorKind: 'codex_cli' }, 'registry'],
+  ['grok_cli vendor_managed built-in -> registry',
+    { transport: 'vendor_managed', executorKind: 'grok_cli' }, 'registry'],
   // POST-flip (Task 9): claude_cli isolation is proven, so its built-in seat
   // derives registry via branch (c) whether or not it is declared — exactly like
   // codex_cli. A registry-agreeing declaration is redundant, not required.
@@ -358,9 +363,12 @@ ok('buildSeatIdentitySealed: every actual_evidence class survives assembly', () 
 ok('qualificationForSeat: vendor-managed built-ins mint versioned builtin1 only', () => {
   const claude = qualificationForSeat({ backend: 'claude', transport: 'vendor_managed' });
   const codex = qualificationForSeat({ backend: 'codex', transport: 'vendor_managed' });
+  const grok = qualificationForSeat({ backend: 'grok', transport: 'vendor_managed' });
   assert.match(claude.fingerprint, /^builtin1:[0-9a-f]{64}$/);
   assert.match(codex.fingerprint, /^builtin1:[0-9a-f]{64}$/);
+  assert.match(grok.fingerprint, /^builtin1:[0-9a-f]{64}$/);
   assert.notEqual(claude.fingerprint, codex.fingerprint);
+  assert.notEqual(grok.fingerprint, codex.fingerprint);
   assert.deepEqual(claude, { fingerprint: claude.fingerprint, gate_scope: null, contract_version: null });
 });
 ok('qualificationForSeat: configurable seats carry accepted qual1 unchanged, never mint it from config', () => {

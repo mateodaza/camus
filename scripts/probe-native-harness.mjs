@@ -12,7 +12,7 @@ import { pathToFileURL } from 'node:url';
 
 export const PINS = Object.freeze({
   qwen: { version: '0.22.3', treeSha256: '51e46da04cbf833fedf0426ba8903a98f1ac269c0298a23df00b4c40a377300d' },
-  grok: { version: '1.0.5 (5115b46bc909)', sha256: '3dfa7f04fbb5427a8fbead286591543aaecb478b3a0ab222c4329eca1a3b2f86' },
+  grok: { version: '1.0.13 (5e9a58528b76)', sha256: '8669e0fdadceec25b8c159c355f427ffbd82583525d774b6ab1522197ea83b80' },
 });
 const sha = value => createHash('sha256').update(value).digest('hex');
 const shellQuote = value => "'" + value.replaceAll("'", "'\\''") + "'";

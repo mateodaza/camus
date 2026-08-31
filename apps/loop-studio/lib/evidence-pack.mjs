@@ -10,7 +10,7 @@ import { validateEvidencePack } from '../../../packages/trust/lib/validate.mjs';
 import { buildClaimLedger, claimAssessmentEvidenceHash } from './claims.mjs';
 import { buildCoverageLedger, coverageAssessmentEvidenceHash } from './contract.mjs';
 import { thresholdLineHash, thresholdEvidenceHash } from './verify.mjs';
-import { buildSeatIdentitySealed, qualificationForSeat, resolveSeatIdentityFacts } from './identity.mjs';
+import { buildSeatIdentitySealed, qualificationForSeat, resolveSeatIdentityFacts, isVendorManagedBuiltin } from './identity.mjs';
 
 const hashText = (text) => `sha256:${createHash('sha256').update(String(text), 'utf8').digest('hex')}`;
 const named = (provider, value) => `${provider}:${value || 'not-recorded'}`;
@@ -22,13 +22,12 @@ const providerOf = (value) => String(value).split(':')[0];
 // claude|codex prefix (never executor_kind — a Codex custom-provider seat is
 // codex_cli too and must seal qual1). A configurable backend uses its provider.
 const seatLabel = (facts, model) => {
-  const prefix = facts?.backend === 'claude' || facts?.backend === 'codex'
+  const prefix = ['claude', 'codex', 'grok'].includes(facts?.backend)
     ? facts.backend
     : (facts?.provider || 'unknown');
   return `${prefix}:${model || 'not-recorded'}`;
 };
-const vendorManagedBuiltin = (facts) =>
-  (facts?.backend === 'claude' || facts?.backend === 'codex') && facts?.transport === 'vendor_managed';
+const vendorManagedBuiltin = (facts) => isVendorManagedBuiltin(facts?.backend, facts?.transport);
 
 // The evidence class behind a seat's `actual`: a built-in CLI seat is observed
 // through CLI events, a configurable backend through its API response, and a

@@ -3,7 +3,7 @@
 // now. The browser receives the result but grants nothing itself.
 
 import { listBackends, seatCatalog } from './models.mjs';
-import { qualificationForSeat } from './identity.mjs';
+import { qualificationForSeat, isVendorManagedBuiltin } from './identity.mjs';
 import { expectedReportedFor, storedSeatQualification } from './capability-probes.mjs';
 import { providerTemplates, plannedProtocols } from './provider-templates.mjs';
 
@@ -21,6 +21,12 @@ const transportLabel = (value) => ({
 const operatorLabel = (value) => value === 'self_hosted'
   ? 'self-hosted'
   : String(value || 'unknown').replace(/^gateway:/, 'gateway:');
+const billingLabel = (value) => ({
+  claude_subscription: 'Claude subscription',
+  chatgpt_subscription: 'ChatGPT subscription',
+  grok_subscription: 'Grok subscription',
+  configured_api_backend: 'configured API billing',
+}[value] ?? null);
 
 function originLabel(entry) {
   const family = entry.modelFamily || 'unknown origin';
@@ -36,6 +42,8 @@ export function seatBadges(entry, { discoveryStatus = null } = {}) {
     { kind: 'operator', label: operatorLabel(entry.inferenceOperator) },
     { kind: 'transport', label: transportLabel(entry.transport) },
   ];
+  const billing = billingLabel(entry.billingAuthority);
+  if (billing) badges.push({ kind: 'billing', label: billing });
   if (discoveryStatus && discoveryStatus !== 'not_recorded') {
     badges.push({ kind: 'discovery', label: String(discoveryStatus).replace(/_/g, ' ') });
   }
@@ -65,8 +73,7 @@ function reasonFor(result, seatType, entry) {
 }
 
 function qualifyEntry(entry, backend, seatType, now) {
-  const builtin = (entry.backend === 'claude' || entry.backend === 'codex')
-    && entry.transport === 'vendor_managed';
+  const builtin = isVendorManagedBuiltin(entry.backend, entry.transport);
   if (builtin) {
     const qualification = qualificationForSeat({ backend: entry.backend, transport: entry.transport });
     return {

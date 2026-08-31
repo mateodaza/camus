@@ -268,7 +268,8 @@ export async function runNativeHarness({ executor, prompt, model, effort, backen
       usageIncomplete: gateway.state.usageIncomplete, nativeSession: { ...session, resumed: undefined, routeObservation }, routeObservation,
       definitiveTurnEnd: true,
       modelActual: `${backend.provider}:${model}`, modelReported: [...gateway.state.reportedModels].join(','),
-      modelActualEvidence: 'native_gateway_observed_response', durationMs: Date.now() - startedAt };
+      modelActualEvidence: 'native_gateway_observed_response', billingAuthority: 'configured_api_backend',
+      durationMs: Date.now() - startedAt };
   } catch (error) {
     terminal ??= grokProtocol?.terminal ?? null;
     return { ...nativeCaughtFailure({ error, stopReason, stopKind, dispatched, terminal }),

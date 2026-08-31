@@ -14,6 +14,7 @@ import { runCodeSeats } from './code-seats.mjs';
 import { codeCredentialRevision, readCodeCheckpoint, codeRunStatus } from './code-run-state.mjs';
 import { studioAtomicWrite, STUDIO_DIR_MODE, STUDIO_FILE_MODE } from './grandfather.mjs';
 import { HARNESS_POLICY_VERSION, assertNativeHarnessArtifact, nativeHarnessReadiness, resolveNativeHarness } from './native-harness-policy.mjs';
+import { GROK_SUBSCRIPTION_NATIVE_POLICY_VERSION } from './adapters/grok-subscription.mjs';
 import {
   canonicalCodeEvalJson, codeEvalCampaignIdentity, codeEvalCellIdentity,
   codeEvalExecutionIdentity, createCodeEvalCell, createCodeEvalReceipt,
@@ -241,6 +242,8 @@ async function buildExecutionSnapshot(campaign, { createdAt = new Date().toISOSt
   const artifact = await (dependencies.assertArtifact ?? assertNativeHarnessArtifact)(campaign.treatment.executor, harness);
   const runtime = await (dependencies.runtimeIdentity ?? codeEvalRuntimeIdentity)();
   const artifactDigest = `sha256:${artifact}`;
+  const nativePolicyVersion = makerBackend.kind === 'grok_cli'
+    ? GROK_SUBSCRIPTION_NATIVE_POLICY_VERSION : HARNESS_POLICY_VERSION;
   const execution = {
     schemaVersion: 1,
     campaignDigest: codeEvalCampaignIdentity(campaign),
@@ -267,11 +270,17 @@ async function buildExecutionSnapshot(campaign, { createdAt = new Date().toISOSt
       version: readiness.requiredVersion,
       artifactDigest,
       parserVersion: 'native-harness-v1',
-      outerSandboxPolicyDigest: digestJson({ protocol: HARNESS_POLICY_VERSION, executor: campaign.treatment.executor, artifactDigest, runtime: runtime.treeDigest }),
-      credentialGatewayPolicyDigest: digestJson({ protocol: 'native-gateway/v1a', provider: campaign.treatment.maker.provider,
-        model: campaign.treatment.maker.model, route: campaign.treatment.maker.route,
-        maximumCalls: campaign.controls.maximumProviderCallsPerCell,
-        maximumTokens: campaign.controls.maximumTokensReserved, runtime: runtime.treeDigest }),
+      outerSandboxPolicyDigest: digestJson({ protocol: nativePolicyVersion, executor: campaign.treatment.executor, artifactDigest, runtime: runtime.treeDigest }),
+      credentialGatewayPolicyDigest: makerBackend.kind === 'grok_cli'
+        ? digestJson({ protocol: GROK_SUBSCRIPTION_NATIVE_POLICY_VERSION, provider: campaign.treatment.maker.provider,
+          model: campaign.treatment.maker.model, billingAuthority: 'grok_subscription',
+          authMethod: 'cached_token', apiKeyAuth: false, apiFallback: false,
+          maximumCalls: campaign.controls.maximumMakerCallsPerCell,
+          maximumTokens: campaign.controls.maximumTokensReserved, runtime: runtime.treeDigest })
+        : digestJson({ protocol: 'native-gateway/v1a', provider: campaign.treatment.maker.provider,
+          model: campaign.treatment.maker.model, route: campaign.treatment.maker.route,
+          maximumCalls: campaign.controls.maximumProviderCallsPerCell,
+          maximumTokens: campaign.controls.maximumTokensReserved, runtime: runtime.treeDigest }),
     },
     verifierDigest: fixture.verifierDigest,
     fixtureReadinessDigest: digestJson(fixtureReadiness),
@@ -541,16 +550,20 @@ function receiptFromBuild({ campaign, execution, cell, prepared, fixtureReadines
   const makerExact = exactObservedIdentity(makerRaw, campaign.treatment.maker.provider, campaign.treatment.maker.model);
   const reviewerProvider = prepared.models.reviewer.provider;
   const reviewerExact = exactObservedIdentity(reviewerRaw, reviewerProvider, campaign.treatment.reviewer.model);
+  const nativePolicyVersion = prepared.frozenBackends.maker.kind === 'grok_cli'
+    ? GROK_SUBSCRIPTION_NATIVE_POLICY_VERSION : HARNESS_POLICY_VERSION;
   const nativeSessionExact = checkpoint?.nativeSession?.executor === campaign.treatment.executor
     && checkpoint.nativeSession.model === campaign.treatment.maker.model
-    && checkpoint.nativeSession.version === HARNESS_POLICY_VERSION
+    && checkpoint.nativeSession.version === nativePolicyVersion
     && checkpoint.nativeSession.harnessVersion === execution.nativeHarness.version;
   const route = assessRouteObservation(campaign, checkpoint, roleCalls.maker);
   const identityStable = makerExact && reviewerExact && nativeSessionExact && route.stable;
-  const modelIdentityObserved = Boolean(makerRaw || reviewerRaw);
-  const modelSubstitution = modelIdentityObserved ? !(makerExact && reviewerExact) : null;
-  const substitutionDetected = modelSubstitution === null && !route.providerMismatch
-    ? null : Boolean(modelSubstitution || route.providerMismatch);
+  const makerObserved = typeof makerRaw === 'string' && makerRaw.length > 0;
+  const reviewerObserved = typeof reviewerRaw === 'string' && reviewerRaw.length > 0;
+  const modelMismatch = makerObserved && !makerExact || reviewerObserved && !reviewerExact;
+  const modelSubstitution = modelMismatch ? true : makerObserved && reviewerObserved ? false : null;
+  const substitutionDetected = modelSubstitution === true || route.providerMismatch ? true
+    : modelSubstitution === false && route.complete ? false : null;
   const verificationBindingMatch = candidateCurrent && result?.verificationBinding === result.candidate.fingerprint;
   const reviewBindingMatch = candidateCurrent && result?.reviewBinding === result.candidate.fingerprint;
   const verificationPassed = result?.verification?.pass === true;

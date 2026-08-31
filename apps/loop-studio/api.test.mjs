@@ -172,7 +172,8 @@ try {
     assert.equal(kimiMaker.admission.status, 'unprobed');
     assert.ok(c.seats.reviewer.some((e) => e.backend === 'claude' && e.model === 'sonnet'), 'claude models are offered in the reviewer seat — the reversed pairing is expressible');
     assert.ok(c.seats.reviewer.filter((e) => e.backend === 'codex').every((e) => e.effort === true), 'codex entries declare the effort knob');
-    assert.ok(c.seats.reviewer.filter((e) => e.backend !== 'codex').every((e) => e.effort === false), 'no other backend claims an effort knob');
+    assert.ok(c.seats.reviewer.filter((e) => e.backend === 'grok').every((e) => e.effort === true), 'subscription Grok entries declare the effort knob');
+    assert.ok(c.seats.reviewer.filter((e) => !['codex', 'grok'].includes(e.backend)).every((e) => e.effort === false), 'only supported built-in backends claim an effort knob');
     assert.ok(!c.seats.reviewer.some((e) => e.model === 'codex-auto-review'), 'the pinned cache keeps hidden models out of the seat catalog');
     assert.equal(c.maker.backend, 'claude', 'the current decision names its backend');
     assert.equal(c.maker.provider, 'anthropic', 'and its provider');

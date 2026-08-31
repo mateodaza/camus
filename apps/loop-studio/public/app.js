@@ -597,7 +597,9 @@ function fillSeatPicker(sel, entries, current) {
   for (const e of entries ?? []) {
     if (!groups.has(e.backend)) {
       const g = document.createElement('optgroup');
-      g.label = `${e.backend} (${e.provider})`;
+      const billing = e.billingAuthority === 'grok_subscription' ? ' · subscription'
+        : e.billingAuthority === 'configured_api_backend' ? ' · API billing' : '';
+      g.label = `${e.backend} (${e.provider}${billing})`;
       groups.set(e.backend, g);
       sel.appendChild(g);
     }
@@ -618,6 +620,12 @@ function fillSeatPicker(sel, entries, current) {
 }
 const EXECUTOR_LABELS = { file_actions: 'Camus file actions (default)', codex_native: 'Native Codex tools',
   qwen_native: 'Qwen Code tools', grok_native: 'Grok Build tools' };
+function executorLabel(executor, maker) {
+  if (executor !== 'grok_native') return EXECUTOR_LABELS[executor] ?? executor;
+  return maker?.backend === 'grok'
+    ? 'Grok Build · Grok subscription'
+    : 'Grok Build · configured API billing';
+}
 function reflectCodeExecutorBudget() {
   const executor = $('code-maker-executor').value;
   const minimumTokens = state.codeChoices?.minimumNativeTokenBudget ?? 32768;
@@ -632,11 +640,11 @@ function reflectCodeExecutors() {
   const maker = seatOf($('pair-maker'));
   const entry = (state.codeChoices?.maker ?? []).find(item => item.backend === maker?.backend && item.model === maker?.model);
   const offered = entry?.codeExecutors ?? ['file_actions'];
-  const current = offered.includes(select.value) ? select.value : 'file_actions';
+  const current = offered.includes(select.value) ? select.value : (offered[0] ?? '');
   select.innerHTML = '';
   for (const executor of offered) {
     const option = document.createElement('option'); option.value = executor;
-    option.textContent = `${EXECUTOR_LABELS[executor] ?? executor}${executor === 'file_actions' ? '' : ' (experimental)'}`;
+    option.textContent = `${executorLabel(executor, maker)}${executor === 'file_actions' ? '' : ' (experimental)'}`;
     select.appendChild(option);
   }
   select.value = current;
@@ -650,9 +658,13 @@ function reflectCodeExecutors() {
     return `${item.label}: ${String(item.status).replaceAll('_', ' ')}${explanation ? ' (setup required)' : ''}`;
   });
   const note = $('code-maker-executor-note');
-  if (note) note.textContent = unavailable.length
-    ? `Native readiness: ${readinessSummary.join(' · ')}. Open Setup for exact remedies. Camus file actions remain available.`
-    : `Native readiness passed for Qwen Code and Grok Build. Provider/model qualification is separate. Native needs at least ${minimumTokens.toLocaleString()} accounted tokens; Camus file actions remain available.`;
+  if (note) note.textContent = maker?.backend === 'grok'
+    ? (offered.includes('grok_native')
+      ? `Grok Build will use its isolated OAuth login and Grok subscription allowance. It never falls back to XAI_API_KEY. Native needs at least ${minimumTokens.toLocaleString()} accounted tokens.`
+      : `Grok Build subscription mode is unavailable. ${readinessSummary.find(text => text.startsWith('Grok Build')) ?? 'Open Setup for the exact remedy.'}`)
+    : unavailable.length
+      ? `Native readiness: ${readinessSummary.join(' · ')}. Open Setup for exact remedies. Camus file actions remain available.`
+      : `Native readiness passed for Qwen Code and Grok Build. Provider/model qualification is separate. Native needs at least ${minimumTokens.toLocaleString()} accounted tokens; Camus file actions remain available.`;
   reflectCodeExecutorBudget();
 }
 $('code-maker-executor').addEventListener('change', reflectCodeExecutors);

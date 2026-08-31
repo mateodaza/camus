@@ -440,8 +440,12 @@ function receiptFromBuild({ campaign, execution, cell, prepared, fixtureReadines
     : authorizationEvidence === true && roleCalls.makerPreflight === true && roleCalls.reviewerPreflight === true ? true : null;
   const identityStable = makerExact && reviewerExact && executorExact && route.stable
     && qualificationBindingsMatch === true && connectionBindingsMatch === true;
-  const identityObserved = Boolean(result?.seats?.maker?.observed?.identity || result?.seats?.reviewer?.observed?.identity);
-  const modelMismatch = identityObserved ? !(makerExact && reviewerExact) : null;
+  const makerIdentity = result?.seats?.maker?.observed?.identity;
+  const reviewerIdentity = result?.seats?.reviewer?.observed?.identity;
+  const makerObserved = typeof makerIdentity === 'string' && makerIdentity.length > 0;
+  const reviewerObserved = typeof reviewerIdentity === 'string' && reviewerIdentity.length > 0;
+  const identityMismatch = makerObserved && !makerExact || reviewerObserved && !reviewerExact;
+  const modelMismatch = identityMismatch ? true : makerObserved && reviewerObserved ? false : null;
   const substitutionDetected = modelMismatch === true || route.mismatch === true || route.fallback === true ? true
     : modelMismatch === false && route.complete !== false ? false : null;
   const verificationRan = typeof result?.verification?.ran === 'boolean' ? result.verification.ran : null;

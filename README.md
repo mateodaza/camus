@@ -36,9 +36,18 @@ Then choose the path that fits the job:
 > repositories you trust; Camus is not an OS sandbox and should never run as root.
 
 <details>
-<summary><strong>What ships in 0.4.16 and how current evidence is bounded</strong></summary>
+<summary><strong>What ships in 0.4.17 and how current evidence is bounded</strong></summary>
 
 **Makes it work. Knows when to stop.**
+
+New in 0.4.17: the built-in `grok:grok-4.6` + `grok_native` seat now
+preserves Grok Build's authenticated subscription inference path instead of
+spending xAI API credits. Camus pins the reviewed Grok Build artifact, strips
+API credentials, exposes only bounded tools, cleans its private OAuth copy, and
+records the subscription policy in sealed evidence. Three bounded simple-task
+runs produced the exact verifier-green fix; the selected Luna reviewer did not
+return, so the seat remains experimental, advisory, and excluded from automatic
+routing and admission.
 
 New in 0.4.16: Flexible Build now has a stricter structured maker protocol,
 bounded discovery, safe hash-bound file replacement, reliable process cleanup,
@@ -118,7 +127,7 @@ The native proof gate needs [Claude Code](https://code.claude.com) and the
 `camus build` needs only the backends you choose, Node 18.17+, and Git.
 
 ```bash
-npm i -g camus-cli@0.4.16
+npm i -g camus-cli@0.4.17
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 ```
@@ -142,13 +151,14 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.4.16
+### Public alpha: 0.4.17
 
 `camus build --inspect RUN_ID [--json]` authenticates and projects a bounded
 checkpoint without contacting a provider or mutating the run. File-action builds
 warn after four mutation-free discovery steps and park after seven; broad
 repository work should be decomposed or sent to a reviewed native harness. These
-contracts ship in 0.4.16.
+inspection and file-action contracts shipped in 0.4.16. Version 0.4.17 adds the
+separate subscription-backed Grok path without changing their standing.
 
 Choose both coding roles independently in the CLI or Studio: Luna → Claude,
 Claude → Qwen, Grok → Qwen, or any other available, role-qualified pairing.
@@ -161,9 +171,11 @@ Productive runs can now repair deterministic verification failures and bounded
 review findings, resume the same private candidate across CLI and Studio, preserve
 questions/answers and accounting, and stop repeated discovery instead of buying
 more identical turns. Native Codex, Qwen Code and Grok Build are explicit maker
-executors. Qwen/Grok use digest-pinned vendor artifacts, an outer macOS arm64
-Seatbelt worker, and a host-owned exact-model credential gateway. Raw API/file-
-action execution remains available and is still the default.
+executors. API-backed Qwen/Grok use digest-pinned vendor artifacts, an outer
+macOS arm64 Seatbelt worker, and a host-owned exact-model credential gateway.
+The built-in `grok:grok-4.6` seat instead preserves Grok Build OAuth and consumes
+the operator's Grok subscription allowance; it never falls back to `XAI_API_KEY`.
+Raw API/file-action execution remains available for configured backends.
 
 Studio's new blinded calibration workspace replaces repeated terminal labeling
 with private autosaved drafts, explicit immutable labels, separate human/proxy
@@ -178,12 +190,14 @@ to each fixture's declared solution paths before the verifier may run.
 Live Qwen/Grok failures remain in the evidence denominator, uncertain turns never
 replay automatically, and the command has no admission, routing, Git-landing or
 publication authority. The first simple-task evidence provisionally favors raw
-Qwen actions; Grok Build produced the exact fix under its harness but exhausted
-the frozen turn budget before a definitive terminal. Neither result is a general
-model ranking.
+Qwen actions. The new subscription-backed Grok Build path three times produced the
+exact verifier-green fix within three maker calls and four guarded actions, with
+measured `grok_subscription` evidence and no API-key fallback; the selected Luna
+reviewer did not return inside any of the five-minute cells, so no end-to-end approval
+or general model ranking is claimed.
 
 No new reviewer admission, automatic route, cross-case harness ranking, or
-optimal pairing is claimed. See the [0.4.16 release notes](docs/RELEASE-0.4.16.md)
+optimal pairing is claimed. See the [0.4.17 release notes](docs/RELEASE-0.4.17.md)
 and the underlying [0.4.12 evaluator notes](docs/RELEASE-0.4.12.md).
 
 ### Existing admission infrastructure
@@ -312,7 +326,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.4.16
+npm i -g camus-cli@0.4.17
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```

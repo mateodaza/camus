@@ -155,7 +155,7 @@ export async function main(argv = process.argv.slice(2)) {
       }
       for (const role of ['maker', 'reviewer']) {
         console.log(`${role}:`);
-        for (const seat of catalog[role]) console.log(`  ${seat.backend}:${seat.model} — model ${seat.modelQualification.qualified ? 'qualified' : `not qualified (${seat.modelQualification.status})`}${seat.codeExecutors.length > 1 ? `; ready executors ${seat.codeExecutors.join(', ')}` : ''}`);
+        for (const seat of catalog[role]) console.log(`  ${seat.backend}:${seat.model} — model ${seat.modelQualification.qualified ? 'qualified' : `not qualified (${seat.modelQualification.status})`}${seat.codeExecutors.some(executor => executor !== 'file_actions') ? `; ready executors ${seat.codeExecutors.join(', ')}` : ''}`);
       }
     }
     return 0;
@@ -179,9 +179,13 @@ export async function main(argv = process.argv.slice(2)) {
   try { repoPath = execFileSync('git', ['-C', resolve(existing?.targetPath || options.repo || process.cwd()), 'rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 10_000 }).trim(); }
   catch { throw new Error('Choose a path inside an existing Git repository.'); }
   const prepared = await prepareCodeExecution(pairing, { preserveAbsentEffort: Boolean(existing) });
+  const limits = parseCodeLimits(options);
+  if (!existing && isNativeExecutor(prepared.models.maker.codeExecutor)
+      && (options['max-tokens'] === undefined || limits.maxTokens < NATIVE_MIN_TOKEN_BUDGET)) {
+    throw new Error(`Native execution requires --max-tokens of at least ${NATIVE_MIN_TOKEN_BUDGET} so the first call reservation fits.`);
+  }
   const id = options.resume || `code-${Date.now()}-${randomBytes(4).toString('hex')}`;
   const receiptsDir = await prepareCodeReceiptsDir(codeRunDirectory(id), repoPath);
-  const limits = parseCodeLimits(options);
   const metadata = existing || { id, codeMode: 'independent', lane: 'build', task, goal: task, acceptanceContract: contract,
     targetPath: repoPath, models: prepared.models, startedAt: Date.now(), experimental: true, gating: false,
     verifyCmd: options.verify ?? null, verifyRepeatable: options['verify-repeatable'] === true, codeLimits: limits };

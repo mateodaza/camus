@@ -14,6 +14,7 @@ export function codeSeatSnapshot(entry, effort = null) {
     connection: entry.connection ?? null, protocol: entry.protocol,
     trainingOrg: entry.trainingOrg, modelFamily: entry.modelFamily,
     inferenceOperator: entry.inferenceOperator, originConfidence: entry.originConfidence,
+    billingAuthority: entry.billingAuthority ?? 'unknown',
     lineage: { source: entry.lineage?.source ?? 'unknown', derivedFrom: entry.lineage?.derivedFrom ?? null },
     ...(entry.expectedReported !== undefined ? { expectedReported: structuredClone(entry.expectedReported) } : {}),
     ...(effort ? { effort } : {}),
@@ -64,7 +65,8 @@ export async function prepareCodeSeats({ pairing = null, live = true, preserveAb
     if (!entry) throw new Error(`${role} ${selected.backend}:${selected.model} is unavailable or not qualified for this seat. Configure and qualify it in Studio or with camus build --setup / --qualify; no substitution was made.`);
     const backend = definitions[entry.backend];
     if (!backend || !backend.seats?.includes(role)) throw new Error(`The selected ${role} backend cannot execute this seat.`);
-    validateCodeExecutor(selected, backend, role);
+    const resolvedExecutor = selected.codeExecutor ?? (role === 'maker' && backend.kind === 'grok_cli' ? 'grok_native' : undefined);
+    validateCodeExecutor({ ...selected, ...(resolvedExecutor ? { codeExecutor: resolvedExecutor } : {}) }, backend, role);
     const requestedEffort = selected.effort;
     if (requestedEffort != null && !EFFORTS.includes(requestedEffort)) throw new Error(`${role} effort must be low, medium, high, or xhigh.`);
     const codeEffort = honorsCodeEffort(entry);
@@ -78,7 +80,7 @@ export async function prepareCodeSeats({ pairing = null, live = true, preserveAb
     const resolvedEffort = preserveAbsentEffort && requestedEffort == null
       ? null : requestedEffort ?? inheritedEffort ?? 'medium';
     models[role] = codeSeatSnapshot(entry, codeEffort ? resolvedEffort : null);
-    if (selected.codeExecutor !== undefined) models[role].codeExecutor = selected.codeExecutor;
+    if (resolvedExecutor !== undefined) models[role].codeExecutor = resolvedExecutor;
     frozenBackends[role] = clone(backend);
     if (entry.admission?.fingerprint) models[role].qualification = {
       fingerprint: entry.admission.fingerprint,
@@ -121,7 +123,9 @@ export async function codeModelChoices(catalog = admissionCatalog(), runtime = {
       status: entry.admission?.status ?? (entry.admission?.qualified === true ? 'qualified' : 'unqualified'),
       reason: entry.admission?.reason ?? 'unknown' },
     effort: honorsCodeEffort(entry),
-    codeExecutors: ['file_actions', ...(role === 'maker' && entry.backend === 'codex' && entry.transport === 'vendor_managed' ? [NATIVE_EXECUTOR] : []),
+    codeExecutors: role === 'maker' && entry.executor === 'grok_cli'
+      ? (harnesses.includes('grok_native') ? ['grok_native'] : [])
+      : ['file_actions', ...(role === 'maker' && entry.backend === 'codex' && entry.transport === 'vendor_managed' ? [NATIVE_EXECUTOR] : []),
       ...(role === 'maker' && entry.executor === 'http_client' ? harnesses : [])],
     ...(role === 'maker' && entry.executor === 'http_client' ? { executorReadiness: nativeHarnesses } : {}),
   });
