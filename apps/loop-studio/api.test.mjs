@@ -291,6 +291,24 @@ try {
     assert.equal(runMeta.models.reviewer.effort, null, 'a claude reviewer records no fabricated effort tier');
     await fetch(`${base}/api/runs/${id}/stop`, { method: 'POST', headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN } });
 
+    const grokStart = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },
+      body: JSON.stringify({
+        goal: 'pairing probe: Studio launches the same built-in Grok subscription seat as the shared CLI runtime',
+        acceptanceContract: 'The vendor-managed Grok tuple passes built-in admission without a configurable-seat receipt.',
+        lane: 'freeform',
+        pairing: { maker: { backend: 'grok', model: 'grok-4.6' }, reviewer: { backend: 'claude', model: 'sonnet' } },
+      }),
+    });
+    const grokCreated = await grokStart.json();
+    assert.equal(grokStart.status, 201, JSON.stringify(grokCreated));
+    const grokMeta = JSON.parse(readFileSync(join(tmp, grokCreated.id, 'run.json'), 'utf8'));
+    assert.equal(grokMeta.models.maker.backend, 'grok');
+    assert.equal(grokMeta.models.maker.transport, 'vendor_managed');
+    assert.equal(grokMeta.models.maker.billingAuthority, 'grok_subscription');
+    await fetch(`${base}/api/runs/${grokCreated.id}/stop`, { method: 'POST', headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN } });
+
     const unqualified = await fetch(`${base}/api/runs`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, 'x-studio-token': TOKEN },

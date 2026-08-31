@@ -49,8 +49,9 @@ try {
   for (const pairing of [
     { maker: { backend: 'codex', model: 'gpt-5.6-luna' }, reviewer: { backend: 'claude', model: 'sonnet' } },
     { maker: { backend: 'claude', model: 'sonnet' }, reviewer: { backend: 'claude', model: 'sonnet' } },
+    { maker: { backend: 'grok', model: 'grok-4.6' }, reviewer: { backend: 'claude', model: 'sonnet' } },
   ]) {
-    const response = await launch({ pairing });
+    const response = await launch({ pairing, ...(pairing.maker.backend === 'grok' ? { codeLimits: { maxTokens: 32_768 } } : {}) });
     const created = await response.json();
     assert.equal(response.status, 201, JSON.stringify(created));
     await (await fetch(`${base}/api/runs/${created.id}/events`)).text();
@@ -84,7 +85,7 @@ try {
   assert.equal(contained.status, 400);
   assert.match((await contained.json()).error, /outside the source/);
   assert.deepEqual(await readdir(repo), sourceFiles, 'containment refuses before writing run metadata');
-  console.log('Independent Build HTTP: reversed and same-model seats, root normalization, non-gating receipts, and replay refusal passed.');
+  console.log('Independent Build HTTP: reversed, same-model, and Grok subscription seats, root normalization, non-gating receipts, and replay refusal passed.');
 } finally {
   if (server && server.exitCode === null) { const closed = once(server, 'exit'); server.kill('SIGTERM'); await closed; }
   await rm(dir, { recursive: true, force: true });

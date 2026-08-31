@@ -22,6 +22,7 @@ import {
   createControlRecorder,
 } from '../../../packages/cli/skills/camus/control-plane.mjs';
 import { studioAtomicWrite, STUDIO_FILE_MODE } from './grandfather.mjs';
+import { isVendorManagedBuiltin } from './identity.mjs';
 
 export class ControlPlaneError extends Error {
   constructor(message, route) {
@@ -182,9 +183,11 @@ const QUAL1_RE = /^qual1:[0-9a-f]{64}$/;
 function admittedSnapshotSeat(seat, seatKey) {
   if (!seat || typeof seat.backend !== 'string' || !seat.backend
     || typeof seat.model !== 'string' || !seat.model) return false;
-  if (['claude', 'codex'].includes(seat.backend)) {
-    return seat.transport === 'vendor_managed';
-  }
+  // One shared built-in predicate owns this classification for catalog,
+  // qualification, CLI Build, and Studio dispatch. A UI-specific allowlist
+  // previously omitted Grok even though the shared runtime had admitted its
+  // vendor-managed subscription seat, so Studio refused a valid CLI pairing.
+  if (isVendorManagedBuiltin(seat.backend, seat.transport)) return true;
   return seat.qualification?.seatType === (seatKey === 'maker' ? 'words_maker' : 'words_reviewer')
     && QUAL1_RE.test(seat.qualification?.fingerprint ?? '');
 }

@@ -44,6 +44,7 @@ import { getModels, updateModels, saveConnectionBackend, modelsSummary, modelCat
 import { deepQualifyModel, expectedReportedFor, redactProviderError, seatQualification, storedSeatQualification } from './lib/capability-probes.mjs';
 import { capabilityDiagnosticsDir } from './lib/capabilities.mjs';
 import { admissionCatalog, admittedSeat, pairingPresentation, isQualifiableTransport } from './lib/admission.mjs';
+import { isVendorManagedBuiltin } from './lib/identity.mjs';
 import { confirmClaudeRoute } from './lib/grandfather.mjs';
 import { reviewPrompt } from './lib/prompts.mjs';
 import { connectionFingerprint, getSharedTunnelManager } from './lib/ssh-tunnel.mjs';
@@ -171,6 +172,7 @@ const snapshotSeat = (entry, model) => ({
   trainingOrg: entry.trainingOrg,
   modelFamily: entry.modelFamily,
   inferenceOperator: entry.inferenceOperator,
+  billingAuthority: entry.billingAuthority ?? 'unknown',
   lineage: { source: entry.lineage.source, derivedFrom: entry.lineage.derivedFrom ?? null },
   originConfidence: entry.originConfidence,
   ...(entry.route ? { route: { ...entry.route } } : {}),
@@ -2114,7 +2116,7 @@ const server = http.createServer(async (req, res) => {
       // openai_compat seat may not launch without a VALID qual1 receipt for the
       // run's seat type. The accepted fingerprint is copied into the run snapshot
       // so the round events and sealed pairing carry it unchanged. Built-in CLI
-      // seats (claude/codex) use builtin1. Rehearsals validate stored custom-seat
+      // seats use builtin1. Rehearsals validate stored custom-seat
       // receipts without making the live anchor request.
       if (lane !== 'build') {
         // Freeze the EXACT decision we are about to qualify BEFORE any network
@@ -2129,8 +2131,8 @@ const server = http.createServer(async (req, res) => {
         // resolves the run's adapters (resolveSeatAdapters keys off it).
         const standing = modelsSnapshot ?? getModels();
         const hasConfigurableSeat =
-          (standing.maker.backend !== 'claude' && standing.maker.backend !== 'codex') ||
-          (standing.reviewer.backend !== 'claude' && standing.reviewer.backend !== 'codex');
+          !isVendorManagedBuiltin(standing.maker.backend, standing.maker.transport) ||
+          !isVendorManagedBuiltin(standing.reviewer.backend, standing.reviewer.transport);
         if (hasConfigurableSeat && !modelsSnapshot) {
           const s = standing;
           modelsSnapshot = {
@@ -2144,7 +2146,7 @@ const server = http.createServer(async (req, res) => {
         const seatSpecs = [['maker', 'words_maker', effective.maker], ['reviewer', 'words_reviewer', effective.reviewer]];
         const accepted = {};
         for (const [seatKey, seatType, seat] of seatSpecs) {
-          if (seat.backend === 'claude' || seat.backend === 'codex') continue;
+          if (isVendorManagedBuiltin(seat.backend, seat.transport)) continue;
           const entry = backendsByName[seat.backend];
           if (!entry || entry.kind !== 'openai_compat') {
             return json(res, 400, { error: `the ${seatKey} seat "${seat.backend}:${seat.model}" is not a qualifiable openai_compat backend and cannot launch` });
@@ -2172,7 +2174,7 @@ const server = http.createServer(async (req, res) => {
         // snapshot `backendsByName`) so the engine resolves its adapters against
         // them, not a live reload a concurrent config edit could have changed
         // under an unchanged name. Only the configurable seats need it; a
-        // claude/codex seat resolves identically either way.
+        // vendor-managed built-in seat resolves identically either way.
         frozenBackends = {
           maker: backendsByName[effective.maker.backend] ?? null,
           reviewer: backendsByName[effective.reviewer.backend] ?? null,

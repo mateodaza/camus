@@ -198,6 +198,33 @@ const qualifiedPlane = createStudioControlPlane({
     reviewer: { backend: 'codex', model: 'reviewer', transport: 'vendor_managed' },
   },
 });
+const grokBuiltinPlane = createStudioControlPlane({
+  id: 'run-grok-subscription-seat',
+  goal: 'Launch the exact Grok subscription seat accepted by the shared CLI runtime.',
+  acceptanceContract: 'Studio and CLI must enforce the same vendor-managed built-in contract.',
+  lane: 'freeform',
+  models: {
+    maker: {
+      backend: 'grok', model: 'grok-4.6', transport: 'vendor_managed',
+      qualification: { seatType: 'words_maker', fingerprint: `builtin1:${'e'.repeat(64)}` },
+    },
+    reviewer: { backend: 'codex', model: 'reviewer', transport: 'vendor_managed' },
+  },
+});
+assert.ok(grokBuiltinPlane.launchActionFingerprint, 'Studio accepts the shared vendor-managed Grok built-in instead of demanding qual1');
+assert.throws(() => createStudioControlPlane({
+  id: 'run-fake-builtin-seat',
+  goal: 'Refuse a configured backend that borrows the built-in fingerprint namespace.',
+  acceptanceContract: 'Only the shared built-in registry may earn vendor-managed admission.',
+  lane: 'freeform',
+  models: {
+    maker: {
+      backend: 'custom', model: 'served-model', transport: 'vendor_managed',
+      qualification: { seatType: 'words_maker', fingerprint: `builtin1:${'f'.repeat(64)}` },
+    },
+    reviewer: { backend: 'codex', model: 'reviewer', transport: 'vendor_managed' },
+  },
+}), /Studio launch refuse/, 'a custom backend cannot claim builtin1 merely by copying its transport and fingerprint shape');
 const changedQualificationPlane = createStudioControlPlane({
   id: 'run-qualified-seat',
   goal: 'Bind the exact qualification into the launch action.',
