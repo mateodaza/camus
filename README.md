@@ -190,11 +190,11 @@ to each fixture's declared solution paths before the verifier may run.
 Live Qwen/Grok failures remain in the evidence denominator, uncertain turns never
 replay automatically, and the command has no admission, routing, Git-landing or
 publication authority. The first simple-task evidence provisionally favors raw
-Qwen actions. The new subscription-backed Grok Build path three times produced the
+Qwen actions. The new subscription-backed Grok Build path four times produced the
 exact verifier-green fix within three maker calls and four guarded actions, with
-measured `grok_subscription` evidence and no API-key fallback; the selected Luna
-reviewer did not return inside any of the five-minute cells, so no end-to-end approval
-or general model ranking is claimed.
+measured `grok_subscription` evidence and no API-key fallback. A tiny Luna readiness
+probe returned quickly, but the real schema-bound review still did not return inside
+its five-minute cell, so no end-to-end approval or general model ranking is claimed.
 
 No new reviewer admission, automatic route, cross-case harness ranking, or
 optimal pairing is claimed. See the [0.4.18 release notes](docs/RELEASE-0.4.18.md)

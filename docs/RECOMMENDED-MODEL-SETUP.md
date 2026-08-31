@@ -206,6 +206,19 @@ enough to reject Qwen Code for larger work.
   are reviewer availability/latency evidence, not a Grok quality loss and not an
   approval. The v9 sealed receipt is
   `codebench1:c06ea446fb9792223916816622af594add524baf2f9a82ca19ffa26848dae8f3`.
+- Before v10, a fresh ephemeral Luna-medium probe returned exactly `READY` in
+  7.6 seconds without tools. That proved basic subscription/model availability,
+  but not the production reviewer path. v10 then repeated the exact Grok fix in
+  three maker calls, four guarded actions, 13,348 measured maker tokens, and
+  10.6 maker seconds; containment and the frozen verifier passed. Its one
+  schema-bound, hardened Luna review emitted no terminal or measured usage
+  before the frozen 285-second call limit, so Camus made no replay and sealed
+  `failed` / `needs_decision` after 296.4 seconds total. The receipt is
+  `codebench1:b8a5e8a2dc3e40ed10e5abb974b3927eb969df80a4f5463a35973e4cde3e4053`.
+- Reviewer readiness must exercise the production adapter, hardening flags,
+  output schema, and a realistic bounded review envelope. A raw one-word liveness
+  response is useful diagnosis, but it cannot authorize a paid maker cell or
+  predict full-review latency by itself.
 - Earlier subscription cells v1-v6 exposed and pinned deterministic integration
   contracts: OAuth permission mode, a hard headless `--max-turns` boundary,
   `target_file` action guarding, attempted-action accounting, exact
@@ -216,8 +229,9 @@ enough to reject Qwen Code for larger work.
 This establishes that the subscription-backed maker path is real, bounded,
 measured, and useful on the simple fixture. It does not establish an optimal
 pairing or reviewer standing. Do not buy more identical Grok cells merely to
-probe an unavailable reviewer; first prove the chosen reviewer can complete a
-small read-only call, or explicitly select a different independent reviewer.
+probe an unavailable reviewer; first prove the chosen reviewer can complete the
+real hardened, schema-bound review path on a spend-free or maker-free fixture,
+or explicitly select a different independent reviewer.
 
 ### Productive `file_actions` context evidence
 
@@ -303,8 +317,8 @@ For Grok subscription:
 - expect `billingAuthority: grok_subscription` in execution evidence;
 - keep `XAI_API_KEY` absent from subscription evaluations and verify the observed
   model, measured token receipt, guarded action count, and no-fallback evidence;
-- treat v7-v9 as maker-path evidence only. A fresh cell is worthwhile after the
-  selected reviewer passes a spend-bounded readiness check, not before.
+- treat v7-v10 as maker-path evidence only. Do not buy another identical maker
+  cell until a representative production-path reviewer probe closes.
 
 ## How to choose raw versus native
 
@@ -324,10 +338,13 @@ Choose the cheapest path that can meet the task contract:
 
 ## Next evidence sequence
 
-1. **Do not rerun the simple Grok smoke while Luna is unavailable.** Subscription
-   v7-v9 already produced the exact change, measured identity/usage, containment,
-   and green verification three times. Their missing review terminals remain failed
-   evidence and manual verification does not rewrite them.
+1. **Do not rerun the simple Grok smoke for reviewer diagnosis.** Subscription
+   v7-v10 already produced the exact change, measured identity/usage, containment,
+   and green verification four times. v10 proved that a tiny liveness check can
+   pass while the real schema-bound review still reaches its call ceiling. Their
+   missing review terminals remain failed evidence and manual verification does
+   not rewrite them. Diagnose the exact production reviewer path without another
+   paid maker cell.
 2. **Do not blindly repeat Qwen simple.** Its result already answers the simple
    task question and exposed the retry-policy defect.
 3. **Use the provider-free balanced fixture now available.** Inspect
