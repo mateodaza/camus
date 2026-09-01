@@ -1317,7 +1317,7 @@ $('start').addEventListener('click', async () => {
       headers: postHeaders(),
       body: JSON.stringify({ goal, acceptanceContract, lane: state.lane, depth: state.depth, ground: state.lane !== 'build' && $('ground').checked, publish: state.lane !== 'build' && $('publish-artifact').checked, targetPath: state.lane === 'build' ? $('target-path').value : undefined,
         codeMode: state.lane === 'build' ? $('build-mode').value : undefined,
-        codeLimits: independentBuild ? Object.fromEntries(['maxCalls', 'maxSteps', 'maxActions', 'maxRepairs', 'maxRetries', 'maxTokens', 'timeoutMs', 'callTimeoutMs', 'idleTimeoutMs'].map((key) => [key, Number($(`code-${key}`).value)])) : undefined,
+        codeLimits: independentBuild ? Object.fromEntries(['maxCalls', 'maxSteps', 'maxActions', 'maxRepairs', 'maxRetries', 'maxRecoveries', 'maxTokens', 'timeoutMs', 'callTimeoutMs', 'idleTimeoutMs'].map((key) => [key, Number($(`code-${key}`).value)])) : undefined,
         verifyRepeatable: independentBuild ? $('code-verify-repeatable').checked : undefined,
         // Only the Build lane verifies a repository, so the command only rides
         // that lane's request; empty means "detect the stack".
@@ -1508,20 +1508,58 @@ function buildCodeRecoveryControl(continuation) {
   if (usage) box.appendChild(el('span', 'sub', `${usage.calls} model calls · ${usage.repairs} repairs · ${Math.round(usage.activeMs / 1000)}s active · ${usage.observedTokens} reported tokens · ${usage.unmeasuredCalls} calls with unknown usage. Last checkpoint: ${new Date(continuation.updatedAt).toLocaleString()}.`));
   if (!continuation?.canResume) return box;
   let answer = null;
-  if (continuation.question?.kind === 'judgment') {
+  const authorityType = continuation.question?.request?.type;
+  let amendmentPairing = null;
+  if (authorityType === 'model_change') {
+    const current = continuation.seats;
+    const applyChange = el('input'); applyChange.type = 'checkbox'; applyChange.checked = true;
+    const applyLabel = el('label', 'sub'); applyLabel.appendChild(applyChange); applyLabel.appendChild(document.createTextNode(' Authorize a pair change on this preserved candidate'));
+    box.appendChild(applyLabel);
+    const maker = $('pair-maker').cloneNode(true); maker.id = ''; maker.disabled = false;
+    const reviewer = $('pair-reviewer').cloneNode(true); reviewer.id = ''; reviewer.disabled = false;
+    maker.value = JSON.stringify([current?.maker?.backend, current?.maker?.model]);
+    reviewer.value = JSON.stringify([current?.reviewer?.backend, current?.reviewer?.model]);
+    const executor = el('select', 'path-input');
+    const refreshExecutors = () => {
+      const selected = seatOf(maker); const currentExecutor = current?.maker?.codeExecutor ?? 'file_actions';
+      const currentNative = currentExecutor !== 'file_actions';
+      const offered = (state.codeChoices?.maker ?? []).find(item => item.backend === selected?.backend && item.model === selected?.model)?.codeExecutors ?? ['file_actions'];
+      const compatible = offered.filter(item => (item !== 'file_actions') === currentNative);
+      executor.innerHTML = '';
+      for (const item of compatible) { const option = document.createElement('option'); option.value = item; option.textContent = executorLabel(item, selected); executor.appendChild(option); }
+      executor.value = compatible.includes(currentExecutor) ? currentExecutor : (compatible[0] ?? '');
+    };
+    maker.addEventListener('change', refreshExecutors); refreshExecutors();
+    for (const [name, input] of [['New maker', maker], ['Maker harness', executor], ['New reviewer', reviewer]]) {
+      const label = el('label', 'sub', name); label.appendChild(input); box.appendChild(label);
+    }
+    box.appendChild(el('span', 'sub', 'The selected pair is re-qualified before use. Camus preserves the candidate only within the same custody class; incompatible harness custody is refused.'));
+    amendmentPairing = () => {
+      if (!applyChange.checked) return null;
+      const selectedMaker = seatOf(maker), selectedReviewer = seatOf(reviewer);
+      if (!selectedMaker || !selectedReviewer || !executor.value) throw new Error('Choose a compatible qualified maker, harness, and reviewer.');
+      selectedMaker.codeExecutor = executor.value;
+      return { maker: selectedMaker, reviewer: selectedReviewer };
+    };
+  }
+  if (continuation.question?.kind === 'judgment' || ['model_change', 'contract_amendment'].includes(authorityType)) {
     const label = el('label', 'sub', continuation.question.text);
-    answer = el('textarea', 'path-input'); answer.maxLength = 4000; answer.placeholder = 'Answer this exact question'; label.appendChild(answer); box.appendChild(label);
+    answer = el('textarea', 'path-input'); answer.maxLength = 4000;
+    answer.placeholder = authorityType === 'model_change' ? 'State why you authorize this exact pair change, or direct the current pair to continue'
+      : authorityType === 'contract_amendment' ? 'State the exact approved contract amendment, or decline it'
+        : 'Answer this exact question';
+    label.appendChild(answer); box.appendChild(label);
   }
   const extensions = el('details'); extensions.appendChild(el('summary', null, 'Extend a budget (optional; totals never reset)'));
   const fields = {};
-  for (const key of ['maxCalls', 'maxSteps', 'maxActions', 'maxRepairs', 'maxRetries', 'maxTokens', 'timeoutMs']) {
+  for (const key of ['maxCalls', 'maxSteps', 'maxActions', 'maxRepairs', 'maxRetries', 'maxRecoveries', 'maxTokens', 'timeoutMs', 'callTimeoutMs']) {
     const label = el('label', 'sub', key); const input = el('input', 'path-input'); input.type = 'number'; input.min = 0; input.placeholder = `unchanged: ${continuation.limits[key]}`;
     fields[key] = input; label.appendChild(input); extensions.appendChild(label);
   }
   box.appendChild(extensions);
   const retryKind = continuation.question?.kind;
   let consent;
-  if (['uncertain_call', 'authority'].includes(retryKind)) {
+  if (retryKind === 'uncertain_call' || authorityType === 'verification_replay') {
     const label = el('label', 'sub'); consent = el('input'); consent.type = 'checkbox'; label.appendChild(consent);
     label.appendChild(document.createTextNode(retryKind === 'uncertain_call' ? ' Authorize one uncertain-call retry; duplicate provider billing is possible.' : ' Authorize one additional execution of the frozen verifier.'));
     box.appendChild(label);
@@ -1534,6 +1572,9 @@ function buildCodeRecoveryControl(continuation) {
     try {
       const body = { codeLimits: Object.fromEntries(Object.entries(fields).filter(([, input]) => input.value !== '').map(([key, input]) => [key, Number(input.value)])) };
       if (answer) body.answer = { id: continuation.question.id, text: answer.value.trim() };
+      if (amendmentPairing) {
+        const pairing = amendmentPairing(); if (pairing) body.pairing = pairing;
+      }
       if (consent) body[retryKind === 'uncertain_call' ? 'retryUncertain' : 'retryVerification'] = true;
       const res = await fetch(`${API}/api/runs/${state.runId}/resume`, { method: 'POST', headers: postHeaders(), body: JSON.stringify(body) });
       const data = await res.json(); if (!res.ok) throw new Error(data.error || res.statusText);

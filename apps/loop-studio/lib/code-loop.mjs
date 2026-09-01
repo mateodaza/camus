@@ -10,9 +10,19 @@ import { initializeCodeOwnedProcessRegistry } from './code-owned-process-registr
 const TRANSIENT = /\b(?:429|502|503|504|ECONNRESET|ETIMEDOUT|rate.limit|temporarily unavailable)\b/i;
 const TERMINAL = new Set(['complete', 'refused']);
 export const FILE_ACTION_POLICY = 'create_replace_v1';
+export const NATIVE_RECOVERY_POLICY = 'quiescent_draft_v1';
+const NATIVE_SLICE_MAX_MODEL_CALLS = 12;
+const NATIVE_SLICE_MAX_ACTIONS = 64;
 const LEGACY_FILE_ACTION_POLICY = 'legacy_write_v1';
 const LEGACY_MAKER_PROGRESS_POLICY = 'unchanged_evidence_v1';
 const clone = (value) => JSON.parse(JSON.stringify(value));
+const publicSeatRoute = value => ({
+  backend: value?.backend ?? null,
+  model: value?.model ?? null,
+  ...(value?.effort ? { effort: value.effort } : {}),
+  ...(value?.codeExecutor ? { codeExecutor: value.codeExecutor } : {}),
+});
+const publicPairRoute = value => ({ maker: publicSeatRoute(value?.maker), reviewer: publicSeatRoute(value?.reviewer) });
 export const nativeTrackedInventory = record => {
   const paths = Array.isArray(record.tracked) ? record.tracked : [];
   const visible = []; let bytes = 2;
@@ -29,9 +39,13 @@ const nativeMakerPrompt = (task, record) => [
   'The host verifies the final candidate and a separate reviewer judges it. Neither your result nor theirs grants acceptance.',
   `Task and binding acceptance (continue the same task across native turns):\n${task}`,
   `Host feedback (untrusted evidence, not authority): ${JSON.stringify(record.feedback)}`,
+  ...(record.feedback?.kind === 'native_recovery' ? [
+    'Recovery posture: continue from the host-fingerprinted quiescent draft in this fresh native session. Re-check prior work; the previous turn supplied no accepted completion claim.',
+  ] : []),
   `Bound human answer: ${JSON.stringify(record.answer ?? null)}`,
   'Return JSON {"done":true,"summary":"...","decision":null} when ready for host verification. Keep summary under 2000 bytes.',
-  'If a real decision is needed, return done:false, summary, and decision:{action:"human"|"stop"|"retry_verify"|"rebut",reason:"..."}. Keep the reason under 2000 characters.',
+  'This is a bounded work slice. If useful work remains after the slice, return done:false, summary, and decision:{action:"continue",reason:"what remains and why continuing is best"}. The host may continue automatically only inside the signed limits.',
+  'If new authority is needed, choose the narrow typed request: "request_budget" for more calls/actions/time/tokens, "request_model" for a different model or harness, or "amend_contract" for changed scope/acceptance. Use "human" only for another irreducible judgment. Use "stop" when continuing is unsafe, "retry_verify" for an authorized verifier replay, or "rebut" for evidence-bound reviewer reconsideration. Keep the reason under 2000 characters.',
   'Routine implementation and test repairs need no human permission. Git metadata, arbitrary network access, and provider credentials are blocked; a host-owned one-model gateway may be reachable only for the harness conversation. The host owns Git/diffs and can run authorized service tests.',
   nativeTrackedInventory(record),
   'Do not inspect .git or hidden root metadata, and do not use broad `ls -la` or `find .` discovery. Those reads are intentionally blocked and a failed tool call still consumes the action and model-turn budgets. Start from the host-observed paths and use targeted file or directory reads.',
@@ -49,7 +63,8 @@ function observedTokens(usage) {
 
 export async function runProductiveCodeLoop(options, h) {
   let { repoPath, task, seats, adapters, backendSnapshot, verify = null, signal, receiptsDir,
-    worktreeRoot, onEvent, resume = false, answer = null, retryUncertain = false, retryVerification = false, authorize = null } = options;
+    worktreeRoot, onEvent, resume = false, answer = null, retryUncertain = false, retryVerification = false, authorize = null,
+    seatAmendment = null, priorBackendSnapshot = null } = options;
   let record, owner, heartbeat, timer, lastTick = Date.now(), writable = false;
   let limits;
   let native = false, nativeExecutor = null;
@@ -90,17 +105,20 @@ export async function runProductiveCodeLoop(options, h) {
     emit('terminal', { stage: 'code_seats', status, line: reason });
     return value;
   };
-  const bind = (fileActionPolicy, makerProgressPolicy) => digest({ task, seats: { maker: seats.maker, reviewer: seats.reviewer }, backends: backendSnapshot,
+  const bind = (fileActionPolicy, makerProgressPolicy, nativeRecoveryPolicy, boundSeats = seats, boundBackends = backendSnapshot) => digest({ task,
+    seats: { maker: boundSeats.maker, reviewer: boundSeats.reviewer }, backends: boundBackends,
     verifier: verify?.command ?? null, repeatable: verify?.repeatable !== false,
     ...(fileActionPolicy === undefined ? {} : { fileActionPolicy }),
     ...(makerProgressPolicy === undefined ? {} : { makerProgressPolicy }),
-    credentialRevisions: Object.fromEntries(Object.entries(backendSnapshot).map(([role, backend]) => {
+    ...(nativeRecoveryPolicy === undefined ? {} : { nativeRecoveryPolicy }),
+    credentialRevisions: Object.fromEntries(Object.entries(boundBackends).map(([role, backend]) => {
       const name = backend?.auth?.envVar ?? backend?.apiKeyEnv;
       return [role, name ? codeCredentialRevision(process.env[name] ?? '') : null];
     })) });
-  const question = (reason, kind = 'judgment') => {
+  const question = (reason, kind = 'judgment', request = null) => {
     record.question = { id: digest({ runId: record.runId, kind, reason, candidate: record.candidate.fingerprint }), kind,
-      text: cleanError(reason), candidateFingerprint: record.candidate.fingerprint };
+      text: cleanError(reason), candidateFingerprint: record.candidate.fingerprint,
+      ...(request ? { request: clone(request) } : {}) };
     return finish('needs_decision', record.question.text);
   };
   const checkCandidate = async (message = 'Candidate drifted outside the recorded host action.') => {
@@ -115,8 +133,11 @@ export async function runProductiveCodeLoop(options, h) {
     if (actual.head !== record.candidate.head || actual.branch !== record.candidate.branch || actual.fingerprint !== record.candidate.fingerprint) throw new Error(message);
   };
   const budgetReason = () => record.usage.calls >= limits.maxCalls ? 'model call budget exhausted'
-    : record.usage.activeMs + Date.now() - lastTick >= limits.timeoutMs ? 'active time budget exhausted'
-      : limits.maxTokens && record.usage.accountedTokens + limits.unknownTokenReserve > limits.maxTokens ? 'token budget lacks the next-call reservation' : null;
+    : record.usage.actions >= limits.maxActions ? 'tool action budget exhausted'
+      : record.usage.activeMs + Date.now() - lastTick >= limits.timeoutMs ? 'active time budget exhausted'
+        : limits.maxTokens && record.usage.accountedTokens + limits.unknownTokenReserve > limits.maxTokens ? 'token budget lacks the next-call reservation' : null;
+  const activeBudgetAborted = () => abort.signal.aborted
+    && /active time budget exhausted/i.test(String(abort.signal.reason?.message ?? abort.signal.reason ?? ''));
   const repeatedFailure = (kind, evidence) => {
     const attempt = `${kind}:${kind === 'verification' ? record.usage.verifications : record.usage.calls}`;
     if (record.lastFailureAttempt === attempt) return record.lastRepetition;
@@ -151,7 +172,7 @@ export async function runProductiveCodeLoop(options, h) {
     const reason = budgetReason();
     if (reason) return { budget: reason };
     await checkCandidate();
-    if (bind(record.fileActionPolicy, record.makerProgressPolicy) !== record.binding) throw new Error('Credential or execution binding changed during this run.');
+    if (bind(record.fileActionPolicy, record.makerProgressPolicy, record.nativeRecoveryPolicy) !== record.binding) throw new Error('Credential or execution binding changed during this run.');
     const id = `${role}-${record.usage.calls + 1}`;
     const nativeCall = native && role === 'maker';
     // Capture the budget before replacing the host's unknown-usage reservation.
@@ -159,6 +180,18 @@ export async function runProductiveCodeLoop(options, h) {
     // across the harness's internal provider calls. Input tokens can still make
     // measured total usage cross this bound and remain visible after the call.
     const remainingTokens = nativeCall ? limits.maxTokens - record.usage.accountedTokens : null;
+    const nativeModelCalls = nativeCall ? Math.min(NATIVE_SLICE_MAX_MODEL_CALLS,
+      Math.max(1, limits.maxCalls - record.usage.calls)) : null;
+    const nativeToolCalls = nativeCall ? Math.min(NATIVE_SLICE_MAX_ACTIONS,
+      Math.max(0, limits.maxActions - record.usage.actions)) : null;
+    const callTimeMs = Math.max(1, Math.min(limits.callTimeoutMs,
+      limits.timeoutMs - record.usage.activeMs - (Date.now() - lastTick)));
+    if (nativeCall && record.nativeSession
+        && (Number.isSafeInteger(record.nativeSession.maximumModelCalls) && nativeModelCalls > record.nativeSession.maximumModelCalls
+          || Number.isSafeInteger(record.nativeSession.maximumActions) && nativeToolCalls > record.nativeSession.maximumActions)) {
+      record.nativeSession = null;
+      await log('native_session_rotated_for_extended_authority');
+    }
     record.pendingCall = { id, role, promptHash: digest(prompt), startedAt: Date.now(), ...(nativeCall ? { native: true } : {}) };
     if (nativeCall) { invalidateCandidateEvidence(); record.nativeInFlight = true; }
     record.usage.calls++; record.usage.accountedTokens += limits.unknownTokenReserve;
@@ -169,7 +202,7 @@ export async function runProductiveCodeLoop(options, h) {
     activity();
     const interrupted = () => control.abort(abort.signal.reason);
     abort.signal.addEventListener('abort', interrupted, { once: true });
-    const timeout = setTimeout(() => control.abort(new Error('provider phase timeout')), limits.callTimeoutMs);
+    const timeout = setTimeout(() => control.abort(new Error('provider phase timeout')), callTimeMs);
     let response;
     try {
       if (abort.signal.aborted) interrupted();
@@ -182,9 +215,9 @@ export async function runProductiveCodeLoop(options, h) {
       response = nativeCall ? await adapters.nativeMaker({ ...common, backend: backendSnapshot.maker, worktree: record.candidate.worktree,
         scratch: nativeExecutor === NATIVE_EXECUTOR ? join(receiptsDir, 'native-scratch') : join(dirname(record.candidate.worktree), 'native-scratch'),
         sourcePath: record.source.repoPath, receiptsDir,
-        deniedPaths: record.nativeDeniedPaths, nativeSession: record.nativeSession ?? null, timeoutMs: limits.callTimeoutMs,
-        maxModelCalls: Math.max(1, limits.maxCalls - record.usage.calls + 1), remainingTokens,
-        maxToolCalls: Math.max(0, limits.maxActions - record.usage.actions),
+        deniedPaths: record.nativeDeniedPaths, nativeSession: record.nativeSession ?? null, timeoutMs: callTimeMs,
+        maxModelCalls: nativeModelCalls, remainingTokens,
+        maxToolCalls: nativeToolCalls,
         onNativeSession: (session) => { record.nativeSession = clone(session); persist(); },
         onNativeProgress: ({ usage, responses = 0, actions = 0 }) => {
           const previous = record.pendingCall.progress ?? { tokens: 0, responses: 0, actions: 0, reservationReplaced: false };
@@ -216,9 +249,13 @@ export async function runProductiveCodeLoop(options, h) {
     finally { clearTimeout(timeout); clearTimeout(idleTimer); abort.signal.removeEventListener('abort', interrupted); }
     if (control.signal.aborted && !(role === 'maker' ? response?.ok : response?.ran) && !response?.definitiveTurnEnd && !response?.noModelCalled) response = { ...response, ok: false, ran: false, error: 'provider phase interrupted', uncertain: true };
     if (nativeCall) {
-      // Tools already operated under the native sandbox. Adopt a new snapshot
-      // only after its process group is closed and a definitive turn receipt.
-      if (response?.definitiveTurnEnd || response?.noModelCalled) {
+      // Tools already operated under the native sandbox. A definitive receipt
+      // makes the snapshot eligible for normal workflow use. An uncertain turn
+      // may only become an explicitly untrusted recovery draft after the
+      // adapter proves that every writer and gateway has quiesced.
+      const recoveryDraft = response?.uncertain === true && response?.candidateQuiescent === true
+        && record.nativeRecoveryPolicy === NATIVE_RECOVERY_POLICY;
+      if (response?.definitiveTurnEnd || response?.noModelCalled || recoveryDraft) {
         const changed = await h.git(record.candidate.worktree, ['diff', '--name-only', '-z', 'HEAD']);
         const untracked = await h.git(record.candidate.worktree, ['ls-files', '--others', '--exclude-standard', '-z']);
         const ignored = await h.git(record.candidate.worktree, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z']);
@@ -231,13 +268,15 @@ export async function runProductiveCodeLoop(options, h) {
         const actual = await h.candidate(record.candidate.worktree, limits);
         if (actual.head !== record.candidate.head || actual.branch !== record.candidate.branch) throw new Error('Native changed candidate git identity.');
         if (response?.noModelCalled && actual.fingerprint !== record.candidate.fingerprint) throw new Error('Candidate changed during native preflight.');
-        record.candidate = actual; record.nativeInFlight = false;
+        record.candidate = { ...actual, snapshotStatus: recoveryDraft ? 'untrusted_recovery' : 'verified_turn' };
+        record.nativeInFlight = false;
         record.reads = [];
         for (const path of (changed.stdout + untracked.stdout).split('\0').filter(Boolean)) {
           try { record.reads.push([path, await h.currentText((await h.safePath(record.candidate.worktree, path)).absolute, limits)]); }
           catch (error) { if (error.code !== 'ENOENT') throw error; }
         }
       }
+      if (recoveryDraft) response = { ...response, recoveryCheckpoint: true };
       if (response?.nativeSession) record.nativeSession = clone(response.nativeSession);
     }
     // All completed responses become durable BEFORE any returned file action.
@@ -289,10 +328,36 @@ export async function runProductiveCodeLoop(options, h) {
   const failedCall = async (response, role) => {
     const nativeDiagnostic = native && role === 'maker' && /^[a-z][a-z0-9_]{0,63}$/.test(response?.failureCode ?? '')
       ? ` Native diagnostic: ${response.failureCode}.` : '';
-    if (response.budget) return question(response.budget, 'budget');
-    if (response.uncertain) return native && role === 'maker'
-      ? finish('needs_decision', `${response.stopKind === 'budget' ? `${cleanError(response.error ?? 'Native accounting limit reached').replace(/[.]+$/, '')}. ` : ''}Native turn outcome is uncertain.${nativeDiagnostic} Candidate preserved for inspection; automatic adoption or replay is refused.`, 'refused')
-      : question('Provider completion is uncertain. Explicitly authorize a bounded retry or leave this candidate parked.', 'uncertain_call');
+    if (response.budget) return question(response.budget, 'budget', { type: 'budget_extension' });
+    if (response.uncertain) {
+      if (native && role === 'maker' && response.recoveryCheckpoint === true) {
+        // The uncertain turn is never replayed or promoted to completion. Its
+        // quiescent filesystem is a new evidence-bound draft, and the next
+        // maker slice starts with a fresh native session over that draft.
+        record.pendingCall = null; record.nativeSession = null;
+        record.usage.steps++; record.usage.recoveries++;
+        record.feedback = { kind: 'native_recovery', candidateFingerprint: record.candidate.fingerprint,
+          evidence: { failureCode: response.failureCode ?? null,
+            reason: cleanError(response.error ?? 'terminal receipt unavailable') },
+          originalContract: 'unchanged', trust: 'untrusted_draft' };
+        record.history.push({ step: record.usage.steps, recovery: true,
+          candidateFingerprint: record.candidate.fingerprint,
+          instruction: 'Continue from this quiescent draft in a fresh native session. Re-check prior work; no prior completion claim was accepted.' });
+        await log('native_recovery_checkpoint', { candidateFingerprint: record.candidate.fingerprint,
+          recovery: record.usage.recoveries });
+        if (abort.signal.aborted && !activeBudgetAborted()) {
+          return finish('stopped', 'Native execution stopped; a quiescent recovery draft is preserved for bounded continuation.');
+        }
+        const exhausted = record.usage.recoveries >= limits.maxRecoveries
+          ? 'native recovery allowance exhausted' : budgetReason();
+        if (exhausted) return question(`${exhausted}; the quiescent recovery draft is preserved. Extend only the required bound to continue.`,
+          'budget', { type: 'budget_extension', cause: exhausted });
+        return null;
+      }
+      return native && role === 'maker'
+        ? finish('needs_decision', `${response.stopKind === 'budget' ? `${cleanError(response.error ?? 'Native accounting limit reached').replace(/[.]+$/, '')}. ` : ''}Native turn outcome is uncertain.${nativeDiagnostic} Candidate preserved for inspection; cleanup or policy evidence is insufficient, so automatic adoption or replay is refused.`, 'refused')
+        : question('Provider completion is uncertain. Explicitly authorize a bounded retry or leave this candidate parked.', 'uncertain_call');
+    }
     if (native && role === 'maker' && response.definitiveTurnEnd && nativeDiagnostic) {
       return finish('needs_decision', `Native turn ended, but Camus could not validate complete terminal evidence.${nativeDiagnostic} Candidate preserved for inspection; review, automatic adoption, and replay are refused.`, 'refused');
     }
@@ -326,26 +391,77 @@ export async function runProductiveCodeLoop(options, h) {
       record = await readCodeCheckpoint(receiptsDir);
       if (record.fileActionPolicy !== undefined && record.fileActionPolicy !== FILE_ACTION_POLICY) throw new Error('Run file-action policy is unsupported; no model was called.');
       if (record.makerProgressPolicy !== undefined && record.makerProgressPolicy !== MAKER_PROGRESS_POLICY) throw new Error('Run maker-progress policy is unsupported; no model was called.');
-      if (record.source.repoPath !== source || record.binding !== bind(record.fileActionPolicy, record.makerProgressPolicy)) throw new Error('Run contract, model, credential, connection, verification, or execution-policy binding changed; no model was called.');
+      if (record.nativeRecoveryPolicy !== undefined && record.nativeRecoveryPolicy !== NATIVE_RECOVERY_POLICY) throw new Error('Run native-recovery policy is unsupported; no model was called.');
+      const changingSeats = seatAmendment !== null;
+      const oldBackends = changingSeats ? priorBackendSnapshot : backendSnapshot;
+      if (record.source.repoPath !== source || record.binding !== bind(record.fileActionPolicy, record.makerProgressPolicy,
+        record.nativeRecoveryPolicy, record.seats, oldBackends)) throw new Error('Run contract, model, credential, connection, verification, or execution-policy binding changed; no model was called.');
       if (TERMINAL.has(record.phase)) throw new Error('This run is already closed; inspect its existing receipt. No model was called.');
-      limits = { ...record.limits };
+      if (changingSeats) {
+        if (!seatAmendment || typeof seatAmendment !== 'object' || Array.isArray(seatAmendment)
+            || seatAmendment.questionId !== record.question?.id
+            || record.question?.request?.type !== 'model_change'
+            || record.question.candidateFingerprint !== record.candidate.fingerprint
+            || answer?.id !== record.question.id || typeof answer?.text !== 'string' || !answer.text.trim()) {
+          throw new Error('Model change does not bind the exact outstanding authority request and candidate; no model was called.');
+        }
+        const previousNative = isNativeExecutor(record.seats?.maker?.codeExecutor);
+        if (previousNative !== native) throw new Error('Model change crosses the candidate-custody boundary; create an explicitly migrated child run. No model was called.');
+        if (digest(record.seats) === digest(seats)) throw new Error('Model change selected the existing pair; answer the request without a pair amendment. No model was called.');
+        const priorSeats = clone(record.seats);
+        record.authorityAmendments ??= [];
+        record.authorityAmendments.push({ type: 'model_change', questionId: record.question.id,
+          candidateFingerprint: record.candidate.fingerprint, from: priorSeats, to: clone(seats),
+          answer: cleanError(answer.text), at: Date.now() });
+        record.seats = clone(seats); record.nativeSession = null;
+        const replacement = h.baseResult({ source: record.source, seats, adapters, backendSnapshot });
+        record.result.seats = replacement.seats; record.result.independence = replacement.independence;
+        invalidateCandidateEvidence();
+        record.feedback = { kind: 'model_change', candidateFingerprint: record.candidate.fingerprint,
+          from: publicPairRoute(priorSeats), to: publicPairRoute(seats), humanAuthorized: true, instruction: cleanError(answer.text) };
+        record.answer = { id: answer.id, text: answer.text }; record.question = null;
+        record.binding = bind(record.fileActionPolicy, record.makerProgressPolicy, record.nativeRecoveryPolicy);
+      }
+      limits = h.limitsFor(record.limits);
       for (const [key, value] of Object.entries(options.limits ?? {})) {
         h.limitsFor({ [key]: value });
-        if (!['maxSteps', 'maxActions', 'maxCalls', 'maxRepairs', 'maxRetries', 'maxTokens', 'timeoutMs'].includes(key)
+        if (!['maxSteps', 'maxActions', 'maxCalls', 'maxRepairs', 'maxRetries', 'maxRecoveries', 'maxTokens', 'timeoutMs', 'callTimeoutMs'].includes(key)
             || (value < limits[key] && !(key === 'maxTokens' && value === 0))) throw new Error('Resume permits only explicit budget extensions, not changed execution policy.');
         limits[key] = value;
       }
       record.limits = limits;
+      record.usage.recoveries ??= 0;
       record.usage.rawProviderResponses ??= record.attempts.filter(attempt => attempt.role === 'maker'
         && ['response', 'infra'].includes(attempt.outcome)).length;
       if (native && limits.maxTokens < limits.unknownTokenReserve) throw new Error(`Native execution requires a token budget of at least ${limits.unknownTokenReserve} so the first call reservation fits.`);
       const base = await h.git(source, ['rev-parse', 'HEAD']);
       if (!base.ok || base.stdout.trim() !== record.source.head) throw new Error('Source baseline changed; resume refused.');
-      if (answer) {
+      const amendingContract = !changingSeats && answer
+        && record.question?.request?.type === 'contract_amendment';
+      if (amendingContract) {
+        if (answer.id !== record.question.id || typeof answer.text !== 'string' || !answer.text.trim() || answer.text.length > 4000
+            || record.question.candidateFingerprint !== record.candidate.fingerprint) {
+          throw new Error('Contract amendment does not bind the exact outstanding authority request and candidate.');
+        }
+        const priorTaskDigest = digest(record.task);
+        task = `${record.task}\n\nHuman-authorized contract amendment (append-only):\n${answer.text.trim()}`;
+        record.authorityAmendments ??= [];
+        record.authorityAmendments.push({ type: 'contract_amendment', questionId: record.question.id,
+          candidateFingerprint: record.candidate.fingerprint, priorTaskDigest, amendment: cleanError(answer.text), at: Date.now() });
+        record.task = task; record.answer = { id: answer.id, text: answer.text }; record.question = null;
+        record.feedback = { kind: 'contract_amendment', candidateFingerprint: record.candidate.fingerprint,
+          originalContract: 'amended_append_only', instruction: cleanError(answer.text) };
+        record.binding = bind(record.fileActionPolicy, record.makerProgressPolicy, record.nativeRecoveryPolicy);
+        invalidateCandidateEvidence();
+      }
+      else if (answer && !changingSeats) {
         if (answer.id !== record.question?.id || typeof answer.text !== 'string' || !answer.text.trim() || answer.text.length > 4000
             || record.question.candidateFingerprint !== record.candidate.fingerprint) throw new Error('Answer does not bind the outstanding question and candidate.');
         record.answer = { id: answer.id, text: answer.text }; record.question = null;
-      } else if (record.question?.kind === 'judgment') return finish('needs_decision', record.question.text);
+      } else if (record.question?.kind === 'judgment'
+          || ['model_change', 'contract_amendment'].includes(record.question?.request?.type)) {
+        return finish('needs_decision', record.question.text);
+      }
       else record.question = null;
       if (record.status !== 'running') record.usage.pausedMs += Math.max(0, Date.now() - record.updatedAt);
       else record.usage.unobservedWallMs = (record.usage.unobservedWallMs ?? 0) + Math.max(0, Date.now() - record.updatedAt);
@@ -366,10 +482,12 @@ export async function runProductiveCodeLoop(options, h) {
       const holder = await mkdtemp(join(root, 'candidate-'));
       const worktree = join(holder, 'worktree');
       const branch = `codex/code-seats-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
-      record = { version: CODE_RUN_VERSION, runId: basename(receiptsDir), binding: bind(FILE_ACTION_POLICY, MAKER_PROGRESS_POLICY), task, seats,
+      const nativeRecoveryPolicy = native ? NATIVE_RECOVERY_POLICY : undefined;
+      record = { version: CODE_RUN_VERSION, runId: basename(receiptsDir), binding: bind(FILE_ACTION_POLICY, MAKER_PROGRESS_POLICY, nativeRecoveryPolicy), task, seats,
         fileActionPolicy: FILE_ACTION_POLICY, makerProgressPolicy: MAKER_PROGRESS_POLICY,
+        ...(nativeRecoveryPolicy ? { nativeRecoveryPolicy } : {}),
         source: { repoPath: source, head: base.stdout.trim() }, candidate: { worktree, branch, head: base.stdout.trim() },
-        phase: 'initialize', status: 'running', limits, usage: { calls: 0, rawProviderResponses: 0, steps: 0, actions: 0, repairs: 0, retries: 0, observedTokens: 0, accountedTokens: 0, unmeasuredCalls: 0, activeMs: 0, modelMs: 0, verificationMs: 0, pausedMs: 0 },
+        phase: 'initialize', status: 'running', limits, usage: { calls: 0, rawProviderResponses: 0, steps: 0, actions: 0, repairs: 0, retries: 0, recoveries: 0, observedTokens: 0, accountedTokens: 0, unmeasuredCalls: 0, activeMs: 0, modelMs: 0, verificationMs: 0, pausedMs: 0 },
         attempts: [], history: [], created: [], reads: [], feedback: null, pendingCall: null, pendingAction: null,
         result: h.baseResult({ seats, adapters, backendSnapshot }), generation: owner.generation };
       writable = true;
@@ -467,7 +585,9 @@ export async function runProductiveCodeLoop(options, h) {
     heartbeat = setInterval(() => { codeStopRequested(receiptsDir, record.generation).then((requested) => { if (requested) stop(); }).catch(() => abort.abort(new Error('stop request unavailable'))); }, 250);
     heartbeat.unref();
     while (true) {
-      if (abort.signal.aborted) return finish('stopped', cleanError(abort.signal.reason ?? 'code seats stopped'));
+      if (abort.signal.aborted) return activeBudgetAborted()
+        ? question('active time budget exhausted; extend the time bound to continue', 'budget', { type: 'budget_extension', cause: 'active time budget exhausted' })
+        : finish('stopped', cleanError(abort.signal.reason ?? 'code seats stopped'));
       record.result.protocol = { version: 'code-seats/v2', fileActionPolicy: record.fileActionPolicy ?? LEGACY_FILE_ACTION_POLICY,
         makerProgressPolicy: record.makerProgressPolicy ?? LEGACY_MAKER_PROGRESS_POLICY,
         rawProviderResponses: native ? null : record.usage.rawProviderResponses,
@@ -482,7 +602,8 @@ export async function runProductiveCodeLoop(options, h) {
             && !record.pendingCall?.response && discovery.noMutationSteps >= MUTATION_STALL_STEPS) {
           return finish('stopped', 'Discovery consumed the bounded mutation-free runway without producing a candidate change; candidate preserved. Use a narrower task or a native harness rather than extending this run.', 'refused');
         }
-        if (!record.pendingCall?.response && record.usage.steps >= limits.maxSteps) return question('protocol step cap reached; extend the budget to continue', 'budget');
+        if (!record.pendingCall?.response && record.usage.steps >= limits.maxSteps) return question('protocol step cap reached; extend the budget to continue',
+          'budget', { type: 'budget_extension', cause: 'protocol step cap reached' });
         const { prompt, context } = native ? { context: { owner: nativeExecutor, sessionReused: Boolean(record.nativeSession) },
           prompt: nativeMakerPrompt(task, record) }
           : codeMakerContext(record, h);
@@ -493,10 +614,17 @@ export async function runProductiveCodeLoop(options, h) {
           record.pendingCall = null; await log('native_interrupted');
           if (abort.signal.aborted) return finish('stopped', 'Native execution stopped; completed-turn checkpoint preserved.');
           if (response.stopKind !== 'budget') return finish(response.stopKind === 'cancel' ? 'stopped' : 'infra_error', response.error, response.stopKind === 'refused' ? 'refused' : 'make');
-          return question(response.error ?? 'Native execution reached its accounting limit.', 'budget');
+          return question(response.error ?? 'Native execution reached its accounting limit.', 'budget',
+            { type: 'budget_extension', cause: 'native accounting limit reached' });
         }
-        if (abort.signal.aborted) return finish('stopped', 'code seats stopped during maker turn');
+        if (abort.signal.aborted && !activeBudgetAborted()
+            && !(native && response?.recoveryCheckpoint === true)) {
+          return finish('stopped', 'code seats stopped during maker turn');
+        }
         if (!response.ok) { const failed = await failedCall(response, 'maker'); if (failed) return failed; continue; }
+        if (abort.signal.aborted) return activeBudgetAborted()
+          ? question('active time budget exhausted after a completed maker checkpoint; extend the time bound to continue', 'budget', { type: 'budget_extension', cause: 'active time budget exhausted' })
+          : finish('stopped', 'code seats stopped during maker turn');
         let message;
         try {
           message = h.parseProtocol(response.text, limits);
@@ -515,12 +643,26 @@ export async function runProductiveCodeLoop(options, h) {
         record.usage.steps++; record.pendingCall = null;
         if (message.decision) {
           const { action, reason } = message.decision;
-          if (action === 'human') return question(reason);
-          if (action === 'stop') return finish('stopped', cleanError(reason), 'refused');
-          if (!record.feedback || record.usage.retries >= limits.maxRetries) return question('No remaining evidence-recheck allowance.', 'budget');
-          if (action === 'retry_verify' && (record.feedback.kind !== 'verification' || verify?.repeatable === false)) return question('This verifier cannot be replayed under its current authorization.', 'authority');
-          if (action === 'rebut' && record.feedback.kind !== 'review') throw new Error('Rebuttal is valid only for a reviewer finding.');
-          record.usage.retries++; record.rebuttal = cleanError(reason); record.phase = action === 'rebut' ? 'review' : 'verify'; record.verificationReady = false;
+          if (action === 'continue') {
+            if (!native) throw new Error('Only a native maker may request another bounded work slice.');
+            record.feedback = { kind: 'metacognitive_continue', candidateFingerprint: record.candidate.fingerprint,
+              evidence: cleanError(reason), originalContract: 'unchanged' };
+            record.nativeDecisions ??= [];
+            record.nativeDecisions.push({ step: record.usage.steps, action, reason: cleanError(reason),
+              candidateFingerprint: record.candidate.fingerprint });
+            await log('native_continue_selected', { candidateFingerprint: record.candidate.fingerprint });
+          }
+          else if (action === 'request_budget') return question(reason, 'budget', { type: 'budget_extension' });
+          else if (action === 'request_model') return question(reason, 'authority', { type: 'model_change' });
+          else if (action === 'amend_contract') return question(reason, 'authority', { type: 'contract_amendment' });
+          else if (action === 'human') return question(reason);
+          else if (action === 'stop') return finish('stopped', cleanError(reason), 'refused');
+          else {
+            if (!record.feedback || record.usage.retries >= limits.maxRetries) return question('No remaining evidence-recheck allowance.', 'budget', { type: 'budget_extension' });
+            if (action === 'retry_verify' && (record.feedback.kind !== 'verification' || verify?.repeatable === false)) return question('This verifier cannot be replayed under its current authorization.', 'authority', { type: 'verification_replay' });
+            if (action === 'rebut' && record.feedback.kind !== 'review') throw new Error('Rebuttal is valid only for a reviewer finding.');
+            record.usage.retries++; record.rebuttal = cleanError(reason); record.phase = action === 'rebut' ? 'review' : 'verify'; record.verificationReady = false;
+          }
         } else if (message.done) {
           if (record.feedback && record.candidate.fingerprint === record.feedback.candidateFingerprint) return finish(record.feedback.kind === 'verification' ? 'verify_failed' : 'review_unresolved', 'Maker offered no changed candidate or evidence-bound recovery.');
           record.phase = 'verify'; record.verificationReady = false;
@@ -541,7 +683,8 @@ export async function runProductiveCodeLoop(options, h) {
             record.actions[record.actionIndex] = action;
           }
           if (!record.pendingAction) {
-            if (record.usage.actions >= limits.maxActions) return question('protocol action cap reached', 'budget');
+            if (record.usage.actions >= limits.maxActions) return question('protocol action cap reached', 'budget',
+              { type: 'budget_extension', cause: 'protocol action cap reached' });
             await checkCandidate(); record.usage.actions++;
             if (['replace', 'create', 'write', 'delete'].includes(action.type)) {
               const validation = await h.applyAction(action, state, { validateOnly: true });
@@ -586,7 +729,8 @@ export async function runProductiveCodeLoop(options, h) {
         await checkCandidate();
         if (!record.candidate.diff) return finish('needs_decision', 'maker completed without a candidate diff');
         if (verify) {
-          if ((record.verifierInFlight || record.usage.verifications > 0) && !record.verificationReady && verify.repeatable === false && !retryVerification) return question('Additional verification is not authorized. Allow one replay explicitly, or leave the candidate parked.', 'authority');
+          if ((record.verifierInFlight || record.usage.verifications > 0) && !record.verificationReady && verify.repeatable === false && !retryVerification) return question('Additional verification is not authorized. Allow one replay explicitly, or leave the candidate parked.',
+            'authority', { type: 'verification_replay' });
           if (!record.verificationReady) {
             if (retryVerification) { retryVerification = false; await log('verification_retry_authorized'); }
             record.usage.verifications = (record.usage.verifications ?? 0) + 1;

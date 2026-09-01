@@ -184,6 +184,20 @@ and an actionable human question. A controller/parser failure is infrastructure,
 not automatically a semantic dilemma. Repeated prompts for the same outstanding
 decision are not progress. Bind human answers to the exact question and candidate.
 
+The maker's bounded metacognitive vocabulary is `continue`, `request_budget`,
+`request_model`, `amend_contract`, `retry_verify`, `rebut`, `human`, or `stop`.
+These are recommendations, not ambient authority. Code enforces remaining limits,
+candidate custody, qualification, binding, and append-only human amendments. A
+quiescent native draft may continue in a fresh session without replaying its
+uncertain turn; an unproven cleanup boundary remains inspection-only.
+
+The later intelligence layer should use a project-owned outcome ledger rather
+than opaque agent memory. It records task class, model+harness route, authorized
+budgets and amendments, recovery/repair history, verification and review, human
+decisions, and consented post-acceptance outcomes. Only evidence that survived
+the configured gates may influence route recommendations. The ledger stays local
+or customer-owned, inspectable, reversible, and content-minimized.
+
 ## 5. Implementation order
 
 Implement directly with focused deterministic tests first. Do not use an expensive

@@ -34,6 +34,7 @@ try {
         if(prompt.includes('WAIT_FOR_STOP')) { onTick('Fixture maker is waiting safely.'); await new Promise(r=>signal.aborted?r():signal.addEventListener('abort',r,{once:true})); return {ok:false,error:'interrupted'}; }
         const history=prompt.match(/Complete host action history[^\\n]*\\n(\\[.*\\])$/s);
         if(prompt.includes('ASK_FORMAT') && prompt.includes('Bound human answer: null')) return {ok:true,text:JSON.stringify({actions:[],done:false,decision:{action:'human',reason:'Choose the output format.'}})};
+        if(prompt.includes('ASK_MODEL') && prompt.includes('Bound human answer: null')) return {ok:true,text:JSON.stringify({actions:[],done:false,decision:{action:'request_model',reason:'Use the alternate qualified pair for closure.'}})};
         return {ok:true,usage:{total_tokens:10},text:JSON.stringify(history?{actions:[],done:true}:{actions:[{type:'create',path:'answer.txt',expected_sha256:null,content:'correct'}],done:false})};
       }, reviewer: async({effort})=> {await appendFile(${JSON.stringify(callsPath)},JSON.stringify({role:'reviewer',model:models.reviewer.model,effort})+'\\n');return {ran:true,verdict:'APPROVED',findings:[],usage:{total_tokens:10}};}
     }; }`;
@@ -118,6 +119,19 @@ try {
   assert.match(unchanged.receiptPath, /report-\d+\.json$/, 'an unchanged resume reports its new immutable receipt, not stale report.json');
   const answered = await post(`runs/${q.id}/answer`, { questionId: q.question.id, answer: 'Plain text is required.' });
   assert.equal(answered.status, 201, await answered.clone().text()); assert.equal((await waitStopped(q.id, 4)).phase, 'complete');
+  const modelResponse = await post('runs', { goal: `${task} ASK_MODEL`, acceptanceContract: contract,
+    lane: 'build', codeMode: 'independent', targetPath: repo,
+    pairing: { maker: { backend: 'codex', model: 'gpt-5.6-luna' }, reviewer: { backend: 'claude', model: 'sonnet' } } });
+  const modelRun = await modelResponse.json(); assert.equal(modelResponse.status, 201, JSON.stringify(modelRun));
+  const modelAsked = await waitStopped(modelRun.id, 1);
+  assert.equal(modelAsked.question.request.type, 'model_change');
+  const changedPair = { maker: { backend: 'claude', model: 'sonnet' }, reviewer: { backend: 'codex', model: 'gpt-5.6-luna' } };
+  const modelResume = await post(`runs/${modelRun.id}/resume`, {
+    answer: { id: modelAsked.question.id, text: 'Approved for this preserved candidate.' }, pairing: changedPair,
+  });
+  assert.equal(modelResume.status, 201, await modelResume.clone().text());
+  const modelDone = await waitStopped(modelRun.id, 4); assert.equal(modelDone.phase, 'complete');
+  assert.equal(modelDone.seats.maker.backend, 'claude'); assert.equal(modelDone.seats.reviewer.backend, 'codex');
   worker = spawn(process.execPath, ['--experimental-loader', loader, 'code-build.mjs', '--task', `${task} WAIT_FOR_STOP`, '--contract', contract, '--repo', repo, '--json'], { cwd: studio, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = ''; worker.stdout.on('data', x => { output += x; }); worker.stderr.resume();
   let runningId;
@@ -143,7 +157,7 @@ try {
   assert.equal(JSON.parse(output).status, 'stopped'); assert.equal((await state(runningId)).owned, false);
   assert.equal(execFileSync('git', ['-C', repo, 'status', '--porcelain'], { encoding: 'utf8' }), '');
   const calls = (await readFile(callsPath, 'utf8')).trim().split('\n').map(JSON.parse);
-  assert.equal(calls.length, 12, 'reattachment/restart/status do not buy model calls');
+  assert.equal(calls.length, 16, 'reattachment/restart/status do not buy model calls; the authorized pair-change run uses only its four expected calls');
   assert.deepEqual(calls.slice(0, 3).map(({ role, effort }) => ({ role, effort })), [
     { role: 'maker', effort: 'high' }, { role: 'maker', effort: 'high' }, { role: 'reviewer', effort: 'xhigh' },
   ], 'Studio start and CLI resume keep the same explicitly frozen effort snapshot');

@@ -30,13 +30,18 @@ Then choose the path that fits the job:
 [See a documented dogfood case](docs/RECOMMENDED-MODEL-SETUP.md) ·
 [Propose a bounded design-partner pilot](https://github.com/mateodaza/camus/issues/new?template=design-partner.yml)
 
-### Product direction after 0.4.18
+### Product direction after 0.4.21
 
 Camus is testing a sharper product wedge: the independent acceptance and proof layer for
 agent-written work. The next approved phase is discovery plus a thin design-partner pilot that asks
 whether an editable acceptance contract and evidence-bound handoff improve real pull-request
 decisions. It does **not** authorize automatic routing, remote workers, a portfolio control plane, or
 an event-sourcing rewrite.
+
+Production code is frozen after 0.4.21 while real design-partner work tests that wedge. Only
+security, provenance, data-loss, correctness, supported-provider compatibility, or the smallest
+evidence-unlocked pilot fix may break the freeze. Future learning is project-owned,
+content-minimized, and derived only from authenticated outcomes—not opaque agent memory.
 
 The binding plan is [Camus Intelligence RFC v0.2](docs/CAMUS-INTELLIGENCE-PLATFORM-RFC.md). Its
 assumptions, competitive threats, success gates, and kill criteria are recorded in the
@@ -50,9 +55,17 @@ the release history.
 > repositories you trust; Camus is not an OS sandbox and should never run as root.
 
 <details>
-<summary><strong>What ships in 0.4.20 and how current evidence is bounded</strong></summary>
+<summary><strong>What ships in 0.4.21 and how current evidence is bounded</strong></summary>
 
 **Makes it work. Knows when to stop.**
+
+New in 0.4.21: long native work is recoverable without grading uncertainty as
+success. Camus divides it into bounded slices, accepts a maker's explicit
+metacognitive `continue`, and may fingerprint a proven-quiescent uncertain draft
+before continuing in a fresh native session. Unproven cleanup still fails closed.
+Durable human checkpoints can extend budget/time, authorize a compatible
+model+harness change on the same candidate, or append an exact contract amendment;
+usage never resets and every authority change remains bound to the candidate.
 
 New in 0.4.20: the built-in Grok subscription maker now uses Grok Build's ACP
 completion boundary and Camus-hosted bounded tools. This removes the weaker
@@ -155,7 +168,7 @@ The native proof gate needs [Claude Code](https://code.claude.com) and the
 `camus build` needs only the backends you choose, Node 18.17+, and Git.
 
 ```bash
-npm i -g camus-cli@0.4.20
+npm i -g camus-cli@0.4.21
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 ```
@@ -179,7 +192,7 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.4.20
+### Public alpha: 0.4.21
 
 `camus build --inspect RUN_ID [--json]` authenticates and projects a bounded
 checkpoint without contacting a provider or mutating the run. File-action builds
@@ -188,7 +201,7 @@ repository work should be decomposed or sent to a reviewed native harness. These
 inspection and file-action contracts shipped in 0.4.16. Version 0.4.18 adds the
 separate subscription-backed Grok path without changing their standing. Version
 0.4.19 makes that same qualified path launchable from Studio and preserves its
-billing provenance there. Version 0.4.20 replaces its native maker transport
+billing provenance there. Version 0.4.20 replaced its native maker transport
 with ACP completion and makes CLI-owned progress visible when Studio attaches.
 
 Choose both coding roles independently in the CLI or Studio: Luna → Claude,
@@ -229,7 +242,7 @@ its five-minute cell. Those results do not transfer to the new ACP v4 transport,
 so no end-to-end approval or general model ranking is claimed.
 
 No new reviewer admission, automatic route, cross-case harness ranking, or
-optimal pairing is claimed. See the [0.4.20 release notes](docs/RELEASE-0.4.20.md)
+optimal pairing is claimed. See the [0.4.21 release notes](docs/RELEASE-0.4.21.md)
 and the underlying [0.4.12 evaluator notes](docs/RELEASE-0.4.12.md).
 
 ### Existing admission infrastructure
@@ -358,7 +371,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.4.20
+npm i -g camus-cli@0.4.21
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```

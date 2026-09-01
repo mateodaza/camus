@@ -25,13 +25,15 @@ export const HELP = `camus build — independent maker/reviewer coding (experime
       [--maker-executor file_actions|codex_native|qwen_native|grok_native]
       [--verify "npm test" --verify-repeatable] [--json]
       [--max-calls 32] [--max-steps 12] [--max-actions 32]
-      [--max-repairs 2] [--max-retries 1] [--max-tokens 1000000]
+      [--max-repairs 2] [--max-retries 1] [--max-recoveries 4] [--max-tokens 1000000]
       [--timeout-ms 1200000] [--call-timeout-ms 600000] [--idle-timeout-ms 0]
   camus build --status <run-id> [--json]
   camus build --inspect <run-id> [--json]
   camus build --stop <run-id>
   camus build --resume <run-id> [budget extensions] [--json]
       [--answer "..." --question <question-id>]
+      [--maker <backend>:<model> --reviewer <backend>:<model>]
+      [--maker-executor file_actions|codex_native|qwen_native|grok_native]
       [--retry-uncertain] [--retry-verification]
   camus build --setup /path/to/connection-backend.json [--replace]
   camus build --qualify <backend>:<model> --role maker|reviewer
@@ -44,8 +46,10 @@ Qualification requires explicit paid-call consent; models/status/inspect/setup a
 CLI and Studio share ~/.camus/studio/runs (or STUDIO_RUNS_DIR). Historical runs
 without a checkpoint remain inspect-only. Inspect authenticates one bounded
 read-only projection and never starts a worker, provider, verifier, or Git action.
-Resume never changes the frozen pair,
-contract or verifier. Budget extensions do not reset usage. --max-tokens is a
+Resume never replaces the contract or changes the verifier. An append-only
+contract amendment or pair change is accepted only for its exact durable
+authority question plus a bound human answer; pair changes must keep candidate
+custody compatible. Budget extensions do not reset usage. --max-tokens is a
 pre-call reservation budget, NOT a provider-enforced billing limit; missing usage
 is conservatively reserved, not claimed as measured.
 Changes stay in a separate worktree. Review is advisory, not an admitted gate.
@@ -64,7 +68,9 @@ real provider key never enters the harness. They currently require macOS and the
 pinned CLI version. Every native executor requires --max-tokens of at least
 ${NATIVE_MIN_TOKEN_BUDGET} so the first conservative call reservation fits.
 Tools cannot read Git/Camus private state or use arbitrary network. Completed
-turns can resume; uncertain native writes cannot auto-replay.
+turns can resume. An uncertain turn is never replayed; when adapter cleanup is
+proven, Camus may fingerprint its untrusted draft and continue in a fresh
+bounded native session. Otherwise the candidate stays inspection-only.
 Legacy camus run and /camus-feat retain their existing Claude/Codex gate.
 `;
 
@@ -91,18 +97,22 @@ export function parseCodeBuildArgs(argv) {
     throw new Error('--inspect is an offline read-only operation and may be combined only with --json.');
   }
   if (Boolean(options.answer) !== Boolean(options.question) || (options.answer || options['retry-uncertain'] || options['retry-verification']) && !options.resume) throw new Error('Answers/retry authorization require --resume; an answer also requires --question.');
-  if (options.resume && ['task', 'task-file', 'contract', 'contract-file', 'repo', 'maker', 'reviewer', 'maker-effort', 'reviewer-effort', 'maker-executor', 'verify', 'verify-repeatable'].some((key) => options[key])) throw new Error('Resume cannot change the frozen contract, repository, pair, executor or verifier.');
+  if (options.resume && ['task', 'task-file', 'contract', 'contract-file', 'repo', 'verify', 'verify-repeatable'].some((key) => options[key])) throw new Error('Resume cannot change the frozen contract, repository or verifier.');
+  if (options.resume && (options.maker || options.reviewer || options['maker-effort'] || options['reviewer-effort'] || options['maker-executor'])
+      && (!options.maker || !options.reviewer || !options.answer || !options.question)) {
+    throw new Error('A resume pairing change requires --maker, --reviewer, --answer, and --question from the exact model-change request.');
+  }
   if (options['maker-executor']) {
     if (!['file_actions', ...NATIVE_EXECUTORS].includes(options['maker-executor'])) throw new Error(`--maker-executor must be file_actions, ${NATIVE_EXECUTORS.join(', ')}.`);
     if (['models', 'setup', 'qualify', 'status', 'inspect', 'stop'].some(key => options[key]) || !options.maker || !options.reviewer) throw new Error('--maker-executor requires a new build with explicit --maker and --reviewer.');
-    if (isNativeExecutor(options['maker-executor']) && (!/^\d+$/.test(options['max-tokens'] ?? '') || Number(options['max-tokens']) < NATIVE_MIN_TOKEN_BUDGET)) {
+    if (!options.resume && isNativeExecutor(options['maker-executor']) && (!/^\d+$/.test(options['max-tokens'] ?? '') || Number(options['max-tokens']) < NATIVE_MIN_TOKEN_BUDGET)) {
       throw new Error(`Native execution requires --max-tokens of at least ${NATIVE_MIN_TOKEN_BUDGET} so the first call reservation fits.`);
     }
   }
   return options;
 }
 
-const LIMIT_FLAGS = { 'max-calls': 'maxCalls', 'max-steps': 'maxSteps', 'max-actions': 'maxActions', 'max-repairs': 'maxRepairs', 'max-retries': 'maxRetries', 'max-tokens': 'maxTokens', 'timeout-ms': 'timeoutMs', 'call-timeout-ms': 'callTimeoutMs', 'idle-timeout-ms': 'idleTimeoutMs' };
+const LIMIT_FLAGS = { 'max-calls': 'maxCalls', 'max-steps': 'maxSteps', 'max-actions': 'maxActions', 'max-repairs': 'maxRepairs', 'max-retries': 'maxRetries', 'max-recoveries': 'maxRecoveries', 'max-tokens': 'maxTokens', 'timeout-ms': 'timeoutMs', 'call-timeout-ms': 'callTimeoutMs', 'idle-timeout-ms': 'idleTimeoutMs' };
 export function parseCodeLimits(options) {
   const limits = {};
   for (const [flag, key] of Object.entries(LIMIT_FLAGS)) if (options[flag] !== undefined) {
@@ -164,20 +174,23 @@ export async function main(argv = process.argv.slice(2)) {
     ? readFile(resolve(options[`${name}-file`]), 'utf8') : options[name];
   const existingDir = options.resume ? codeRunDirectory(options.resume) : null;
   const existing = existingDir ? await readCodeRunMetadata(existingDir) : null;
-  if (existingDir) await readCodeCheckpoint(existingDir); // no backfilled legacy checkpoint
+  const existingCheckpoint = existingDir ? await readCodeCheckpoint(existingDir) : null; // no backfilled legacy checkpoint
   const task = existing ? existing.goal ?? existing.task : await content('task');
   const contract = existing ? existing.acceptanceContract : await content('contract');
   if (typeof task !== 'string' || task.trim().length < 12 || typeof contract !== 'string' || contract.trim().length < 12) throw new Error('Provide a task and acceptance contract (at least 12 characters each).');
   if (task.length + contract.length > 50_000) throw new Error('The task and contract exceed 50,000 characters.');
   if (Boolean(options.maker) !== Boolean(options.reviewer)) throw new Error('Specify both --maker and --reviewer, or neither to use saved Studio choices.');
   if (!options.maker && (options['maker-effort'] || options['reviewer-effort'])) throw new Error('Effort overrides require explicit --maker and --reviewer.');
-  const pairing = existing ? existing.models : options.maker ? {
+  const requestedPairing = options.maker ? {
     maker: { ...parseCodeSeat(options.maker), ...(options['maker-effort'] ? { effort: options['maker-effort'] } : {}), ...(options['maker-executor'] ? { codeExecutor: options['maker-executor'] } : {}) },
     reviewer: { ...parseCodeSeat(options.reviewer), ...(options['reviewer-effort'] ? { effort: options['reviewer-effort'] } : {}) },
   } : null;
+  const pairing = requestedPairing ?? existingCheckpoint?.seats ?? null;
   let repoPath;
   try { repoPath = execFileSync('git', ['-C', resolve(existing?.targetPath || options.repo || process.cwd()), 'rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 10_000 }).trim(); }
   catch { throw new Error('Choose a path inside an existing Git repository.'); }
+  const previousPrepared = existing && requestedPairing
+    ? await prepareCodeExecution(existingCheckpoint.seats, { preserveAbsentEffort: true }) : null;
   const prepared = await prepareCodeExecution(pairing, { preserveAbsentEffort: Boolean(existing) });
   const limits = parseCodeLimits(options);
   if (!existing && isNativeExecutor(prepared.models.maker.codeExecutor)
@@ -202,13 +215,15 @@ export async function main(argv = process.argv.slice(2)) {
   };
   try {
     const result = await runCodeSeats({
-      repoPath: metadata.targetPath, task: `${task}\n\nAcceptance contract (binding):\n${contract}`,
+      repoPath: metadata.targetPath, task: existingCheckpoint?.task ?? `${task}\n\nAcceptance contract (binding):\n${contract}`,
       seats: prepared.models, adapters: prepared.adapters, backendSnapshot: prepared.frozenBackends,
       receiptsDir, signal: controller.signal, onEvent,
       verify: createCodeVerifier(metadata.verifyCmd, { receiptsDir, repeatable: metadata.verifyRepeatable === true }),
       limits, resume: Boolean(existing), authorize: prepared.authorize,
       answer: options.answer ? { id: options.question, text: options.answer } : null,
       retryUncertain: options['retry-uncertain'] === true, retryVerification: options['retry-verification'] === true,
+      seatAmendment: existing && requestedPairing ? { questionId: options.question } : null,
+      priorBackendSnapshot: previousPrepared?.frozenBackends ?? null,
     });
     await writes;
     const report = { ...metadata, ...result, endedAt: Date.now(), receiptsDegraded: receiptError };

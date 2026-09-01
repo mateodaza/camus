@@ -88,6 +88,139 @@ test('definitive budget interruption preserves the same session and candidate fo
   assert.equal(resumed.completion, 'candidate_ready_for_acceptance', resumed.error);
 });
 
+test('a quiescent uncertain native draft continues in a fresh session without human replay approval', async t => {
+  let calls = 0;
+  const f = await fixture(t, async args => {
+    calls++;
+    if (calls === 1) {
+      args.onNativeSession(session);
+      args.onNativeProgress({ usage, responses: 1, actions: 1 });
+      await writeFile(join(args.worktree, 'answer.txt'), 'partial');
+      return { ok: false, uncertain: true, candidateQuiescent: true, failureCode: 'terminal_missing',
+        error: 'Final receipt unavailable.', usage, nativeSession: session };
+    }
+    assert.equal(args.nativeSession, null, 'uncertain hidden harness state is not resumed');
+    assert.match(args.prompt, /quiescent draft/i);
+    await writeFile(join(args.worktree, 'answer.txt'), 'correct');
+    return done();
+  });
+  const result = await f.run();
+  assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+  assert.equal(calls, 2); assert.equal(result.usage.recoveries, 1);
+  assert.equal(await readFile(join(result.candidate.worktree, 'answer.txt'), 'utf8'), 'correct');
+});
+
+test('native recovery allowance parks a quiescent draft and an explicit extension continues it', async t => {
+  let calls = 0;
+  const f = await fixture(t, async args => {
+    calls++;
+    if (calls === 1) {
+      await writeFile(join(args.worktree, 'answer.txt'), 'partial');
+      return { ok: false, uncertain: true, candidateQuiescent: true,
+        error: 'Slice ended without a receipt.', usage };
+    }
+    await writeFile(join(args.worktree, 'answer.txt'), 'correct');
+    return done();
+  });
+  const parked = await f.run({ limits: { maxTokens: 1000000, maxRecoveries: 1 } });
+  assert.equal(parked.question.kind, 'budget');
+  assert.equal(parked.question.request.type, 'budget_extension');
+  assert.match(parked.error, /recovery allowance exhausted/);
+  assert.equal(parked.resumable, true); assert.equal(calls, 1);
+  const resumed = await f.run({ resume: true, limits: { maxRecoveries: 2 } });
+  assert.equal(resumed.completion, 'candidate_ready_for_acceptance', resumed.error);
+  assert.equal(calls, 2);
+});
+
+test('native metacognitive continue reuses a trusted session while model-change authority stays durable', async t => {
+  let calls = 0;
+  const f = await fixture(t, async args => {
+    calls++;
+    if (calls === 1) {
+      args.onNativeSession(session); await writeFile(join(args.worktree, 'answer.txt'), 'partial');
+      return { ...done(), text: JSON.stringify({ actions: [], done: false, summary: 'More work remains.',
+        decision: { action: 'continue', reason: 'Complete the implementation and run the focused check.' } }) };
+    }
+    assert.equal(args.nativeSession.threadId, session.threadId);
+    if (calls === 2) return { ...done(), text: JSON.stringify({ actions: [], done: false, summary: 'Need another harness.',
+      decision: { action: 'request_model', reason: 'This task now needs a model with visual inspection.' } }) };
+    await writeFile(join(args.worktree, 'answer.txt'), 'correct'); return done();
+  });
+  const asked = await f.run();
+  assert.equal(asked.question.kind, 'authority');
+  assert.equal(asked.question.request.type, 'model_change');
+  assert.equal(calls, 2);
+  const waiting = await f.run({ resume: true });
+  assert.equal(waiting.question.id, asked.question.id); assert.equal(calls, 2);
+  const resumed = await f.run({ resume: true, answer: { id: asked.question.id,
+    text: 'Continue with the existing model; visual inspection is not required.' } });
+  assert.equal(resumed.completion, 'candidate_ready_for_acceptance', resumed.error);
+  assert.equal(calls, 3);
+});
+
+test('a human-authorized model amendment rebinds the preserved native candidate and starts a fresh session', async t => {
+  let calls = 0;
+  const f = await fixture(t, async args => {
+    calls++;
+    if (calls === 1) {
+      args.onNativeSession(session); await writeFile(join(args.worktree, 'answer.txt'), 'partial');
+      return { ...done(), text: JSON.stringify({ actions: [], done: false, summary: 'Escalation recommended.',
+        decision: { action: 'request_model', reason: 'Use the stronger qualified maker for closure.' } }) };
+    }
+    assert.equal(args.model, 'fixture-next'); assert.equal(args.nativeSession, null);
+    await writeFile(join(args.worktree, 'answer.txt'), 'correct'); return done();
+  });
+  const asked = await f.run();
+  const seats = { ...f.options.seats, maker: { ...f.options.seats.maker, model: 'fixture-next' } };
+  const result = await f.run({ resume: true, seats, backendSnapshot: f.options.backendSnapshot,
+    priorBackendSnapshot: f.options.backendSnapshot,
+    seatAmendment: { questionId: asked.question.id },
+    answer: { id: asked.question.id, text: 'Approved for closure on this candidate.' } });
+  assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+  assert.equal(result.seats.maker.requested.model, 'fixture-next'); assert.equal(calls, 2);
+  const checkpoint = await f.checkpoint();
+  assert.equal(checkpoint.authorityAmendments.length, 1);
+  assert.equal(checkpoint.authorityAmendments[0].candidateFingerprint, asked.candidate.fingerprint);
+});
+
+test('a model amendment cannot silently cross native and file-action candidate custody', async t => {
+  let calls = 0;
+  const f = await fixture(t, async args => {
+    calls++; await writeFile(join(args.worktree, 'answer.txt'), 'partial');
+    return { ...done(), text: JSON.stringify({ actions: [], done: false, summary: 'Change harness.',
+      decision: { action: 'request_model', reason: 'Try file actions.' } }) };
+  });
+  const asked = await f.run();
+  const seats = { ...f.options.seats, maker: { backend: 'codex', model: 'fixture-next', codeExecutor: 'file_actions' } };
+  const result = await f.run({ resume: true, seats, backendSnapshot: f.options.backendSnapshot,
+    priorBackendSnapshot: f.options.backendSnapshot, seatAmendment: { questionId: asked.question.id },
+    answer: { id: asked.question.id, text: 'Approved.' } });
+  assert.equal(result.status, 'infra_error'); assert.match(result.error, /candidate-custody boundary/);
+  assert.equal(result.stateUnchanged, true); assert.equal(calls, 1);
+});
+
+test('a human-authorized contract amendment is append-only, bound to the candidate, and visible to closure', async t => {
+  let calls = 0;
+  const f = await fixture(t, async args => {
+    calls++;
+    if (calls === 1) {
+      await writeFile(join(args.worktree, 'answer.txt'), 'partial');
+      return { ...done(), text: JSON.stringify({ actions: [], done: false, summary: 'One acceptance detail is missing.',
+        decision: { action: 'amend_contract', reason: 'Specify whether the answer needs a trailing newline.' } }) };
+    }
+    assert.match(args.prompt, /Human-authorized contract amendment \(append-only\):/);
+    assert.match(args.prompt, /A trailing newline is required/);
+    await writeFile(join(args.worktree, 'answer.txt'), 'correct\n'); return done();
+  });
+  const asked = await f.run();
+  assert.equal(asked.question.request.type, 'contract_amendment');
+  const result = await f.run({ resume: true, answer: { id: asked.question.id, text: 'A trailing newline is required.' } });
+  assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+  const checkpoint = await f.checkpoint();
+  assert.equal(checkpoint.authorityAmendments[0].type, 'contract_amendment');
+  assert.match(checkpoint.task, /append-only/); assert.equal(calls, 2);
+});
+
 test('hard-crash native writes never silently become an authorized candidate on retry', async t => {
   let calls = 0;
   const f = await fixture(t, async args => {

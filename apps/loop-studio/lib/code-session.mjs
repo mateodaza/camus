@@ -1,13 +1,14 @@
 import { basename, join, resolve, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { readFile, lstat } from 'node:fs/promises';
-import { codeRunStatus, readCodeRunSnapshot } from './code-run-state.mjs';
+import { readCodeRunSnapshot } from './code-run-state.mjs';
 import { redactCodeText, diagnosticSecrets } from './code-diagnostics.mjs';
-import { FILE_ACTION_POLICY } from './code-loop.mjs';
+import { FILE_ACTION_POLICY, NATIVE_RECOVERY_POLICY } from './code-loop.mjs';
 import { MAKER_PROGRESS_POLICY } from './code-context.mjs';
+import { isNativeExecutor } from './code-native-policy.mjs';
 
 const USAGE_FIELDS = [
-  'calls', 'rawProviderResponses', 'steps', 'actions', 'repairs', 'retries',
+  'calls', 'rawProviderResponses', 'steps', 'actions', 'repairs', 'retries', 'recoveries',
   'observedTokens', 'accountedTokens', 'unmeasuredCalls', 'activeMs', 'modelMs',
   'verificationMs', 'pausedMs', 'verifications', 'unobservedWallMs',
 ];
@@ -15,7 +16,7 @@ const LIMIT_FIELDS = [
   'maxSteps', 'maxActions', 'maxActionsPerStep', 'maxResponseBytes',
   'maxContextBytes', 'maxReviewContextBytes', 'maxFileBytes', 'maxListEntries',
   'maxDiffBytes', 'timeoutMs', 'callTimeoutMs', 'idleTimeoutMs', 'maxCalls',
-  'maxRepairs', 'maxRetries', 'maxTokens', 'unknownTokenReserve',
+  'maxRepairs', 'maxRetries', 'maxRecoveries', 'maxTokens', 'unknownTokenReserve',
 ];
 const HEX_ID = /^[a-f0-9]{64}$/;
 const GIT_HEAD = /^[a-f0-9]{40,64}$/;
@@ -83,6 +84,16 @@ function candidateProjection(candidate) {
   };
 }
 
+function seatProjection(seat) {
+  if (!seat || typeof seat !== 'object' || Array.isArray(seat)) throw new Error('Invalid coding inspection seat.');
+  return {
+    backend: safeLabel(seat.backend, 'seat backend'),
+    model: safeText(seat.model, 200),
+    ...(seat.effort ? { effort: safeLabel(seat.effort, 'seat effort') } : {}),
+    ...(seat.codeExecutor ? { codeExecutor: safeLabel(seat.codeExecutor, 'seat executor') } : {}),
+  };
+}
+
 function reviewProjection(state) {
   const review = state.result?.review;
   if (review == null) return { status: 'not_run', verdict: null, candidateBound: null, findingCount: null };
@@ -126,7 +137,17 @@ function questionProjection(question, roots) {
       || typeof question.kind !== 'string' || typeof question.text !== 'string') {
     throw new Error('Invalid coding inspection question.');
   }
-  return { id: question.id, kind: safeLabel(question.kind, 'question kind'), text: safeText(question.text, 1000, roots) };
+  let request = null;
+  if (question.request != null) {
+    if (!question.request || typeof question.request !== 'object' || Array.isArray(question.request)
+        || !['budget_extension', 'model_change', 'contract_amendment', 'verification_replay'].includes(question.request.type)) {
+      throw new Error('Invalid coding inspection authority request.');
+    }
+    request = { type: question.request.type };
+    if (typeof question.request.cause === 'string') request.cause = safeText(question.request.cause, 300, roots);
+  }
+  return { id: question.id, kind: safeLabel(question.kind, 'question kind'), text: safeText(question.text, 1000, roots),
+    ...(request ? { request } : {}) };
 }
 
 function hasUncertainWork(state) {
@@ -141,6 +162,10 @@ function nextSafeAction(state, { owned, resumable, question, questionBound, poli
     reason: 'A worker owns this run. Observe or attach; do not start a second worker.',
   };
   const uncertain = hasUncertainWork(state);
+  if (uncertain && question?.kind === 'uncertain_call' && questionBound && !state.nativeInFlight) return {
+    action: 'authorize_uncertain_retry',
+    reason: 'Explicitly authorize the bounded provider retry; duplicate billing remains possible.',
+  };
   if (uncertain) return {
     action: 'investigate_or_start_fresh',
     reason: 'Recovery is not safely authorized from this evidence. Investigate the preserved run or start fresh without replaying uncertain work.',
@@ -155,19 +180,20 @@ function nextSafeAction(state, { owned, resumable, question, questionBound, poli
   };
   if (state.phase === 'refused'
       || ['infra_error', 'verify_failed', 'review_unresolved', 'needs_decision'].includes(state.status)) {
-    if (question?.kind === 'judgment' && questionBound && !uncertain && state.phase !== 'refused'
+    if ((question?.kind === 'judgment' || ['model_change', 'contract_amendment'].includes(question?.request?.type))
+        && questionBound && !uncertain && state.phase !== 'refused'
         && !['infra_error', 'verify_failed', 'review_unresolved'].includes(state.status)) return {
-      action: 'answer_question',
-      reason: 'Answer the exact durable question before resuming this candidate.',
+      action: question?.kind === 'judgment' ? 'answer_question' : 'answer_authority_request',
+      reason: 'Answer the exact durable authority request before resuming this candidate.',
     };
     return {
       action: 'investigate_or_start_fresh',
       reason: 'Recovery is not safely authorized from this evidence. Investigate the preserved run or start fresh without replaying uncertain work.',
     };
   }
-  if (question?.kind === 'judgment' && questionBound) return {
-    action: 'answer_question',
-    reason: 'Answer the exact durable question before resuming this candidate.',
+  if ((question?.kind === 'judgment' || ['model_change', 'contract_amendment'].includes(question?.request?.type)) && questionBound) return {
+    action: question?.kind === 'judgment' ? 'answer_question' : 'answer_authority_request',
+    reason: 'Answer the exact durable authority request before resuming this candidate.',
   };
   if (question) return {
     action: 'investigate_or_start_fresh',
@@ -258,9 +284,13 @@ export async function inspectCodeRun(dir) {
   const status = state.status;
   const phase = state.phase;
   const interrupted = status === 'running' && !owned;
+  const native = isNativeExecutor(state.seats?.maker?.codeExecutor);
   const policyCompatible = state.fileActionPolicy === FILE_ACTION_POLICY
-    && (state.makerProgressPolicy === undefined || state.makerProgressPolicy === MAKER_PROGRESS_POLICY);
-  const resumable = !owned && policyCompatible && !['complete', 'refused'].includes(phase);
+    && (state.makerProgressPolicy === undefined || state.makerProgressPolicy === MAKER_PROGRESS_POLICY)
+    && (!native || state.nativeRecoveryPolicy === NATIVE_RECOVERY_POLICY);
+  const unsafeRecovery = state.nativeInFlight === true
+    || Boolean(state.verifierInFlight && state.verificationReady !== true);
+  const resumable = !owned && policyCompatible && !unsafeRecovery && !['complete', 'refused'].includes(phase);
   const textRoots = [dir, state.source?.repoPath, state.candidate?.worktree].filter(Boolean);
   const question = questionProjection(state.question, textRoots);
   const questionBound = question == null || (typeof state.question?.candidateFingerprint === 'string'
@@ -290,6 +320,7 @@ export async function inspectCodeRun(dir) {
     resumable,
     checkpoint: { version: state.version, revision: state.revision, updatedAt: state.updatedAt },
     candidate: candidateProjection(state.candidate),
+    seats: { maker: seatProjection(state.seats.maker), reviewer: seatProjection(state.seats.reviewer) },
     usage,
     limits: numericProjection(state.limits, LIMIT_FIELDS),
     review,
@@ -311,7 +342,7 @@ export function formatCodeInspection(inspection) {
   ];
   if (inspection.checkpoint) lines.push(`Checkpoint: v${inspection.checkpoint.version} revision ${inspection.checkpoint.revision}; updated ${inspection.checkpoint.updatedAt}`);
   if (inspection.candidate) lines.push(`Candidate: ${inspection.candidate.worktree} (${inspection.candidate.branch} @ ${inspection.candidate.head?.slice(0, 12) ?? 'unrecorded'})`);
-  if (inspection.usage) lines.push(`Usage: ${inspection.usage.calls ?? 'unknown'} calls; ${inspection.usage.steps ?? 'unknown'} steps; ${inspection.usage.actions ?? 'unknown'} actions; ${inspection.usage.accountedTokens ?? 'unknown'} accounted tokens`);
+  if (inspection.usage) lines.push(`Usage: ${inspection.usage.calls ?? 'unknown'} calls; ${inspection.usage.steps ?? 'unknown'} steps; ${inspection.usage.actions ?? 'unknown'} actions; ${inspection.usage.recoveries ?? 0} recoveries; ${inspection.usage.accountedTokens ?? 'unknown'} accounted tokens`);
   lines.push(`Review: ${inspection.review.status}; verification: ${inspection.verification.status}`);
   if (inspection.question) lines.push(`Question ${inspection.question.id}: ${inspection.question.text}`);
   if (inspection.reason) lines.push(`Reason: ${inspection.reason}`);
@@ -321,8 +352,9 @@ export function formatCodeInspection(inspection) {
 
 export async function codeContinuation(dir) {
   try {
-    const state = await codeRunStatus(dir);
+    const state = await inspectCodeRun(dir);
     return { mode: 'code_checkpoint', canResume: state.resumable, ...state,
+      updatedAt: state.checkpoint?.updatedAt ?? null, revision: state.checkpoint?.revision ?? null,
       presentation: { title: state.owned ? 'Worker active' : state.resumable ? 'Continue the same candidate' : 'Inspect the preserved candidate',
         detail: state.owned ? 'Attach to this run; no second worker is started.' : state.reason ?? 'Recovery uses saved responses and file hashes; it does not restart planning.' } };
   } catch (error) {

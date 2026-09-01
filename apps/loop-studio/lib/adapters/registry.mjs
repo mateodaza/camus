@@ -33,10 +33,15 @@ function reviewerFor(backend) {
 }
 
 export function nativeMakerFor(executor) {
-  if (executor === NATIVE_EXECUTOR) return runNativeCodex;
-  if (executor === QWEN_NATIVE_EXECUTOR) return runNativeQwen;
-  if (executor === GROK_NATIVE_EXECUTOR) return runNativeGrok;
-  return undefined;
+  const runner = executor === NATIVE_EXECUTOR ? runNativeCodex
+    : executor === QWEN_NATIVE_EXECUTOR ? runNativeQwen
+      : executor === GROK_NATIVE_EXECUTOR ? runNativeGrok : null;
+  if (!runner) return undefined;
+  // A resolved native adapter promise is also the cleanup boundary: its child
+  // process/process group and any host gateway have closed. This does not make
+  // an uncertain model turn successful; it only gives the engine enough proof
+  // to fingerprint the quiescent filesystem as an untrusted recovery draft.
+  return async options => ({ ...(await runner(options)), candidateQuiescent: true });
 }
 
 const QUAL1_RE = /^qual1:[0-9a-f]{64}$/;

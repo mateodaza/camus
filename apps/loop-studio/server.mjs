@@ -345,6 +345,9 @@ async function startRun({
   retryUncertain = false,
   retryVerification = false,
   authorizeCode = null,
+  codeSeatAmendment = null,
+  priorFrozenBackends = null,
+  codeBoundTask = null,
 }) {
   const id = existingCodeId || newId();
   const dir = join(RUNS_DIR, id);
@@ -375,7 +378,9 @@ async function startRun({
     models, recovery, publishRequested, codeMode,
   });
   const run = { id, goal, displayGoal, acceptanceContract, lane, codeMode, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: lane === 'build' ? (idSalt || `studio-${id}`) : null, status: 'running', startedAt: Date.now(), lastMarkdown: null, rev: 0, costUsd: 0, receiptsDegraded: false, models, pairingView, frozenKnowledge, toolPolicy, publish: publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationChecks, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, experimentContext, modelRouting, controlPlane };
-  Object.assign(run, { codeLimits, verifyRepeatable, resumeCode: Boolean(existingCodeId), codeAnswer, retryUncertain, retryVerification });
+  Object.assign(run, { codeLimits, verifyRepeatable, resumeCode: Boolean(existingCodeId), codeAnswer, retryUncertain, retryVerification,
+    codeSeatAmendment, priorFrozenBackends });
+  run.codeBoundTask = codeBoundTask;
   // The run exists on disk from second zero — a crash must not orphan it.
   const runMetadata = () => ({ id, goal, displayGoal, acceptanceContract, lane, codeMode, depth, ground, targetPath, targetToplevel, verifyCmd, recovery, idSalt: run.idSalt, engine: ENGINE, models, pairingView, publishRequested, iterationPolicy, evaluationProfile, evaluationCaseId, evaluationChecks, evaluationPlanPolicy, evaluationCampaignId, evaluationConfigHash, knowledgeSnapshotId: run.frozenKnowledge?.snapshot_id ?? null, experimentContext, modelRouting, startedAt: run.startedAt });
   if (!existingCodeId) await writeFile(join(dir, 'run.json'), JSON.stringify({ ...runMetadata(), codeLimits, verifyRepeatable }, null, 2), { mode: 0o600 })
@@ -600,7 +605,7 @@ const startingCodeResumes = new Set();
 async function resumeIndependentCode(id, body) {
   if (startingCodeResumes.has(id) || (runs.has(id) && runs.get(id).workerFinished === false)) throw new Error('That coding worker is still running or sealing its receipt.');
   if (!body || typeof body !== 'object' || Array.isArray(body)
-      || Object.keys(body).some((key) => !['codeLimits', 'answer', 'retryUncertain', 'retryVerification'].includes(key))) throw new Error('Resume accepts only budget extensions, a bound answer, and explicit retry authorization. The pair, contract and verifier are frozen.');
+      || Object.keys(body).some((key) => !['codeLimits', 'answer', 'retryUncertain', 'retryVerification', 'pairing'].includes(key))) throw new Error('Resume accepts only budget extensions, a bound answer, explicit retry authorization, and an authority-bound pairing change. The verifier is frozen; the contract can change only through its exact append-only authority request.');
   for (const key of ['retryUncertain', 'retryVerification']) if (body[key] !== undefined && typeof body[key] !== 'boolean') throw new Error(`${key} must be a boolean.`);
   validateCodeLimits(body.codeLimits);
   startingCodeResumes.add(id);
@@ -615,13 +620,21 @@ async function resumeIndependentCode(id, body) {
     admission = acquireAdmission(1);
     if (!admission.ok) throw new Error('Studio is at its active run limit.');
     target = meta.targetPath; activeBuilds.add(target);
-    const prepared = await prepareCodeExecution(checkpoint.seats, { preserveAbsentEffort: true });
+    const previousPrepared = await prepareCodeExecution(checkpoint.seats, { preserveAbsentEffort: true });
+    if (body.pairing !== undefined && (!body.answer || typeof body.answer !== 'object' || Array.isArray(body.answer))) {
+      throw new Error('A pairing change requires the exact bound authority answer.');
+    }
+    const prepared = body.pairing === undefined ? previousPrepared
+      : await prepareCodeExecution(body.pairing, { preserveAbsentEffort: true });
     return await startRun({
       existingCodeId: id, goal: meta.goal ?? meta.task, acceptanceContract: meta.acceptanceContract,
       lane: 'build', codeMode: 'independent', depth: 'quick', ground: false,
       targetPath: target, targetToplevel: target, verifyCmd: meta.verifyCmd,
       verifyRepeatable: meta.verifyRepeatable === true, codeLimits: body.codeLimits,
       codeAnswer: body.answer, retryUncertain: body.retryUncertain === true, retryVerification: body.retryVerification === true,
+      codeSeatAmendment: body.pairing === undefined ? null : { questionId: body.answer.id },
+      priorFrozenBackends: body.pairing === undefined ? null : previousPrepared.frozenBackends,
+      codeBoundTask: checkpoint.task,
       modelsSnapshot: prepared.models, frozenBackends: prepared.frozenBackends,
       pairingView: prepared.pairingView, authorizeCode: prepared.authorize,
     });

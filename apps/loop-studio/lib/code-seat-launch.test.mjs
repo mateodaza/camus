@@ -7,9 +7,6 @@ import { prepareCodeSeats, codeModelChoices, memoizeNativeHarnessReadiness } fro
 import { createCodeVerifier, verificationEnvironment } from './code-seat-verify.mjs';
 import { parseCodeBuildArgs, parseCodeSeat } from '../code-build.mjs';
 import { resolveSeatAdapters, nativeMakerFor } from './adapters/registry.mjs';
-import { runNativeCodex } from './adapters/codex-native.mjs';
-import { runNativeQwen } from './adapters/qwen-native.mjs';
-import { runNativeGrok } from './adapters/grok-native.mjs';
 
 const entry = (backend, model, extra = {}) => ({ backend, model, provider: backend,
   effort: backend === 'codex', executor: `${backend}_cli`, transport: 'vendor_managed',
@@ -120,14 +117,14 @@ assert.match(staticExecutorOptions, /value="file_actions"/);
 assert.doesNotMatch(staticExecutorOptions, /value="(?:codex|qwen|grok)_native"/, 'Studio starts fail-closed and adds only ready executors from config');
 const native = await prepareCodeSeats({ pairing: { maker: { ...pick(codex), codeExecutor: 'codex_native' }, reviewer: pick(claude) }, live: false }, deps);
 assert.equal(native.models.maker.codeExecutor, 'codex_native');
-assert.equal(resolveSeatAdapters(native.models, native.frozenBackends).nativeMaker, runNativeCodex, 'shared registry used by Studio AND CLI resolves native');
+assert.equal(typeof resolveSeatAdapters(native.models, native.frozenBackends).nativeMaker, 'function', 'shared registry used by Studio AND CLI resolves native');
 assert.equal(resolveSeatAdapters(reversed.models, reversed.frozenBackends).nativeMaker, undefined, 'default remains file actions');
-assert.equal(nativeMakerFor('qwen_native'), runNativeQwen); assert.equal(nativeMakerFor('grok_native'), runNativeGrok);
+assert.equal(typeof nativeMakerFor('qwen_native'), 'function'); assert.equal(typeof nativeMakerFor('grok_native'), 'function');
 const qwenNative = await prepareCodeSeats({ pairing: { maker: { ...pick(external), codeExecutor: 'qwen_native' }, reviewer: pick(claude) }, live: false }, deps);
 assert.equal(qwenNative.models.maker.codeExecutor, 'qwen_native');
 const grokSubscription = await prepareCodeSeats({ pairing: { maker: pick(grok), reviewer: pick(claude) }, live: false }, deps);
 assert.equal(grokSubscription.models.maker.codeExecutor, 'grok_native', 'the built-in Grok seat cannot silently fall back to Camus file actions');
-assert.equal(resolveSeatAdapters(grokSubscription.models, grokSubscription.frozenBackends).nativeMaker, runNativeGrok);
+assert.equal(typeof resolveSeatAdapters(grokSubscription.models, grokSubscription.frozenBackends).nativeMaker, 'function');
 await assert.rejects(prepareCodeSeats({ pairing: { maker: { ...pick(grok), codeExecutor: 'file_actions' }, reviewer: pick(claude) }, live: false }, deps), /subscription authentication/);
 await assert.rejects(prepareCodeSeats({ pairing: { maker: { ...pick(codex), codeExecutor: 'qwen_native' }, reviewer: pick(claude) }, live: false }, deps), /OpenAI-compatible/);
 await assert.rejects(prepareCodeSeats({ pairing: { maker: { ...pick(claude), codeExecutor: 'codex_native' }, reviewer: pick(codex) }, live: false }, deps), /built-in/);
@@ -140,7 +137,9 @@ assert.equal(parseCodeBuildArgs([...nativeArgs, '--max-tokens', '100000'])['make
 const qwenArgs = ['--maker', 'qwen:fixture', '--reviewer', 'claude:fixture', '--maker-executor', 'qwen_native'];
 assert.throws(() => parseCodeBuildArgs(qwenArgs), /at least 32768/);
 assert.equal(parseCodeBuildArgs([...qwenArgs, '--max-tokens', '100000'])['maker-executor'], 'qwen_native');
-assert.throws(() => parseCodeBuildArgs(['--resume', 'fixture', '--maker-executor', 'file_actions']), /frozen/);
+assert.throws(() => parseCodeBuildArgs(['--resume', 'fixture', '--maker-executor', 'file_actions']), /requires --maker/);
+assert.equal(parseCodeBuildArgs(['--resume', 'fixture', '--maker', 'codex:next', '--reviewer', 'claude:review',
+  '--maker-executor', 'codex_native', '--question', 'q_1', '--answer', 'Approved.'])['maker-executor'], 'codex_native');
 assert.throws(() => parseCodeBuildArgs(['--models', '--maker-executor', 'file_actions']), /new build/);
 assert.throws(() => parseCodeBuildArgs(['--maker-executor', 'unknown']), /file_actions, codex_native, qwen_native, grok_native/);
 

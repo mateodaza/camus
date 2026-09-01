@@ -418,10 +418,16 @@ export async function runGrokSubscriptionTurn({ prompt, model, effort = 'medium'
       ...(receipt ? { modelActual: `xai:${model}`, modelReported: receipt.reported, modelActualEvidence: 'observed_cli_event' } : {}),
       billingAuthority: 'grok_subscription' };
   } finally {
-    await toolsHost?.cleanup().catch(() => {}); await rpc?.close().catch(() => {});
-    if (policy) await unlink(join(policy.home, 'auth.json')).catch(error => {
-      if (error?.code !== 'ENOENT') throw new Error('The isolated Grok login copy could not be removed; execution refused.');
-    });
+    // Cleanup is part of the native result contract. Never claim a quiescent
+    // candidate when a terminal or ACP child could still be writing to it.
+    let cleanupError = null;
+    try { await toolsHost?.cleanup(); } catch { cleanupError = new Error('Grok host-tool cleanup could not be proven; execution refused.'); }
+    try { await rpc?.close(); } catch { cleanupError ??= new Error('Grok ACP process cleanup could not be proven; execution refused.'); }
+    if (policy) try { await unlink(join(policy.home, 'auth.json')); }
+    catch (error) {
+      if (error?.code !== 'ENOENT') cleanupError ??= new Error('The isolated Grok login copy could not be removed; execution refused.');
+    }
+    if (cleanupError) throw cleanupError;
   }
 }
 

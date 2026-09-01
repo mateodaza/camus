@@ -7,11 +7,12 @@ export async function runIndependentCodeLoop(run, { emit, adapters, signal, rece
     emit('log', { line: 'Experimental any-model Build: isolated candidate, advisory review, explicit human acceptance. No automatic commit, merge, or publication.' });
     const result = await runCodeSeats({
       repoPath: run.targetPath,
-      task: `${run.goal}\n\nAcceptance contract (binding):\n${run.acceptanceContract}`,
+      task: run.codeBoundTask ?? `${run.goal}\n\nAcceptance contract (binding):\n${run.acceptanceContract}`,
       seats: run.models, adapters, signal, receiptsDir, backendSnapshot: frozenBackends,
       verify: createCodeVerifier(run.verifyCmd, { receiptsDir, repeatable: run.verifyRepeatable === true }),
       limits: run.codeLimits, resume: run.resumeCode === true, answer: run.codeAnswer,
       retryUncertain: run.retryUncertain === true, retryVerification: run.retryVerification === true,
+      seatAmendment: run.codeSeatAmendment ?? null, priorBackendSnapshot: run.priorFrozenBackends ?? null,
       authorize: authorizeCode,
       onEvent: (event) => {
         if (event.stage) emit('stage', { name: event.stage, status: event.status ?? 'active' });

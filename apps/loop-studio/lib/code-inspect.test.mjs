@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { acquireCodeRun, saveCodeCheckpoint } from './code-run-state.mjs';
 import { codeRunDirectory, inspectCodeRun, formatCodeInspection } from './code-session.mjs';
 import { parseCodeBuildArgs } from '../code-build.mjs';
-import { FILE_ACTION_POLICY } from './code-loop.mjs';
+import { FILE_ACTION_POLICY, NATIVE_RECOVERY_POLICY } from './code-loop.mjs';
 import { MAKER_PROGRESS_POLICY } from './code-context.mjs';
 
 async function fixture(t, mutate = () => {}) {
@@ -94,6 +94,15 @@ test('inspection derives fixed safe actions and only bounded review/verification
   assert.equal(questionView.nextSafeAction.action, 'answer_question');
   assert.doesNotMatch(questionView.question.text, /[\u0000-\u001f\u007f-\u009f]/u);
   assert.match(questionView.question.text, /src\/foo\.js:12/);
+
+  const modelChange = await fixture(t, state => {
+    state.status = 'needs_decision';
+    state.question = { id: 'q_model', kind: 'authority', text: 'Use a stronger closure model.',
+      request: { type: 'model_change' }, candidateFingerprint: state.candidate.fingerprint };
+  });
+  const modelChangeView = await inspectCodeRun(modelChange.dir);
+  assert.equal(modelChangeView.nextSafeAction.action, 'answer_authority_request');
+  assert.deepEqual(modelChangeView.question.request, { type: 'model_change' });
 
   const staleQuestion = await fixture(t, state => {
     state.status = 'needs_decision';
@@ -212,6 +221,23 @@ test('inspection never recommends resume under an unsupported execution policy',
   const unknownProgress = await fixture(t, state => { state.makerProgressPolicy = 'future_progress_policy'; });
   const unknown = await inspectCodeRun(unknownProgress.dir);
   assert.equal(unknown.resumable, false); assert.equal(unknown.nextSafeAction.action, 'investigate_or_start_fresh');
+
+  const nativeWithoutRecovery = await fixture(t, state => { state.seats.maker.codeExecutor = 'grok_native'; });
+  assert.equal((await inspectCodeRun(nativeWithoutRecovery.dir)).resumable, false);
+
+  const nativeRecovery = await fixture(t, state => {
+    state.seats.maker.codeExecutor = 'grok_native'; state.nativeRecoveryPolicy = NATIVE_RECOVERY_POLICY;
+    state.usage.recoveries = 1; state.limits.maxRecoveries = 4;
+  });
+  const recoverable = await inspectCodeRun(nativeRecovery.dir);
+  assert.equal(recoverable.resumable, true); assert.equal(recoverable.usage.recoveries, 1);
+
+  const nativeInFlight = await fixture(t, state => {
+    state.seats.maker.codeExecutor = 'grok_native'; state.nativeRecoveryPolicy = NATIVE_RECOVERY_POLICY;
+    state.nativeInFlight = true; state.pendingCall = { id: 'native-1', role: 'maker', native: true };
+  });
+  const unsafe = await inspectCodeRun(nativeInFlight.dir);
+  assert.equal(unsafe.resumable, false); assert.equal(unsafe.nextSafeAction.action, 'investigate_or_start_fresh');
 });
 
 test('missing, symlinked, malformed, oversized, unsupported and incomplete artifacts fail closed', async (t) => {

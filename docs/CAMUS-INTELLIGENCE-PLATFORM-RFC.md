@@ -6,7 +6,7 @@
 
 **Date:** 2026-08-31
 
-**Scope:** Product direction after Camus 0.4.18
+**Scope:** Product direction after Camus 0.4.21
 
 **Decision owners:** Product owner for commercial and UX choices; Camus kernel for enforced runtime contracts
 
@@ -52,6 +52,34 @@ strong shipped trust primitives and no established product-market proof. Therefo
 4. integrate with IDE, Git, CI, and context systems instead of requiring a destination workflow; and
 5. judge progress by decisions changed, review time saved, repeat use, and willingness to pay—not
    releases, schemas, model count, downloads, or internal dogfood volume.
+
+### Post-0.4.21 freeze decision
+
+Camus 0.4.21 closes the last known native-recovery gap before product validation. It adds bounded
+native work slices, proven-quiescent draft recovery without uncertain replay, and a typed
+metacognitive vocabulary for `continue`, budget expansion, model/harness change, append-only
+contract amendment, verification replay, rebuttal, human judgment, and stop. These are durable
+recommendations and authority requests; the deterministic kernel still decides what is permitted,
+binds every human answer to the exact candidate, and keeps usage monotonic.
+
+After the 0.4.21 release, production code is frozen while Phase 0 discovery and the minimum Phase 1
+pilot run. The freeze permits only:
+
+- security, provenance, data-loss, or correctness fixes against the shipped contract;
+- provider compatibility repairs required to keep an already-supported path working; and
+- the smallest pilot change explicitly unlocked by evidence from real design-partner work.
+
+Model count, dashboard breadth, automatic routing, remote workers, and another orchestration rewrite
+are not valid reasons to break the freeze. The next work is to observe Carlos and additional design
+partners, capture where the acceptance proof changes a real decision, and determine whether the
+thin PR/handoff pilot is repeated without founder operation.
+
+The future Camus Intelligence input is a **project-owned outcome ledger**, not opaque agent memory.
+It derives content-minimized records from existing authenticated checkpoints and receipts: task
+class, complete model+harness route, authorized limits and amendments, recovery/repair history,
+verification, independent review, human decisions, and consented post-acceptance outcomes. Raw
+source, prompts, diffs, credentials, and unverified model claims are not learning records. Route
+recommendations remain advisory and must abstain until the Phase 3 evidence gates are met.
 
 ## 1. Research conclusion: the correction we must accept
 
@@ -854,7 +882,11 @@ before adding infrastructure.
 - one optional manual artifact-and-obligation handoff at a sealed phase boundary;
 - the existing verification, review, and receipt presented as a concise PR check/handoff report;
 - consented outcome labels for merged, rejected, corrected, reverted, or later-failed work; and
-- automatic capture from repository, harness, Git, and CI state wherever possible.
+- automatic capture from repository, harness, Git, and CI state wherever possible;
+- reuse the shipped 0.4.21 authority-request and recovery events as pilot evidence rather than
+  introducing another controller or model-owned state machine; and
+- define the project-owned outcome-ledger projection before collecting learning data, including
+  consent, retention, export, deletion, and content-minimization rules.
 
 Explicitly excluded: worker/coordinator, event-source inversion, automatic routing or switching,
 portfolio Studio, organization product, A2A, new model adapters, and generic institutional memory.
@@ -889,7 +921,8 @@ does not require users to understand internal schema machinery.
 **Goal:** make route advice useful before claiming automatic optimization.
 
 - reuse accepted contracts and acceptance packs by repository/task archetype;
-- capture complete route, review, cost, override, and later outcome evidence with consent;
+- capture complete route, review, cost, override, recovery, authority-amendment, and later outcome
+  evidence with consent in the project-owned ledger;
 - combine explicit rules, current qualification, public priors, and private team evidence;
 - show a recommendation, reason, uncertainty, and abstain path;
 - run shadow and paired experiments with holdouts, expiry, drift checks, and calibrated judges; and

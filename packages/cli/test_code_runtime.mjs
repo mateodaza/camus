@@ -216,7 +216,11 @@ try {
     providerCalls: await readFile(providerCalls, 'utf8'),
   };
   const inspected = JSON.parse((await command(process.execPath, [bin, 'build', '--inspect', started.id, '--json'], { cwd: installed, env: runEnv })).stdout);
-  assert.deepEqual(Object.keys(inspected).sort(), ['candidate', 'checkpoint', 'interrupted', 'legacy', 'limits', 'nextSafeAction', 'owned', 'phase', 'question', 'reason', 'resumable', 'review', 'runId', 'schemaVersion', 'status', 'usage', 'verification'].sort());
+  assert.deepEqual(Object.keys(inspected).sort(), ['candidate', 'checkpoint', 'interrupted', 'legacy', 'limits', 'nextSafeAction', 'owned', 'phase', 'question', 'reason', 'resumable', 'review', 'runId', 'schemaVersion', 'seats', 'status', 'usage', 'verification'].sort());
+  assert.deepEqual(inspected.seats, {
+    maker: { backend: 'claude', model: 'sonnet', effort: 'high' },
+    reviewer: { backend: 'claude', model: 'sonnet', effort: 'low' },
+  }, 'inspection exposes only the bounded seat labels needed for an authority-bound pair change');
   assert.equal(inspected.runId, started.id); assert.equal(inspected.nextSafeAction.action, 'investigate_or_start_fresh');
   assert.equal(Object.hasOwn(inspected.candidate, 'diff'), false); assert.doesNotMatch(JSON.stringify(inspected), /correct|acceptanceContract|targetPath|providerOutput|rawResponseBody/i);
   assert.deepEqual(await readFile(join(runDir, 'run.json')), beforeInspect.metadata);

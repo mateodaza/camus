@@ -16,9 +16,9 @@ export function nativeUsage(total, baseline = zero()) {
 }
 const allowedItems = new Set(['userMessage', 'agentMessage', 'reasoning', 'commandExecution', 'fileChange', 'contextCompaction', 'plan', 'imageView']);
 const outputSchema = { type: 'object', additionalProperties: false, required: ['done', 'summary', 'decision'], properties: {
-  done: { type: 'boolean' }, summary: { type: 'string' },
+  done: { type: 'boolean' }, summary: { type: 'string', maxLength: 2000 },
   decision: { type: ['object', 'null'], additionalProperties: false, required: ['action', 'reason'], properties: {
-    action: { type: 'string', enum: ['human', 'stop', 'retry_verify', 'rebut'] }, reason: { type: 'string' } } },
+    action: { type: 'string', enum: ['continue', 'request_budget', 'request_model', 'amend_contract', 'human', 'stop', 'retry_verify', 'rebut'] }, reason: { type: 'string', maxLength: 2000 } } },
 } };
 
 export async function runNativeCodex({ prompt, model, effort, worktree, scratch, receiptsDir, sourcePath,
@@ -105,11 +105,11 @@ export async function runNativeCodex({ prompt, model, effort, worktree, scratch,
       error: stopReason ?? 'Native turn did not complete.', stopKind: stopKind ?? 'failure', usage, nativeSession: session, usageIncomplete: terminal !== 'completed' };
     let result;
     try { result = JSON.parse(text); } catch { throw new Error('Native final decision was not valid JSON.'); }
-    if (!result || typeof result.done !== 'boolean' || typeof result.summary !== 'string'
+    if (!result || typeof result.done !== 'boolean' || typeof result.summary !== 'string' || Buffer.byteLength(result.summary) > 2000
         || !Object.hasOwn(result, 'decision')
         || result.decision !== null && (typeof result.decision !== 'object' || result.done
-          || !['human', 'stop', 'retry_verify', 'rebut'].includes(result.decision.action)
-          || typeof result.decision.reason !== 'string' || !result.decision.reason.trim()
+          || !['continue', 'request_budget', 'request_model', 'amend_contract', 'human', 'stop', 'retry_verify', 'rebut'].includes(result.decision.action)
+          || typeof result.decision.reason !== 'string' || !result.decision.reason.trim() || result.decision.reason.length > 2000
           || Object.keys(result.decision).some(k => !['action', 'reason'].includes(k)))
         || Object.keys(result).some(k => !['done', 'summary', 'decision'].includes(k))) throw new Error('Invalid native final decision.');
     return { ok: true, text: JSON.stringify({ actions: [], ...result }), usage, nativeSession: session, definitiveTurnEnd: true,

@@ -28,7 +28,7 @@ async function fixture(t) {
 }
 
 function rpcFactoryFor({ authMethods = [{ id: 'cached_token' }], reportedModel = 'grok-4.6', terminalUsage = true,
-  promptError = null } = {}) {
+  promptError = null, closeError = null } = {}) {
   const captures = [], requests = [];
   const factory = options => {
     captures.push(options);
@@ -52,7 +52,7 @@ function rpcFactoryFor({ authMethods = [{ id: 'cached_token' }], reportedModel =
         }
         throw new Error(`unexpected request ${method}`);
       },
-      async close() {},
+      async close() { if (closeError) throw new Error(closeError); },
     };
   };
   factory.captures = captures;
@@ -147,6 +147,17 @@ test('native subscription distinguishes a missing ACP completion from a terminal
   const missingCompletion = await runNativeGrokSubscription({ ...common, rpcFactory: rpcFactoryFor({ promptError: 'fixture transport closed' }) });
   assert.equal(missingCompletion.ok, false); assert.equal(missingCompletion.uncertain, true);
   assert.equal(missingCompletion.definitiveTurnEnd, false); assert.equal(missingCompletion.failureCode, 'terminal_missing');
+  await assert.rejects(() => readFile(join(f.scratch, 'grok-home', 'auth.json')), { code: 'ENOENT' });
+});
+
+test('native subscription cleanup failure overrides a model result instead of claiming quiescence', async t => {
+  const f = await fixture(t);
+  await assert.rejects(() => runNativeGrokSubscription({ prompt: 'bounded native task', model: 'grok-4.6',
+    worktree: f.worktree, scratch: f.scratch, receiptsDir: f.receiptsDir, maxModelCalls: 1, maxToolCalls: 0,
+    resolveHarness: async () => f.harness, assertArtifact: async () => '9'.repeat(64),
+    installAuth: async home => writeFile(join(home, 'auth.json'), '{"opaque":"login"}\n', { mode: 0o600 }),
+    createPolicy: darwinAcpPolicy, sourcePath: f.root, preflightTools: async () => {},
+    rpcFactory: rpcFactoryFor({ closeError: 'fixture child remained live' }) }), /cleanup could not be proven/);
   await assert.rejects(() => readFile(join(f.scratch, 'grok-home', 'auth.json')), { code: 'ENOENT' });
 });
 

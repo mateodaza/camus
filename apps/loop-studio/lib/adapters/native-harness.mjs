@@ -8,9 +8,9 @@ import { nativeHarnessPolicy, nativeHarnessEnvironment, resolveNativeHarness, as
 
 const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value);
 const outputSchema = { type: 'object', additionalProperties: false, required: ['done', 'summary', 'decision'], properties: {
-  done: { type: 'boolean' }, summary: { type: 'string' },
+  done: { type: 'boolean' }, summary: { type: 'string', maxLength: 2000 },
   decision: { type: ['object', 'null'], additionalProperties: false, required: ['action', 'reason'], properties: {
-    action: { type: 'string', enum: ['human', 'stop', 'retry_verify', 'rebut'] }, reason: { type: 'string' } } },
+    action: { type: 'string', enum: ['continue', 'request_budget', 'request_model', 'amend_contract', 'human', 'stop', 'retry_verify', 'rebut'] }, reason: { type: 'string', maxLength: 2000 } } },
 } };
 const prohibitedTool = /(?:web[_-]?(?:search|fetch)|mcp|search_tool|use_tool|subagent|task)/i;
 const routeSlug = /^[a-z0-9](?:[a-z0-9._-]{0,63})(?:\/[a-z0-9](?:[a-z0-9._-]{0,63}))*$/;
@@ -125,7 +125,7 @@ export function validateNativeDecision(result) {
   if (!result || typeof result.done !== 'boolean' || typeof result.summary !== 'string' || Buffer.byteLength(result.summary) > 2000
       || !Object.hasOwn(result, 'decision')
       || result.decision !== null && (typeof result.decision !== 'object' || result.done
-        || !['human', 'stop', 'retry_verify', 'rebut'].includes(result.decision.action)
+        || !['continue', 'request_budget', 'request_model', 'amend_contract', 'human', 'stop', 'retry_verify', 'rebut'].includes(result.decision.action)
         || typeof result.decision.reason !== 'string' || !result.decision.reason.trim() || result.decision.reason.length > 2000
         || Object.keys(result.decision).some(key => !['action', 'reason'].includes(key)))
       || Object.keys(result).some(key => !['done', 'summary', 'decision'].includes(key))) throw new Error('Invalid native final decision.');

@@ -168,6 +168,7 @@ test('a pre-policy in-flight native checkpoint restores conservative accounting 
   const state = await f.checkpoint();
   delete state.fileActionPolicy;
   delete state.makerProgressPolicy;
+  delete state.nativeRecoveryPolicy;
   state.binding = digest({ task: f.options.task, seats: f.options.seats,
     backends: { maker: makerBackend, reviewer: {} }, verifier: null, repeatable: true,
     credentialRevisions: { maker: null, reviewer: null } });
@@ -621,7 +622,9 @@ test('new file reads, bounded discovery and context rollover preserve contract a
     assert.match(prompt, new RegExp(digest('correct'))); assert.match(prompt, /nextOffset/); return message();
   });
   await writeFile(join(f.options.repoPath, 'README.md'), 'A'.repeat(1200)); git(f.options.repoPath, 'add', '.'); git(f.options.repoPath, 'commit', '-qm', 'large context');
-  const result = await f.run({ limits: { maxContextBytes: 5200 } });
+  // Leave room for the complete authority-request vocabulary while still
+  // forcing the deliberately oversized read history through context rollover.
+  const result = await f.run({ limits: { maxContextBytes: 6000 } });
   assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
 });
 
@@ -749,13 +752,14 @@ test('unreported tokens reserve budget and explicit extension retains the origin
   const f = await fixture(t, () => {
     const result = ++turn === 1 ? message([write('correct')]) : message(); delete result.usage; return result;
   });
-  const first = await f.run({ limits: { maxTokens: 32768 } });
+  const first = await f.run({ limits: { maxTokens: 32768, callTimeoutMs: 100 } });
   assert.equal(first.question.kind, 'budget'); assert.equal(first.usage.calls, 1);
   assert.equal(first.usage.observedTokens, 0); assert.equal(first.usage.accountedTokens, 32768);
-  const second = await f.run({ resume: true, limits: { maxTokens: 100000 } });
+  const second = await f.run({ resume: true, limits: { maxTokens: 100000, callTimeoutMs: 1000 } });
   assert.equal(second.completion, 'candidate_ready_for_acceptance', second.error);
   assert.equal(second.usage.unmeasuredCalls, 2); assert.equal(second.usage.observedTokens, 12);
   assert.equal(second.usage.accountedTokens, 65548);
+  assert.equal(second.limits.callTimeoutMs, 1000, 'human timing authority may extend the per-call ceiling');
 });
 
 test('diagnostic selection is bounded, redacted, source-located, and explicitly untrusted', () => {
