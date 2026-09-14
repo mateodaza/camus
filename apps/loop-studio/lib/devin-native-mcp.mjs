@@ -3,7 +3,7 @@
 import { createServer } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 
-export async function startDevinMcp({ tools, maxCalls, onRefusal = () => {}, onCall = () => {} }) {
+export async function startDevinMcp({ tools, maxCalls, onRefusal = () => {}, onCall = () => {}, getBudget = () => null }) {
   if (!Number.isSafeInteger(maxCalls) || maxCalls < 1 || maxCalls > 1000 || !Array.isArray(tools) || !tools.length
       || tools.length > 8 || new Set(tools.map(tool => tool.name)).size !== tools.length
       || tools.some(tool => !/^[a-z_]{1,32}$/.test(tool.name) || typeof tool.invoke !== 'function'
@@ -29,7 +29,15 @@ export async function startDevinMcp({ tools, maxCalls, onRefusal = () => {}, onC
       if (!message || Array.isArray(message) || message.jsonrpc !== '2.0') return send(400, {});
       if (message.id === undefined) return message.method === 'notifications/initialized' && initialized ? send(202) : send(400, {});
       if (!(Number.isSafeInteger(message.id) || typeof message.id === 'string' && message.id.length <= 128)) return send(400, {});
-      const result = value => send(200, { jsonrpc: '2.0', id: message.id, result: value });
+      const result = value => {
+        // A separate content block keeps file/command JSON unchanged. Snapshot
+        // after execution/accounting, including no-effect correction/busy calls.
+        if (Array.isArray(value.content)) {
+          const budget = getBudget();
+          if (budget) value = { ...value, content: [...value.content, { type: 'text', text: JSON.stringify(budget) }] };
+        }
+        return send(200, { jsonrpc: '2.0', id: message.id, result: value });
+      };
       const refuse = (code = 'invalid_dispatch', tool = null) => {
         onRefusal({ code, tool }); return send(200, { jsonrpc: '2.0', id: message.id, error: { code: -32600, message: 'Camus tool request refused.' } });
       };

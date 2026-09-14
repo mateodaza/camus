@@ -28,13 +28,13 @@ for the first real candidate, model setup, and honest terminal states.
 > it; configured API credentials remain local and go only to that endpoint.
 
 <details>
-<summary><strong>Current release: 0.4.24</strong></summary>
+<summary><strong>Current release: 0.4.25</strong></summary>
 
-**New in 0.4.24:** malformed SWE host commands receive pre-execution correction
-guidance; overlapping MCP calls receive bounded no-execution busy feedback.
-CLI/Studio share precise refusal diagnostics. Budgets, duplicate protection and
-uncertain-effect refusals remain enforced; live validation is separate.
-[Maintenance notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.24.md).
+**New in 0.4.25:** native coding prompts expose numeric slice pacing targets.
+SWE host-tool responses include remaining actions/time and early wrap-up guidance.
+CLI/Studio share this runtime; limits and uncertain-result protections remain
+enforced. Offline checks are not a live pacing guarantee.
+[Maintenance notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.25.md).
 
 **Added in 0.4.22:** optional **SWE-2 High through native Devin**, with independent
 reviewer selection in CLI and Studio. Use `--maker devin:swe-2-high
@@ -567,7 +567,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.4.24
+npm i -g camus-cli@0.4.25
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)

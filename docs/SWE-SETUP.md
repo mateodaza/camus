@@ -22,7 +22,7 @@ to guarantee zero charges; check the terms and usage in your Devin account.
 ## CLI
 
 ```sh
-npm install -g camus-cli@0.4.24
+npm install -g camus-cli@0.4.25
 camus models
 camus build --repo /path/to/clean-repository \
   --task-file /path/to/task.txt --contract-file /path/to/acceptance.txt \
@@ -64,6 +64,33 @@ the hosted demo does not execute your local login or repository.
   replayed. Acceptance remains a separate human decision.
 
 ## Evidence, not a model ranking
+
+### 0.4.25 native slice pacing
+
+Native coding prompts now expose their action slice target and dispatch time
+limit. For SWE, the slice is at most 64 **accounted actions**, reduced by the run's
+remaining allowance. Native events and host operations share that allowance;
+64 actions does not mean 64 tool calls. The maker is asked to wrap up by 75% of
+the slice (48 of 64 actions), or earlier if time is low.
+
+SWE MCP tool responses include a separate `camus_native_budget` text block with
+remaining actions/time and wrap-up guidance, including after correction or busy
+feedback. Ordinary tool result JSON is unchanged. Native filesystem/permission
+responses are not rewritten; the model still needs to follow the initial pacing
+instructions when using native tools directly.
+
+Return a valid `done:false` / `decision.action:"continue"` handoff **before** the
+hard stop if work remains. This preserves partial work through the normal checked
+completion path; continuation uses the original run limits and recalculates the
+next slice allowance. No post-timeout prompt, added provider call, automatic
+budget extension or uncertain-session replay is authorized. Guidance cannot
+guarantee a model will finish on time. Live pacing validation remains separate.
+
+These shared prompt changes apply to native coding makers in CLI and Studio,
+not file-actions, words/marketing workflows, or reviewers. Live response counters
+in this release are specific to SWE host tools. See [0.4.25 notes](RELEASE-0.4.25.md).
+
+### Earlier diagnostic and command-boundary fixes
 
 Use 0.4.23 or later for failure diagnostics and bounded host-tool feedback.
 `list_files` provides paginated prepared-file discovery. A host response with

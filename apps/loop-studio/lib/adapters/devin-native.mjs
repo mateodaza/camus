@@ -14,6 +14,7 @@ import { CodexRpc } from '../codex-rpc.mjs';
 import { runNativeProcess } from '../native-process.mjs';
 import { grokSubscriptionPolicy } from './grok-subscription.mjs';
 import { verificationEnvironment } from '../code-seat-verify.mjs';
+import { devinBudgetSnapshot } from '../native-budget.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const schema = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
@@ -51,6 +52,8 @@ export async function runNativeDevin(options, dependencies = {}) {
     if (reason || actions > contract.maxObservedTools) { localStopReason ??= 'observed_tool_limit'; abort(); throw new Error('Devin observed action allowance reached.'); }
   };
   const hostAction = ({ tool } = {}) => { if (tool) lastHostTool = tool; hostTools++; reportActions(); };
+  const budgetSnapshot = () => devinBudgetSnapshot({ maximumActions: contract.maxObservedTools,
+    usedActions: nativeTools + hostTools, maximumMs: contract.maxWallMs, elapsedMs: Date.now() - started });
   try {
     context = await (dependencies.prepareContext ?? prepareDevinContext)({ signal: control.signal });
     mirror = await realpath(await mkdtemp(join(tmpdir(), 'camus-devin-workspace-')));
@@ -77,7 +80,8 @@ export async function runNativeDevin(options, dependencies = {}) {
       } finally { tasks.delete(pending); }
     };
     const relativePath = value => relative(mirror, workspace.mapPath(value));
-    broker = await (dependencies.startBroker ?? startDevinMcp)({ maxCalls: contract.maxObservedTools, onRefusal: refuseTool, onCall: hostAction, tools: [
+    broker = await (dependencies.startBroker ?? startDevinMcp)({ maxCalls: contract.maxObservedTools,
+      onRefusal: refuseTool, onCall: hostAction, getBudget: budgetSnapshot, tools: [
       { name: 'list_files', description: 'List prepared file paths and write permissions, 100 per page. Start at offset 0. Includes host-created files.',
         inputSchema: schema({ offset: { type: 'integer', minimum: 0, maximum: 4096 } }),
         invoke: runTool(async args => {
@@ -128,8 +132,10 @@ export async function runNativeDevin(options, dependencies = {}) {
     await mkdir(receiptsDir, { recursive: true, mode: 0o700 });
     closed = false;
     refusalStage = 'native_turn';
+    const toolPolicy = 'Camus native tool policy: use native read/edit only for prepared existing files. Use camus MCP list_files (offset 0, then nextOffset) to discover the prepared inventory, and search/read_file/write_file/run_command for search, creation and tests. Discover these tools when needed. A tool response with operationCompleted:false made no change: follow its guidance within the existing budget; never treat it as a successful write. Native exec is blocked. Commands see read-only staging, no credentials or network. Use TMPDIR for temporary outputs. Request new authority rather than bypassing unavailable operations. Return the requested JSON decision without Markdown.';
+    const dispatchPrompt = `${prompt}\n\nHost-observed SWE budget snapshot before protocol setup: ${JSON.stringify(budgetSnapshot())}\nHost MCP responses include a separate camus_native_budget block. Follow wrapUp guidance before exhaustion; stop tool use and return the requested final JSON. Native events plus host operations share the allowance; internal inference spend remains unknown.\n\n${toolPolicy}`;
     outcome = await runDevinProtocolTurn({ model, cwd: mirror, contract, signal: control.signal,
-      prompt: `${prompt}\n\nCamus native tool policy: use native read/edit only for prepared existing files. Use camus MCP list_files (offset 0, then nextOffset) to discover the prepared inventory, and search/read_file/write_file/run_command for search, creation and tests. Discover these tools when needed. A tool response with operationCompleted:false made no change: follow its guidance within the existing budget; never treat it as a successful write. Native exec is blocked. Commands see read-only staging, no credentials or network. Use TMPDIR for temporary outputs. Request new authority rather than bypassing unavailable operations. Return the requested JSON decision without Markdown.`,
+      prompt: dispatchPrompt,
       rpcFactory: callbacks => (dependencies.rpcFactory ?? (value => new CodexRpc(value)))({ ...callbacks,
         command: '/usr/bin/sandbox-exec', args: ['-p', workspace.profile, context.harness, '--config', context.config, '--sandbox', 'acp', '--model', model],
         cwd: context.root, env: context.env, protocol: 'jsonrpc2' }),
@@ -139,7 +145,7 @@ export async function runNativeDevin(options, dependencies = {}) {
         const file = await open(markerPath, 'wx', 0o600);
         try {
           await file.writeFile(JSON.stringify({ executor: 'devin_native', model, artifactDigest: context.digest,
-            sessionId, manifestHash: workspace.manifestHash, promptHash: hash(prompt), contract }));
+            sessionId, manifestHash: workspace.manifestHash, promptHash: hash(prompt), dispatchPromptHash: hash(dispatchPrompt), contract }));
           await file.sync();
         } finally { await file.close(); }
         await onNativeSession({ executor: 'devin_native', sessionId, model, replayable: false, artifactDigest: context.digest });

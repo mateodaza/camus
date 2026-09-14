@@ -7,6 +7,22 @@ import { runNativeProcess } from './native-process.mjs';
 import { assertDevinModelSelection, validateDevinSession, inspectDevinUsage, createDevinProtocolObserver, classifyDevinToolFailure,
   DEVIN_NATIVE_MODEL } from './devin-native-protocol.mjs';
 import { publicDevinDiagnostic } from './devin-native-protocol.mjs';
+import { devinBudgetSnapshot, nativeBudgetPrompt } from './native-budget.mjs';
+
+test('native pacing reserves headroom and reports time/low budgets without inventing SWE spend limits', () => {
+  const base = { maximumActions: 64, maximumMs: 300000, usedActions: 47, elapsedMs: 10000 };
+  assert.equal(devinBudgetSnapshot(base).wrapUp, false);
+  const warning = devinBudgetSnapshot({ ...base, usedActions: 48 });
+  assert.equal(warning.wrapUp, true); assert.equal(warning.remainingActions, 16);
+  assert.equal(warning.internalModelCalls, null); assert.equal(warning.inferenceTokens, null);
+  assert.equal(devinBudgetSnapshot({ ...base, elapsedMs: 225000 }).wrapUp, true);
+  assert.equal(devinBudgetSnapshot({ ...base, elapsedMs: 400000 }).remainingMs, 0);
+  assert.equal(devinBudgetSnapshot({ ...base, usedActions: 65 }).remainingActions, 0);
+  assert.equal(devinBudgetSnapshot({ ...base, maximumActions: 1, usedActions: 0 }).wrapUp, true);
+  const prompt = nativeBudgetPrompt({ actions: 22, timeoutMs: 5000, modelCalls: 2, remainingTokens: 4000, observedOnly: false });
+  assert.match(prompt, /22;.*16 accounted/); assert.match(prompt, /5000 ms/); assert.match(prompt, /Model-call slice target: 2/);
+  assert.match(prompt, /not a billing guarantee/);
+});
 
 test('public diagnostics allow only fixed labels and bounded counters, never arbitrary provider values', () => {
   const secret = 'synthetic-private-provider-text';

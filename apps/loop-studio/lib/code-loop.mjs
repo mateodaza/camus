@@ -8,6 +8,7 @@ import { NATIVE_EXECUTOR, isNativeExecutor, validateCodeExecutor } from './code-
 import { initializeCodeOwnedProcessRegistry } from './code-owned-process-registry.mjs';
 import { DEVIN_OBSERVED_CONSENT, devinBudgetSemantics } from './devin-code-seat.mjs';
 import { publicDevinDiagnostic } from './devin-native-protocol.mjs';
+import { nativeBudgetPrompt } from './native-budget.mjs';
 
 const TRANSIENT = /\b(?:429|502|503|504|ECONNRESET|ETIMEDOUT|rate.limit|temporarily unavailable)\b/i;
 const TERMINAL = new Set(['complete', 'refused']);
@@ -47,7 +48,7 @@ const nativeMakerPrompt = (task, record) => [
   ] : []),
   `Bound human answer: ${JSON.stringify(record.answer ?? null)}`,
   'Return JSON {"done":true,"summary":"...","decision":null} when ready for host verification. Keep summary under 2000 bytes.',
-  'This is a bounded work slice. If useful work remains after the slice, return done:false, summary, and decision:{action:"continue",reason:"what remains and why continuing is best"}. The host may continue automatically only inside the signed limits.',
+  'This is a bounded work slice. Before exhausting the slice, if useful work remains, stop tools and return done:false, summary, and decision:{action:"continue",reason:"what remains and why continuing is best"}. Do not wait for the hard stop. The host may continue automatically only inside the signed limits.',
   'If new authority is needed, choose the narrow typed request: "request_budget" for more calls/actions/time/tokens, "request_model" for a different model or harness, or "amend_contract" for changed scope/acceptance. Use "human" only for another irreducible judgment. Use "stop" when continuing is unsafe, "retry_verify" for an authorized verifier replay, or "rebut" for evidence-bound reviewer reconsideration. Keep the reason under 2000 characters.',
   'Routine implementation and test repairs need no human permission. Git metadata, arbitrary network access, and provider credentials are blocked; a host-owned one-model gateway may be reachable only for the harness conversation. The host owns Git/diffs and can run authorized service tests.',
   nativeTrackedInventory(record),
@@ -190,13 +191,19 @@ export async function runProductiveCodeLoop(options, h) {
       Math.max(0, limits.maxActions - record.usage.actions)) : null;
     const callTimeMs = Math.max(1, Math.min(limits.callTimeoutMs,
       limits.timeoutMs - record.usage.activeMs - (Date.now() - lastTick)));
+    const nativeSliceTimeMs = nativeExecutor === 'devin_native' ? Math.min(callTimeMs, 1200000) : callTimeMs;
     if (nativeCall && record.nativeSession
         && (Number.isSafeInteger(record.nativeSession.maximumModelCalls) && nativeModelCalls > record.nativeSession.maximumModelCalls
           || Number.isSafeInteger(record.nativeSession.maximumActions) && nativeToolCalls > record.nativeSession.maximumActions)) {
       record.nativeSession = null;
       await log('native_session_rotated_for_extended_authority');
     }
-    record.pendingCall = { id, role, promptHash: digest(prompt), startedAt: Date.now(), ...(nativeCall ? { native: true } : {}) };
+    const dispatchPrompt = nativeCall ? `${prompt}\n\n${nativeBudgetPrompt({ actions: nativeToolCalls,
+      timeoutMs: nativeSliceTimeMs, modelCalls: nativeModelCalls, remainingTokens, observedOnly: nativeExecutor === 'devin_native' })}` : prompt;
+    // Keep the logical prompt hash for saved-response binding; separately seal
+    // the exact dispatch including this turn's changing budget snapshot.
+    record.pendingCall = { id, role, promptHash: digest(prompt), startedAt: Date.now(),
+      ...(nativeCall ? { native: true, dispatchPromptHash: digest(dispatchPrompt) } : {}) };
     if (nativeCall) { invalidateCandidateEvidence(); record.nativeInFlight = true; }
     record.usage.calls++; record.usage.accountedTokens += limits.unknownTokenReserve;
     await log('call_started', { id, role });
@@ -210,7 +217,7 @@ export async function runProductiveCodeLoop(options, h) {
     let response;
     try {
       if (abort.signal.aborted) interrupted();
-      const common = { prompt, model: seats[role].model, effort: seats[role].effort ?? null, cwd: record.scratch,
+      const common = { prompt: dispatchPrompt, model: seats[role].model, effort: seats[role].effort ?? null, cwd: record.scratch,
         ownedProcessDir: receiptsDir,
         signal: control.signal, expectedReported: seats[role].expectedReported,
         ...(emptyAssessmentLedgers ? { emptyAssessmentLedgers: true } : {}),
@@ -224,7 +231,7 @@ export async function runProductiveCodeLoop(options, h) {
           sourceFiles: [...new Set([...record.tracked, ...(await h.git(record.candidate.worktree,
             ['ls-files', '--others', '--exclude-standard', '-z'])).stdout.split('\0').filter(Boolean)])],
           observedBudget: { version: DEVIN_OBSERVED_CONSENT, maxPrompts: 1, maxObservedTools: nativeToolCalls,
-            maxWallMs: Math.min(callTimeMs, 1200000), billingUncertaintyAccepted: true },
+            maxWallMs: nativeSliceTimeMs, billingUncertaintyAccepted: true },
         } : {}),
         maxModelCalls: nativeModelCalls, remainingTokens,
         maxToolCalls: nativeToolCalls,

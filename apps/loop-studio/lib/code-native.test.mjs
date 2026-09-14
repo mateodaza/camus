@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runCodeSeats } from './code-seats.mjs';
 import { nativeTrackedInventory } from './code-loop.mjs';
-import { readCodeCheckpoint, saveCodeCheckpoint } from './code-run-state.mjs';
+import { readCodeCheckpoint, saveCodeCheckpoint, digest } from './code-run-state.mjs';
 import { nativeUsage } from './adapters/codex-native.mjs';
 import { validateCodeExecutor } from './code-native-policy.mjs';
 import { DEVIN_CODE_BACKEND } from './devin-code-seat.mjs';
@@ -48,10 +48,16 @@ test('SWE unknown inference usage reaches verification/review; later turns inclu
     assert.equal(args.observedBudget.version, 'devin-observed/v1');
     assert.equal(args.observedBudget.billingUncertaintyAccepted, true);
     assert.equal(args.observedBudget.maxPrompts, 1);
+    const allowance = turns === 0 ? 64 : 22;
+    assert.equal(args.maxToolCalls, allowance);
+    assert.match(args.prompt, new RegExp(`Action slice allowance/target: ${allowance};`));
+    assert.match(args.prompt, /native tool events PLUS host operations/);
+    assert.doesNotMatch(args.prompt, /Model-call slice target:/);
+    assert.equal((await f.checkpoint()).pendingCall.dispatchPromptHash, digest(args.prompt));
     assert(args.sourceFiles.includes('README.md'));
     if (++turns === 2) assert(args.sourceFiles.includes('answer.txt'));
     args.onNativeSession({ executor: 'devin_native', sessionId: `s${turns}`, replayable: false });
-    args.onNativeProgress({ usage: null, responses: 0, actions: 2 });
+    args.onNativeProgress({ usage: null, responses: 0, actions: turns === 1 ? 48 : 2 });
     await writeFile(join(args.worktree, 'answer.txt'), turns === 1 ? 'draft' : 'correct');
     return { ...done(), usage: null, usageIncomplete: true, nativeSession: undefined, modelActual: null,
       modelReported: 'swe-2-high', text: JSON.stringify({ actions: [], done: turns === 2, summary: 'Bounded progress.',
@@ -59,6 +65,7 @@ test('SWE unknown inference usage reaches verification/review; later turns inclu
   }, async () => { reviews++; return { ran: true, verdict: 'APPROVED', findings: [], usage: { total_tokens: 5 } }; });
   f.options.seats.maker = { backend: 'devin', model: 'swe-2-high', codeExecutor: 'devin_native', observedBudgetConsent: 'devin-observed/v1' };
   f.options.backendSnapshot.maker = DEVIN_CODE_BACKEND;
+  f.options.limits.maxActions = 70;
   const verify = async ({ worktree }) => ({ ran: true, pass: (await readFile(join(worktree, 'answer.txt'), 'utf8')) === 'correct', exitCode: 0 });
   verify.command = 'offline fixture'; verify.repeatable = true;
   const result = await f.run({ verify });
@@ -88,6 +95,9 @@ test('native edits use a private clone, live accounting, host verification and f
   const f = await fixture(t, async args => {
     turns++; remaining.push(args.remainingTokens);
     if (turns === 1) {
+      assert.match(args.prompt, new RegExp(`Action slice allowance/target: ${args.maxToolCalls};`));
+      assert.match(args.prompt, new RegExp(`Model-call slice target: ${args.maxModelCalls};`));
+      assert.match(args.prompt, new RegExp(`Dispatch time limit: ${args.timeoutMs} ms`));
       assert.match(args.prompt, /Host-observed tracked candidate paths \(1\): \["README\.md"\]/);
       assert.match(args.prompt, /do not use broad `ls -la` or `find \.` discovery/);
     }

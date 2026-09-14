@@ -7,6 +7,38 @@ import { createHash } from 'node:crypto';
 import { runNativeDevin } from './devin-native.mjs';
 import { devinIsolatedEnvironment } from '../devin-native-preflight.mjs';
 
+test('SWE sees the actual budget and a live warning, then returns a valid partial completion without another prompt',
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    ctx.defaults.observedBudget.maxObservedTools = 8;
+    const result = await runNativeDevin(ctx.defaults, ctx.dependencies(async ({ update, mcp, promptText }) => {
+      assert.match(promptText, /"maximumActions":8/);
+      assert.match(promptText, /"wrapUpAtActions":6/);
+      assert.match(promptText, /internal inference spend remains unknown/);
+      const markerName = (await readdir(ctx.receipts)).find(name => name.startsWith('devin-dispatch-'));
+      const marker = JSON.parse(await readFile(join(ctx.receipts, markerName), 'utf8'));
+      assert.equal(marker.dispatchPromptHash, createHash('sha256').update(promptText).digest('hex'));
+      for (let i = 0; i < 3; i++) {
+        update({ sessionUpdate: 'tool_call', toolCallId: `t${i}`, kind: 'read', status: 'pending' });
+        const reply = await mcp('tools/call', i === 0
+          ? { name: 'write_file', arguments: { path: 'partial.txt', content: 'bounded draft', expectedSha256: null } }
+          : { name: 'read_file', arguments: { path: 'calc.mjs' } });
+        assert.equal(reply.result.isError, false);
+        const budget = JSON.parse(reply.result.content[1].text);
+        assert.equal(budget.usedActions, (i + 1) * 2);
+        assert.equal(budget.remainingActions, 8 - (i + 1) * 2);
+        assert.equal(budget.wrapUp, i === 2);
+        if (i === 2) assert.match(budget.guidance, /Stop tools and return the final JSON now/);
+        update({ sessionUpdate: 'tool_call_update', toolCallId: `t${i}`, status: 'completed' });
+      }
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify({ done: false,
+        summary: 'Saved a bounded draft.', decision: { action: 'continue', reason: 'Finish partial.txt and verify.' } }) } });
+      return { stopReason: 'end_turn' };
+    }));
+    assert.equal(result.ok, true, result.error); assert.equal(ctx.state().prompts, 1);
+    assert.equal(JSON.parse(result.text).done, false); assert.equal(JSON.parse(result.text).decision.action, 'continue');
+    assert.equal(await readFile(join(ctx.candidate, 'partial.txt'), 'utf8'), 'bounded draft');
+  }));
+
 test('malformed command requests give bounded no-execution guidance and accept a corrected argv request',
   { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
     let executed = 0;
@@ -21,6 +53,7 @@ test('malformed command requests give bounded no-execution guidance and accept a
         assert.equal(reply.result.isError, false);
         const feedback = JSON.parse(reply.result.content[0].text);
         assert.equal(feedback.operationCompleted, false); assert.equal(feedback.code, 'invalid_command');
+        assert.equal(JSON.parse(reply.result.content[1].text).kind, 'camus_native_budget');
         assert.doesNotMatch(feedback.guidance, /secret-argument|bad\x00arg/);
         assert.equal(executed, 0);
       }
@@ -50,6 +83,7 @@ test('overlapping MCP requests cannot interrupt or run beside a sandbox command'
       try {
         const busy = await mcp('tools/call', { name: 'write_file', arguments: { path: 'calc.mjs', content: 'must not execute', expectedSha256: null } });
         assert.equal(JSON.parse(busy.result.content[0].text).code, 'tool_busy');
+        assert.equal(JSON.parse(busy.result.content[1].text).usedActions, 2);
         assert.equal(executions, 1);
       } finally { release(); }
       assert.equal((await first).result.isError, false);
@@ -152,7 +186,7 @@ async function fixture(fn) {
           prompts++;
           assert((await readdir(receipts)).some(name => name.startsWith('devin-dispatch-')));
           await mcp('initialize', { protocolVersion: '2025-03-26' }); await mcp('tools/list', {});
-          return prompt({ update, callbacks, mcp, sourceMirror });
+          return prompt({ update, callbacks, mcp, sourceMirror, promptText: params.prompt[0].text });
         }
         throw new Error('Unexpected RPC.');
       } };
