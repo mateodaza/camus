@@ -109,3 +109,13 @@ test('host shell requests and host cleanup failure refuse safely', async () => {
   const result = await runDevinProtocolTurn({ ...options, closeTools: async () => { throw new Error('unproven'); } });
   assert.equal(result.reason, 'cleanup_unproven'); assert.equal(result.execution, 'uncertain');
 });
+
+test('transport failures retain only known fixed labels, not exception content', async () => {
+  for (const [message, label] of [['Native executor closed before completion.', 'executor_closed'],
+    ['Native protocol request failed.', 'request_rejected'], ['provider-secret', null]]) {
+    const { options } = fixture({ prompt: () => { throw new Error(message); } });
+    const result = await runDevinProtocolTurn(options);
+    assert.equal(result.rpcFailure, label); assert.equal(result.reason, 'native_turn_failed');
+    assert.equal(result.protocolStage, 'prompt'); assert.doesNotMatch(JSON.stringify(result), /provider-secret/);
+  }
+});

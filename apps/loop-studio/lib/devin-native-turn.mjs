@@ -1,7 +1,7 @@
 // Shared ACP lifecycle for a future optional adapter. This does not open a CLI,
 // grant filesystem authority, admit a seat, or satisfy Build's billing ledger.
 // The adapter supplies an isolated RPC factory and separately bounded host tools.
-import { createDevinProtocolObserver, validateDevinSession, DEVIN_NATIVE_MODEL } from './devin-native-protocol.mjs';
+import { createDevinProtocolObserver, validateDevinSession, DEVIN_NATIVE_MODEL, devinRpcFailure } from './devin-native-protocol.mjs';
 
 export function devinObservedContract(value) {
   const keys = ['version', 'maxPrompts', 'maxObservedTools', 'maxWallMs', 'billingUncertaintyAccepted'];
@@ -23,6 +23,7 @@ export async function runDevinProtocolTurn({ prompt, cwd, contract: inputContrac
     throw new Error('Invalid fresh Devin turn dependencies or selection; no replay or substitution.');
   let rpc, session, observer, dispatched = false, stopped = null, toolCount = 0, hostCount = 0;
   let observation = null, closeConfirmed = false, toolsClosed = false;
+  let protocolStage = 'initialize', rpcFailure = null;
   const active = new Set(), control = new AbortController(), started = Date.now();
   const stop = reason => {
     if (stopped) return;
@@ -75,18 +76,25 @@ export async function runDevinProtocolTurn({ prompt, cwd, contract: inputContrac
     if (initialized?.protocolVersion !== 1 || !initialized.authMethods?.some(item => item.id === 'devin-browser'))
       throw new Error('Unsupported ACP authentication.');
     // MCP belongs in private native config, never an unadvertised ACP transport.
+    protocolStage = 'session';
     session = validateDevinSession(await rpc.request('session/new', { cwd, mcpServers: [] }, Math.min(25000, remaining())));
     observer = createDevinProtocolObserver({ sessionId: session.sessionId, maxObservedTools: contract.maxObservedTools });
     // Caller must persist a one-shot dispatch marker before acknowledging this.
     // A crash after the marker remains uncertain and is never replayed here.
+    protocolStage = 'dispatch';
     await beforePrompt({ sessionId: session.sessionId, modelSelected: model, contract, signal: control.signal });
     if (stopped || Date.now() - started >= contract.maxWallMs) throw new Error('Stopped before prompt.');
     dispatched = true;
+    protocolStage = 'prompt';
     const result = await rpc.request('session/prompt', { sessionId: session.sessionId,
       prompt: [{ type: 'text', text: prompt }] }, remaining());
     if (stopped) throw new Error('Stopped prompt.');
+    protocolStage = 'completion';
     observation = observer.finish(result);
-  } catch { if (!stopped) stop(dispatched ? 'native_turn_failed' : 'preflight_refused'); }
+  } catch (error) {
+    rpcFailure = devinRpcFailure(error);
+    if (!stopped) stop(dispatched ? 'native_turn_failed' : 'preflight_refused');
+  }
   finally {
     clearTimeout(timer); signal?.removeEventListener('abort', abort); control.abort();
     try { await rpc?.close(); closeConfirmed = true; } catch { closeConfirmed = false; }
@@ -100,6 +108,8 @@ export async function runDevinProtocolTurn({ prompt, cwd, contract: inputContrac
     reason: completed ? null : !cleanupConfirmed ? 'cleanup_unproven' : stopped ?? 'incomplete_terminal',
     promptsSent: dispatched ? 1 : 0, observedTools: toolCount, hostRequests: hostCount,
     terminalReceived: observation?.terminalReceived === true, endTurn: observation?.endTurn === true,
+    protocolStage, rpcFailure, stopReason: ['end_turn', 'max_tokens', 'max_turn_requests', 'refusal', 'cancelled'].includes(observation?.stopReason) ? observation.stopReason : null,
+    toolFailures: observer?.diagnostics() ?? [],
     cleanupConfirmed, durationMs: Date.now() - started,
     modelSelected: model, modelActual: null, providerCalls: null, runTokens: null, usageIncomplete: true,
     usageNotifications: observation?.usageNotifications ?? null,

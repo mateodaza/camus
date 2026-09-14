@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, realpath, writeFile, readFile, readdir, rm, symlink, li
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { createDevinWorkspace } from './devin-native-workspace.mjs';
+import { createDevinWorkspace, DevinToolFeedback } from './devin-native-workspace.mjs';
 import { runNativeProcess } from './native-process.mjs';
 import { devinIsolatedEnvironment } from './devin-native-preflight.mjs';
 
@@ -93,6 +93,21 @@ test('checked host creation and adoption require current hashes and stopped writ
   assert.equal(await readFile(join(options.candidate, 'src/a.mjs'), 'utf8'), 'new');
   assert.equal(await readFile(join(options.candidate, 'another/new.mjs'), 'utf8'), '');
   await assert.rejects(workspace.adopt({ writersStopped: true }), /already consumed/);
+}));
+
+test('only host-proven no-write conflicts are recoverable; protection and integrity errors remain fatal', () => fixture(async options => {
+  const workspace = await createDevinWorkspace({ ...options, deniedPaths: ['private'] });
+  await assert.rejects(workspace.readText('missing.mjs'), e => e instanceof DevinToolFeedback && e.code === 'file_not_prepared');
+  await assert.rejects(workspace.writeText({ path: 'src/a.mjs', content: 'not-written', expectedSha256: 'stale' }),
+    e => e instanceof DevinToolFeedback && e.code === 'stale_file');
+  assert.equal((await workspace.readText('src/a.mjs')).content, 'old');
+  for (const path of ['.env', '../escape', 'private/key'])
+    await assert.rejects(workspace.readText(path), e => !(e instanceof DevinToolFeedback));
+  await assert.rejects(workspace.writeText({ path: 'test.mjs', content: 'not-written', expectedSha256: 'stale' }),
+    e => !(e instanceof DevinToolFeedback));
+  await rm(join(options.mirror, 'src/a.mjs'));
+  await symlink(join(options.outside, 'secret'), join(options.mirror, 'src/a.mjs'));
+  await assert.rejects(workspace.readText('src/a.mjs'), e => !(e instanceof DevinToolFeedback));
 }));
 
 test('real native staging sandbox allows only declared files, denies source, private files and fork',

@@ -3,13 +3,13 @@
 import { mkdir, mkdtemp, realpath, open, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { prepareDevinContext } from '../devin-native-context.mjs';
-import { createDevinWorkspace, isDevinVisiblePath } from '../devin-native-workspace.mjs';
+import { createDevinWorkspace, isDevinVisiblePath, DevinToolFeedback } from '../devin-native-workspace.mjs';
 import { runDevinProtocolTurn, devinObservedContract } from '../devin-native-turn.mjs';
 import { startDevinMcp } from '../devin-native-mcp.mjs';
 import { assessDevinFilePermission, mergeDevinPermissionTool, selectDevinOneTimePermission } from '../devin-native-permission.mjs';
-import { DEVIN_NATIVE_MODEL, DEVIN_NATIVE_DIGEST } from '../devin-native-protocol.mjs';
+import { DEVIN_NATIVE_MODEL, DEVIN_NATIVE_DIGEST, publicDevinDiagnostic } from '../devin-native-protocol.mjs';
 import { CodexRpc } from '../codex-rpc.mjs';
 import { runNativeProcess } from '../native-process.mjs';
 import { grokSubscriptionPolicy } from './grok-subscription.mjs';
@@ -35,18 +35,22 @@ export async function runNativeDevin(options, dependencies = {}) {
   let context, mirror, toolScratch, workspace, broker, outcome, adopted = false, active = false, sessionId, commandActive = false;
   const control = new AbortController(), calls = new Map(), permissions = new Set(), tasks = new Set();
   const abort = () => control.abort(); signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
-  const started = Date.now(); const timer = setTimeout(abort, contract.maxWallMs);
+  const started = Date.now(); const timer = setTimeout(() => { localStopReason ??= 'deadline'; abort(); }, contract.maxWallMs);
   let closed = true, mutated = false;
   let nativeTools = 0, hostTools = 0;
   let refusalStage = 'preparation';
+  let localStopReason = null, lastHostTool = null;
+  const refuseTool = () => { localStopReason ??= 'tool_boundary_refused'; abort(); };
+  const diagnostic = () => publicDevinDiagnostic({ ...outcome, stage: refusalStage, lastHostTool,
+    reason: outcome?.reason === 'cancelled' && localStopReason ? localStopReason : outcome?.reason });
   const reportActions = () => {
     // Deliberately conservative: ACP tool events and host executions both
     // consume allowance, even when they describe the same underlying action.
     const actions = nativeTools + hostTools;
     const reason = onNativeProgress({ usage: null, responses: 0, actions });
-    if (reason || actions > contract.maxObservedTools) { abort(); throw new Error('Devin observed action allowance reached.'); }
+    if (reason || actions > contract.maxObservedTools) { localStopReason ??= 'observed_tool_limit'; abort(); throw new Error('Devin observed action allowance reached.'); }
   };
-  const hostAction = () => { hostTools++; reportActions(); };
+  const hostAction = ({ tool } = {}) => { if (tool) lastHostTool = tool; hostTools++; reportActions(); };
   try {
     context = await (dependencies.prepareContext ?? prepareDevinContext)({ signal: control.signal });
     mirror = await realpath(await mkdtemp(join(tmpdir(), 'camus-devin-workspace-')));
@@ -64,17 +68,32 @@ export async function runNativeDevin(options, dependencies = {}) {
     const runTool = fn => async args => {
       if (!active || control.signal.aborted || commandActive) throw new Error('Native tools are outside the active turn.');
       const pending = Promise.resolve().then(() => fn(args)); tasks.add(pending);
-      try { return await pending; } finally { tasks.delete(pending); }
+      try { return await pending; }
+      catch (error) {
+        if (!(error instanceof DevinToolFeedback) || control.signal.aborted) throw error;
+        // The RPC succeeded in reporting a no-write conflict. This is not a
+        // successful file operation or permission to retry an uncertain effect.
+        return JSON.stringify({ operationCompleted: false, code: error.code, guidance: error.message });
+      } finally { tasks.delete(pending); }
     };
     const relativePath = value => relative(mirror, workspace.mapPath(value));
-    broker = await (dependencies.startBroker ?? startDevinMcp)({ maxCalls: contract.maxObservedTools, onRefusal: abort, onCall: hostAction, tools: [
+    broker = await (dependencies.startBroker ?? startDevinMcp)({ maxCalls: contract.maxObservedTools, onRefusal: refuseTool, onCall: hostAction, tools: [
+      { name: 'list_files', description: 'List prepared file paths and write permissions, 100 per page. Start at offset 0. Includes host-created files.',
+        inputSchema: schema({ offset: { type: 'integer', minimum: 0, maximum: 4096 } }),
+        invoke: runTool(async args => {
+          exact(args, ['offset']);
+          if (!Number.isSafeInteger(args.offset) || args.offset < 0 || args.offset > 4096) throw new Error('Invalid inventory offset.');
+          const files = workspace.listFiles();
+          return JSON.stringify({ files: files.slice(args.offset, args.offset + 100),
+            nextOffset: args.offset + 100 < files.length ? args.offset + 100 : null });
+        }) },
       { name: 'read_file', description: 'Read a prepared UTF-8 file and its SHA-256.', inputSchema: schema({ path: string }),
         invoke: runTool(async args => { exact(args, ['path']); return JSON.stringify(await workspace.readText(args.path)); }) },
       { name: 'search', description: 'Literal text search over prepared files; bounded results, no shell or regex.', inputSchema: schema({ query: string }),
         invoke: runTool(async args => {
           exact(args, ['query']); if (typeof args.query !== 'string' || !args.query || args.query.length > 256) throw new Error('Invalid search.');
           const matches = [];
-          for (const item of workspace.manifest) {
+          for (const item of workspace.listFiles()) {
             const text = (await workspace.readText(item.path)).content;
             for (const [line, value] of text.split('\n').entries()) if (value.includes(args.query)) {
               matches.push({ path: item.path, line: line + 1, text: value.slice(0, 200) });
@@ -109,7 +128,7 @@ export async function runNativeDevin(options, dependencies = {}) {
     closed = false;
     refusalStage = 'native_turn';
     outcome = await runDevinProtocolTurn({ model, cwd: mirror, contract, signal: control.signal,
-      prompt: `${prompt}\n\nCamus native tool policy: use native read/edit only for prepared existing files. Use the camus MCP search/read_file/write_file/run_command tools for search, creation and tests. Discover them when needed. Native exec is blocked. Commands see read-only staging, no credentials or network. Use TMPDIR for temporary outputs. Request new authority rather than bypassing unavailable operations. Return the requested JSON decision without Markdown.`,
+      prompt: `${prompt}\n\nCamus native tool policy: use native read/edit only for prepared existing files. Use camus MCP list_files (offset 0, then nextOffset) to discover the prepared inventory, and search/read_file/write_file/run_command for search, creation and tests. Discover these tools when needed. A tool response with operationCompleted:false made no change: follow its guidance within the existing budget; never treat it as a successful write. Native exec is blocked. Commands see read-only staging, no credentials or network. Use TMPDIR for temporary outputs. Request new authority rather than bypassing unavailable operations. Return the requested JSON decision without Markdown.`,
       rpcFactory: callbacks => (dependencies.rpcFactory ?? (value => new CodexRpc(value)))({ ...callbacks,
         command: '/usr/bin/sandbox-exec', args: ['-p', workspace.profile, context.harness, '--config', context.config, '--sandbox', 'acp', '--model', model],
         cwd: context.root, env: context.env, protocol: 'jsonrpc2' }),
@@ -148,18 +167,23 @@ export async function runNativeDevin(options, dependencies = {}) {
       closeTools: async () => { active = false; abort(); await broker.close(); await Promise.allSettled([...tasks]); },
     });
     closed = outcome.cleanupConfirmed;
-    if (outcome.execution !== 'completed') return { ok: false, uncertain: outcome.promptsSent > 0,
-      noModelCalled: outcome.promptsSent === 0, usage: null, usageIncomplete: true,
-      stagedDraft: outcome.promptsSent > 0 && closed ? { path: mirror, adopted: false, replayAllowed: false } : null,
-      candidateQuiescent: false, failureCode: 'devin_native_incomplete', error: 'Devin native turn did not supply a complete contained result.' };
     // Keep terminal evidence BEFORE parsing/adoption. This bounded private file
     // is never a success receipt or public diagnostic; it can include task text.
     // A malformed decision must not erase proof of how the native turn ended.
     refusalStage = 'terminal_evidence';
-    await writeFile(join(receiptsDir, `devin-terminal-${hash(sessionId)}.json`), JSON.stringify({
+    await writeFile(join(receiptsDir, `devin-terminal-${sessionId ? hash(sessionId) : randomUUID()}.json`), JSON.stringify({
       ...outcome, artifactDigest: context.digest, modelSelected: model,
+      diagnostic: diagnostic(),
       candidateAdopted: false, privateTaskContent: true,
     }), { flag: 'wx', mode: 0o600 });
+    if (outcome.execution !== 'completed') {
+      refusalStage = 'native_turn';
+      return { ok: false, uncertain: outcome.promptsSent > 0,
+        noModelCalled: outcome.promptsSent === 0, usage: null, usageIncomplete: true,
+        stagedDraft: outcome.promptsSent > 0 && closed ? { path: mirror, adopted: false, replayAllowed: false } : null,
+        diagnostic: diagnostic(), candidateQuiescent: false, failureCode: 'devin_native_incomplete',
+        error: 'Devin native turn did not supply a complete contained result.' };
+    }
     refusalStage = 'decision_json';
     let decision;
     try { decision = JSON.parse(outcome.text); } catch { throw new Error('Devin completion was not the required JSON decision.'); }
@@ -187,8 +211,7 @@ export async function runNativeDevin(options, dependencies = {}) {
     return { ok: false, noModelCalled: !sessionId, uncertain: !!sessionId || mutated,
       usage: null, usageIncomplete: true, candidateQuiescent: false, failureCode: 'devin_native_refused',
       stagedDraft: sessionId && closed && !adopted ? { path: mirror, adopted: false, replayAllowed: false } : null,
-      diagnostic: { stage: refusalStage, terminalReceived: outcome?.terminalReceived === true,
-        cleanupConfirmed: outcome?.cleanupConfirmed === true },
+      diagnostic: diagnostic(),
       error: `Devin native ${refusalStage} refused. No fallback or replay.` };
   } finally {
     clearTimeout(timer); signal?.removeEventListener('abort', abort); active = false; abort();

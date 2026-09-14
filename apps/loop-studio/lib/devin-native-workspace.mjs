@@ -10,6 +10,15 @@ import { renderDevinPreflightProfile } from './devin-native-preflight.mjs';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const within = (a, b) => b === a || b.startsWith(a + sep);
 const protectedPart = value => /^(?:\.git|\.env(?:\..*)?|\.npmrc|\.netrc|\.camus|\.claude|\.codex|\.qwen|\.grok|\.devin|\.ssh|\.aws|\.azure|node_modules)$/i.test(value);
+// Constructed only by host checks BEFORE a write. Never classify provider prose
+// or arbitrary filesystem/permission errors as recoverable.
+export class DevinToolFeedback extends Error {
+  constructor(code) {
+    super(code === 'stale_file' ? 'Read the file again and use its current hash.' : 'Use list_files to choose a prepared file.');
+    if (!['stale_file', 'file_not_prepared'].includes(code)) throw new Error('Invalid Devin feedback.');
+    this.code = code;
+  }
+}
 function fileName(value) {
   if (typeof value !== 'string' || !value || value.length > 1024 || value !== value.normalize('NFC')
       || value.includes('\\') || /[\x00-\x1f\x7f]/.test(value) || value.startsWith('/')
@@ -118,9 +127,12 @@ export async function createDevinWorkspace({ candidate, mirror, root, harness, f
     + `\n(deny file-read* file-write* (subpath ${JSON.stringify(candidate)}))`;
   let adopted = false;
   const workspace = { profile, manifest: Object.freeze(manifest), manifestHash: hash(JSON.stringify(manifest)),
+    listFiles() { return snapshots.map(item => ({ path: item.path, writable: item.mode !== 'read' })); },
     async readText(value) {
       const name = fileName(value), item = snapshots.find(item => item.path === name);
-      if (!item) throw new Error('Devin read is outside the prepared manifest.');
+      if (denied.some(path => name.toLowerCase() === path || name.toLowerCase().startsWith(path + '/')))
+        throw new Error('Devin read path is denied.');
+      if (!item) throw new DevinToolFeedback('file_not_prepared');
       const bytes = await readBounded(mirror, name, maxFileBytes);
       const text = bytes.toString('utf8');
       if (!Buffer.from(text).equals(bytes)) throw new Error('Devin text tools refuse non-UTF-8 files.');
@@ -147,7 +159,8 @@ export async function createDevinWorkspace({ candidate, mirror, root, harness, f
         }
       } else {
         const before = await readBounded(mirror, name, maxFileBytes);
-        if (item.mode === 'read' || hash(before) !== expectedSha256) throw new Error('Devin write lacks the current file hash.');
+        if (item.mode === 'read') throw new Error('Devin write is read-only.');
+        if (hash(before) !== expectedSha256) throw new DevinToolFeedback('stale_file');
         await writeFile(join(mirror, name), content);
       }
       return { sha256: hash(Buffer.from(content)) };

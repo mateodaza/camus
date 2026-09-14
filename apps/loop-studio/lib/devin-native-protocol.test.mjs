@@ -6,6 +6,17 @@ import { join } from 'node:path';
 import { runNativeProcess } from './native-process.mjs';
 import { assertDevinModelSelection, validateDevinSession, inspectDevinUsage, createDevinProtocolObserver, classifyDevinToolFailure,
   DEVIN_NATIVE_MODEL } from './devin-native-protocol.mjs';
+import { publicDevinDiagnostic } from './devin-native-protocol.mjs';
+
+test('public diagnostics allow only fixed labels and bounded counters, never arbitrary provider values', () => {
+  const secret = 'synthetic-private-provider-text';
+  const safe = publicDevinDiagnostic({ stage: 'native_turn', reason: secret, protocolStage: secret,
+    stopReason: secret, observedTools: Infinity, hostRequests: -1, terminalReceived: true, cleanupConfirmed: true,
+    text: secret, toolFailures: Array.from({ length: 40 }, () => ({ nativeTool: secret, categories: ['path_unavailable', secret] })) });
+  assert.doesNotMatch(JSON.stringify(safe), /synthetic-private/);
+  assert.equal(safe.reason, null); assert.equal(safe.observedTools, null); assert.equal(safe.hostRequests, null);
+  assert.equal(safe.toolFailures.length, 16); assert.equal(publicDevinDiagnostic({ stage: secret }), null);
+});
 import { devinIsolatedEnvironment, devinIsolatedConfig, validateDevinLogin,
   renderDevinPreflightProfile, inspectDevinAcp } from './devin-native-preflight.mjs';
 

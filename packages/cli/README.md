@@ -28,9 +28,14 @@ for the first real candidate, model setup, and honest terminal states.
 > it; configured API credentials remain local and go only to that endpoint.
 
 <details>
-<summary><strong>Current release: 0.4.22</strong></summary>
+<summary><strong>Current release: 0.4.23</strong></summary>
 
-**New in 0.4.22:** optional **SWE-2 High through native Devin**, with independent
+**New in 0.4.23:** incomplete SWE turns preserve private evidence and expose
+sanitized reasons in CLI/Studio. File discovery and host-proven no-write conflict
+feedback reduce avoidable stops; unknown native failures remain fail-closed.
+[Maintenance notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.23.md).
+
+**Added in 0.4.22:** optional **SWE-2 High through native Devin**, with independent
 reviewer selection in CLI and Studio. Use `--maker devin:swe-2-high
 --maker-executor devin_native --accept-devin-unmetered`. Saved Devin login,
 no API fallback, no default-model change. macOS Apple Silicon, pinned CLI,
@@ -561,7 +566,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.4.22
+npm i -g camus-cli@0.4.23
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)

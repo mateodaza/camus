@@ -48,7 +48,7 @@ export async function startDevinMcp({ tools, maxCalls, onRefusal = () => {}, onC
           || Object.keys(p).some(key => !['name', 'arguments', '_meta'].includes(key))
           || closed || calls >= maxCalls || pending.size || consumedIds.has(id)) return refuse();
       calls++; consumedIds.add(id); // Consume before await; never retry an effect.
-      const operation = Promise.resolve().then(() => { onCall(); return tool.invoke(args); }); pending.add(operation);
+      const operation = Promise.resolve().then(() => { onCall({ tool: tool.name }); return tool.invoke(args); }); pending.add(operation);
       try {
         const output = await operation;
         if (typeof output !== 'string' || Buffer.byteLength(output) > 262144) throw new Error('Bounded output exceeded.');

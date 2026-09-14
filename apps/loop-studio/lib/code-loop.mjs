@@ -7,6 +7,7 @@ import { codeMakerContext, discoveryProgress, DISCOVERY_STALL_STEPS, MUTATION_ST
 import { NATIVE_EXECUTOR, isNativeExecutor, validateCodeExecutor } from './code-native-policy.mjs';
 import { initializeCodeOwnedProcessRegistry } from './code-owned-process-registry.mjs';
 import { DEVIN_OBSERVED_CONSENT, devinBudgetSemantics } from './devin-code-seat.mjs';
+import { publicDevinDiagnostic } from './devin-native-protocol.mjs';
 
 const TRANSIENT = /\b(?:429|502|503|504|ECONNRESET|ETIMEDOUT|rate.limit|temporarily unavailable)\b/i;
 const TERMINAL = new Set(['complete', 'refused']);
@@ -335,8 +336,9 @@ export async function runProductiveCodeLoop(options, h) {
     return record.pendingCall.response;
   };
   const failedCall = async (response, role) => {
+    const devinDiagnostic = nativeExecutor === 'devin_native' && role === 'maker' ? publicDevinDiagnostic(response?.diagnostic) : null;
     const nativeDiagnostic = native && role === 'maker' && /^[a-z][a-z0-9_]{0,63}$/.test(response?.failureCode ?? '')
-      ? ` Native diagnostic: ${response.failureCode}.` : '';
+      ? ` Native diagnostic: ${response.failureCode}${devinDiagnostic?.reason ? ` (${devinDiagnostic.reason})` : ''}.` : '';
     if (response.budget) return question(response.budget, 'budget', { type: 'budget_extension' });
     if (response.uncertain) {
       if (native && role === 'maker' && response.recoveryCheckpoint === true) {
@@ -364,7 +366,7 @@ export async function runProductiveCodeLoop(options, h) {
         return null;
       }
       return native && role === 'maker'
-        ? finish('needs_decision', `${response.stopKind === 'budget' ? `${cleanError(response.error ?? 'Native accounting limit reached').replace(/[.]+$/, '')}. ` : ''}Native turn outcome is uncertain.${nativeDiagnostic} Candidate preserved for inspection; cleanup or policy evidence is insufficient, so automatic adoption or replay is refused.`, 'refused')
+        ? finish('needs_decision', `${response.stopKind === 'budget' ? `${cleanError(response.error ?? 'Native accounting limit reached').replace(/[.]+$/, '')}. ` : ''}Native turn outcome is uncertain.${nativeDiagnostic} Candidate preserved for inspection; ${devinDiagnostic?.cleanupConfirmed ? 'native cleanup was confirmed, but an acceptable completed result was not established' : 'cleanup or policy evidence is insufficient'}, so automatic adoption or replay is refused.`, 'refused')
         : question('Provider completion is uncertain. Explicitly authorize a bounded retry or leave this candidate parked.', 'uncertain_call');
     }
     if (native && role === 'maker' && response.definitiveTurnEnd && nativeDiagnostic) {

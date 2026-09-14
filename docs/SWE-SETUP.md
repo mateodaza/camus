@@ -22,7 +22,7 @@ to guarantee zero charges; check the terms and usage in your Devin account.
 ## CLI
 
 ```sh
-npm install -g camus-cli@0.4.22
+npm install -g camus-cli@0.4.23
 camus models
 camus build --repo /path/to/clean-repository \
   --task-file /path/to/task.txt --contract-file /path/to/acceptance.txt \
@@ -64,6 +64,18 @@ the hosted demo does not execute your local login or repository.
   replayed. Acceptance remains a separate human decision.
 
 ## Evidence, not a model ranking
+
+Use 0.4.23 or later for failure diagnostics and bounded host-tool feedback.
+`list_files` provides paginated prepared-file discovery. A host response with
+`operationCompleted:false` reports a no-write conflict, not a completed edit;
+follow its guidance within the existing budget. Unknown native tool failures and
+security refusals still stop. Incomplete runs expose sanitized `nativeDiagnostic`
+fields in CLI inspection and Studio status, with private terminal evidence stored
+locally. Never post raw terminal files publicly.
+
+A later cross-project 0.4.22 run stopped before edits or review and lost its
+underlying reason. 0.4.23 fixes the diagnostic loss; the original trigger remains
+unknown, and no paid rerun has yet established that project's success.
 
 The bounded native SWE → frozen verification → Luna medium smoke passed. A
 subsequent ten-file snapshot of a real application's package passed a two-file

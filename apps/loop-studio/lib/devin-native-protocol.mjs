@@ -10,6 +10,41 @@ const record = value => value !== null && typeof value === 'object' && !Array.is
 const id = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
 const integer = value => Number.isSafeInteger(value) && value >= 0;
 
+const REASONS = new Set(['cleanup_unproven', 'cancelled', 'deadline', 'observed_tool_limit',
+  'pre_dispatch_activity', 'tool_failed', 'protocol_refused', 'tool_boundary_refused',
+  'native_turn_failed', 'preflight_refused', 'incomplete_terminal']);
+const STAGES = new Set(['preparation', 'native_turn', 'terminal_evidence', 'decision_json',
+  'decision_schema', 'decision_authority', 'staged_adoption', 'result_receipt']);
+const CATEGORIES = new Set(['permission_denied', 'path_unavailable', 'metadata_or_symlink',
+  'prior_read_required', 'stale_file', 'permission_required', 'match_not_found', 'unclassified']);
+const RPC_ERRORS = new Map([
+  ['Native transport closed.', 'transport_closed'], ['Native executor could not start.', 'executor_start_failed'],
+  ['Native executor closed before completion.', 'executor_closed'], ['Native output limit exceeded.', 'output_limit'],
+  ['Invalid native protocol message.', 'invalid_message'], ['Invalid native protocol response.', 'invalid_response'],
+  ['Native protocol request failed.', 'request_rejected'], ['Native protocol request timed out.', 'request_timeout'],
+  ['Native protocol timed out.', 'request_timeout'], ['Native executor requested unsupported authority.', 'unsupported_authority'],
+  ['Native executor reused a live request id.', 'reused_request_id'],
+]);
+export const devinRpcFailure = error => RPC_ERRORS.get(error?.message) ?? null;
+
+// Re-project even authenticated checkpoints: only fixed labels/counters may
+// reach CLI/Studio status. Native text, arguments, paths and arbitrary keys cannot.
+export function publicDevinDiagnostic(value) {
+  if (!record(value) || !STAGES.has(value.stage)) return null;
+  return { stage: value.stage, reason: REASONS.has(value.reason) ? value.reason : null,
+    terminalReceived: value.terminalReceived === true, cleanupConfirmed: value.cleanupConfirmed === true,
+    protocolStage: ['initialize', 'session', 'dispatch', 'prompt', 'completion'].includes(value.protocolStage) ? value.protocolStage : null,
+    rpcFailure: [...RPC_ERRORS.values()].includes(value.rpcFailure) ? value.rpcFailure : null,
+    lastHostTool: ['list_files', 'read_file', 'search', 'write_file', 'run_command'].includes(value.lastHostTool) ? value.lastHostTool : null,
+    stopReason: ['end_turn', 'max_tokens', 'max_turn_requests', 'refusal', 'cancelled'].includes(value.stopReason) ? value.stopReason : null,
+    observedTools: integer(value.observedTools) && value.observedTools <= 1000 ? value.observedTools : null,
+    hostRequests: integer(value.hostRequests) && value.hostRequests <= 1001 ? value.hostRequests : null,
+    toolFailures: (Array.isArray(value.toolFailures) ? value.toolFailures : []).slice(0, 16).map(item => ({
+      nativeTool: ['read', 'edit', 'write', 'exec'].includes(item?.nativeTool) ? item.nativeTool : 'unreported',
+      categories: [...new Set((Array.isArray(item?.categories) ? item.categories : []).filter(c => CATEGORIES.has(c)))],
+    })) };
+}
+
 // Fixed labels only: provider text, file paths, credentials and native arguments
 // never enter a persisted diagnostic. These are clues, not root-cause verdicts.
 export function classifyDevinToolFailure(tool) {

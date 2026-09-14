@@ -71,13 +71,15 @@ test('SWE unknown inference usage reaches verification/review; later turns inclu
 
 test('SWE refuses missing consent before any maker and preserves uncertainty without automatic recovery', async t => {
   let turns = 0;
-  const f = await fixture(t, async () => { turns++; return { ok: false, uncertain: true, candidateQuiescent: false, usage: null }; });
+  const f = await fixture(t, async () => { turns++; return { ok: false, uncertain: true, candidateQuiescent: false, usage: null,
+    failureCode: 'devin_native_incomplete', diagnostic: { stage: 'native_turn', reason: 'tool_failed', cleanupConfirmed: true } }; });
   f.options.seats.maker = { backend: 'devin', model: 'swe-2-high', codeExecutor: 'devin_native' };
   f.options.backendSnapshot.maker = DEVIN_CODE_BACKEND;
   assert.match((await f.run()).error, /SWE requires/); assert.equal(turns, 0);
   f.options.seats.maker.observedBudgetConsent = 'devin-observed/v1';
   const result = await f.run();
   assert.equal(turns, 1); assert.equal(result.resumable, false); assert.match(result.error, /uncertain/);
+  assert.match(result.error, /devin_native_incomplete \(tool_failed\)/);
   assert.equal(result.review, null);
 });
 

@@ -5,6 +5,7 @@ import { createServer, createConnection } from 'node:net';
 import { readFile, lstat, realpath, appendFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadMachineSalt, studioAtomicWrite } from './grandfather.mjs';
+import { publicDevinDiagnostic } from './devin-native-protocol.mjs';
 
 export const CODE_RUN_VERSION = 2;
 export const digest = (value) => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
@@ -73,7 +74,7 @@ export async function codeRunStatus(dir) {
     interrupted: state.status === 'running' && !owned, updatedAt: state.updatedAt,
     revision: state.revision, candidate: { ...state.candidate, diff: undefined }, question: state.question ?? null,
     reason: state.reason ?? null, usage: state.usage, limits: state.limits,
-    ...(state.seats?.maker?.codeExecutor === 'devin_native' ? { budgetSemantics: {
+    ...(state.seats?.maker?.codeExecutor === 'devin_native' ? { nativeDiagnostic: publicDevinDiagnostic(state.pendingCall?.response?.diagnostic), budgetSemantics: {
       version: 'devin-observed/v1', internalModelCalls: null, totalInferenceTokens: null,
       calls: 'Camus dispatches; not internal Devin inferences', tokens: 'planning reservations; not a billing cap',
     } } : {}),

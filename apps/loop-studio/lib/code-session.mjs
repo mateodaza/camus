@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { readFile, lstat } from 'node:fs/promises';
 import { readCodeRunSnapshot } from './code-run-state.mjs';
 import { redactCodeText, diagnosticSecrets } from './code-diagnostics.mjs';
+import { publicDevinDiagnostic } from './devin-native-protocol.mjs';
 import { FILE_ACTION_POLICY, NATIVE_RECOVERY_POLICY } from './code-loop.mjs';
 import { MAKER_PROGRESS_POLICY } from './code-context.mjs';
 import { isNativeExecutor } from './code-native-policy.mjs';
@@ -323,7 +324,7 @@ export async function inspectCodeRun(dir) {
     candidate: candidateProjection(state.candidate),
     seats: { maker: seatProjection(state.seats.maker), reviewer: seatProjection(state.seats.reviewer) },
     usage,
-    ...(state.seats.maker.codeExecutor === 'devin_native' ? { budgetSemantics: {
+    ...(state.seats.maker.codeExecutor === 'devin_native' ? { nativeDiagnostic: publicDevinDiagnostic(state.pendingCall?.response?.diagnostic), budgetSemantics: {
       version: 'devin-observed/v1', internalModelCalls: null, totalInferenceTokens: null,
       calls: 'Camus dispatches; not internal Devin inferences', tokens: 'planning reservations; not a billing cap',
     } } : {}),

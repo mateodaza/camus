@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, readdir, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { acquireCodeRun, saveCodeCheckpoint } from './code-run-state.mjs';
+import { acquireCodeRun, saveCodeCheckpoint, codeRunStatus } from './code-run-state.mjs';
 import { codeRunDirectory, inspectCodeRun, formatCodeInspection } from './code-session.mjs';
 import { parseCodeBuildArgs } from '../code-build.mjs';
 import { FILE_ACTION_POLICY, NATIVE_RECOVERY_POLICY } from './code-loop.mjs';
@@ -50,6 +50,24 @@ async function fixture(t, mutate = () => {}) {
   await writeFile(join(candidate, 'sentinel.txt'), 'unchanged');
   return { root, id, dir, candidate, state };
 }
+
+test('CLI inspection and Studio status share sanitized SWE failure evidence without granting recovery', async t => {
+  const f = await fixture(t, state => {
+    state.seats.maker = { backend: 'devin', model: 'swe-2-high', codeExecutor: 'devin_native' };
+    state.phase = 'refused'; state.status = 'needs_decision';
+    state.pendingCall = { role: 'maker', response: { uncertain: true, diagnostic: {
+      stage: 'native_turn', reason: 'tool_failed', cleanupConfirmed: true, terminalReceived: false,
+      protocolStage: 'prompt', observedTools: 9, text: 'PRIVATE_PROVIDER_TEXT',
+      toolFailures: [{ nativeTool: 'read', categories: ['path_unavailable', 'PRIVATE_PROVIDER_TEXT'] }],
+    } } };
+  });
+  const inspection = await inspectCodeRun(f.dir), status = await codeRunStatus(f.dir);
+  assert.deepEqual(inspection.nativeDiagnostic, status.nativeDiagnostic);
+  assert.equal(inspection.nativeDiagnostic.reason, 'tool_failed');
+  assert.equal(inspection.nativeDiagnostic.cleanupConfirmed, true);
+  assert.equal(inspection.resumable, false); assert.equal(status.resumable, false);
+  assert.doesNotMatch(JSON.stringify(inspection), /PRIVATE_PROVIDER_TEXT/);
+});
 
 test('inspection is one authenticated, bounded, read-only checkpoint projection', async (t) => {
   const f = await fixture(t);

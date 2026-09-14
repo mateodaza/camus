@@ -5,6 +5,15 @@ Owner: Camus maintainer. Updated September 14, 2026.
 
 ## Current checkpoint
 
+- **0.4.23 diagnostic hardening:** a subsequent cross-project 0.4.22 run stopped
+  before edits or review after approximately 36 seconds and nine actions. Its
+  adapter returned before saving the incomplete outcome. The trigger cannot be
+  reconstructed. All outcomes now retain private evidence and sanitized public
+  reason/stage/cleanup/tool-failure fields. Prepared-file discovery and host-proven
+  no-write feedback are covered offline; unknown native failures still stop.
+  No live rerun was made for this maintenance release. Historical uncertain work
+  remains inspection-only. See [0.4.23 notes](RELEASE-0.4.23.md).
+
 - **Real-package check 3 passed (September 14):** one SWE maker prompt, frozen
   verification and one Luna medium review completed in 76.142 seconds. SWE used
   six observed actions; 32 tests passed and Luna approved with zero findings.
