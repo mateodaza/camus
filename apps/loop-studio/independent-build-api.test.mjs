@@ -50,8 +50,9 @@ try {
     { maker: { backend: 'codex', model: 'gpt-5.6-luna' }, reviewer: { backend: 'claude', model: 'sonnet' } },
     { maker: { backend: 'claude', model: 'sonnet' }, reviewer: { backend: 'claude', model: 'sonnet' } },
     { maker: { backend: 'grok', model: 'grok-4.6' }, reviewer: { backend: 'claude', model: 'sonnet' } },
+    { maker: { backend: 'devin', model: 'swe-2-high', codeExecutor: 'devin_native', observedBudgetConsent: 'devin-observed/v1' }, reviewer: { backend: 'codex', model: 'gpt-5.6-luna' } },
   ]) {
-    const response = await launch({ pairing, ...(pairing.maker.backend === 'grok' ? { codeLimits: { maxTokens: 32_768 } } : {}) });
+    const response = await launch({ pairing, ...(['grok', 'devin'].includes(pairing.maker.backend) ? { codeLimits: { maxTokens: 32_768 } } : {}) });
     const created = await response.json();
     assert.equal(response.status, 201, JSON.stringify(created));
     await (await fetch(`${base}/api/runs/${created.id}/events`)).text();
@@ -75,6 +76,7 @@ try {
     assert.equal(resume.status, 409, 'experimental candidate never falls into legacy replay');
   }
   assert.equal((await launch({ pairing: { maker: { backend: 'codex', model: 'not-offered' }, reviewer: { backend: 'claude', model: 'sonnet' } } })).status, 400);
+  assert.equal((await launch({ pairing: { maker: { backend: 'devin', model: 'swe-2-high', codeExecutor: 'devin_native' }, reviewer: { backend: 'codex', model: 'gpt-5.6-luna' } }, codeLimits: { maxTokens: 65536 } })).status, 400, 'missing SWE uncertainty consent cannot dispatch');
   assert.equal((await launch({ modelRouting: 'automatic' })).status, 400);
   assert.equal((await launch({ publish: true })).status, 400);
   assert.equal((await launch({ codeMode: 'invented' })).status, 400);

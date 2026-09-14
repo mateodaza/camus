@@ -212,6 +212,16 @@ const grokBuiltinPlane = createStudioControlPlane({
   },
 });
 assert.ok(grokBuiltinPlane.launchActionFingerprint, 'Studio accepts the shared vendor-managed Grok built-in instead of demanding qual1');
+const devinInput = { id: 'devin-code-only', goal: 'Run the exact explicit experimental SWE code contract.',
+  acceptanceContract: 'Preserve no words admission and require independent review.', lane: 'build', codeMode: 'independent', targetPath: '/fixture',
+  models: { maker: { backend: 'devin', model: 'swe-2-high', executor: 'devin_cli', transport: 'vendor_managed',
+    codeExecutor: 'devin_native', observedBudgetConsent: 'devin-observed/v1' },
+    reviewer: { backend: 'codex', model: 'reviewer', transport: 'vendor_managed' } } };
+assert.ok(createStudioControlPlane(devinInput).launchActionFingerprint);
+for (const patch of [{ lane: 'freeform' }, { models: { ...devinInput.models, maker: { ...devinInput.models.maker, observedBudgetConsent: undefined } } },
+  { models: { maker: devinInput.models.reviewer, reviewer: devinInput.models.maker } }]) {
+  assert.throws(() => createStudioControlPlane({ ...devinInput, ...patch }), /Studio launch refuse/);
+}
 assert.throws(() => createStudioControlPlane({
   id: 'run-fake-builtin-seat',
   goal: 'Refuse a configured backend that borrows the built-in fingerprint namespace.',

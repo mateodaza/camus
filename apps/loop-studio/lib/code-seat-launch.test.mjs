@@ -83,7 +83,7 @@ const roleSwapped = await prepareCodeSeats({ pairing: { maker: pick(codex), revi
 assert.equal(roleSwapped.models.maker.effort, 'medium', 'a role-swapped seat never inherits the other role\'s effort');
 assert.equal(roleSwapped.models.reviewer.effort, 'medium', 'a role-swapped seat defaults deterministically');
 const choices = await codeModelChoices(catalog, { platform: 'darwin', arch: 'arm64', nodeMajor: 22, readiness: readyHarness });
-assert.equal(choices.maker.length, choices.reviewer.length);
+assert.equal(choices.maker.length, choices.reviewer.length + 1, 'SWE is code-maker-only');
 assert.doesNotMatch(JSON.stringify(choices), /baseUrl|apiKey|changed.invalid/);
 assert.equal(choices.maker.find(seat => seat.backend === 'claude').effort, true, 'Build exposes the Claude CLI effort capability without changing the words-seat catalog');
 assert.deepEqual(parseCodeSeat('host:qwen:large'), { backend: 'host', model: 'qwen:large' });

@@ -73,6 +73,10 @@ export async function codeRunStatus(dir) {
     interrupted: state.status === 'running' && !owned, updatedAt: state.updatedAt,
     revision: state.revision, candidate: { ...state.candidate, diff: undefined }, question: state.question ?? null,
     reason: state.reason ?? null, usage: state.usage, limits: state.limits,
+    ...(state.seats?.maker?.codeExecutor === 'devin_native' ? { budgetSemantics: {
+      version: 'devin-observed/v1', internalModelCalls: null, totalInferenceTokens: null,
+      calls: 'Camus dispatches; not internal Devin inferences', tokens: 'planning reservations; not a billing cap',
+    } } : {}),
     resumable: !owned && !['complete', 'refused'].includes(state.phase) };
 }
 

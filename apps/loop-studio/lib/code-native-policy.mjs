@@ -2,12 +2,15 @@ import { mkdir, realpath, writeFile, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { validateDevinCodeSeat } from './devin-code-seat.mjs';
+import { DEVIN_NATIVE_EXECUTOR } from './devin-native-protocol.mjs';
+export { DEVIN_NATIVE_EXECUTOR } from './devin-native-protocol.mjs';
 import { scrubbedEnv } from './adapters/codex.mjs';
 import { HARNESS_NATIVE_EXECUTORS, GROK_NATIVE_EXECUTOR, isHarnessNativeExecutor } from './native-harness-policy.mjs';
 export { HARNESS_NATIVE_EXECUTORS, QWEN_NATIVE_EXECUTOR, GROK_NATIVE_EXECUTOR } from './native-harness-policy.mjs';
 
 export const NATIVE_EXECUTOR = 'codex_native';
-export const NATIVE_EXECUTORS = Object.freeze([NATIVE_EXECUTOR, ...HARNESS_NATIVE_EXECUTORS]);
+export const NATIVE_EXECUTORS = Object.freeze([NATIVE_EXECUTOR, ...HARNESS_NATIVE_EXECUTORS, DEVIN_NATIVE_EXECUTOR]);
 export const isNativeExecutor = value => NATIVE_EXECUTORS.includes(value);
 export const NATIVE_MIN_TOKEN_BUDGET = 32768;
 export const NATIVE_POLICY_VERSION = 'codex-native/v1';
@@ -22,6 +25,10 @@ export const toml = value => Array.isArray(value) ? `[${value.map(toml).join(','
 
 export function validateCodeExecutor(seat, backend, role = 'maker') {
   const executor = seat?.codeExecutor;
+  if (executor === DEVIN_NATIVE_EXECUTOR || backend?.kind === 'devin_cli' || seat?.backend === 'devin') {
+    validateDevinCodeSeat(seat, backend, role); return;
+  }
+  if (seat?.observedBudgetConsent !== undefined) throw new Error('Devin budget consent cannot authorize a different executor.');
   if (backend?.kind === 'grok_cli') {
     if (executor === undefined) return; // tool-less words maker/reviewer; Build injects grok_native before validation
     if (role === 'maker' && executor === GROK_NATIVE_EXECUTOR) return;

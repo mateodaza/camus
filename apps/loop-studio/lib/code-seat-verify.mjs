@@ -43,6 +43,7 @@ export function createCodeVerifier(command, { receiptsDir, timeoutMs = 300_000, 
       let owned;
       try {
         owned = await runCodeOwnedProcess({ runDir: receiptsDir, kind: 'verifier', command: process.execPath,
+          stdinMode: 'lifetime',
           args: [verificationChildPath, command, String(timeoutMs)], cwd: worktree,
           env: verificationEnvironment(process.env, privateHome), timeoutMs: timeoutMs + 5000,
           signal: local.signal, targetIpc: true, onStdout: consume, onStderr: consume,

@@ -6,11 +6,18 @@ the receipt that binds identities, checks, findings, budgets, and human decision
 to the exact result.
 
 Flexible Build supports independently selected, capability-qualified seats and
-opt-in Camus file actions or native Codex/Qwen Code/Grok Build maker harnesses.
+opt-in Camus file actions or native Codex/Qwen Code/Grok Build/Devin maker harnesses.
 Its review is advisory and the candidate never lands without human acceptance.
 The separate Claude → Codex proof gate retains fixed admitted roles and bounded
 recovery. The shared `camus code-eval` campaign remains CLI-only: Studio has no
 hidden provider-spend or routing authority. See [the coding guide](../../docs/INDEPENDENT-CODE-SEATS.md).
+
+**SWE in 0.4.22:** choose Devin / SWE-2 High in Flexible Build, choose the reviewer,
+and explicitly accept unknown internal inference/token spend. macOS Apple Silicon
+and the pinned Devin CLI are required; prepared source is limited to 512 files /
+8 MiB. This coding-only option uses Devin's saved login, never an API-key fallback.
+It does not change model defaults or enable words/reviewer admission.
+See [SWE setup](../../docs/SWE-SETUP.md).
 
 New private receipts default to `~/.camus/studio/runs/<id>`, shared with the CLI;
 `STUDIO_RUNS_DIR` overrides the root. Historical `./runs` files are not moved or

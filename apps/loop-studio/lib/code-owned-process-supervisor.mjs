@@ -102,12 +102,17 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     if (child || !message || message.type !== 'launch' || typeof message.command !== 'string'
         || !Array.isArray(message.args) || message.args.some(arg => typeof arg !== 'string')
         || typeof message.cwd !== 'string' || !Number.isSafeInteger(message.timeoutMs)
-        || message.timeoutMs < 1 || message.timeoutMs > 90_000_000 || typeof message.targetIpc !== 'boolean') {
+        || message.timeoutMs < 1 || message.timeoutMs > 90_000_000 || typeof message.targetIpc !== 'boolean'
+        || !['closed', 'lifetime'].includes(message.stdinMode)) {
       requestFinish('invalid_launch'); return;
     }
+    // Headless CLIs must see EOF: Codex also reads piped context when a prompt
+    // argument is present. Only trusted nested supervisors use stdin as a
+    // parent-lifetime signal; IPC is independent of this choice.
+    const stdin = message.stdinMode === 'lifetime' ? 'pipe' : 'ignore';
     child = spawn(message.command, message.args, { cwd: message.cwd, env: process.env, detached: true,
-      stdio: message.targetIpc ? ['pipe', 'pipe', 'pipe', 'ipc'] : ['pipe', 'pipe', 'pipe'] });
-    child.stdin.on('error', () => {});
+      stdio: message.targetIpc ? [stdin, 'pipe', 'pipe', 'ipc'] : [stdin, 'pipe', 'pipe'] });
+    child.stdin?.on('error', () => {});
     // Capture descendants before the first forwarded byte can encounter a
     // closed parent pipe and make a noisy target exit between periodic scans.
     let firstOutputTracked = false;

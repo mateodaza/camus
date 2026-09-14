@@ -42,6 +42,65 @@ const processAlive = pid => {
   } catch { return false; }
 };
 
+// Codex reads non-TTY stdin as extra prompt context even with a prompt argument.
+// Ordinary callers supply no stdin: both paths must expose immediate EOF,
+// independently of IPC. Trusted nested supervisors opt into a lifetime pipe.
+for (const supervised of [false, true]) for (const targetIpc of [false, true]) {
+  test(`stdin reaches EOF with ${supervised ? 'supervised' : 'direct'} launch and IPC ${targetIpc ? 'on' : 'off'}`, async t => {
+    const root = await mkdtemp(join(tmpdir(), 'camus-owned-process-eof-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    let stdout = '';
+    const messages = [];
+    const controller = new AbortController();
+    // Bound the direct-path failure too; its caller normally owns the timer.
+    const timer = setTimeout(() => controller.abort(), 5000);
+    t.after(() => clearTimeout(timer));
+    const result = await runCodeOwnedProcess({
+      ...(supervised ? { runDir: root } : {}), kind: 'codex_reviewer',
+      command: process.execPath, args: ['-e', `
+        const input = require('node:fs').readFileSync(0, 'utf8');
+        if (input !== '') process.exit(9);
+        process.stdout.write('stdin-eof');
+        if (process.send) process.send({ type: 'eof_confirmed' }, () => process.disconnect());
+      `], cwd: root, env: { PATH: process.env.PATH }, timeoutMs: 2000,
+      signal: controller.signal, targetIpc,
+      onStdout: chunk => { stdout += chunk; },
+      onMessage: message => { messages.push(message); },
+    });
+    assert.equal(result.code, 0, 'EOF-dependent target must finish, not time out');
+    assert.equal(stdout, 'stdin-eof');
+    assert.deepEqual(messages, targetIpc ? [{ type: 'eof_confirmed' }] : []);
+    if (supervised) {
+      const cleanup = codeOwnedProcessCleanupStatus(root);
+      assert.equal(cleanup.complete, true);
+      assert.equal(cleanup.intents.length, 1);
+      assert.equal(cleanup.intents[0].cleanup.reason, 'target_closed');
+    }
+  });
+}
+
+for (const targetIpc of [false, true]) {
+  test(`explicit lifetime stdin stays open with IPC ${targetIpc ? 'on' : 'off'}`, async t => {
+    const root = await mkdtemp(join(tmpdir(), 'camus-owned-process-lifetime-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    let stdout = '';
+    const result = await runCodeOwnedProcess({ runDir: root, kind: 'verifier',
+      command: process.execPath, args: ['-e', `
+        process.stdin.on('end', () => process.exit(9));
+        process.stdin.resume();
+        setTimeout(() => {
+          process.stdout.write('lifetime-open');
+          process.stdin.destroy();
+          if (process.connected) process.disconnect();
+        }, 100);
+      `], cwd: root, env: { PATH: process.env.PATH }, timeoutMs: 2000,
+      targetIpc, stdinMode: 'lifetime', onStdout: chunk => { stdout += chunk; } });
+    assert.equal(result.code, 0);
+    assert.equal(stdout, 'lifetime-open');
+    assert.equal(codeOwnedProcessCleanupStatus(root).complete, true);
+  });
+}
+
 test('direct subprocess cancellation kills a wrapper and its output-holding descendant', {
   skip: process.platform === 'win32',
 }, async t => {

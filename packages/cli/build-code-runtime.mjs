@@ -20,6 +20,11 @@ try {
 const pending = [
   'apps/loop-studio/code-build.mjs',
   'apps/loop-studio/code-eval.mjs',
+  // Shared experimental Devin code runtime. Packaging is not words admission;
+  // no user settings or live canary scripts are bundled.
+  'apps/loop-studio/lib/devin-native-workspace.mjs',
+  'apps/loop-studio/lib/devin-native-turn.mjs',
+  'apps/loop-studio/lib/adapters/devin-native.mjs',
   'apps/loop-studio/fixtures/code-eval-v1/simple-bounded-parser-fix/fixture.json',
   'apps/loop-studio/fixtures/code-eval-v1/balanced-job-event-scheduler/fixture.json',
   'apps/loop-studio/package.json',

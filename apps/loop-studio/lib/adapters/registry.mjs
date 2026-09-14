@@ -17,8 +17,10 @@ import { runNativeCodex } from './codex-native.mjs';
 import { runNativeQwen } from './qwen-native.mjs';
 import { runNativeGrok } from './grok-native.mjs';
 import { runGrokSubscriptionMaker, runGrokSubscriptionReview } from './grok-subscription.mjs';
+import { runNativeDevin } from './devin-native.mjs';
 
 function makerFor(backend) {
+  if (backend.kind === 'devin_cli') return async () => { throw new Error('Devin is native coding-only; no text/API fallback.'); };
   if (backend.kind === 'claude_cli') return runClaude;
   if (backend.kind === 'codex_cli') return runCodexMaker;
   if (backend.kind === 'grok_cli') return runGrokSubscriptionMaker;
@@ -26,6 +28,7 @@ function makerFor(backend) {
 }
 
 function reviewerFor(backend) {
+  if (backend.kind === 'devin_cli') throw new Error('Devin is not offered as a reviewer.');
   if (backend.kind === 'claude_cli') return runClaudeReview;
   if (backend.kind === 'codex_cli') return runCodexReview;
   if (backend.kind === 'grok_cli') return runGrokSubscriptionReview;
@@ -33,6 +36,9 @@ function reviewerFor(backend) {
 }
 
 export function nativeMakerFor(executor) {
+  // Devin preserves uncertain staging separately: never overwrite its cleanup
+  // evidence with the generic quiescent-draft recovery assertion.
+  if (executor === 'devin_native') return runNativeDevin;
   const runner = executor === NATIVE_EXECUTOR ? runNativeCodex
     : executor === QWEN_NATIVE_EXECUTOR ? runNativeQwen
       : executor === GROK_NATIVE_EXECUTOR ? runNativeGrok : null;

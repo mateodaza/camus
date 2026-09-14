@@ -1949,6 +1949,7 @@ const server = http.createServer(async (req, res) => {
       }
       const independentBuild = lane === 'build' && codeMode === 'independent';
       if (!independentBuild && (body.pairing?.maker?.codeExecutor !== undefined || body.pairing?.reviewer?.codeExecutor !== undefined)) return json(res, 400, { error: 'codeExecutor applies only to independent Build; no executor override was accepted.' });
+      if (!independentBuild && [body.pairing?.maker, body.pairing?.reviewer].some(seat => seat?.backend === 'devin' || seat?.observedBudgetConsent !== undefined)) return json(res, 400, { error: 'Devin is an experimental coding maker only. Use Flexible Build with explicit observed-budget consent.' });
       let codeLimits;
       try { codeLimits = independentBuild ? validateCodeLimits(body.codeLimits) : undefined; }
       catch (error) { return json(res, 400, { error: String(error.message || error).slice(0, 300) }); }

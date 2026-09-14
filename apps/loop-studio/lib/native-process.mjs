@@ -27,6 +27,7 @@ async function runRegisteredNativeProcess({ command, args, cwd, env, timeoutMs, 
   const abort = () => local.abort(signal?.reason ?? new Error('Native execution cancelled.'));
   signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
   const result = await runCodeOwnedProcess({ runDir: ownedProcessDir, kind: 'native_harness_supervisor',
+    stdinMode: 'lifetime',
     command: process.execPath, args: [nativeChildPath, JSON.stringify({ command, args, cwd, timeoutMs, stdinMode: 'closed' })],
     cwd, env, timeoutMs: timeoutMs + 5000, signal: local.signal,
     onStdout: parseLines,

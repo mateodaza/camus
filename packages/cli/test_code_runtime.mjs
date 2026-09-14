@@ -52,6 +52,31 @@ try {
   assert(entries.includes('package/runtime/apps/loop-studio/lib/code-seats.mjs'), 'tarball includes the shared code-seat engine');
   for (const name of ['code-loop', 'code-context', 'code-run-state', 'code-session', 'code-setup', 'code-diagnostics', 'code-verify-child', 'code-native-policy', 'code-native-child', 'code-owned-process', 'code-owned-process-registry', 'code-owned-process-supervisor', 'native-process', 'native-gateway', 'native-harness-policy', 'codex-rpc', 'adapters/codex-native', 'adapters/native-harness', 'adapters/qwen-native', 'adapters/grok-native']) assert(entries.includes(`package/runtime/apps/loop-studio/lib/${name}.mjs`), `tarball includes ${name}`);
   assert(entries.includes('package/runtime/apps/loop-studio/lib/adapters/registry.mjs'), 'tarball includes the shared adapter registry');
+  for (const name of ['devin-native-workspace', 'devin-native-turn', 'devin-native-protocol', 'devin-native-preflight',
+    'devin-native-context', 'devin-native-permission', 'devin-native-mcp', 'devin-code-seat', 'adapters/devin-native']) {
+    const path = `apps/loop-studio/lib/${name}.mjs`;
+    assert(entries.includes(`package/runtime/${path}`), `tarball includes shared ${name}`);
+    assert.deepEqual(await readFile(join(installed, 'runtime', path)), await readFile(resolve(PACKAGE_ROOT, '../..', path)),
+      `${name} is identical in CLI and Studio`);
+  }
+  assert(!entries.some(name => name.includes('devin-canary') || name.includes('authorization-8') || name.includes('.firecrawl')),
+    'live Devin authorization and canary artifacts are never packaged');
+  for (const name of ['code-owned-process', 'code-owned-process-supervisor', 'code-seat-verify', 'native-process']) {
+    const path = `apps/loop-studio/lib/${name}.mjs`;
+    assert.deepEqual(await readFile(join(installed, 'runtime', path)), await readFile(resolve(PACKAGE_ROOT, '../..', path)),
+      `${name} stdin/lifecycle policy is identical in CLI and Studio`);
+  }
+  const ownedUrl = pathToFileURL(join(installed, 'runtime/apps/loop-studio/lib/code-owned-process.mjs')).href;
+  const eofScript = `import {runCodeOwnedProcess} from ${JSON.stringify(ownedUrl)};
+    const result=await runCodeOwnedProcess({runDir:${JSON.stringify(join(TEMP, 'packed-eof'))},kind:'codex_reviewer',
+      command:process.execPath,args:['-e','require("node:fs").readFileSync(0);process.stdout.write("packed-eof")'],
+      cwd:process.cwd(),env:{PATH:process.env.PATH},timeoutMs:2000,onStdout:b=>process.stdout.write(b)});
+    process.exitCode=result.code;`;
+  await mkdir(join(TEMP, 'packed-eof'), { mode: 0o700 });
+  assert.equal((await command(process.execPath, ['--input-type=module', '-e', eofScript], { cwd: installed })).stdout, 'packed-eof',
+    'installed CLI supervisor closes unused stdin instead of hanging the reviewer');
+  const packedDevin = await import(pathToFileURL(join(installed, 'runtime/apps/loop-studio/lib/devin-native-turn.mjs')));
+  assert.throws(() => packedDevin.devinObservedContract({}), /Explicit observed-only/);
   for (const name of ['code-eval-contract', 'code-eval-fixture', 'code-eval-ledger', 'code-eval-runner']) {
     assert(entries.includes(`package/runtime/apps/loop-studio/lib/${name}.mjs`), `tarball includes ${name}`);
   }

@@ -6,6 +6,7 @@ import { expectedReportedFor, seatQualification } from './capability-probes.mjs'
 import { resolveSeatAdapters } from './adapters/registry.mjs';
 import { validateCodeExecutor, NATIVE_EXECUTOR, NATIVE_MIN_TOKEN_BUDGET, HARNESS_NATIVE_EXECUTORS, isNativeExecutor } from './code-native-policy.mjs';
 import { nativeHarnessReadiness } from './native-harness-policy.mjs';
+import { DEVIN_CODE_ENTRY, DEVIN_CODE_BACKEND, devinCodeReadiness } from './devin-code-seat.mjs';
 
 export function codeSeatSnapshot(entry, effort = null) {
   return {
@@ -61,9 +62,11 @@ export async function prepareCodeSeats({ pairing = null, live = true, preserveAb
     if (!selected || typeof selected.backend !== 'string' || typeof selected.model !== 'string') {
       throw new Error(`Choose ${role} as an explicit backend and model.`);
     }
-    const entry = admittedSeat(catalog[role], selected.backend, selected.model);
+    const devin = selected.backend === 'devin';
+    if (devin && definitions.devin) throw new Error('A configured backend conflicts with the reserved Devin code seat. Rename that backend first.');
+    const entry = devin ? DEVIN_CODE_ENTRY : admittedSeat(catalog[role], selected.backend, selected.model);
     if (!entry) throw new Error(`${role} ${selected.backend}:${selected.model} is unavailable or not qualified for this seat. Configure and qualify it in Studio or with camus build --setup / --qualify; no substitution was made.`);
-    const backend = definitions[entry.backend];
+    const backend = devin ? DEVIN_CODE_BACKEND : definitions[entry.backend];
     if (!backend || !backend.seats?.includes(role)) throw new Error(`The selected ${role} backend cannot execute this seat.`);
     const resolvedExecutor = selected.codeExecutor ?? (role === 'maker' && backend.kind === 'grok_cli' ? 'grok_native' : undefined);
     validateCodeExecutor({ ...selected, ...(resolvedExecutor ? { codeExecutor: resolvedExecutor } : {}) }, backend, role);
@@ -81,6 +84,7 @@ export async function prepareCodeSeats({ pairing = null, live = true, preserveAb
       ? null : requestedEffort ?? inheritedEffort ?? 'medium';
     models[role] = codeSeatSnapshot(entry, codeEffort ? resolvedEffort : null);
     if (resolvedExecutor !== undefined) models[role].codeExecutor = resolvedExecutor;
+    if (devin) models[role].observedBudgetConsent = selected.observedBudgetConsent;
     frozenBackends[role] = clone(backend);
     if (entry.admission?.fingerprint) models[role].qualification = {
       fingerprint: entry.admission.fingerprint,
@@ -114,6 +118,8 @@ export async function codeModelChoices(catalog = admissionCatalog(), runtime = {
   const nativeHarnesses = Object.fromEntries(await Promise.all(HARNESS_NATIVE_EXECUTORS.map(async executor => [executor,
     await readinessProbe(executor, { platform, arch, nodeMajor })])));
   const harnesses = HARNESS_NATIVE_EXECUTORS.filter(executor => nativeHarnesses[executor].ready);
+  const devin = await (runtime.devinReadiness ?? devinCodeReadiness)({ platform, arch });
+  nativeHarnesses.devin_native = devin;
   const safe = (entry, role) => ({
     backend: entry.backend, model: entry.model, provider: entry.provider,
     transport: entry.transport, trainingOrg: entry.trainingOrg,
@@ -129,7 +135,11 @@ export async function codeModelChoices(catalog = admissionCatalog(), runtime = {
       ...(role === 'maker' && entry.executor === 'http_client' ? harnesses : [])],
     ...(role === 'maker' && entry.executor === 'http_client' ? { executorReadiness: nativeHarnesses } : {}),
   });
-  return { maker: catalog.maker.map(entry => safe(entry, 'maker')), reviewer: catalog.reviewer.map(entry => safe(entry, 'reviewer')),
+  const devinChoice = { ...DEVIN_CODE_ENTRY, available: devin.ready, reason: devin.detail,
+    codeOnly: true, experimental: true, requiresObservedBudgetConsent: true,
+    modelQualification: { qualified: false, status: 'experimental_code_only', reason: 'Not admitted as a words maker or reviewer.' },
+    codeExecutors: devin.ready ? ['devin_native'] : [], executorReadiness: { devin_native: devin } };
+  return { maker: [...catalog.maker.map(entry => safe(entry, 'maker')), devinChoice], reviewer: catalog.reviewer.map(entry => safe(entry, 'reviewer')),
     nativeHarnesses, minimumNativeTokenBudget: NATIVE_MIN_TOKEN_BUDGET, gating: false };
 }
 

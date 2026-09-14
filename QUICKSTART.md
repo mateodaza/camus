@@ -6,6 +6,11 @@ honest receipt around AI-made work. Choose the smallest surface that fits the jo
 - **Code, choose both models:** use experimental `camus build` or Studio Flexible Build.
 - **Code, admitted proof gate:** use `camus start` + `camus run`; the Claude → Codex path remains compatible.
 - **Written or research work:** run Loop Studio locally in the browser.
+
+**Using SWE as maker?** Camus 0.4.22 adds native Devin / SWE-2 High to the CLI
+and Studio. Pick the reviewer independently and read the [SWE setup and limits](docs/SWE-SETUP.md)
+first: macOS Apple Silicon, pinned CLI, bounded source inventory, and explicit
+consent to unknown internal inference/token spend. No default-model change.
 - **Agent-supervised work:** let another agent operate Camus, but not implement beside it.
 
 Camus is public-alpha software. Use it only on repositories and test commands you trust,

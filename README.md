@@ -55,9 +55,19 @@ the release history.
 > repositories you trust; Camus is not an OS sandbox and should never run as root.
 
 <details>
-<summary><strong>What ships in 0.4.21 and how current evidence is bounded</strong></summary>
+<summary><strong>What ships in 0.4.22 and how current evidence is bounded</strong></summary>
 
 **Makes it work. Knows when to stop.**
+
+New in 0.4.22: select **SWE-2 High through native Devin** as an optional coding
+maker in both CLI and Studio, with a separately selected reviewer. The saved
+Devin login is preserved; no API fallback or default-model change is made.
+Support is bounded to macOS Apple Silicon, the pinned Devin CLI, and a prepared
+source inventory of 512 files / 8 MiB. Internal inference/token usage is unknown
+and requires explicit per-run consent. Flexible Build remains advisory.
+This release also fixes Codex review launches waiting on open stdin and separates
+native progress commentary from the post-tool completion decision.
+See [SWE setup and limits](docs/SWE-SETUP.md) and [release notes](docs/RELEASE-0.4.22.md).
 
 New in 0.4.21: long native work is recoverable without grading uncertainty as
 success. Camus divides it into bounded slices, accepts a maker's explicit
@@ -168,7 +178,7 @@ The native proof gate needs [Claude Code](https://code.claude.com) and the
 `camus build` needs only the backends you choose, Node 18.17+, and Git.
 
 ```bash
-npm i -g camus-cli@0.4.21
+npm i -g camus-cli@0.4.22
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 ```
@@ -192,7 +202,7 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.4.21
+### Public alpha: 0.4.22
 
 `camus build --inspect RUN_ID [--json]` authenticates and projects a bounded
 checkpoint without contacting a provider or mutating the run. File-action builds
@@ -371,7 +381,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.4.21
+npm i -g camus-cli@0.4.22
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```

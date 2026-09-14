@@ -181,6 +181,15 @@ function reflectLaneControls() {
   $('pairing').classList.toggle('hidden', build && !independent);
   $('pairing-note').classList.toggle('hidden', build && !independent);
   $('open-compare').classList.toggle('hidden', build);
+  if (state.seats) {
+    for (const role of ['maker', 'reviewer']) {
+      const select = $(`pair-${role}`);
+      if (!fillSeatPicker(select, pairingCatalog()[role], seatOf(select))) pairingDirty = true;
+    }
+    if (!independent) $('devin-unmetered-consent').checked = false;
+    reflectCodeExecutors();
+    void reflectPairingNote();
+  }
   if (build) $('open-compare').setAttribute('aria-expanded', 'false');
   if (independent) {
     $('build-gate-note').textContent = 'Both selected seats will run. Experimental code feedback is advisory, even for a clean review. Inspect the candidate and test result before accepting it; same-model and same-provider choices do not count as independent review.';
@@ -591,6 +600,9 @@ function fillPicker(sel, options, current) {
 // seat catalog, grouped by backend. Option values are JSON so no separator
 // can collide with a model name. Returns whether `current` was offerable —
 // an unoffered current decision is NEVER injected as a selectable option.
+function pairingCatalog() {
+  return state.lane === 'build' && $('build-mode').value === 'independent' ? state.codeChoices ?? state.seats : state.seats;
+}
 function fillSeatPicker(sel, entries, current) {
   sel.innerHTML = '';
   const groups = new Map();
@@ -605,10 +617,10 @@ function fillSeatPicker(sel, entries, current) {
     }
     const o = document.createElement('option');
     o.value = JSON.stringify([e.backend, e.model]);
-    o.disabled = e.admission?.qualified === false;
+    o.disabled = e.available !== undefined ? !e.available : e.admission?.qualified === false;
     o.textContent = o.disabled
       ? `${e.model} — ${e.admission?.status ?? 'unprobed'}`
-      : e.model;
+      : `${e.model}${e.codeOnly ? ' — experimental coding only' : ''}`;
     if (e.admission?.warning) o.title = e.admission.warning;
     groups.get(e.backend).appendChild(o);
   }
@@ -619,7 +631,7 @@ function fillSeatPicker(sel, entries, current) {
   return offered;
 }
 const EXECUTOR_LABELS = { file_actions: 'Camus file actions (default)', codex_native: 'Native Codex tools',
-  qwen_native: 'Qwen Code tools', grok_native: 'Grok Build tools' };
+  qwen_native: 'Qwen Code tools', grok_native: 'Grok Build tools', devin_native: 'Devin · SWE native tools' };
 function executorLabel(executor, maker) {
   if (executor !== 'grok_native') return EXECUTOR_LABELS[executor] ?? executor;
   return maker?.backend === 'grok'
@@ -648,6 +660,13 @@ function reflectCodeExecutors() {
     select.appendChild(option);
   }
   select.value = current;
+  const devinSelected = maker?.backend === 'devin' && current === 'devin_native';
+  $('code-calls-label').textContent = devinSelected ? 'Camus dispatches (not SWE inferences)' : 'Model calls';
+  $('code-tokens-label').textContent = devinSelected ? 'Planning tokens (not a spend cap)' : 'Token budget (0 = raw only)';
+  $('code-recoveries-label').textContent = devinSelected ? 'Uncertain SWE replay is refused' : 'Native recoveries';
+  $('code-maxRecoveries').disabled = devinSelected;
+  $('devin-consent-wrap').classList.toggle('hidden', !devinSelected);
+  if (!devinSelected) $('devin-unmetered-consent').checked = false;
   const readiness = state.codeChoices?.nativeHarnesses ?? {};
   const minimumTokens = state.codeChoices?.minimumNativeTokenBudget ?? 32768;
   const unavailable = Object.values(readiness).filter(item => !item.ready);
@@ -658,7 +677,9 @@ function reflectCodeExecutors() {
     return `${item.label}: ${String(item.status).replaceAll('_', ' ')}${explanation ? ' (setup required)' : ''}`;
   });
   const note = $('code-maker-executor-note');
-  if (note) note.textContent = maker?.backend === 'grok'
+  if (note) note.textContent = maker?.backend === 'devin'
+    ? 'SWE is an optional coding maker for bounded work on macOS Apple Silicon (512 files / 8 MiB). The pinned Devin artifact and model selection are checked before a prompt. Independent review and human acceptance still apply.'
+    : maker?.backend === 'grok'
     ? (offered.includes('grok_native')
       ? `Grok Build will use its isolated OAuth login and Grok subscription allowance. It never falls back to XAI_API_KEY. Native needs at least ${minimumTokens.toLocaleString()} accounted tokens.`
       : `Grok Build subscription mode is unavailable. ${readinessSummary.find(text => text.startsWith('Grok Build')) ?? 'Open Setup for the exact remedy.'}`)
@@ -1002,9 +1023,14 @@ async function reflectAutomaticRouting() {
   }
 }
 async function reflectPairingNote(prefix = '') {
-  const maker = seatEntry(state.seats?.maker, seatOf($('pair-maker')));
-  const reviewer = seatEntry(state.seats?.reviewer, seatOf($('pair-reviewer')));
+  const maker = seatEntry(pairingCatalog()?.maker, seatOf($('pair-maker')));
+  const reviewer = seatEntry(pairingCatalog()?.reviewer, seatOf($('pair-reviewer')));
   const note = $('pairing-note');
+  if (maker?.codeOnly) {
+    ++pairingPresentationRequest;
+    note.textContent = 'SWE makes the candidate; your selected reviewer checks it. This advisory coding pair is not an admitted gate. Serving-model identity and internal SWE token spend remain unverified.';
+    return;
+  }
   if (!maker || !reviewer) {
     note.textContent = 'One model makes the work. A separate reviewer tries to break it; independence is earned only when the recorded identities support it.';
     return;
@@ -1042,8 +1068,9 @@ async function refreshPairing() {
     const c = await res.json();
     state.seats = c.seats ?? { maker: [], reviewer: [] };
     state.codeChoices = c.codeChoices ?? { maker: [], reviewer: [] };
-    const makerOffered = fillSeatPicker($('pair-maker'), state.seats.maker, { backend: c.maker.backend, model: c.maker.model });
-    const reviewerOffered = fillSeatPicker($('pair-reviewer'), state.seats.reviewer, { backend: c.reviewer.backend, model: c.reviewer.model });
+    const makerOffered = fillSeatPicker($('pair-maker'), pairingCatalog().maker, { backend: c.maker.backend, model: c.maker.model });
+    const reviewerOffered = fillSeatPicker($('pair-reviewer'), pairingCatalog().reviewer, { backend: c.reviewer.backend, model: c.reviewer.model });
+    $('devin-unmetered-consent').checked = false;
     // When the standing decision is not offerable, the picker shows a real
     // offerable pairing instead — and that DISPLAYED pairing is what the run
     // request must carry. Leaving pairingDirty false here made the POST omit
@@ -1066,7 +1093,7 @@ async function refreshPairing() {
   }
 }
 for (const id of ['pair-maker', 'pair-reviewer']) {
-  $(id).addEventListener('change', () => { pairingDirty = true; if (id === 'pair-maker') reflectCodeExecutors(); void reflectPairingNote(); });
+  $(id).addEventListener('change', () => { pairingDirty = true; $('devin-unmetered-consent').checked = false; if (id === 'pair-maker') reflectCodeExecutors(); void reflectPairingNote(); });
 }
 $('pairing-change').addEventListener('click', openSettings);
 $('model-routing-auto').addEventListener('change', async () => {
@@ -1278,6 +1305,7 @@ $('start-compare').addEventListener('click', async () => {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
+    $('devin-unmetered-consent').checked = false;
     attach(data.id, data.goal);
   } catch (err) {
     $('compare-note').textContent = String(err.message || err);
@@ -1308,6 +1336,10 @@ $('start').addEventListener('click', async () => {
       const minimumTokens = state.codeChoices?.minimumNativeTokenBudget ?? 32768;
       if (Number($('code-maxTokens').value) < minimumTokens) throw new Error(`Native execution needs a token budget of at least ${minimumTokens} so the first call reservation fits.`);
       pairMaker.codeExecutor = executor;
+      if (executor === 'devin_native') {
+        if (!$('devin-unmetered-consent').checked) throw new Error('SWE internal inference and token spend are unknown. Confirm the SWE budget consent before starting.');
+        pairMaker.observedBudgetConsent = 'devin-observed/v1';
+      }
     }
     const pairing = ((independentBuild) || (!state.automaticModelRouting && pairingDirty && state.lane !== 'build')) && pairMaker && pairReviewer
       ? { maker: pairMaker, reviewer: pairReviewer }
@@ -1329,6 +1361,7 @@ $('start').addEventListener('click', async () => {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
+    $('devin-unmetered-consent').checked = false;
     attach(data.id, goal);
   } catch (err) {
     $('form-error').textContent = String(err.message || err);
@@ -1505,7 +1538,9 @@ function buildCodeRecoveryControl(continuation) {
   box.appendChild(el('span', 'sub', continuation?.presentation?.detail ?? 'Historical candidates remain inspection-only.'));
   if (continuation?.candidate?.worktree) box.appendChild(el('span', 'sub', `Candidate: ${continuation.candidate.worktree}`));
   const usage = continuation?.usage;
-  if (usage) box.appendChild(el('span', 'sub', `${usage.calls} model calls · ${usage.repairs} repairs · ${Math.round(usage.activeMs / 1000)}s active · ${usage.observedTokens} reported tokens · ${usage.unmeasuredCalls} calls with unknown usage. Last checkpoint: ${new Date(continuation.updatedAt).toLocaleString()}.`));
+  if (usage) box.appendChild(el('span', 'sub', continuation?.budgetSemantics?.version === 'devin-observed/v1'
+    ? `${usage.calls} Camus dispatches · ${usage.actions} observed actions · ${Math.round(usage.activeMs / 1000)}s active. SWE internal calls and total token spend are unknown; ${usage.accountedTokens} tokens accounted for planning, not billing. Last checkpoint: ${new Date(continuation.updatedAt).toLocaleString()}.`
+    : `${usage.calls} model calls · ${usage.repairs} repairs · ${Math.round(usage.activeMs / 1000)}s active · ${usage.observedTokens} reported tokens · ${usage.unmeasuredCalls} calls with unknown usage. Last checkpoint: ${new Date(continuation.updatedAt).toLocaleString()}.`));
   if (!continuation?.canResume) return box;
   let answer = null;
   const authorityType = continuation.question?.request?.type;
@@ -1516,10 +1551,14 @@ function buildCodeRecoveryControl(continuation) {
     const applyLabel = el('label', 'sub'); applyLabel.appendChild(applyChange); applyLabel.appendChild(document.createTextNode(' Authorize a pair change on this preserved candidate'));
     box.appendChild(applyLabel);
     const maker = $('pair-maker').cloneNode(true); maker.id = ''; maker.disabled = false;
+    fillSeatPicker(maker, state.codeChoices?.maker, current?.maker);
     const reviewer = $('pair-reviewer').cloneNode(true); reviewer.id = ''; reviewer.disabled = false;
     maker.value = JSON.stringify([current?.maker?.backend, current?.maker?.model]);
     reviewer.value = JSON.stringify([current?.reviewer?.backend, current?.reviewer?.model]);
     const executor = el('select', 'path-input');
+    const sweConsentLabel = el('label', 'sub');
+    const sweConsent = el('input'); sweConsent.type = 'checkbox';
+    sweConsentLabel.append(sweConsent, document.createTextNode(' I accept unknown internal SWE inference/token spend. Time and observed-tool limits apply; call/token totals are planning allowances.'));
     const refreshExecutors = () => {
       const selected = seatOf(maker); const currentExecutor = current?.maker?.codeExecutor ?? 'file_actions';
       const currentNative = currentExecutor !== 'file_actions';
@@ -1528,17 +1567,24 @@ function buildCodeRecoveryControl(continuation) {
       executor.innerHTML = '';
       for (const item of compatible) { const option = document.createElement('option'); option.value = item; option.textContent = executorLabel(item, selected); executor.appendChild(option); }
       executor.value = compatible.includes(currentExecutor) ? currentExecutor : (compatible[0] ?? '');
+      sweConsent.checked = false;
+      sweConsentLabel.classList.toggle('hidden', executor.value !== 'devin_native');
     };
     maker.addEventListener('change', refreshExecutors); refreshExecutors();
     for (const [name, input] of [['New maker', maker], ['Maker harness', executor], ['New reviewer', reviewer]]) {
       const label = el('label', 'sub', name); label.appendChild(input); box.appendChild(label);
     }
     box.appendChild(el('span', 'sub', 'The selected pair is re-qualified before use. Camus preserves the candidate only within the same custody class; incompatible harness custody is refused.'));
+    box.appendChild(sweConsentLabel);
     amendmentPairing = () => {
       if (!applyChange.checked) return null;
       const selectedMaker = seatOf(maker), selectedReviewer = seatOf(reviewer);
       if (!selectedMaker || !selectedReviewer || !executor.value) throw new Error('Choose a compatible qualified maker, harness, and reviewer.');
       selectedMaker.codeExecutor = executor.value;
+      if (executor.value === 'devin_native') {
+        if (!sweConsent.checked) throw new Error('Confirm unknown SWE inference/token spend for this pairing change.');
+        selectedMaker.observedBudgetConsent = 'devin-observed/v1';
+      }
       return { maker: selectedMaker, reviewer: selectedReviewer };
     };
   }

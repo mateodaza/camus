@@ -91,6 +91,7 @@ function seatProjection(seat) {
     model: safeText(seat.model, 200),
     ...(seat.effort ? { effort: safeLabel(seat.effort, 'seat effort') } : {}),
     ...(seat.codeExecutor ? { codeExecutor: safeLabel(seat.codeExecutor, 'seat executor') } : {}),
+    ...(seat.observedBudgetConsent === 'devin-observed/v1' ? { observedBudgetConsent: 'devin-observed/v1' } : {}),
   };
 }
 
@@ -322,6 +323,10 @@ export async function inspectCodeRun(dir) {
     candidate: candidateProjection(state.candidate),
     seats: { maker: seatProjection(state.seats.maker), reviewer: seatProjection(state.seats.reviewer) },
     usage,
+    ...(state.seats.maker.codeExecutor === 'devin_native' ? { budgetSemantics: {
+      version: 'devin-observed/v1', internalModelCalls: null, totalInferenceTokens: null,
+      calls: 'Camus dispatches; not internal Devin inferences', tokens: 'planning reservations; not a billing cap',
+    } } : {}),
     limits: numericProjection(state.limits, LIMIT_FIELDS),
     review,
     verification,
@@ -343,6 +348,7 @@ export function formatCodeInspection(inspection) {
   if (inspection.checkpoint) lines.push(`Checkpoint: v${inspection.checkpoint.version} revision ${inspection.checkpoint.revision}; updated ${inspection.checkpoint.updatedAt}`);
   if (inspection.candidate) lines.push(`Candidate: ${inspection.candidate.worktree} (${inspection.candidate.branch} @ ${inspection.candidate.head?.slice(0, 12) ?? 'unrecorded'})`);
   if (inspection.usage) lines.push(`Usage: ${inspection.usage.calls ?? 'unknown'} calls; ${inspection.usage.steps ?? 'unknown'} steps; ${inspection.usage.actions ?? 'unknown'} actions; ${inspection.usage.recoveries ?? 0} recoveries; ${inspection.usage.accountedTokens ?? 'unknown'} accounted tokens`);
+  if (inspection.budgetSemantics) lines.push('SWE accounting: calls are Camus dispatches; tokens are planning reservations. Internal inference counts and total token spend are unknown, not capped.');
   lines.push(`Review: ${inspection.review.status}; verification: ${inspection.verification.status}`);
   if (inspection.question) lines.push(`Question ${inspection.question.id}: ${inspection.question.text}`);
   if (inspection.reason) lines.push(`Reason: ${inspection.reason}`);

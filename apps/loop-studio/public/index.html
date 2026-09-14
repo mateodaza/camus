@@ -197,21 +197,25 @@
             <option value="file_actions">Camus file actions (default, any offered model)</option>
           </select>
           <div class="hint" id="code-maker-executor-note">Camus offers a native harness only after a spend-free local version and artifact check. Provider/model qualification is separate; credentials remain in the host-owned one-model gateway.</div>
+          <div id="devin-consent-wrap" class="hidden">
+            <label class="toggle"><input id="devin-unmetered-consent" type="checkbox" aria-describedby="devin-budget-note" /><span>I accept unknown SWE inference and token spend for this run</span></label>
+            <div class="hint" id="devin-budget-note">Camus bounds time and observed tools. Model calls count Camus dispatches, not Devin’s internal inferences; the token budget is a planning reservation, not a spending cap. Uses your saved Devin login, with no API-key fallback. Check your plan’s current allowance.</div>
+          </div>
         </div>
         <details id="code-policy">
           <summary>Recovery and budget limits</summary>
           <label class="toggle"><input id="code-verify-repeatable" type="checkbox" /><span>This check is safe to repeat after fixes or interruption</span></label>
           <div class="hint">Without this authorization, an additional verification pauses for permission. No changed contract or model is allowed on resume. These are global run limits, not per-round allowances.</div>
           <div class="row">
-            <label>Model calls <input class="path-input" id="code-maxCalls" type="number" min="1" value="32" /></label>
+            <label><span id="code-calls-label">Model calls</span> <input class="path-input" id="code-maxCalls" type="number" min="1" value="32" /></label>
             <label>Maker steps <input class="path-input" id="code-maxSteps" type="number" min="1" value="12" /></label>
             <label>File/tool actions <input class="path-input" id="code-maxActions" type="number" min="1" value="32" /></label>
           </div>
           <div class="row">
             <label>Repairs <input class="path-input" id="code-maxRepairs" type="number" min="0" value="2" /></label>
             <label>Retries <input class="path-input" id="code-maxRetries" type="number" min="0" value="1" /></label>
-            <label>Native recoveries <input class="path-input" id="code-maxRecoveries" type="number" min="0" value="4" /></label>
-            <label>Token budget (0 = raw only) <input class="path-input" id="code-maxTokens" type="number" min="0" value="0" /></label>
+            <label><span id="code-recoveries-label">Native recoveries</span> <input class="path-input" id="code-maxRecoveries" type="number" min="0" value="4" /></label>
+            <label><span id="code-tokens-label">Token budget (0 = raw only)</span> <input class="path-input" id="code-maxTokens" type="number" min="0" value="0" /></label>
           </div>
           <div class="row">
             <label>Active time (ms) <input class="path-input" id="code-timeoutMs" type="number" min="1" value="1200000" /></label>

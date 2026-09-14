@@ -9,6 +9,7 @@ import { nativeTrackedInventory } from './code-loop.mjs';
 import { readCodeCheckpoint, saveCodeCheckpoint } from './code-run-state.mjs';
 import { nativeUsage } from './adapters/codex-native.mjs';
 import { validateCodeExecutor } from './code-native-policy.mjs';
+import { DEVIN_CODE_BACKEND } from './devin-code-seat.mjs';
 
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const session = { version: 'codex-native/v1', threadId: '01900000-0000-7000-8000-000000000001', policyHash: 'fixture', usageTotal: { inputTokens: 10, cachedInputTokens: 4, outputTokens: 5, totalTokens: 15 } };
@@ -39,6 +40,46 @@ async function fixture(t, nativeMaker, reviewer = async () => ({ ran: true, verd
   };
   return { options, run: more => runCodeSeats({ ...options, ...more }), checkpoint: () => readCodeCheckpoint(receiptsDir) };
 }
+
+test('SWE unknown inference usage reaches verification/review; later turns include created files without session replay', async t => {
+  let turns = 0, reviews = 0;
+  const f = await fixture(t, async args => {
+    assert.equal(args.nativeSession, null);
+    assert.equal(args.observedBudget.version, 'devin-observed/v1');
+    assert.equal(args.observedBudget.billingUncertaintyAccepted, true);
+    assert.equal(args.observedBudget.maxPrompts, 1);
+    assert(args.sourceFiles.includes('README.md'));
+    if (++turns === 2) assert(args.sourceFiles.includes('answer.txt'));
+    args.onNativeSession({ executor: 'devin_native', sessionId: `s${turns}`, replayable: false });
+    args.onNativeProgress({ usage: null, responses: 0, actions: 2 });
+    await writeFile(join(args.worktree, 'answer.txt'), turns === 1 ? 'draft' : 'correct');
+    return { ...done(), usage: null, usageIncomplete: true, nativeSession: undefined, modelActual: null,
+      modelReported: 'swe-2-high', text: JSON.stringify({ actions: [], done: turns === 2, summary: 'Bounded progress.',
+        decision: turns === 2 ? null : { action: 'continue', reason: 'Finish the saved draft.' } }) };
+  }, async () => { reviews++; return { ran: true, verdict: 'APPROVED', findings: [], usage: { total_tokens: 5 } }; });
+  f.options.seats.maker = { backend: 'devin', model: 'swe-2-high', codeExecutor: 'devin_native', observedBudgetConsent: 'devin-observed/v1' };
+  f.options.backendSnapshot.maker = DEVIN_CODE_BACKEND;
+  const verify = async ({ worktree }) => ({ ran: true, pass: (await readFile(join(worktree, 'answer.txt'), 'utf8')) === 'correct', exitCode: 0 });
+  verify.command = 'offline fixture'; verify.repeatable = true;
+  const result = await f.run({ verify });
+  assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+  assert.equal(turns, 2); assert.equal(reviews, 1); assert.equal(result.usage.calls, 3);
+  assert.equal(result.usage.unmeasuredCalls, 2); assert.equal(result.usage.observedTokens, 5);
+  assert.equal(result.budgetSemantics.internalModelCalls, null); assert.equal(result.budgetSemantics.totalInferenceTokens, null);
+  assert.equal(git(f.options.repoPath, 'status', '--porcelain'), '');
+});
+
+test('SWE refuses missing consent before any maker and preserves uncertainty without automatic recovery', async t => {
+  let turns = 0;
+  const f = await fixture(t, async () => { turns++; return { ok: false, uncertain: true, candidateQuiescent: false, usage: null }; });
+  f.options.seats.maker = { backend: 'devin', model: 'swe-2-high', codeExecutor: 'devin_native' };
+  f.options.backendSnapshot.maker = DEVIN_CODE_BACKEND;
+  assert.match((await f.run()).error, /SWE requires/); assert.equal(turns, 0);
+  f.options.seats.maker.observedBudgetConsent = 'devin-observed/v1';
+  const result = await f.run();
+  assert.equal(turns, 1); assert.equal(result.resumable, false); assert.match(result.error, /uncertain/);
+  assert.equal(result.review, null);
+});
 
 test('native edits use a private clone, live accounting, host verification and fresh advisory review', async t => {
   let turns = 0, reviews = 0; const remaining = [];

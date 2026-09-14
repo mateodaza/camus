@@ -96,6 +96,11 @@ rather than present an older snapshot as current; inspect the retained worktree.
 The maker executor is independent from the maker model/backend:
 
 - `file_actions` remains the default host-mediated protocol.
+- `devin_native` selects `devin:swe-2-high` with the pinned Devin CLI and saved
+  account login. Requires `--accept-devin-unmetered`: internal inference/token
+  spend is unknown, while time and observed actions are bounded. macOS Apple
+  Silicon only, 512 files / 8 MiB of prepared source. No API fallback; maker-only,
+  advisory, and never a new default. See [SWE setup](SWE-SETUP.md).
 - `codex_native` uses the built-in vendor-managed Codex backend and its existing
   ChatGPT CLI login.
 - `qwen_native` uses Qwen Code 0.22.3 with any exact, qualified

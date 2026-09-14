@@ -45,7 +45,7 @@ export default function Home() {
                 <div>
                   <h2 className="sec-h2">Models are multiplying. Accountability isn’t.</h2>
                   <p className="sec-sub">
-                    Claude, GPT, Grok, Qwen, open weights, and native agent harnesses
+                    Claude, GPT, Grok, Qwen, SWE, open weights, and native agent harnesses
                     improve on different curves. Switching models is easy. Proving what
                     ran, under which budget, against which exact artifact, is not.
                   </p>
@@ -235,14 +235,15 @@ maker_tokens    7,445`}
                 <p className="direction-tag">Advisory path</p>
                 <h3>Flexible Build</h3>
                 <p>
-                  Choose any qualified maker and reviewer pair, then use Camus file
-                  actions or an eligible native Codex, Qwen Code, or Grok Build harness.
+                  Choose an available maker and reviewer separately, then use Camus file
+                  actions or an eligible native Codex, Qwen Code, Grok Build, or Devin harness.
                   The candidate stays advisory and never lands without human acceptance.
                 </p>
                 <p>
-                  The built-in Grok seat can use a pinned Grok Build subscription
-                  path. Repeated simple-task maker evidence is verifier-green, but
-                  the path remains unrouted and advisory until review evidence closes.
+                  Bring your Grok login or choose SWE-2 High through Devin, with a
+                  separate reviewer. SWE supports bounded coding work on Apple Silicon;
+                  internal token spend is unknown and requires explicit consent.{' '}
+                  <a href="https://github.com/mateodaza/camus/blob/main/docs/SWE-SETUP.md">Check SWE setup and limits ↗</a>
                 </p>
               </Reveal>
               <Reveal className="direction-card direction-card--evidence">
@@ -306,7 +307,8 @@ maker_tokens    7,445`}
                 <ul>
                   <li>browser interface, no JSON noise</li>
                   <li>the full acceptance contract in your own words</li>
-                  <li>connections for Claude, GPT, Grok, Qwen, and OpenAI-compatible or local seats</li>
+                  <li>separate maker/reviewer choices for code, research, and marketing</li>
+                  <li>Claude, GPT, Grok, Qwen, compatible APIs, and SWE via Devin for code</li>
                   <li>built-in Claude/Codex seats use versioned qualification contracts; configurable seats require exact local qualification</li>
                   <li>native harness artifacts separately prove readiness and policy compatibility</li>
                   <li>Hivemind grounding through your Claude MCP</li>
@@ -333,7 +335,10 @@ maker_tokens    7,445`}
                     only the selected model through a host-owned one-model gateway. The
                     built-in Grok subscription seat keeps Grok Build's own login and
                     inference route, strips API keys, pins the reviewed artifact, and
-                    applies Camus's bounded tool policy.
+                    applies Camus's bounded tool policy. Devin similarly uses its saved
+                    login for SWE coding work, with no API-key fallback. Its internal
+                    inference totals are unavailable: Camus limits time and observed
+                    actions, not an unobservable token bill.
                   </p>
                 </div>
                 {/* eslint-disable-next-line @next/next/no-img-element */}

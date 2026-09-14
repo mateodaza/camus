@@ -5,7 +5,9 @@ import { codeOwnedProcessSupervisorPath } from './code-owned-process-supervisor.
 // Run one target through the trusted supervisor. Target stdout/stderr and IPC
 // are callbacks; credentials stay only in the inherited environment.
 export async function runCodeOwnedProcess({ runDir, kind, command, args = [], cwd, env = process.env,
-  timeoutMs, signal, targetIpc = false, onStdout = () => {}, onStderr = () => {}, onMessage = () => {} }) {
+  timeoutMs, signal, targetIpc = false, stdinMode = 'closed', onStdout = () => {}, onStderr = () => {}, onMessage = () => {} }) {
+  if (!['closed', 'lifetime'].includes(stdinMode) || (stdinMode === 'lifetime' && !runDir))
+    throw new Error('Lifetime stdin is only supported for registered child supervisors.');
   // Existing non-Build adapter entry points remain plain direct subprocesses.
   // The shared Build engine always passes its private receipts directory and
   // therefore always takes the durable supervisor path below.
@@ -44,7 +46,7 @@ export async function runCodeOwnedProcess({ runDir, kind, command, args = [], cw
   const launch = () => {
     if (launchSent || !ready || spawnError || cancelled) return;
     launchSent = true;
-    supervisor.send({ type: 'launch', command, args, cwd, timeoutMs, targetIpc });
+    supervisor.send({ type: 'launch', command, args, cwd, timeoutMs, targetIpc, stdinMode });
   };
   supervisor.on('message', message => {
     if (message?.type === 'supervisor_ready') {

@@ -6,6 +6,7 @@ import { redactCodeText, diagnosticSecrets } from './code-diagnostics.mjs';
 import { codeMakerContext, discoveryProgress, DISCOVERY_STALL_STEPS, MUTATION_STALL_STEPS, MAKER_PROGRESS_POLICY } from './code-context.mjs';
 import { NATIVE_EXECUTOR, isNativeExecutor, validateCodeExecutor } from './code-native-policy.mjs';
 import { initializeCodeOwnedProcessRegistry } from './code-owned-process-registry.mjs';
+import { DEVIN_OBSERVED_CONSENT, devinBudgetSemantics } from './devin-code-seat.mjs';
 
 const TRANSIENT = /\b(?:429|502|503|504|ECONNRESET|ETIMEDOUT|rate.limit|temporarily unavailable)\b/i;
 const TERMINAL = new Set(['complete', 'refused']);
@@ -21,6 +22,7 @@ const publicSeatRoute = value => ({
   model: value?.model ?? null,
   ...(value?.effort ? { effort: value.effort } : {}),
   ...(value?.codeExecutor ? { codeExecutor: value.codeExecutor } : {}),
+  ...(value?.observedBudgetConsent ? { observedBudgetConsent: value.observedBudgetConsent } : {}),
 });
 const publicPairRoute = value => ({ maker: publicSeatRoute(value?.maker), reviewer: publicSeatRoute(value?.reviewer) });
 export const nativeTrackedInventory = record => {
@@ -84,6 +86,7 @@ export async function runProductiveCodeLoop(options, h) {
   const finish = async (status, reason, phase = record?.phase) => {
     if (!record) return { status, error: reason, advisory: true, gating: false };
     record.status = status; record.reason = reason; record.phase = phase;
+    if (seats.maker.codeExecutor === 'devin_native') record.result.budgetSemantics = devinBudgetSemantics();
     // Provider responses and accepted host-protocol steps are distinct. A
     // malformed paid raw response is still durable economic/identity evidence,
     // even though it authorized zero protocol steps or file actions.
@@ -215,7 +218,13 @@ export async function runProductiveCodeLoop(options, h) {
       response = nativeCall ? await adapters.nativeMaker({ ...common, backend: backendSnapshot.maker, worktree: record.candidate.worktree,
         scratch: nativeExecutor === NATIVE_EXECUTOR ? join(receiptsDir, 'native-scratch') : join(dirname(record.candidate.worktree), 'native-scratch'),
         sourcePath: record.source.repoPath, receiptsDir,
-        deniedPaths: record.nativeDeniedPaths, nativeSession: record.nativeSession ?? null, timeoutMs: callTimeMs,
+        deniedPaths: record.nativeDeniedPaths, nativeSession: nativeExecutor === 'devin_native' ? null : record.nativeSession ?? null, timeoutMs: callTimeMs,
+        ...(nativeExecutor === 'devin_native' ? {
+          sourceFiles: [...new Set([...record.tracked, ...(await h.git(record.candidate.worktree,
+            ['ls-files', '--others', '--exclude-standard', '-z'])).stdout.split('\0').filter(Boolean)])],
+          observedBudget: { version: DEVIN_OBSERVED_CONSENT, maxPrompts: 1, maxObservedTools: nativeToolCalls,
+            maxWallMs: Math.min(callTimeMs, 1200000), billingUncertaintyAccepted: true },
+        } : {}),
         maxModelCalls: nativeModelCalls, remainingTokens,
         maxToolCalls: nativeToolCalls,
         onNativeSession: (session) => { record.nativeSession = clone(session); persist(); },
@@ -604,7 +613,7 @@ export async function runProductiveCodeLoop(options, h) {
         }
         if (!record.pendingCall?.response && record.usage.steps >= limits.maxSteps) return question('protocol step cap reached; extend the budget to continue',
           'budget', { type: 'budget_extension', cause: 'protocol step cap reached' });
-        const { prompt, context } = native ? { context: { owner: nativeExecutor, sessionReused: Boolean(record.nativeSession) },
+        const { prompt, context } = native ? { context: { owner: nativeExecutor, sessionReused: nativeExecutor !== 'devin_native' && Boolean(record.nativeSession) },
           prompt: nativeMakerPrompt(task, record) }
           : codeMakerContext(record, h);
         record.context = context;

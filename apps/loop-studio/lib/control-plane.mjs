@@ -23,6 +23,7 @@ import {
 } from '../../../packages/cli/skills/camus/control-plane.mjs';
 import { studioAtomicWrite, STUDIO_FILE_MODE } from './grandfather.mjs';
 import { isVendorManagedBuiltin } from './identity.mjs';
+import { DEVIN_CODE_BACKEND, validateDevinCodeSeat } from './devin-code-seat.mjs';
 
 export class ControlPlaneError extends Error {
   constructor(message, route) {
@@ -181,6 +182,7 @@ function usableStatuses(statuses) {
 
 const QUAL1_RE = /^qual1:[0-9a-f]{64}$/;
 function admittedSnapshotSeat(seat, seatKey) {
+  if (seat?.backend === 'devin' || seat?.executor === 'devin_cli' || seat?.codeExecutor === 'devin_native') return false;
   if (!seat || typeof seat.backend !== 'string' || !seat.backend
     || typeof seat.model !== 'string' || !seat.model) return false;
   // One shared built-in predicate owns this classification for catalog,
@@ -239,15 +241,23 @@ export function createStudioControlPlane({
     details: { lane },
   });
   const noSeats = Boolean(recovery) || (lane === 'build' && codeMode !== 'independent');
+  let devinCode = false;
+  if (lane === 'build' && codeMode === 'independent' && models?.maker?.backend === 'devin') {
+    try {
+      validateDevinCodeSeat(models.maker, DEVIN_CODE_BACKEND, 'maker');
+      devinCode = models.maker.transport === 'vendor_managed' && models.maker.executor === 'devin_cli'
+        && !models.maker.qualification;
+    } catch { /* A code-only exception never grants words/model admission. */ }
+  }
   const seatsOk = noSeats
-    || (admittedSnapshotSeat(models?.maker, 'maker') && admittedSnapshotSeat(models?.reviewer, 'reviewer'));
+    || ((devinCode || admittedSnapshotSeat(models?.maker, 'maker')) && admittedSnapshotSeat(models?.reviewer, 'reviewer'));
   record({
     controlId: 'studio.run.seat_admission', action: launch,
     outcome: noSeats ? 'not_applicable' : seatsOk ? 'passed' : 'refused',
     reasonCode: noSeats ? (recovery ? 'recovery_has_no_model_seats' : 'build_gate_owns_model_seats')
-      : seatsOk ? 'run_snapshot_has_admitted_exact_seats' : 'run_snapshot_seat_admission_unproven',
+      : seatsOk ? (devinCode ? 'explicit_experimental_code_contract_and_admitted_reviewer' : 'run_snapshot_has_admitted_exact_seats') : 'run_snapshot_seat_admission_unproven',
     cause: noSeats || seatsOk ? null : 'policy_refused',
-    details: { lane, recovery: Boolean(recovery) },
+    details: { lane, recovery: Boolean(recovery), ...(devinCode ? { experimentalCodeOnly: true, modelQualificationGranted: false } : {}) },
   });
   const targetOk = lane !== 'build' || Boolean(targetPath);
   record({

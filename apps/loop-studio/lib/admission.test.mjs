@@ -14,10 +14,17 @@ const previous = {
   STUDIO_MODELS_FILE: process.env.STUDIO_MODELS_FILE,
   STUDIO_GRANDFATHER_DIR: process.env.STUDIO_GRANDFATHER_DIR,
   STUDIO_CAPABILITY_DIR: process.env.STUDIO_CAPABILITY_DIR,
+  STUDIO_CODEX_CACHE_FILE: process.env.STUDIO_CODEX_CACHE_FILE,
 };
 process.env.STUDIO_MODELS_FILE = modelsFile;
 process.env.STUDIO_GRANDFATHER_DIR = temp;
 delete process.env.STUDIO_CAPABILITY_DIR;
+// The machine's live Codex cache can legitimately drop this fixture model.
+// Admission assertions must depend on a declared catalog, not operator state.
+process.env.STUDIO_CODEX_CACHE_FILE = join(temp, 'codex-cache.json');
+writeFileSync(process.env.STUDIO_CODEX_CACHE_FILE, JSON.stringify({
+  models: [{ slug: 'gpt-5.4-mini', visibility: 'list' }],
+}));
 
 writeFileSync(modelsFile, `${JSON.stringify({
   maker: { backend: 'claude', model: 'sonnet' },

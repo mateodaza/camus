@@ -1,7 +1,7 @@
 # Recommended model and harness setup
 
 **Status:** Evidence-based operator guidance, not automatic-routing policy  
-**Last updated:** 2026-08-31
+**Last updated:** 2026-09-14
 
 **Applies to:** Camus Flexible Build in CLI and Loop Studio
 
@@ -40,6 +40,37 @@ one-model gateway. Camus records the billing authority and never substitutes one
 for the other.
 
 ## Current recommendations
+
+### SWE-2 High through Devin (0.4.22)
+
+SWE is now an optional supported maker **within its documented scope**, not a
+new default, reviewer, automatic route or universal recommendation. Use it with
+an independently selected reviewer; see [SWE setup and limits](SWE-SETUP.md).
+
+A real private application's ten-file package snapshot exercised a two-file
+ordering correction and added regression tests. The successful run took 76.142
+seconds: 66.441 seconds in native SWE, 0.478 seconds in frozen verification and
+8.401 seconds in Luna medium review. Review approved with zero findings; six
+actions, one maker prompt, one review, no repairs or retries in that run.
+The 32 existing/new/frozen tests passed. The original checkout stayed unchanged.
+
+Two preceding package attempts stopped at Camus's completion boundary (61.294
+and 63.719 seconds). A preserved draft passed inspection tests but was not an
+approved run. The diagnostic attempt showed progress commentary concatenated
+with terminal JSON; Camus now considers only text after the final tool event,
+still requiring exact JSON and complete tools/cleanup. The earlier synthetic
+smoke also found a Codex stdin deadlock, now regression-tested in both packages.
+This is three package attempts, not a first-try success or a broad speed benchmark.
+
+SWE internal inference/token totals remain unknown. The successful review
+reported 13,286 tokens; the run's 46,054 accounted tokens include an unknown-SWE
+planning reservation and are **not** a measured total or cost comparison.
+macOS Apple Silicon and a pinned Devin CLI are required. Prepared source remains
+limited to 512 files / 8 MiB, with no automatic monorepo scoping or dependency
+installation. Evidence supports small scoped work, not repository-wide preference.
+Underlying private application receipts/source are not published.
+
+### Existing task-class guidance
 
 These are deliberately conservative. “Incumbent” means the pair is a sensible
 manual starting point; it does **not** mean Camus has proven it is the winner.

@@ -6,7 +6,7 @@
 
 **Trust the work, not the model that made it.**
 
-Camus is an open-source local control plane for AI-made code that must be
+Camus is an open-source local control plane for AI-made work that must be
 verified. One model or coding agent makes the change, another challenges the
 exact candidate, deterministic checks arbitrate what they can, and you decide
 what ships.
@@ -28,7 +28,18 @@ for the first real candidate, model setup, and honest terminal states.
 > it; configured API credentials remain local and go only to that endpoint.
 
 <details>
-<summary><strong>Current release: 0.4.21</strong></summary>
+<summary><strong>Current release: 0.4.22</strong></summary>
+
+**New in 0.4.22:** optional **SWE-2 High through native Devin**, with independent
+reviewer selection in CLI and Studio. Use `--maker devin:swe-2-high
+--maker-executor devin_native --accept-devin-unmetered`. Saved Devin login,
+no API fallback, no default-model change. macOS Apple Silicon, pinned CLI,
+512-file / 8-MiB prepared-source limit; internal inference/token spend stays
+unknown with explicit consent. Flexible Build remains advisory.
+Codex review subprocesses no longer hang waiting for stdin, and native progress
+messages no longer contaminate the final decision JSON.
+[SWE setup and limits](https://github.com/mateodaza/camus/blob/main/docs/SWE-SETUP.md) ·
+[Release notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.22.md)
 
 **New in 0.4.21:** native Build work can continue across bounded,
 evidence-preserving slices. A proven-quiescent uncertain turn becomes an
@@ -550,7 +561,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.4.21
+npm i -g camus-cli@0.4.22
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)

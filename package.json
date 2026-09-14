@@ -4,8 +4,12 @@
   "version": "0.0.0",
   "packageManager": "pnpm@9.15.0",
   "scripts": {
-    "test": "node --test scripts/probe-native-harness.test.mjs && pnpm --filter camus-cli test",
+    "test": "node --test scripts/probe-native-harness.test.mjs scripts/devin-acp-permission.test.mjs scripts/devin-canary-mirror.test.mjs scripts/devin-canary-diagnostics.test.mjs scripts/devin-canary-mcp.test.mjs scripts/devin-canary-verifier.test.mjs apps/loop-studio/lib/devin-native-protocol.test.mjs apps/loop-studio/lib/devin-native-workspace.test.mjs apps/loop-studio/lib/devin-native-turn.test.mjs apps/loop-studio/lib/devin-native-mcp.test.mjs apps/loop-studio/lib/adapters/devin-native.test.mjs && pnpm test:devin-seats && pnpm --filter camus-cli test",
+    "test:devin-seats": "node --test apps/loop-studio/lib/devin-code-seat.test.mjs apps/loop-studio/lib/code-seat-launch.test.mjs apps/loop-studio/lib/code-native.test.mjs apps/loop-studio/control-plane.test.mjs apps/loop-studio/independent-build-api.test.mjs",
     "test:native-harness-probe": "node --test scripts/probe-native-harness.test.mjs",
+    "test:devin-permissions": "node --test scripts/devin-acp-permission.test.mjs",
+    "test:devin-native": "node --test apps/loop-studio/lib/devin-native-protocol.test.mjs apps/loop-studio/lib/devin-native-workspace.test.mjs apps/loop-studio/lib/devin-native-turn.test.mjs apps/loop-studio/lib/devin-native-mcp.test.mjs apps/loop-studio/lib/adapters/devin-native.test.mjs scripts/devin-canary-mirror.test.mjs scripts/devin-canary-diagnostics.test.mjs scripts/devin-canary-mcp.test.mjs scripts/devin-canary-verifier.test.mjs",
+    "preflight:devin-native": "node scripts/devin-native-preflight.mjs",
     "web:dev": "pnpm --filter web dev",
     "web:build": "pnpm --filter web build",
     "cli:pack": "pnpm --filter camus-cli exec npm pack --dry-run",

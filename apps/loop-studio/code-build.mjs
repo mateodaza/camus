@@ -15,6 +15,7 @@ import { configureCodeBackend, qualifyCodeSeat } from './lib/code-setup.mjs';
 import { redactCodeText, diagnosticSecrets } from './lib/code-diagnostics.mjs';
 import { getSharedTunnelManager } from './lib/ssh-tunnel.mjs';
 import { NATIVE_EXECUTORS, NATIVE_MIN_TOKEN_BUDGET, isNativeExecutor } from './lib/code-native-policy.mjs';
+import { DEVIN_OBSERVED_CONSENT } from './lib/devin-code-seat.mjs';
 
 export const HELP = `camus build — independent maker/reviewer coding (experimental)
 
@@ -22,7 +23,8 @@ export const HELP = `camus build — independent maker/reviewer coding (experime
   camus build --task "..." --contract "..." [--repo /path/to/repo]
       --maker <backend>:<model> --reviewer <backend>:<model>
       [--maker-effort low|medium|high|xhigh] [--reviewer-effort ...]
-      [--maker-executor file_actions|codex_native|qwen_native|grok_native]
+      [--maker-executor file_actions|codex_native|qwen_native|grok_native|devin_native]
+      [--accept-devin-unmetered]
       [--verify "npm test" --verify-repeatable] [--json]
       [--max-calls 32] [--max-steps 12] [--max-actions 32]
       [--max-repairs 2] [--max-retries 1] [--max-recoveries 4] [--max-tokens 1000000]
@@ -33,7 +35,7 @@ export const HELP = `camus build — independent maker/reviewer coding (experime
   camus build --resume <run-id> [budget extensions] [--json]
       [--answer "..." --question <question-id>]
       [--maker <backend>:<model> --reviewer <backend>:<model>]
-      [--maker-executor file_actions|codex_native|qwen_native|grok_native]
+      [--maker-executor file_actions|codex_native|qwen_native|grok_native|devin_native]
       [--retry-uncertain] [--retry-verification]
   camus build --setup /path/to/connection-backend.json [--replace]
   camus build --qualify <backend>:<model> --role maker|reviewer
@@ -72,10 +74,17 @@ turns can resume. An uncertain turn is never replayed; when adapter cleanup is
 proven, Camus may fingerprint its untrusted draft and continue in a fresh
 bounded native session. Otherwise the candidate stays inspection-only.
 Legacy camus run and /camus-feat retain their existing Claude/Codex gate.
+SWE is optional: --maker devin:swe-2-high --maker-executor devin_native
+requires --accept-devin-unmetered. This explicitly accepts unknown internal
+inference/token spend. Calls count Camus dispatches, NOT Devin's internal calls;
+tokens remain planning reservations. Time and observed-tool allowances are bounded.
+Devin uses its saved account login with no API-key fallback. Promotional billing
+is not guaranteed by Camus. Currently pinned macOS arm64, coding maker only;
+not offered as a reviewer or admitted gate. Uncertain staging is inspection-only.
 `;
 
 export function parseCodeBuildArgs(argv) {
-  const flags = new Set(['help', 'models', 'json', 'replace', 'allow-provider-calls', 'verify-repeatable', 'retry-uncertain', 'retry-verification']);
+  const flags = new Set(['help', 'models', 'json', 'replace', 'allow-provider-calls', 'verify-repeatable', 'retry-uncertain', 'retry-verification', 'accept-devin-unmetered']);
   const valued = new Set(['task', 'task-file', 'contract', 'contract-file', 'repo', 'maker', 'reviewer', 'maker-effort', 'reviewer-effort', 'maker-executor', 'verify',
     'status', 'inspect', 'stop', 'resume', 'answer', 'question', 'setup', 'qualify', 'role', ...Object.keys(LIMIT_FLAGS)]);
   const options = {};
@@ -109,6 +118,10 @@ export function parseCodeBuildArgs(argv) {
       throw new Error(`Native execution requires --max-tokens of at least ${NATIVE_MIN_TOKEN_BUDGET} so the first call reservation fits.`);
     }
   }
+  if (options['accept-devin-unmetered'] && (options.maker !== 'devin:swe-2-high' || options['maker-executor'] !== 'devin_native'))
+    throw new Error('--accept-devin-unmetered requires the explicit Devin SWE native maker; it does not authorize other executors.');
+  if (options['maker-executor'] === 'devin_native' && !options['accept-devin-unmetered'])
+    throw new Error('SWE internal inference/token spend is unknown. Add --accept-devin-unmetered only if you accept this for the selected run.');
   return options;
 }
 
@@ -182,7 +195,8 @@ export async function main(argv = process.argv.slice(2)) {
   if (Boolean(options.maker) !== Boolean(options.reviewer)) throw new Error('Specify both --maker and --reviewer, or neither to use saved Studio choices.');
   if (!options.maker && (options['maker-effort'] || options['reviewer-effort'])) throw new Error('Effort overrides require explicit --maker and --reviewer.');
   const requestedPairing = options.maker ? {
-    maker: { ...parseCodeSeat(options.maker), ...(options['maker-effort'] ? { effort: options['maker-effort'] } : {}), ...(options['maker-executor'] ? { codeExecutor: options['maker-executor'] } : {}) },
+    maker: { ...parseCodeSeat(options.maker), ...(options['maker-effort'] ? { effort: options['maker-effort'] } : {}), ...(options['maker-executor'] ? { codeExecutor: options['maker-executor'] } : {}),
+      ...(options['accept-devin-unmetered'] ? { observedBudgetConsent: DEVIN_OBSERVED_CONSENT } : {}) },
     reviewer: { ...parseCodeSeat(options.reviewer), ...(options['reviewer-effort'] ? { effort: options['reviewer-effort'] } : {}) },
   } : null;
   const pairing = requestedPairing ?? existingCheckpoint?.seats ?? null;

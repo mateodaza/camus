@@ -1,0 +1,254 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { runNativeProcess } from './native-process.mjs';
+import { assertDevinModelSelection, validateDevinSession, inspectDevinUsage, createDevinProtocolObserver, classifyDevinToolFailure,
+  DEVIN_NATIVE_MODEL } from './devin-native-protocol.mjs';
+import { devinIsolatedEnvironment, devinIsolatedConfig, validateDevinLogin,
+  renderDevinPreflightProfile, inspectDevinAcp } from './devin-native-preflight.mjs';
+
+const modelOption = { category: 'model', id: 'model', currentValue: DEVIN_NATIVE_MODEL };
+const opened = () => ({ sessionId: 'session-one', configOptions: [{ ...modelOption }], modes: { currentModeId: 'autonomous' } });
+const event = update => ({ sessionId: 'session-one', update });
+const tool = (toolCallId, status = 'pending') => ({ sessionUpdate: 'tool_call', toolCallId, status });
+const usage = (decorated = false) => ({ sessionUpdate: 'usage_update', used: 23273, size: 262000,
+  _meta: { 'cognition.ai/inputTokens': 22879, 'cognition.ai/outputTokens': 394,
+    'cognition.ai/cachedReadTokens': 22552,
+    ...(decorated ? { 'cognition.ai/subagent_context': { parentAgentId: 'root' } } : {}) } });
+const observer = options => createDevinProtocolObserver({ sessionId: 'session-one', ...options });
+
+test('exact model selection is required but never called actual serving identity', () => {
+  assert.equal(assertDevinModelSelection([modelOption]), DEVIN_NATIVE_MODEL);
+  const result = validateDevinSession(opened());
+  assert.equal(result.modelSelected, DEVIN_NATIVE_MODEL); assert.equal(result.modelActual, null);
+  assert.equal(result.actualModelEvidence, 'unobserved'); assert(Object.isFrozen(result));
+  for (const options of [undefined, [], [modelOption, modelOption], [{ ...modelOption, currentValue: 'swe-2' }],
+    [{ ...modelOption, currentValue: 'fusion-swe' }], [{ ...modelOption, category: 'effort' }]])
+    assert.throws(() => assertDevinModelSelection(options));
+  assert.throws(() => validateDevinSession({ ...opened(), models: { currentModelId: 'swe-2-medium' } }));
+  assert.throws(() => validateDevinSession({ ...opened(), sessionId: '' }));
+  assert.throws(() => validateDevinSession({ ...opened(), modes: { currentModeId: 'dangerous' } }));
+});
+
+test('usage remains unknown for duplicate, decorated, invalid and last-inference receipts', () => {
+  const subject = observer();
+  for (const update of [usage(), usage(), usage(true), { ...usage(), _meta: { 'cognition.ai/inputTokens': -1 } }]) {
+    const result = inspectDevinUsage(update);
+    assert.equal(result.runUsage, null); assert.equal(result.providerCalls, null); assert.equal(result.cumulative, false);
+    subject.observe('session/update', event(update));
+  }
+  const receipt = subject.finish({ stopReason: 'end_turn', usage: { totalTokens: 23273, inputTokens: 22879, outputTokens: 394 } });
+  assert.equal(receipt.usageNotifications, 4); assert.equal(receipt.decoratedUsageNotifications, 1);
+  assert.equal(receipt.usage, null); assert.equal(receipt.providerCalls, null); assert.equal(receipt.usageIncomplete, true);
+  assert.equal(receipt.qualifiedCompletion, false); assert.equal(receipt.modelActual, null);
+  assert.equal(inspectDevinUsage(usage()).countersValid, true);
+  assert.equal(inspectDevinUsage({ _meta: { 'cognition.ai/inputTokens': Number.MAX_SAFE_INTEGER,
+    'cognition.ai/outputTokens': 1 } }).countersValid, false);
+});
+
+test('tool observations require known identities, bounded counts and terminal status', () => {
+  const subject = observer({ maxObservedTools: 2 });
+  subject.observe('session/update', event(tool('read', 'completed')));
+  subject.observe('session/update', event(tool('write', 'in_progress')));
+  const result = subject.finish({ stopReason: 'end_turn' });
+  assert.equal(result.observedTools, 2); assert.equal(result.completedTools, 1); assert.equal(result.toolsComplete, false);
+  for (const updates of [
+    [tool('same'), tool('same')], [tool('one'), tool('two')],
+    [{ sessionUpdate: 'tool_call_update', toolCallId: 'unknown', status: 'completed' }],
+    [tool('one', 'completed'), { sessionUpdate: 'tool_call_update', toolCallId: 'one', status: 'in_progress' }],
+    [tool('one', 'invented')],
+  ]) {
+    const checked = observer({ maxObservedTools: 1 });
+    assert.throws(() => updates.forEach(update => checked.observe('session/update', event(update))));
+    assert.throws(() => checked.finish({ stopReason: 'end_turn' }));
+  }
+});
+
+test('session/model/mode drift poisons the observation and cannot later finish successfully', () => {
+  for (const [method, params] of [
+    ['session/update', { sessionId: 'other', update: usage() }],
+    ['_cognition.ai/turn_stats', { sessionId: 'other', responseDimensions: {} }],
+    ['session/update', event({ sessionUpdate: 'config_option_update', configOptions: [{ ...modelOption, currentValue: 'other' }] })],
+    ['session/update', event({ sessionUpdate: 'current_mode_update', currentModeId: 'accept-edits' })],
+    ['session/update', event(null)],
+  ]) {
+    const subject = observer();
+    assert.throws(() => subject.observe(method, params));
+    assert.throws(() => subject.finish({ stopReason: 'end_turn' }));
+  }
+});
+
+test('completion is one-shot, bounded UTF-8, and does not turn cancellation into success', () => {
+  const subject = observer({ maxTextBytes: 4 });
+  subject.observe('session/update', event({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'éé' } }));
+  const result = subject.finish({ stopReason: 'cancelled' });
+  assert.equal(result.text, 'éé'); assert.equal(result.endTurn, false); assert.equal(result.terminalReceived, true);
+  assert.throws(() => subject.finish({ stopReason: 'end_turn' }));
+  assert.throws(() => subject.observe('session/update', event(usage())));
+  const tooLong = observer({ maxTextBytes: 3 });
+  assert.throws(() => tooLong.observe('session/update', event({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'éé' } })));
+  assert.equal(observer().finish({}).terminalReceived, false);
+});
+
+test('complete tools and end_turn are evidence, not an admitted native completion', () => {
+  const subject = observer();
+  subject.observe('session/update', event(tool('write')));
+  subject.observe('session/update', event({ sessionUpdate: 'tool_call_update', toolCallId: 'write', status: 'completed' }));
+  subject.observe('session/update', event({ sessionUpdate: 'config_option_update', configOptions: [modelOption] }));
+  subject.observe('_cognition.ai/turn_stats', { sessionId: 'session-one', responseDimensions: { fabricatedTokens: 0 } });
+  const receipt = subject.finish({ stopReason: 'end_turn' });
+  assert.equal(receipt.endTurn, true); assert.equal(receipt.toolsComplete, true);
+  assert.equal(receipt.qualifiedCompletion, false); assert.equal(receipt.usage, null);
+});
+
+test('only post-tool completion text is a decision; progress keeps its cumulative byte budget', () => {
+  const say = (subject, text) => subject.observe('session/update', event({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }));
+  const subject = observer();
+  say(subject, 'I will read the files.');
+  subject.observe('session/update', event(tool('read', 'completed')));
+  say(subject, 'Now I will make the changes.');
+  subject.observe('session/update', event(tool('write')));
+  subject.observe('session/update', event({ sessionUpdate: 'tool_call_update', toolCallId: 'write', status: 'completed' }));
+  say(subject, '{"done":true,"summary":');
+  say(subject, '"Fixed.","decision":null}');
+  const result = subject.finish({ stopReason: 'end_turn' });
+  assert.equal(JSON.parse(result.text).done, true);
+  assert.equal(result.progressTextBytes, Buffer.byteLength('I will read the files.Now I will make the changes.'));
+  assert.equal(result.completionTextPolicy, 'after-last-tool/v1');
+
+  const premature = observer();
+  say(premature, '{"done":true,"summary":"Old","decision":null}');
+  premature.observe('session/update', event(tool('later-write', 'completed')));
+  assert.equal(premature.finish({ stopReason: 'end_turn' }).text, '', 'never reuse pre-tool approval');
+  const bounded = observer({ maxTextBytes: 4 });
+  say(bounded, '1234'); bounded.observe('session/update', event(tool('read', 'completed')));
+  assert.throws(() => say(bounded, '5'), /text limit/);
+  const ambiguous = observer();
+  say(ambiguous, '{"done":false}{"done":true}');
+  assert.throws(() => JSON.parse(ambiguous.finish({ stopReason: 'end_turn' }).text));
+});
+
+test('failed-tool diagnostics retain fixed categories, never native text or input secrets', () => {
+  const privateValue = 'synthetic-private-value-do-not-persist';
+  const result = classifyDevinToolFailure({ _meta: { 'cognition.ai/inferenceToolName': 'edit' },
+    rawInput: { file_path: '/Users/private/credentials.toml', content: privateValue },
+    content: [{ type: 'content', content: { type: 'text', text: `EPERM: unable to read metadata ${privateValue}` } }] });
+  assert.equal(result.nativeTool, 'edit'); assert(result.categories.includes('permission_denied'));
+  assert(result.categories.includes('metadata_or_symlink'));
+  assert(!JSON.stringify(result).includes(privateValue)); assert(!JSON.stringify(result).includes('/Users'));
+  assert.deepEqual(classifyDevinToolFailure({ rawOutput: privateValue }).categories, ['unclassified']);
+  assert.deepEqual(classifyDevinToolFailure(null).categories, ['unclassified']);
+});
+
+test('failure diagnostics remain available after cancellation without accepting a terminal', () => {
+  const subject = observer();
+  subject.observe('session/update', event({ ...tool('edit'), kind: 'edit', _meta: { 'cognition.ai/inferenceToolName': 'edit' } }));
+  subject.observe('session/update', event({ sessionUpdate: 'tool_call_update', toolCallId: 'edit', status: 'failed',
+    rawOutput: 'No such file or directory (os error 2)' }));
+  assert.equal(subject.diagnostics()[0].nativeTool, 'edit');
+  assert.deepEqual(subject.diagnostics()[0].categories, ['path_unavailable']);
+  assert(Object.isFrozen(subject.diagnostics()));
+  assert.equal(subject.finish({ stopReason: 'cancelled' }).qualifiedCompletion, false);
+});
+
+test('isolated environment is an allowlist, with no model/key/fallback/proxy inheritance', () => {
+  const inherited = ['WINDSURF_API_KEY', 'DEVIN_API_KEY', 'DEVIN_MODEL', 'DEVIN_REFUSAL_FALLBACK',
+    'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NODE_OPTIONS', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY'];
+  const env = devinIsolatedEnvironment('/private/tmp/camus-unit');
+  for (const key of inherited) assert(!Object.hasOwn(env, key));
+  assert.equal(env.HOME, '/private/tmp/camus-unit/home'); assert.equal(env.DEVIN_SANDBOX, 'true');
+  assert(Object.isFrozen(env));
+  for (const root of ['/', '', '/tmp/../Users', 'relative']) assert.throws(() => devinIsolatedEnvironment(root));
+  const config = devinIsolatedConfig();
+  assert.equal(config.auto_update, false); assert.equal(config.subagents_enabled, false);
+  assert.deepEqual(config.read_config_from, { cursor: false, windsurf: false, claude: false });
+  assert.deepEqual(config.proxy, { mode: 'off' });
+});
+
+const login = () => Buffer.from('windsurf_api_key = "synthetic-test-login"\napi_server_url = "https://server.codeium.com"\ndevin_webapp_host = "app.devin.ai"\ndevin_api_url = "https://api.devin.ai"\n');
+test('stored login schema refuses endpoint substitution, duplicate keys, sections and payload drift', () => {
+  assert.equal(validateDevinLogin(login()), true);
+  for (const bytes of [Buffer.alloc(0), Buffer.alloc(262145),
+    Buffer.from(login().toString().replace('https://api.devin.ai', 'https://other.invalid')),
+    Buffer.from(login().toString() + 'windsurf_api_key = "other"\n'),
+    Buffer.from(login().toString() + '[custom]\n'),
+    Buffer.from(login().toString().replace('"synthetic-test-login"', '""')),
+    Buffer.from(login().toString() + 'fallback = "other"\n')]) assert.throws(() => validateDevinLogin(bytes));
+});
+
+test('inference process profile excludes candidate data and execution while isolating login scratch', () => {
+  const params = { root: '/private/tmp/camus-preflight', harness: '/Users/operator/.local/bin/devin',
+    candidate: '/private/tmp/camus-candidate', operatorHome: '/Users/operator' };
+  const profile = renderDevinPreflightProfile(params);
+  assert(profile.includes('(deny file-read-data (subpath "/private/tmp/camus-candidate"))'));
+  assert(profile.includes('(allow process-exec (literal "/Users/operator/.local/bin/devin"))'));
+  assert(!profile.includes('(allow process-fork)')); assert(profile.includes('(deny default)'));
+  assert(profile.includes('(allow mach-lookup (global-name "com.apple.trustd") (global-name "com.apple.trustd.agent"))'));
+  assert(!profile.includes('(allow mach-lookup)')); assert(!profile.includes('(allow network*)'));
+  assert(!profile.includes('(allow file-write* (subpath "/private/tmp/camus-candidate")'));
+  assert.throws(() => renderDevinPreflightProfile({ ...params, candidate: params.root + '/candidate' }));
+  assert.throws(() => renderDevinPreflightProfile({ ...params, root: '/' }));
+});
+
+test('preflight RPC only initializes and opens an empty session, with host capabilities advertised', async () => {
+  const requests = [];
+  const rpc = { request: async (method, params) => {
+    requests.push({ method, params });
+    if (method === 'initialize') return { protocolVersion: 1, authMethods: [{ id: 'devin-browser' }] };
+    if (method === 'session/new') return opened();
+    assert.fail('Unexpected inference/authority request');
+  } };
+  const result = await inspectDevinAcp(rpc, { candidate: '/private/tmp/candidate' });
+  assert.deepEqual(requests.map(request => request.method), ['initialize', 'session/new']);
+  assert.deepEqual(requests[0].params.clientCapabilities, { fs: { readTextFile: true, writeTextFile: true }, terminal: true });
+  assert.deepEqual(requests[1].params.mcpServers, []);
+  assert.equal(result.promptsSent, 0); assert.equal(result.delegatedToolsProven, false); assert.equal(result.runAccountingProven, false);
+});
+
+test('preflight cancels before RPC and does not fall back from unsupported auth', async () => {
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(inspectDevinAcp({ request: () => assert.fail('Must not dispatch') }, { signal: controller.signal }));
+  const requests = [];
+  await assert.rejects(inspectDevinAcp({ request: async method => {
+    requests.push(method); return { protocolVersion: 1, authMethods: [{ id: 'api-key' }] };
+  } }));
+  assert.deepEqual(requests, ['initialize']);
+});
+
+test('real macOS metadata variant permits stat, not contents/writes/private paths or execution',
+  { skip: process.platform !== 'darwin', timeout: 15000 }, async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'camus-devin-policy-test-')));
+    const candidate = await realpath(await mkdtemp(join(tmpdir(), 'camus-devin-candidate-test-')));
+    const outside = await realpath(await mkdtemp(join(tmpdir(), 'camus-devin-private-test-')));
+    try {
+      await writeFile(join(candidate, 'fixture.txt'), 'synthetic candidate', { flag: 'wx' });
+      await writeFile(join(outside, 'private.txt'), 'synthetic private canary', { flag: 'wx' });
+      const harness = await realpath(process.execPath);
+      for (const candidateMetadata of [false, true]) {
+      const profile = renderDevinPreflightProfile({ root, candidate, harness, candidateMetadata });
+      const source = `const fs=require('node:fs'),cp=require('node:child_process'),a=require('node:assert/strict');
+const denied=e=>['EPERM','EACCES'].includes(e.code);
+${candidateMetadata
+  ? `a.equal(fs.lstatSync(${JSON.stringify(join(candidate, 'fixture.txt'))}).isFile(),true);
+a.equal(fs.realpathSync.native(${JSON.stringify(join(candidate, 'fixture.txt'))}),${JSON.stringify(join(candidate, 'fixture.txt'))});
+a.throws(()=>fs.accessSync(${JSON.stringify(join(candidate, 'fixture.txt'))},fs.constants.R_OK),denied);
+a.throws(()=>fs.accessSync(${JSON.stringify(join(candidate, 'fixture.txt'))},fs.constants.W_OK),denied);`
+  : `a.throws(()=>fs.lstatSync(${JSON.stringify(join(candidate, 'fixture.txt'))}),denied);`}
+a.throws(()=>fs.lstatSync(${JSON.stringify(join(outside, 'private.txt'))}),denied);
+a.throws(()=>fs.readFileSync(${JSON.stringify(join(candidate, 'fixture.txt'))}),denied);
+a.throws(()=>fs.readFileSync(${JSON.stringify(join(outside, 'private.txt'))}),denied);
+a.throws(()=>fs.writeFileSync(${JSON.stringify(join(candidate, 'escape.txt'))},'no'),denied);
+a.throws(()=>cp.execFileSync('/bin/sh',['-c','exit 0'],{stdio:'ignore'}));
+fs.writeFileSync(${JSON.stringify(join(root, 'owned-'))}+${JSON.stringify(String(candidateMetadata))},'owned',{flag:'wx'});
+console.log('camus-devin-isolation-ok');`;
+      const result = await runNativeProcess({ command: '/usr/bin/sandbox-exec',
+        args: ['-p', profile, harness, '-e', source], cwd: root, env: devinIsolatedEnvironment(root),
+        timeoutMs: 5000, maxBytes: 16384 });
+      assert.equal(result.code, 0); assert.match(result.stdout, /camus-devin-isolation-ok/);
+      }
+    } finally {
+      await rm(root, { recursive: true }); await rm(candidate, { recursive: true }); await rm(outside, { recursive: true });
+    }
+  });
