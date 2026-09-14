@@ -30,8 +30,8 @@ export async function startDevinMcp({ tools, maxCalls, onRefusal = () => {}, onC
       if (message.id === undefined) return message.method === 'notifications/initialized' && initialized ? send(202) : send(400, {});
       if (!(Number.isSafeInteger(message.id) || typeof message.id === 'string' && message.id.length <= 128)) return send(400, {});
       const result = value => send(200, { jsonrpc: '2.0', id: message.id, result: value });
-      const refuse = () => {
-        onRefusal(); return send(200, { jsonrpc: '2.0', id: message.id, error: { code: -32600, message: 'Camus tool request refused.' } });
+      const refuse = (code = 'invalid_dispatch', tool = null) => {
+        onRefusal({ code, tool }); return send(200, { jsonrpc: '2.0', id: message.id, error: { code: -32600, message: 'Camus tool request refused.' } });
       };
       if (message.method === 'initialize') {
         if (initialized) return refuse(); initialized = true;
@@ -45,16 +45,26 @@ export async function startDevinMcp({ tools, maxCalls, onRefusal = () => {}, onC
       const p = message.params, tool = registry.get(p?.name), args = p?.arguments ?? {};
       const id = `${typeof message.id}:${message.id}`;
       if (message.method !== 'tools/call' || !tool || !args || typeof args !== 'object' || Array.isArray(args)
-          || Object.keys(p).some(key => !['name', 'arguments', '_meta'].includes(key))
-          || closed || calls >= maxCalls || pending.size || consumedIds.has(id)) return refuse();
+          || Object.keys(p).some(key => !['name', 'arguments', '_meta'].includes(key))) return refuse('invalid_dispatch', tool?.name);
+      if (closed) return refuse('bridge_closed', tool.name);
+      if (consumedIds.has(id)) return refuse('duplicate_request', tool.name);
+      if (calls >= maxCalls) return refuse('call_limit', tool.name);
       calls++; consumedIds.add(id); // Consume before await; never retry an effect.
-      const operation = Promise.resolve().then(() => { onCall({ tool: tool.name }); return tool.invoke(args); }); pending.add(operation);
+      try { onCall({ tool: tool.name }); }
+      catch { return refuse('action_limit', tool.name); }
+      if (pending.size) {
+        // No queue, deferred effect or reusable request id. Busy attempts still
+        // consume allowance so polling cannot bypass the host action budget.
+        return result({ content: [{ type: 'text', text: JSON.stringify({ operationCompleted: false,
+          code: 'tool_busy', guidance: 'Nothing executed. Await the previous tool response, then use a new request id within the remaining budget. Send tools sequentially.' }) }], isError: false });
+      }
+      const operation = Promise.resolve().then(() => tool.invoke(args)); pending.add(operation);
       try {
         const output = await operation;
         if (typeof output !== 'string' || Buffer.byteLength(output) > 262144) throw new Error('Bounded output exceeded.');
         return result({ content: [{ type: 'text', text: output }], isError: false });
       } catch {
-        onRefusal(); return result({ content: [{ type: 'text', text: 'Camus refused the tool operation; stop without replay.' }], isError: true });
+        onRefusal({ code: 'tool_execution_refused', tool: tool.name }); return result({ content: [{ type: 'text', text: 'Camus refused the tool operation; stop without replay.' }], isError: true });
       } finally { pending.delete(operation); }
     } catch { if (!res.headersSent) send(400, {}); }
   });

@@ -17,6 +17,9 @@ const STAGES = new Set(['preparation', 'native_turn', 'terminal_evidence', 'deci
   'decision_schema', 'decision_authority', 'staged_adoption', 'result_receipt']);
 const CATEGORIES = new Set(['permission_denied', 'path_unavailable', 'metadata_or_symlink',
   'prior_read_required', 'stale_file', 'permission_required', 'match_not_found', 'unclassified']);
+const HOST_TOOLS = new Set(['list_files', 'read_file', 'search', 'write_file', 'run_command']);
+const BOUNDARY_CODES = new Set(['invalid_dispatch', 'bridge_closed', 'duplicate_request',
+  'call_limit', 'action_limit', 'tool_execution_refused', 'native_command_overlap']);
 const RPC_ERRORS = new Map([
   ['Native transport closed.', 'transport_closed'], ['Native executor could not start.', 'executor_start_failed'],
   ['Native executor closed before completion.', 'executor_closed'], ['Native output limit exceeded.', 'output_limit'],
@@ -35,7 +38,10 @@ export function publicDevinDiagnostic(value) {
     terminalReceived: value.terminalReceived === true, cleanupConfirmed: value.cleanupConfirmed === true,
     protocolStage: ['initialize', 'session', 'dispatch', 'prompt', 'completion'].includes(value.protocolStage) ? value.protocolStage : null,
     rpcFailure: [...RPC_ERRORS.values()].includes(value.rpcFailure) ? value.rpcFailure : null,
-    lastHostTool: ['list_files', 'read_file', 'search', 'write_file', 'run_command'].includes(value.lastHostTool) ? value.lastHostTool : null,
+    lastHostTool: HOST_TOOLS.has(value.lastHostTool) ? value.lastHostTool : null,
+    boundaryRefusal: BOUNDARY_CODES.has(value.boundaryRefusal?.code) ? {
+      code: value.boundaryRefusal.code, tool: HOST_TOOLS.has(value.boundaryRefusal.tool) ? value.boundaryRefusal.tool : null,
+    } : null,
     stopReason: ['end_turn', 'max_tokens', 'max_turn_requests', 'refusal', 'cancelled'].includes(value.stopReason) ? value.stopReason : null,
     observedTools: integer(value.observedTools) && value.observedTools <= 1000 ? value.observedTools : null,
     hostRequests: integer(value.hostRequests) && value.hostRequests <= 1001 ? value.hostRequests : null,

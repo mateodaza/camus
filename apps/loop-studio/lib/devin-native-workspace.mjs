@@ -10,12 +10,14 @@ import { renderDevinPreflightProfile } from './devin-native-preflight.mjs';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const within = (a, b) => b === a || b.startsWith(a + sep);
 const protectedPart = value => /^(?:\.git|\.env(?:\..*)?|\.npmrc|\.netrc|\.camus|\.claude|\.codex|\.qwen|\.grok|\.devin|\.ssh|\.aws|\.azure|node_modules)$/i.test(value);
-// Constructed only by host checks BEFORE a write. Never classify provider prose
+// Constructed only by host checks BEFORE an effect. Never classify provider prose
 // or arbitrary filesystem/permission errors as recoverable.
 export class DevinToolFeedback extends Error {
   constructor(code) {
-    super(code === 'stale_file' ? 'Read the file again and use its current hash.' : 'Use list_files to choose a prepared file.');
-    if (!['stale_file', 'file_not_prepared'].includes(code)) throw new Error('Invalid Devin feedback.');
+    super(code === 'invalid_command'
+      ? 'Nothing executed. Supply exactly command (an absolute executable path using letters, digits, _, ., /, + or -) and args (at most 100 strings without NUL); total JSON at most 16384 bytes. Example: {"command":"/usr/bin/env","args":["pnpm","test"]}. Do not put a shell command line in command. The read-only, network-denied sandbox still applies.'
+      : code === 'stale_file' ? 'Read the file again and use its current hash.' : 'Use list_files to choose a prepared file.');
+    if (!['stale_file', 'file_not_prepared', 'invalid_command'].includes(code)) throw new Error('Invalid Devin feedback.');
     this.code = code;
   }
 }

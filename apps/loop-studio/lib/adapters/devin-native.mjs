@@ -39,9 +39,9 @@ export async function runNativeDevin(options, dependencies = {}) {
   let closed = true, mutated = false;
   let nativeTools = 0, hostTools = 0;
   let refusalStage = 'preparation';
-  let localStopReason = null, lastHostTool = null;
-  const refuseTool = () => { localStopReason ??= 'tool_boundary_refused'; abort(); };
-  const diagnostic = () => publicDevinDiagnostic({ ...outcome, stage: refusalStage, lastHostTool,
+  let localStopReason = null, lastHostTool = null, boundaryRefusal = null;
+  const refuseTool = detail => { boundaryRefusal ??= detail ?? null; localStopReason ??= 'tool_boundary_refused'; abort(); };
+  const diagnostic = () => publicDevinDiagnostic({ ...outcome, stage: refusalStage, lastHostTool, boundaryRefusal,
     reason: outcome?.reason === 'cancelled' && localStopReason ? localStopReason : outcome?.reason });
   const reportActions = () => {
     // Deliberately conservative: ACP tool events and host executions both
@@ -105,14 +105,15 @@ export async function runNativeDevin(options, dependencies = {}) {
       { name: 'write_file', description: 'Create a safe relative file with expectedSha256:null, or replace a recently read file with its current hash. No deletion.',
         inputSchema: schema({ path: string, content: string, expectedSha256: { type: ['string', 'null'] } }),
         invoke: runTool(async args => { exact(args, ['path', 'content', 'expectedSha256']); return JSON.stringify(await workspace.writeText(args)); }) },
-      { name: 'run_command', description: 'Run an argument-array command in a credential-free, network-denied sandbox. Workspace is read-only; put test output in TMPDIR. No install, git mutation, or shell changes to source.',
+      { name: 'run_command', description: 'Run an absolute executable path with a separate args array, e.g. command:"/usr/bin/env", args:["pnpm","test"]. Send tools sequentially. Credential-free, network-denied sandbox; workspace is read-only. Put test output in TMPDIR. No install, git mutation, or shell changes to source.',
         inputSchema: schema({ command: string, args: { type: 'array', items: string } }),
         invoke: runTool(async args => {
-          exact(args, ['command', 'args']);
+          try { exact(args, ['command', 'args']); }
+          catch { throw new DevinToolFeedback('invalid_command'); }
           if (typeof args.command !== 'string' || !/^\/[A-Za-z0-9_./+-]{1,1024}$/.test(args.command)
               || !Array.isArray(args.args) || args.args.length > 100
               || args.args.some(arg => typeof arg !== 'string' || arg.includes('\0'))
-              || Buffer.byteLength(JSON.stringify(args)) > 16384) throw new Error('Invalid command.');
+              || Buffer.byteLength(JSON.stringify(args)) > 16384) throw new DevinToolFeedback('invalid_command');
           commandActive = true;
           try {
             const result = await (dependencies.runProcess ?? runNativeProcess)({ command: '/usr/bin/sandbox-exec',
@@ -154,7 +155,10 @@ export async function runNativeDevin(options, dependencies = {}) {
         onTick(`Devin native: ${nativeTools + hostTools} accounted actions (native events plus host executions); inference usage unavailable.`);
       },
       onToolRequest: async (method, params) => {
-        if (commandActive) throw new Error('Concurrent native write/verification refused.');
+        if (commandActive) {
+          refuseTool({ code: 'native_command_overlap', tool: null });
+          throw new Error('Concurrent native write/verification refused.');
+        }
         if (method === 'fs/read_text_file') { hostAction(); return { content: (await workspace.readText(relativePath(params.path))).content }; }
         if (method !== 'session/request_permission') throw new Error('Native delegated write is unsupported; use checked MCP write_file.');
         const tool = mergeDevinPermissionTool(calls.get(params.toolCall?.toolCallId), params.toolCall);

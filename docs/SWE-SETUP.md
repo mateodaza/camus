@@ -22,7 +22,7 @@ to guarantee zero charges; check the terms and usage in your Devin account.
 ## CLI
 
 ```sh
-npm install -g camus-cli@0.4.23
+npm install -g camus-cli@0.4.24
 camus models
 camus build --repo /path/to/clean-repository \
   --task-file /path/to/task.txt --contract-file /path/to/acceptance.txt \
@@ -75,7 +75,28 @@ locally. Never post raw terminal files publicly.
 
 A later cross-project 0.4.22 run stopped before edits or review and lost its
 underlying reason. 0.4.23 fixes the diagnostic loss; the original trigger remains
-unknown, and no paid rerun has yet established that project's success.
+unknown. A fresh 0.4.23 attempt also stopped before edits or review, with
+`tool_boundary_refused` and `lastHostTool: run_command`. That identifies the
+boundary, not the exact offending request, and does not establish project success.
+
+### 0.4.24 command-boundary correction
+
+Version 0.4.24 returns `invalid_command` guidance for a
+malformed host command **before execution**. `command` must be an absolute
+executable path; `args` is a separate string array. Camus never translates a
+command line into shell execution automatically.
+
+A distinct overlapping MCP request returns `tool_busy` / `operationCompleted:false`:
+nothing executed or queued. Wait for the earlier response and use a fresh request
+ID, within the original budget. Both malformed commands and busy attempts consume
+action allowance. Duplicate IDs, exhausted budgets, post-dispatch errors and
+security failures remain fatal; uncertain effects are never retried automatically.
+Direct native filesystem/permission requests during a command still fail closed.
+
+Sanitized diagnostics now include `boundaryRefusal` with a fixed reason code and
+known host tool name, separate from the last observed host tool. Offline regression
+coverage is not proof that a fresh SWE run on the affected project will succeed.
+This correction is not included in 0.4.23. See [0.4.24 release notes](RELEASE-0.4.24.md).
 
 The bounded native SWE → frozen verification → Luna medium smoke passed. A
 subsequent ten-file snapshot of a real application's package passed a two-file

@@ -16,6 +16,12 @@ test('public diagnostics allow only fixed labels and bounded counters, never arb
   assert.doesNotMatch(JSON.stringify(safe), /synthetic-private/);
   assert.equal(safe.reason, null); assert.equal(safe.observedTools, null); assert.equal(safe.hostRequests, null);
   assert.equal(safe.toolFailures.length, 16); assert.equal(publicDevinDiagnostic({ stage: secret }), null);
+  assert.equal(publicDevinDiagnostic({ stage: 'native_turn', boundaryRefusal: { code: secret, tool: 'run_command' } }).boundaryRefusal, null);
+  assert.deepEqual(publicDevinDiagnostic({ stage: 'native_turn', boundaryRefusal: {
+    code: 'duplicate_request', tool: secret, arguments: secret,
+  } }).boundaryRefusal, { code: 'duplicate_request', tool: null });
+  const valid = publicDevinDiagnostic({ stage: 'native_turn', boundaryRefusal: { code: 'call_limit', tool: 'run_command' } });
+  assert.deepEqual(publicDevinDiagnostic(valid), valid, 'CLI/Studio re-projection retains safe boundary evidence');
 });
 import { devinIsolatedEnvironment, devinIsolatedConfig, validateDevinLogin,
   renderDevinPreflightProfile, inspectDevinAcp } from './devin-native-preflight.mjs';

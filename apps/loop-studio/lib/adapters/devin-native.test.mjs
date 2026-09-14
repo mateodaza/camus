@@ -7,6 +7,121 @@ import { createHash } from 'node:crypto';
 import { runNativeDevin } from './devin-native.mjs';
 import { devinIsolatedEnvironment } from '../devin-native-preflight.mjs';
 
+test('malformed command requests give bounded no-execution guidance and accept a corrected argv request',
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    let executed = 0;
+    const deps = ctx.dependencies(async ({ mcp, update }) => {
+      for (const args of [
+        { command: 'pnpm test', args: [] }, { command: 'pnpm', args: ['test'] },
+        { command: '/bin/echo', args: 'secret-argument' }, { command: '/bin/echo', args: ['bad\0arg'] },
+        { command: '/bin/echo', args: [], extra: true }, { command: '/bin/echo', args: Array(101).fill('x') },
+        { command: '/bin/echo', args: ['x'.repeat(16384)] }, {},
+      ]) {
+        const reply = await mcp('tools/call', { name: 'run_command', arguments: args });
+        assert.equal(reply.result.isError, false);
+        const feedback = JSON.parse(reply.result.content[0].text);
+        assert.equal(feedback.operationCompleted, false); assert.equal(feedback.code, 'invalid_command');
+        assert.doesNotMatch(feedback.guidance, /secret-argument|bad\x00arg/);
+        assert.equal(executed, 0);
+      }
+      const reply = await mcp('tools/call', { name: 'run_command', arguments: { command: '/bin/echo', args: ['literal; not a shell'] } });
+      assert.equal(JSON.parse(reply.result.content[0].text).exitCode, 0);
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '{"done":true,"summary":"Checked","decision":null}' } });
+      return { stopReason: 'end_turn' };
+    });
+    deps.runProcess = async options => {
+      executed++; assert.equal(options.command, '/usr/bin/sandbox-exec');
+      assert.deepEqual(options.args.slice(2), ['/bin/echo', 'literal; not a shell']);
+      assert.match(options.args[1], /deny file-write/); assert.equal(options.signal.aborted, false);
+      return { code: 0, stdout: 'ok' };
+    };
+    const result = await runNativeDevin(ctx.defaults, deps);
+    assert.equal(result.ok, true, result.error); assert.equal(executed, 1); assert.equal(ctx.state().prompts, 1);
+  }));
+
+test('overlapping MCP requests cannot interrupt or run beside a sandbox command',
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    let release, started, executions = 0;
+    const entered = new Promise(resolve => { started = resolve; });
+    const waiting = new Promise(resolve => { release = resolve; });
+    const deps = ctx.dependencies(async ({ mcp, update }) => {
+      const first = mcp('tools/call', { name: 'run_command', arguments: { command: '/bin/echo', args: [] } });
+      await entered;
+      try {
+        const busy = await mcp('tools/call', { name: 'write_file', arguments: { path: 'calc.mjs', content: 'must not execute', expectedSha256: null } });
+        assert.equal(JSON.parse(busy.result.content[0].text).code, 'tool_busy');
+        assert.equal(executions, 1);
+      } finally { release(); }
+      assert.equal((await first).result.isError, false);
+      const read = await mcp('tools/call', { name: 'read_file', arguments: { path: 'calc.mjs' } });
+      assert.equal(JSON.parse(read.result.content[0].text).content, 'export const add=(a,b)=>a-b;');
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '{"done":true,"summary":"Checked","decision":null}' } });
+      return { stopReason: 'end_turn' };
+    });
+    deps.runProcess = async () => { executions++; started(); await waiting; return { code: 0, stdout: '' }; };
+    try {
+      const result = await runNativeDevin(ctx.defaults, deps);
+      assert.equal(result.ok, true, result.error); assert.equal(executions, 1);
+    } finally { release(); }
+  }));
+
+test('post-dispatch process errors remain fatal, redacted and unreplayed',
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    let executed = 0;
+    const deps = ctx.dependencies(async ({ mcp }) => {
+      const reply = await mcp('tools/call', { name: 'run_command', arguments: { command: '/bin/echo', args: [] } });
+      assert.equal(reply.result.isError, true);
+      return { stopReason: 'end_turn' };
+    });
+    deps.runProcess = async () => { executed++; throw new Error('private-process-error'); };
+    const result = await runNativeDevin(ctx.defaults, deps);
+    assert.equal(result.ok, false); assert.equal(executed, 1); assert.equal(result.uncertain, true);
+    assert.deepEqual(result.diagnostic.boundaryRefusal, { code: 'tool_execution_refused', tool: 'run_command' });
+    assert.doesNotMatch(JSON.stringify(result), /private-process-error/);
+    const terminalName = (await readdir(ctx.receipts)).find(name => name.startsWith('devin-terminal-'));
+    const terminal = JSON.parse(await readFile(join(ctx.receipts, terminalName), 'utf8'));
+    assert.deepEqual(terminal.diagnostic.boundaryRefusal, result.diagnostic.boundaryRefusal);
+    assert.equal(await readFile(join(ctx.candidate, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>a-b;');
+  }));
+
+test('native file requests overlapping a command remain fail-closed with an exact boundary label',
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    let started;
+    const entered = new Promise(resolve => { started = resolve; });
+    const deps = ctx.dependencies(async ({ mcp, callbacks, sourceMirror }) => {
+      const first = mcp('tools/call', { name: 'run_command', arguments: { command: '/bin/echo', args: [] } });
+      await entered;
+      await assert.rejects(callbacks.onRequest('fs/read_text_file', { sessionId: 'fixture-s1', path: join(sourceMirror, 'calc.mjs') }));
+      await first;
+      return { stopReason: 'end_turn' };
+    });
+    deps.runProcess = async ({ signal }) => {
+      started(); await new Promise(resolve => { signal.addEventListener('abort', resolve, { once: true }); });
+      throw new Error('cancelled-private-command');
+    };
+    const result = await runNativeDevin(ctx.defaults, deps);
+    assert.equal(result.ok, false); assert.equal(result.uncertain, true);
+    assert.deepEqual(result.diagnostic.boundaryRefusal, { code: 'native_command_overlap', tool: null }, 'first refusal survives later command cancellation');
+    assert.equal(await readFile(join(ctx.candidate, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>a-b;');
+  }));
+
+test('command corrections cannot extend an exhausted budget',
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    ctx.defaults.observedBudget.maxObservedTools = 1;
+    let executed = 0;
+    const deps = ctx.dependencies(async ({ mcp }) => {
+      const bad = await mcp('tools/call', { name: 'run_command', arguments: { command: 'pnpm test', args: [] } });
+      assert.equal(JSON.parse(bad.result.content[0].text).code, 'invalid_command');
+      const corrected = await mcp('tools/call', { name: 'run_command', arguments: { command: '/usr/bin/env', args: ['pnpm', 'test'] } });
+      assert(corrected.error);
+      return { stopReason: 'end_turn' };
+    });
+    deps.runProcess = async () => { executed++; return { code: 0, stdout: '' }; };
+    const result = await runNativeDevin(ctx.defaults, deps);
+    assert.equal(result.ok, false); assert.equal(executed, 0);
+    assert.deepEqual(result.diagnostic.boundaryRefusal, { code: 'call_limit', tool: 'run_command' });
+  }));
+
 async function fixture(fn) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'camus-devin-adapter-test-')));
   const candidate = join(root, 'candidate'), auth = join(root, 'auth'), receipts = join(root, 'receipts');
