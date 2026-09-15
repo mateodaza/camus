@@ -15,6 +15,12 @@ include these corrections. The contained native-write policy introduced in
 
 ## Before you start
 
+**0.4.29 continuity correction:** a denied native exec can now be followed by
+the permitted MCP command path after host policy, binary and staged-state checks.
+Eligible historical denied-exec runs can resume from their last accepted candidate,
+never their refused mirror. This is not included in 0.4.28. See the
+[contract evidence](SWE-CONTRACT-VALIDATION.md#denied-native-exec-and-continuity-hardening-0429).
+
 Version 0.4.28 also handles omitted summaries and adds narrow recovery
 from the last accepted candidate after a cleanly terminated schema-refused SWE
 turn. This is **not in 0.4.27**. After updating to 0.4.28, inspect the run first. If it reports the
@@ -31,6 +37,18 @@ mirror. Keep the agent paused until the new dispatch is authorized. Do not use
   ChatGPT login. Your orchestrating agent can plan separately using GPT or Claude.
 - A clean, trusted Git repository and a trusted verification command.
 
+If Devin auto-updates the default executable, use the still-installed reviewed
+artifact rather than downgrading the whole installation or bypassing its digest
+check. For the standard versioned install, set this in the worker's environment:
+
+```bash
+export CAMUS_DEVIN_BIN="$HOME/.local/share/devin/cli/_versions/3000.10.21/bin/devin"
+```
+
+Camus still verifies those bytes; the directory name alone is not trusted. A
+different installed version is not silently substituted. Restart long-lived
+workers after changing this setting.
+
 Camus preserves Devin account authentication. No API key or provider fallback
 is substituted. A vendor promotion or subscription does **not** make Camus able
 to guarantee zero charges; check the terms and usage in your Devin account.
@@ -38,7 +56,7 @@ to guarantee zero charges; check the terms and usage in your Devin account.
 ## CLI
 
 ```sh
-npm install -g camus-cli@0.4.28
+npm install -g camus-cli@0.4.29
 camus models
 camus build --repo /path/to/clean-repository \
   --task-file /path/to/task.txt --contract-file /path/to/acceptance.txt \

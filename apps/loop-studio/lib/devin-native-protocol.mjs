@@ -51,7 +51,7 @@ const CATEGORIES = new Set(['permission_denied', 'path_unavailable', 'metadata_o
   'prior_read_required', 'stale_file', 'permission_required', 'match_not_found', 'unclassified']);
 const HOST_TOOLS = new Set(['list_files', 'read_file', 'search', 'write_file', 'run_command']);
 const BOUNDARY_CODES = new Set(['invalid_dispatch', 'bridge_closed', 'duplicate_request',
-  'call_limit', 'action_limit', 'tool_execution_refused', 'native_command_overlap', 'host_operation_refused']);
+  'call_limit', 'action_limit', 'tool_execution_refused', 'native_command_overlap', 'host_operation_refused', 'native_exec_unexpected_completion']);
 const RPC_ERRORS = new Map([
   ['Native transport closed.', 'transport_closed'], ['Native executor could not start.', 'executor_start_failed'],
   ['Native executor closed before completion.', 'executor_closed'], ['Native output limit exceeded.', 'output_limit'],

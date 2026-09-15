@@ -5,6 +5,14 @@ Owner: Camus maintainer. Updated September 14, 2026.
 
 ## Current checkpoint
 
+- **0.4.29 denied-exec continuity:** native command authority stays denied. Host
+  policy, artifact and staged-state evidence can allow correction through checked
+  MCP commands. Eligible historical refusals can explicitly resume the prior
+  accepted candidate without importing the failed mirror. Smaller cumulative
+  resume-call ceilings are enforced, including reviewer dispatches. Offline
+  multi-slice, sandbox, tamper and crash/restart checks passed; no new live SWE
+  success is claimed. See [the evidence](SWE-CONTRACT-VALIDATION.md#denied-native-exec-and-continuity-hardening-0429).
+
 - **0.4.28 summary and prior-candidate recovery:** an absent descriptive summary
   becomes an explicitly recorded empty value, without defaulting execution or
   authority fields. A narrowly eligible schema-refused SWE run may explicitly

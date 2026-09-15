@@ -48,7 +48,7 @@ const nativeMakerPrompt = (task, record) => [
     'Recovery posture: continue from the host-fingerprinted quiescent draft in this fresh native session. Re-check prior work; the previous turn supplied no accepted completion claim.',
   ] : []),
   ...(record.feedback?.kind === 'prior_candidate_recovery' ? [
-    'Continue from the last accepted maker-turn candidate in a fresh session. The later schema-refused turn was NOT adopted and must not be replayed. Re-assess remaining work against the original contract; verification and independent review are still required.',
+    'Continue from the last accepted maker-turn candidate in a fresh session. The later refused turn was NOT adopted and must not be replayed. Re-assess remaining work against the original contract; verification and independent review are still required.',
   ] : []),
   `Bound human answer: ${JSON.stringify(record.answer ?? null)}`,
   'Return JSON {"done":true,"summary":"...","decision":null} when ready for host verification. Keep summary under 2000 bytes.',
@@ -452,8 +452,11 @@ export async function runProductiveCodeLoop(options, h) {
       limits = h.limitsFor(record.limits);
       for (const [key, value] of Object.entries(options.limits ?? {})) {
         h.limitsFor({ [key]: value });
+        // A smaller human continuation allowance must be enforceable at
+        // dispatch, not by a polling supervisor racing the next native turn.
+        const tighterCallCeiling = key === 'maxCalls' && value >= record.usage.calls;
         if (!['maxSteps', 'maxActions', 'maxCalls', 'maxRepairs', 'maxRetries', 'maxRecoveries', 'maxTokens', 'timeoutMs', 'callTimeoutMs'].includes(key)
-            || (value < limits[key] && !(key === 'maxTokens' && value === 0))) throw new Error('Resume permits only explicit budget extensions, not changed execution policy.');
+            || (value < limits[key] && !tighterCallCeiling && !(key === 'maxTokens' && value === 0))) throw new Error('Resume permits explicit budget extensions or a cumulative call ceiling no lower than already-consumed calls, not changed execution policy.');
         limits[key] = value;
       }
       record.limits = limits;
@@ -615,7 +618,8 @@ export async function runProductiveCodeLoop(options, h) {
       // as authenticated history; a subsequent crash resumes this transition,
       // never charges another recovery or replays the original native session.
       record.retiredNativeCalls ??= [];
-      record.retiredNativeCalls.push({ ...record.pendingCall, disposition: 'discarded_schema_turn',
+      record.retiredNativeCalls.push({ ...record.pendingCall,
+        disposition: record.pendingCall.response?.diagnostic?.stage === 'decision_schema' ? 'discarded_schema_turn' : 'discarded_incomplete_turn',
         candidateFingerprint: record.candidate.fingerprint });
       record.pendingCall = null; record.nativeSession = null; record.nativeInFlight = false;
       record.phase = 'make';

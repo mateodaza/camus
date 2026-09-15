@@ -5,6 +5,86 @@ Status: **survivable-edit and bounded-formatting corrections are included in
 This is a compatibility and regression gate, not a promise of bug-free native
 execution or a successful Company Brain run.
 
+## Denied native exec and continuity hardening (0.4.29)
+
+The Company Brain continuation on 0.4.28 performed one checked mirror write,
+then stopped when SWE selected the forbidden native `exec` tool. The authenticated
+checkpoint at revision 149 records `tool_failed`, no terminal completion, and
+**confirmed cleanup**. `nativeInFlight:true` retains unresolved-turn state; it
+does not prove that a writer remains alive. That draft remains unadopted.
+
+The correction separates two kinds of recovery:
+
+- **In-turn correction:** a failed native exec can remain a failed, recoverable
+  operation only under the exact host-written `exec` deny configuration and
+  reviewed binary. Both are rechecked locally. The host's native SBPL profile
+  denies child-process creation and permits initial execution only of the pinned
+  harness. The host serializes reconciliation, checks all approved staged bytes
+  and inventory, then fsyncs a no-effect receipt binding the tool/session,
+  configuration, binary and profile hashes. Provider error text is not proof.
+  The model is directed to the existing checked MCP `run_command`, not granted
+  native command permission. A claimed successful native exec is an invariant
+  violation and refuses; no shell/network/write authority is broadened.
+- **Prior-candidate continuation:** the historical cleanly stopped denied-exec
+  run can explicitly continue only from its previous accepted snapshot, under
+  the recognized policy and pinned artifact. This does **not** retroactively
+  prove the failed turn harmless, accept its result, or import its mirror. Normal
+  source/custody/fingerprint/ownership checks and recovery budgets still apply.
+
+An adjacent storage race was also fixed: failure to persist the no-effect receipt
+now cancels execution while still holding the host queue. A queued operation
+cannot slip through before the observer sees that evidence failure.
+
+Resume also permits an explicitly tighter cumulative `--max-calls` ceiling, no
+lower than calls already consumed. Counters are never reset and reviewer calls
+consume the same ceiling. Three calls consumed plus seven newly authorized calls
+means `--max-calls 10`, not 7 or 24. This prevents a polling supervisor from having
+to race the next dispatch to enforce a smaller human allowance. Other execution
+policies remain unchanged; larger allowances still require explicit authority.
+
+Offline coverage includes two full maker slices combining corrected edit misses,
+blocked native exec, invalid command arguments, permitted commands, omitted
+summaries, frozen verification and independent review. Controls cover changed or
+missing deny policy, binary/config tampering, unsafe config permissions/links,
+unapproved writes, extra files, overlapping tools, unexpected successful exec,
+cleanup failure, receipt collision and ordinary nonzero command exit codes.
+Real macOS sandbox tests prove child creation is denied even for the otherwise
+allowed harness executable. SIGKILL/restart checks cover both recovery-restored
+and recovery-reserved checkpoints, with no replay or double-counted recovery.
+
+Read-only inspection of the real candidate confirmed revision 149, three consumed
+calls, one consumed recovery, unchanged accepted fingerprint/branch/HEAD, isolated
+Git custody and no ignored output. The run remains untouched. **No new live model
+test or Company Brain completion is claimed.** The pinned Devin 3000.10.21 artifact
+is still required; auto-upgrading the operator's default CLI does not change it.
+
+Validation: the broader targeted run passed 150 tests with zero skips; additional
+SIGKILL tests passed at both prior-candidate recovery checkpoints. Full root/CLI
+and Studio suites passed. After adding the tighter resume-call ceiling, all 82
+native/loop/inspection regressions passed, including a stop before an unauthorized
+reviewer call and later review-only continuation without maker replay. No test
+used provider inference. Package parity and `git diff --check` are release gates.
+
+### Company Brain continuation with 0.4.29
+
+Keep run `code-1789435781661-50eb06c8`, the existing task/contract/verifier and
+SWE-2 High / Opus 4.8 high pair. The user's eight-call allowance has one consumed
+call and seven left. If that authorization remains in force, inspect again and
+use the tightened cumulative ceiling below. This does not extend the token,
+action, repair, recovery or time budgets. It is unsupported by 0.4.28.
+
+```bash
+export CAMUS_DEVIN_BIN="$HOME/.local/share/devin/cli/_versions/3000.10.21/bin/devin"
+camus build --inspect code-1789435781661-50eb06c8 --json
+camus build --resume code-1789435781661-50eb06c8 --max-calls 10 --json
+```
+
+Do not import either refused mirror or use `--retry-uncertain`. Do not commit,
+merge or publish the candidate without separate authority. Normal maker slices,
+verification and review may proceed without repeated human prompts inside the
+authorized limits. Seven calls do not guarantee task completion; report actual
+remaining work at an enforced stop rather than silently extending the allowance.
+
 ## Summary and prior-candidate recovery correction (0.4.28)
 
 Company Brain run `code-1789435781661-50eb06c8` completed and adopted its

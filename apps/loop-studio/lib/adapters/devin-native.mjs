@@ -164,7 +164,7 @@ export async function runNativeDevin(options, dependencies = {}) {
     closed = false;
     refusalStage = 'native_turn';
     const toolPolicy = 'Camus native tool policy: native edit/write tools may write only the isolated staging workspace after a checked one-time permission. Each permission binds the exact expected file content; Camus checks the result before adoption. ACP file delegation and checked Camus MCP tools are also supported. Complete each approved native write before another write or command. Direct native exec is blocked. Use camus MCP list_files (offset 0, then nextOffset), search/read_file/write_file/run_command for discovery and tests. Host-proven no-effect conflicts provide correction guidance, never successful-write claims. Commands see read-only staging, no credentials or network. Use TMPDIR for temporary outputs. Request new authority rather than bypassing unavailable operations. Return the requested JSON decision without Markdown.';
-    const recoveryPolicy = 'A failed native edit/write is not a successful edit. Camus may let you continue only after checking that it left no changes. If the turn remains active, read the target again and make a corrected tool call with a new ID, within the remaining budget. Never assume a failed edit applied, bypass permission checks, or replay an uncertain operation.';
+    const recoveryPolicy = 'A failed tool is not a successful operation. Camus may let you continue after proving no effect. Native exec is denied by host policy: if it is refused and the turn remains active, use the Camus MCP run_command tool instead, with an absolute command and a separate args array. Do not request changes to permission settings or repeat native exec. After a no-effect edit/write failure, read the target and make a corrected call with a new ID within the remaining budget. Never assume a failed operation applied, bypass checks, or replay an uncertain operation.';
     const dispatchPrompt = `${prompt}\n\nHost-observed SWE budget snapshot before protocol setup: ${JSON.stringify(budgetSnapshot())}\nHost MCP responses include a separate camus_native_budget block. Follow wrapUp guidance before exhaustion; stop tool use and return the requested final JSON. Native events plus host operations share the allowance; internal inference spend remains unknown.\n\n${toolPolicy}\n${recoveryPolicy}`;
     outcome = await runDevinProtocolTurn({ model, cwd: mirror, contract, signal: control.signal,
       prompt: dispatchPrompt,
@@ -192,27 +192,44 @@ export async function runNativeDevin(options, dependencies = {}) {
         const prior = calls.get(update.toolCallId);
         calls.set(update.toolCallId, { ...prior, ...Object.fromEntries(Object.entries(update).filter(([, value]) => value != null)),
           status: update.status ?? prior?.status ?? 'pending' });
+        const current = calls.get(update.toolCallId);
+        if (current?._meta?.['cognition.ai/inferenceToolName'] === 'exec' && current.status === 'completed')
+          refuseTool({ code: 'native_exec_unexpected_completion', tool: null });
       },
       onToolFailure(update) {
         const tool = calls.get(update.toolCallId);
-        if (!['edit', 'write'].includes(tool?._meta?.['cognition.ai/inferenceToolName'])
-            || typeof tool.rawInput?.file_path !== 'string' || tasks.size || broker.stats().active
+        const kind = tool?._meta?.['cognition.ai/inferenceToolName'];
+        if (!['edit', 'write', 'exec'].includes(kind)
+            || (kind !== 'exec' && typeof tool.rawInput?.file_path !== 'string') || tasks.size || broker.stats().active
             || [...calls.values()].some(call => !['completed', 'failed'].includes(call.status)))
           return null;
         return serializeHost(async () => {
           let receipt;
-          try { receipt = await workspace.reconcileFailedNativeWrite(tool); }
+          try {
+            if (kind === 'exec') {
+              const denial = await context.verifyExecDenial();
+              if (denial?.policy !== 'native-exec-denied/v1' || denial.artifactDigest !== context.digest
+                  || !/^[a-f0-9]{64}$/.test(denial.configHash ?? '')) throw new Error('Native exec denial is unbound.');
+              receipt = { ...await workspace.reconcileDeniedNativeExec(tool), denial };
+            } else receipt = await workspace.reconcileFailedNativeWrite(tool);
+          }
           catch {
             // Cancel synchronously inside the queue, before it can dispatch a
             // subsequent host operation. Preserve the original failure label.
             localStopReason ??= 'tool_failed'; abort(); return null;
           }
-          const file = await open(join(receiptsDir, `devin-no-effect-${hash(sessionId)}-${hash(update.toolCallId)}.json`), 'wx', 0o600);
           try {
-            await file.writeFile(JSON.stringify({ ...receipt, sessionId, artifactDigest: context.digest,
-              policy: 'contained-native/v1', operationCompleted: false }));
-            await file.sync();
-          } finally { await file.close(); }
+            const file = await open(join(receiptsDir, `devin-no-effect-${hash(sessionId)}-${hash(update.toolCallId)}.json`), 'wx', 0o600);
+            try {
+              await file.writeFile(JSON.stringify({ ...receipt, sessionId, artifactDigest: context.digest,
+                policy: 'contained-native/v1', operationCompleted: false }));
+              await file.sync();
+            } finally { await file.close(); }
+          } catch {
+            // Storage failure is an evidence failure too. Cancel while holding
+            // the host queue, not later in the observer's promise callback.
+            localStopReason ??= 'tool_failed'; abort(); return null;
+          }
           return receipt;
         });
       },

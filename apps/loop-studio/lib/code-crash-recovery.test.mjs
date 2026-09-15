@@ -28,6 +28,7 @@ try {
       if(window==='response_saved' && event.type==='call_response_saved') kill();
       if(window==='write_started' && event.type==='action_started') kill();
       if(window==='write_saved' && event.type==='action_completed') kill();
+      if(['native_prior_candidate_restored','native_prior_candidate_recovery_reserved'].includes(window) && event.type===window) kill();
     }`;
   await writeFile(loader, `export async function load(url,ctx,next){if(url===${JSON.stringify(moduleUrl)})return {format:'module',shortCircuit:true,source:${JSON.stringify(injected)}};return next(url,ctx);}`);
   await writeFile(child, `import {runCodeSeats} from ${JSON.stringify(pathToFileURL(join(here, 'code-seats.mjs')).href)};
@@ -79,6 +80,57 @@ try {
     if (['call_started', 'response_before_save'].includes(window)) assert.ok(result.attempts.some(x => x.possibleDuplicateBilling));
     else assert.equal(result.usage.retries, 0);
     console.log(`ok - SIGKILL/restart ${kind} at ${window}`);
+  }
+  // Crash on either side of the new prior-candidate recovery reservation. The
+  // refused mirror must never become input, and no recovery or call is doubled.
+  const nativeChild = join(root, 'native-worker.mjs');
+  await writeFile(nativeChild, `import {runCodeSeats} from ${JSON.stringify(pathToFileURL(join(here, 'code-seats.mjs')).href)};
+    import {DEVIN_CODE_BACKEND} from ${JSON.stringify(pathToFileURL(join(here, 'devin-code-seat.mjs')).href)};
+    import {DEVIN_NATIVE_DIGEST} from ${JSON.stringify(pathToFileURL(join(here, 'devin-native-protocol.mjs')).href)};
+    import {readFile,writeFile,appendFile} from 'node:fs/promises'; import {join} from 'node:path';
+    const root=process.argv[2];
+    const result=await runCodeSeats({repoPath:join(root,'repo'),receiptsDir:join(root,'run'),task:'Finish the accepted draft safely',resume:process.argv[3]==='resume',
+      seats:{maker:{backend:'devin',model:'swe-2-high',codeExecutor:'devin_native',observedBudgetConsent:'devin-observed/v1'},reviewer:{backend:'claude',model:'fixture'}},
+      backendSnapshot:{maker:DEVIN_CODE_BACKEND,reviewer:{kind:'claude_cli',transport:'vendor_managed',provider:'anthropic'}},
+      limits:{maxCalls:4,maxRecoveries:1,maxTokens:1000000},
+      adapters:{maker:()=>{throw Error('No fallback')},nativeMaker:async args=>{
+        const calls=await readFile(join(root,'calls'),'utf8').catch(()=> '');const turn=calls.split('maker').length;
+        await appendFile(join(root,'calls'),'maker\\n');
+        if(args.nativeSession!==null)throw Error('No session replay');
+        await args.onNativeSession({executor:'devin_native',sessionId:'s'+turn,replayable:false,artifactDigest:DEVIN_NATIVE_DIGEST});
+        if(turn===2)return {ok:false,uncertain:true,noModelCalled:false,usage:null,candidateQuiescent:false,failureCode:'devin_native_incomplete',
+          stagedDraft:{path:join(root,'refused-mirror'),adopted:false,replayAllowed:false},
+          diagnostic:{stage:'native_turn',reason:'tool_failed',terminalReceived:false,cleanupConfirmed:true,protocolStage:'prompt',stopReason:null,rpcFailure:null,boundaryRefusal:null,
+            toolFailures:[{nativeTool:'exec',categories:['permission_denied']}]}};
+        if(turn===3 && await readFile(join(args.worktree,'answer.txt'),'utf8')!=='accepted')throw Error('Accepted draft lost');
+        await writeFile(join(args.worktree,'answer.txt'),turn===1?'accepted':'finished');
+        return {ok:true,definitiveTurnEnd:true,candidateQuiescent:true,usage:null,text:JSON.stringify({actions:[],done:turn===3,summary:'Progress',decision:turn===1?{action:'continue',reason:'Finish remaining work'}:null})};
+      },reviewer:async()=>({ran:true,verdict:'APPROVED',findings:[],usage:{total_tokens:5}})}});
+    process.stdout.write(JSON.stringify(result));`);
+  for (const window of ['native_prior_candidate_restored', 'native_prior_candidate_recovery_reserved']) {
+    const dir = join(root, window), repo = join(dir, 'repo');
+    await mkdir(repo, { recursive: true }); await mkdir(join(dir, 'run'));
+    await writeFile(join(repo, 'README.md'), 'base\n');
+    const git = args => execFileSync('git', ['-C', repo, ...args], { stdio: 'ignore' });
+    git(['init', '-q']); git(['add', '.']); git(['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'base']);
+    await writeFile(join(dir, 'refused-mirror'), 'never adopt');
+    const nativeRun = async (resume, crash = '') => {
+      const proc = spawn(process.execPath, ['--experimental-loader', loader, nativeChild, dir, resume ? 'resume' : 'new'],
+        { env: { ...process.env, CAMUS_CRASH_WINDOW: crash }, stdio: ['ignore', 'pipe', 'pipe'] });
+      let output = '', errors = ''; proc.stdout.on('data', b => { output += b; }); proc.stderr.on('data', b => { errors += b; });
+      const [code, signal] = await once(proc, 'exit');
+      if (crash) { assert.equal(signal, 'SIGKILL', errors); return; }
+      assert.equal(code, 0, errors); return JSON.parse(output);
+    };
+    const seeded = await nativeRun(false); assert.equal(seeded.resumable, true); assert.equal(seeded.usage.calls, 2);
+    await nativeRun(true, window);
+    assert.equal((await readFile(join(dir, 'calls'), 'utf8')).trim().split('\n').length, 2, 'crash precedes any fresh maker dispatch');
+    const resumed = await nativeRun(true);
+    assert.equal(resumed.completion, 'candidate_ready_for_acceptance', resumed.error);
+    assert.equal(resumed.usage.recoveries, 1); assert.equal(resumed.usage.calls, 4); assert.equal(resumed.usage.retries, 0);
+    assert.equal(await readFile(join(resumed.candidate.worktree, 'answer.txt'), 'utf8'), 'finished');
+    assert.equal(await readFile(join(dir, 'refused-mirror'), 'utf8'), 'never adopt');
+    console.log('ok - SIGKILL/restart SWE at ' + window);
   }
   // Hard death of the owner must not strand a test process with no deadline.
   const check = join(root, 'long-check.cjs'), pidFile = join(root, 'verifier.pid');

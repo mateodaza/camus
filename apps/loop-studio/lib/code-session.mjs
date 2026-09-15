@@ -167,7 +167,7 @@ function nextSafeAction(state, { owned, resumable, question, questionBound, poli
   const uncertain = hasUncertainWork(state);
   if (resumable && canResumeDevinPriorCandidate(state)) return {
     action: 'resume_candidate',
-    reason: 'Explicit resume revalidates the last accepted candidate and starts a fresh bounded session. The schema-refused turn stays discarded; its draft is neither adopted nor replayed.',
+    reason: 'Explicit resume revalidates the last accepted candidate and starts a fresh bounded session. The refused turn stays discarded; its draft is neither adopted nor replayed.',
   };
   if (uncertain && question?.kind === 'uncertain_call' && questionBound && !state.nativeInFlight) return {
     action: 'authorize_uncertain_retry',

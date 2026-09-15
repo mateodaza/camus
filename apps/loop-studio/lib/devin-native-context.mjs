@@ -8,6 +8,22 @@ import { join, resolve } from 'node:path';
 import { devinIsolatedConfig, devinIsolatedEnvironment, validateDevinLogin } from './devin-native-preflight.mjs';
 import { DEVIN_NATIVE_DIGEST, DEVIN_NATIVE_MODEL, DEVIN_NATIVE_VERSION } from './devin-native-protocol.mjs';
 
+// Pure local evidence check, factored for hermetic tamper controls. Production
+// always supplies DEVIN_NATIVE_DIGEST, never a user-selected trust anchor.
+export async function verifyDevinExecDenial({ config, configBytes, harness, artifactDigest }) {
+  const stat = await lstat(config);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== process.getuid()
+      || (stat.mode & 0o077) || stat.size !== Buffer.byteLength(configBytes)
+      || await readFile(config, 'utf8') !== configBytes
+      || createHash('sha256').update(await readFile(harness)).digest('hex') !== artifactDigest)
+    throw new Error('Devin execution policy changed.');
+  const policy = JSON.parse(configBytes);
+  if (!Array.isArray(policy.permissions?.deny) || !policy.permissions.deny.includes('exec'))
+    throw new Error('Devin execution denial absent.');
+  return Object.freeze({ policy: 'native-exec-denied/v1', artifactDigest,
+    configHash: createHash('sha256').update(configBytes).digest('hex') });
+}
+
 export async function prepareDevinContext({ binary, credentialSource, signal } = {}) {
   if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('Devin native currently requires macOS arm64.');
   if (signal?.aborted) throw new Error('Devin preparation cancelled.');
@@ -31,13 +47,20 @@ export async function prepareDevinContext({ binary, credentialSource, signal } =
       await mkdir(path, { recursive: true, mode: 0o700 });
     await writeFile(join(env.XDG_DATA_HOME, 'devin/credentials.toml'), bytes, { flag: 'wx', mode: 0o600 });
     const config = join(env.XDG_CONFIG_HOME, 'devin/config.json');
-    await writeFile(config, JSON.stringify({ ...devinIsolatedConfig(),
+    const configBytes = JSON.stringify({ ...devinIsolatedConfig(),
       permissions: { allow: ['mcp__camus__read_file', 'mcp__camus__search', 'mcp__camus__write_file', 'mcp__camus__run_command'],
-        ask: [], deny: ['exec'] } }), { flag: 'wx', mode: 0o600 });
+        ask: [], deny: ['exec'] } });
+    await writeFile(config, configBytes, { flag: 'wx', mode: 0o600 });
     let configured = false, released = false;
     return {
       root, env, harness, config, model: DEVIN_NATIVE_MODEL, version: DEVIN_NATIVE_VERSION,
       digest: DEVIN_NATIVE_DIGEST, sourceLoginPrivate: (info.mode & 0o077) === 0,
+      async verifyExecDenial() {
+        if (released || signal?.aborted) throw new Error('Devin execution policy unavailable.');
+        // The diagnostic text is not proof. Rebind the exact host-created deny
+        // configuration and reviewed binary before treating exec as blocked.
+        return verifyDevinExecDenial({ config, configBytes, harness, artifactDigest: DEVIN_NATIVE_DIGEST });
+      },
       async configureMcp(definition) {
         if (configured || released) throw new Error('Devin context already configured or released.');
         const url = new URL(definition.url);

@@ -177,6 +177,22 @@ export async function createDevinWorkspace({ candidate, mirror, root, harness, f
   const workspace = { profile, containedNativeWrites, manifest: Object.freeze(manifest), manifestHash: hash(JSON.stringify(manifest)),
     nativeWriteEvidence() { return { policy: containedNativeWrites ? 'contained-native/v1' : 'host-or-legacy',
       writes: nativeWrites.map(item => ({ ...item })) }; },
+    async reconcileDeniedNativeExec(tool) {
+      if (!containedNativeWrites || adopted || signal?.aborted || tool?.status !== 'failed'
+          || tool?._meta?.['cognition.ai/inferenceToolName'] !== 'exec')
+        throw new Error('Native execution failure is not reconcilable.');
+      // This workspace's host-authored SBPL denies process-fork and allows
+      // process-exec only for the initial pinned harness. Native shell commands
+      // cannot start. The adapter additionally verifies the exact deny config.
+      // Do not use error strings or mere unchanged target bytes as that proof.
+      await workspace.verifyNativeWrites();
+      await verifyInventory();
+      await workspace.verifyNativeWrites();
+      if (signal?.aborted) throw new Error('Native failure reconciliation cancelled.');
+      return Object.freeze({ toolCallId: tool.toolCallId, recovery: 'verified_no_effect',
+        operation: 'exec', executionPrevented: true, profileHash: hash(profile),
+        checkedStateHash: hash(JSON.stringify(snapshots.map(item => [item.path, acceptedHashes.get(item.path)]))) });
+    },
     async reconcileFailedNativeWrite(tool) {
       // A failed terminal event is not proof of no effect. The caller serializes
       // this check with host work and refuses overlapping native operations.

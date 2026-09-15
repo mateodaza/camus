@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, writeFile, chmod, symlink, link } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { verifyDevinExecDenial } from './devin-native-context.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runNativeProcess } from './native-process.mjs';
@@ -8,6 +10,30 @@ import { assertDevinModelSelection, validateDevinSession, inspectDevinUsage, cre
   DEVIN_NATIVE_MODEL } from './devin-native-protocol.mjs';
 import { publicDevinDiagnostic, parseDevinDecisionText } from './devin-native-protocol.mjs';
 import { devinBudgetSnapshot, nativeBudgetPrompt } from './native-budget.mjs';
+
+for (const fault of ['none', 'config', 'artifact', 'mode', 'symlink', 'hardlink', 'no_deny'])
+  test(`host exec-denial evidence binds the configuration and binary: ${fault}`, async t => {
+    const root = await mkdtemp(join(tmpdir(), 'camus-exec-policy-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const config = join(root, 'config.json'), harness = join(root, 'harness');
+    const configBytes = JSON.stringify({ permissions: { deny: fault === 'no_deny' ? [] : ['exec'], allow: [], ask: [] } });
+    await writeFile(config, configBytes, { mode: 0o600 });
+    await writeFile(harness, 'hermetic binary fixture');
+    const artifactDigest = createHash('sha256').update('hermetic binary fixture').digest('hex');
+    if (fault === 'config') await writeFile(config, configBytes.replace('exec', 'read'));
+    if (fault === 'artifact') await writeFile(harness, 'different binary');
+    if (fault === 'mode') await chmod(config, 0o644);
+    if (fault === 'symlink') {
+      const target = join(root, 'other'); await writeFile(target, configBytes, { mode: 0o600 });
+      await rm(config); await symlink(target, config);
+    }
+    if (fault === 'hardlink') await link(config, join(root, 'alias'));
+    const check = () => verifyDevinExecDenial({ config, configBytes, harness, artifactDigest });
+    if (fault === 'none') {
+      const proof = await check(); assert.equal(proof.policy, 'native-exec-denied/v1');
+      assert.equal(proof.artifactDigest, artifactDigest); assert.match(proof.configHash, /^[a-f0-9]{64}$/);
+    } else await assert.rejects(check, /execution/);
+  });
 
 test('native decision formatting accepts only whole JSON, one JSON fence or bounded plain-text preamble', () => {
   const value = { done: true, summary: 'Corrected.', decision: null }, json = JSON.stringify(value);
