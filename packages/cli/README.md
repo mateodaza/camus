@@ -28,15 +28,15 @@ for the first real candidate, model setup, and honest terminal states.
 > it; configured API credentials remain local and go only to that endpoint.
 
 <details>
-<summary><strong>Current release: 0.4.27</strong></summary>
+<summary><strong>Current release: 0.4.28</strong></summary>
 
-**New in 0.4.27:** SWE can correct native edit misses after host verification of
-no effect. Bounded final JSON presentation wrappers are accepted; schema,
-authority, containment and verification remain strict. CLI and Studio share the
-fix. A fresh recovery canary passed verification and Luna review in 66 seconds,
-without retries or repairs. This is bounded compatibility evidence, not
-all-project qualification or measured SWE spend.
-[Maintenance notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.27.md).
+**New in 0.4.28:** an omitted SWE summary is explicitly normalized as empty
+metadata; execution decisions remain strict. Eligible schema-refused runs can
+explicitly resume from their last accepted candidate without adopting or
+replaying the refused draft. Existing budgets, verification and independent
+review still apply. CLI and Studio share the correction. Offline regression and
+package checks passed; no new live SWE success is claimed.
+[Maintenance notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.28.md).
 
 **Added in 0.4.22:** optional **SWE-2 High through native Devin**, with independent
 reviewer selection in CLI and Studio. Use `--maker devin:swe-2-high
@@ -569,7 +569,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.4.27
+npm i -g camus-cli@0.4.28
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)

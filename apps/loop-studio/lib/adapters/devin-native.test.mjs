@@ -101,7 +101,7 @@ for (const channel of ['delegated', 'native']) test(`shared Build completes ${ch
     await assert.rejects(readFile(join(ctx.candidate, 'nested/new.mjs')), { code: 'ENOENT' });
   }));
 
-test('two bounded SWE slices survive failed grants, preserve progress and reach candidate-bound verification/review',
+test('two bounded SWE slices survive failed grants and missing summaries, preserve progress and reach candidate-bound verification/review',
   { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 15000 }, () => fixture(async ctx => {
     const git = (...args) => execFileSync('git', ['-C', ctx.candidate, ...args], { stdio: 'ignore' });
     git('init', '-q'); git('add', 'calc.mjs');
@@ -125,7 +125,7 @@ test('two bounded SWE slices survive failed grants, preserve progress and reach 
       const command = await mcp('tools/call', { name: 'run_command', arguments: { command: '/bin/echo', args: [] } });
       assert.equal(JSON.parse(command.result.content[0].text).exitCode, 0, 'revoked grants do not block later commands');
       update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify({ done: slices === 2,
-        summary: 'Bounded progress.', decision: slices === 1 ? { action: 'continue', reason: 'Finish numeric input support.' } : null }) } });
+        decision: slices === 1 ? { action: 'continue', reason: 'Finish numeric input support.' } : null }) } });
       return { stopReason: 'end_turn' };
     });
     deps.runProcess = async () => ({ code: 0, stdout: '' });
@@ -150,6 +150,7 @@ test('two bounded SWE slices survive failed grants, preserve progress and reach 
       const receipt = await readFile(join(ctx.receipts, name), 'utf8');
       assert.doesNotMatch(receipt, /sensitive-provider-text/);
       assert.equal(JSON.parse(receipt).writeEvidence.writes[0].noEffectVerified, true);
+      assert.deepEqual(JSON.parse(receipt).decisionNormalizations, ['missing_summary_defaulted_empty']);
       assert.equal(JSON.parse(receipt).toolFailures[0].recovery, 'verified_no_effect');
     }
   }));
@@ -416,11 +417,29 @@ test('composed adapter checks MCP writes, completes, adopts into isolated candid
     assert((await readdir(ctx.receipts)).some(name => name.startsWith('devin-result-')));
   }));
 
+for (const value of [
+  { done: false, summary: null, decision: { action: 'continue', reason: 'More work' } },
+  { done: false, summary: 1, decision: { action: 'continue', reason: 'More work' } },
+  { done: false, summary: 'x'.repeat(2001), decision: { action: 'continue', reason: 'More work' } },
+  { decision: { action: 'continue', reason: 'More work' } },
+  { done: false },
+  { done: false, extra: 'unknown', decision: { action: 'continue', reason: 'More work' } },
+]) test(`summary normalization does not repair invalid schema ${JSON.stringify(value).slice(0, 90)}`,
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    const result = await runNativeDevin(ctx.defaults, ctx.dependencies(async ({ update }) => {
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify(value) } });
+      return { stopReason: 'end_turn' };
+    }));
+    assert.equal(result.ok, false); assert.equal(result.diagnostic.stage, 'decision_schema');
+    assert.equal(await readFile(join(ctx.candidate, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>a-b;');
+    assert.equal((await readdir(ctx.receipts)).filter(name => name.startsWith('devin-result-')).length, 0);
+  }));
+
 for (const wrapper of ['plain', 'preamble', 'fence']) test(`invalid ${wrapper} final decision preserves staging without adopting or replaying`,
   { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
     const result = await runNativeDevin(ctx.defaults, ctx.dependencies(async ({ update, sourceMirror }) => {
       await writeFile(join(sourceMirror, 'calc.mjs'), 'untrusted draft');
-      const json = '{"done":true,"summary":"Done","decision":{"action":"publish","reason":"go"}}';
+      const json = '{"done":true,"decision":{"action":"publish","reason":"go"}}';
       update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: wrapper === 'preamble'
         ? `Complete.\n\n${json}` : wrapper === 'fence' ? `\`\`\`json\n${json}\n\`\`\`` : json } });
       return { stopReason: 'end_turn' };

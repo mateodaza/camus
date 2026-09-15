@@ -73,6 +73,9 @@ Tools cannot read Git/Camus private state or use arbitrary network. Completed
 turns can resume. An uncertain turn is never replayed; when adapter cleanup is
 proven, Camus may fingerprint its untrusted draft and continue in a fresh
 bounded native session. Otherwise the candidate stays inspection-only.
+Exception: a cleaned-up SWE decision-schema refusal may explicitly resume from
+its unchanged, previously accepted candidate. Its refused mirror is never
+adopted or replayed; current usage and recovery limits still apply. Inspect first.
 Legacy camus run and /camus-feat retain their existing Claude/Codex gate.
 SWE is optional: --maker devin:swe-2-high --maker-executor devin_native
 requires --accept-devin-unmetered. This explicitly accepts unknown internal

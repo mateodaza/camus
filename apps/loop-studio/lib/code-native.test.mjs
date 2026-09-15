@@ -10,6 +10,9 @@ import { readCodeCheckpoint, saveCodeCheckpoint, digest } from './code-run-state
 import { nativeUsage } from './adapters/codex-native.mjs';
 import { validateCodeExecutor } from './code-native-policy.mjs';
 import { DEVIN_CODE_BACKEND } from './devin-code-seat.mjs';
+import { codeRunStatus } from './code-run-state.mjs';
+import { inspectCodeRun } from './code-session.mjs';
+import { canResumeDevinPriorCandidate } from './code-native-prior-candidate.mjs';
 
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const session = { version: 'codex-native/v1', threadId: '01900000-0000-7000-8000-000000000001', policyHash: 'fixture', usageTotal: { inputTokens: 10, cachedInputTokens: 4, outputTokens: 5, totalTokens: 15 } };
@@ -88,6 +91,102 @@ test('SWE refuses missing consent before any maker and preserves uncertainty wit
   assert.equal(turns, 1); assert.equal(result.resumable, false); assert.match(result.error, /uncertain/);
   assert.match(result.error, /devin_native_incomplete \(tool_failed\)/);
   assert.equal(result.review, null);
+});
+
+for (const mode of ['resume', 'drift', 'source_drift', 'ignored', 'authority', 'recovery_budget', 'call_budget']) test(`SWE schema refusal retains the accepted candidate: ${mode}`, async t => {
+  let turns = 0, reviews = 0, verifies = 0;
+  const f = await fixture(t, async args => {
+    turns++;
+    assert.equal(args.nativeSession, null);
+    args.onNativeSession({ executor: 'devin_native', sessionId: `s${turns}`, replayable: false });
+    if (turns === 2) return { ok: false, uncertain: true, noModelCalled: false, usage: null,
+      candidateQuiescent: false, failureCode: 'devin_native_refused',
+      stagedDraft: { path: join(f.options.receiptsDir, 'refused-mirror'), adopted: false, replayAllowed: false },
+      diagnostic: { stage: 'decision_schema', terminalReceived: true, cleanupConfirmed: true,
+        protocolStage: 'completion', stopReason: 'end_turn', reason: null, rpcFailure: null, boundaryRefusal: null } };
+    if (turns === 3) {
+      assert.equal(await readFile(join(args.worktree, 'answer.txt'), 'utf8'), 'accepted turn 1');
+      assert.match(args.prompt, /later schema-refused turn was NOT adopted/);
+      assert.equal((await f.checkpoint()).retiredNativeCalls[0].id, 'maker-2');
+    }
+    await writeFile(join(args.worktree, 'answer.txt'), turns === 1 ? 'accepted turn 1' : 'finished');
+    return { ...done(), nativeSession: undefined, text: JSON.stringify({ actions: [], done: turns === 3, summary: 'Progress',
+      decision: turns === 1 ? { action: 'continue', reason: 'Finish task' } : null }) };
+  }, async () => { reviews++; return { ran: true, verdict: 'APPROVED', findings: [], usage: { total_tokens: 5 } }; });
+  f.options.seats.maker = { backend: 'devin', model: 'swe-2-high', codeExecutor: 'devin_native', observedBudgetConsent: 'devin-observed/v1' };
+  f.options.backendSnapshot.maker = DEVIN_CODE_BACKEND;
+  f.options.limits.maxRecoveries = mode === 'recovery_budget' ? 0 : 1;
+  f.options.limits.maxCalls = mode === 'call_budget' ? 2 : 4;
+  const verify = async ({ worktree }) => { verifies++; return { ran: true, pass: await readFile(join(worktree, 'answer.txt'), 'utf8') === 'finished', exitCode: 0 }; };
+  verify.command = 'offline fixture'; verify.repeatable = true; f.options.verify = verify;
+  const first = await f.run();
+  assert.equal(turns, 2); assert.equal(first.completion, null); assert.equal(reviews, 0); assert.equal(verifies, 0);
+  const checkpoint = await f.checkpoint();
+  assert.equal(checkpoint.candidate.snapshotStatus, 'verified_turn');
+  assert.equal(first.resumable, true); assert.equal(first.candidate.fingerprint, checkpoint.candidate.fingerprint);
+  if (mode === 'resume') {
+    for (const mutate of [
+      s => { s.pendingCall.response.diagnostic.cleanupConfirmed = false; },
+      s => { s.pendingCall.response.diagnostic.stage = 'native_turn'; },
+      s => { s.pendingCall.response.diagnostic.stage = 'staged_adoption'; },
+      s => { s.pendingCall.response.diagnostic.stage = 'result_receipt'; },
+      s => { s.pendingCall.response.diagnostic.stopReason = 'max_tokens'; },
+      s => { s.pendingCall.response.diagnostic.boundaryRefusal = 'unsafe_tool'; },
+      s => { s.pendingCall.response.diagnostic.terminalReceived = false; },
+      s => { s.pendingCall.response.stagedDraft.adopted = true; },
+      s => { s.pendingCall.response.stagedDraft = null; },
+      s => { s.pendingCall.response = null; },
+      s => { s.candidate.snapshotStatus = 'untrusted_recovery'; },
+      s => { s.candidate.fingerprint = null; },
+      s => { s.usage.steps = 0; },
+      s => { s.nativeRecoveryPolicy = 'unknown'; },
+      s => { s.makerProgressPolicy = 'unknown'; },
+      s => { s.seats.maker.codeExecutor = 'grok_native'; },
+      s => { s.seats.maker.observedBudgetConsent = null; },
+      s => { s.verifierInFlight = true; },
+      s => { s.pendingAction = {}; },
+      s => { s.question = {}; },
+    ]) {
+      const invalid = structuredClone(checkpoint); mutate(invalid);
+      assert.equal(canResumeDevinPriorCandidate(invalid), false, mutate.toString());
+    }
+  }
+  await writeFile(join(f.options.receiptsDir, 'refused-mirror'), 'NEVER ADOPT THIS');
+  await writeFile(join(f.options.receiptsDir, 'run.json'), JSON.stringify({ id: checkpoint.runId, codeMode: 'independent', targetPath: f.options.repoPath, models: f.options.seats }));
+  assert.equal((await codeRunStatus(f.options.receiptsDir)).resumable, true);
+  const inspection = await inspectCodeRun(f.options.receiptsDir);
+  assert.equal(inspection.resumable, true); assert.equal(inspection.nextSafeAction.action, 'resume_candidate');
+  assert.match(inspection.nextSafeAction.reason, /neither adopted nor replayed/);
+  if (mode === 'drift') await writeFile(join(checkpoint.candidate.worktree, 'answer.txt'), 'external drift');
+  if (mode === 'source_drift') {
+    await writeFile(join(f.options.repoPath, 'README.md'), 'different baseline');
+    git(f.options.repoPath, 'add', '.'); git(f.options.repoPath, 'commit', '-qm', 'external baseline change');
+  }
+  if (mode === 'ignored') {
+    await writeFile(join(checkpoint.candidate.worktree, '.git/info/exclude'), 'untracked.cache\n');
+    await writeFile(join(checkpoint.candidate.worktree, 'untracked.cache'), 'outside snapshot');
+  }
+  const resumed = await f.run({ resume: true, ...(mode === 'authority' ? { retryUncertain: true } : {}) });
+  if (['drift', 'source_drift', 'ignored', 'authority'].includes(mode)) {
+    assert.equal(turns, 2); assert.equal(resumed.stateUnchanged, true);
+    assert.equal((await f.checkpoint()).revision, checkpoint.revision);
+    assert.match(resumed.error, { drift: /drift/, source_drift: /Source baseline changed/, ignored: /ignored output/, authority: /cannot replay/ }[mode]);
+  } else if (mode.endsWith('budget')) {
+    assert.equal(turns, 2); assert.equal(resumed.question.kind, 'budget');
+    assert.equal(resumed.usage.calls, 2);
+    const finished = await f.run({ resume: true, limits: { maxCalls: 4, maxRecoveries: 1 } });
+    assert.equal(finished.completion, 'candidate_ready_for_acceptance', finished.error);
+    assert.equal(finished.usage.recoveries, 1);
+  } else {
+    assert.equal(resumed.completion, 'candidate_ready_for_acceptance', resumed.error);
+    assert.equal(resumed.usage.calls, 4); assert.equal(resumed.usage.retries, 0); assert.equal(resumed.usage.recoveries, 1);
+    assert.equal(reviews, 1); assert.equal(verifies, 1);
+    const final = await f.checkpoint();
+    assert.equal(final.retiredNativeCalls[0].response.uncertain, true);
+    assert.equal(final.retiredNativeCalls[0].disposition, 'discarded_schema_turn');
+  }
+  assert.equal(await readFile(join(f.options.receiptsDir, 'refused-mirror'), 'utf8'), 'NEVER ADOPT THIS');
+  assert.equal(git(f.options.repoPath, 'status', '--porcelain'), '');
 });
 
 test('native edits use a private clone, live accounting, host verification and fresh advisory review', async t => {

@@ -5,6 +5,14 @@ Owner: Camus maintainer. Updated September 14, 2026.
 
 ## Current checkpoint
 
+- **0.4.28 summary and prior-candidate recovery:** an absent descriptive summary
+  becomes an explicitly recorded empty value, without defaulting execution or
+  authority fields. A narrowly eligible schema-refused SWE run may explicitly
+  resume from its unchanged last accepted candidate after ownership, binding and
+  fingerprint checks. Its refused mirror is never adopted or replayed. Existing
+  budgets and independent verification/review remain enforced. Shared CLI/Studio
+  behavior, validated offline; no fresh live evaluation is claimed.
+
 - **0.4.27 survivable-edit correction:** native edit/write failures may
   continue only after host verification of no effect, with durable evidence and
   existing budgets. Partial/uncertain effects and concurrent work remain fatal.
@@ -13,7 +21,7 @@ Owner: Camus maintainer. Updated September 14, 2026.
   frozen verification and Luna medium review in 66.103 seconds (12 actions,
   no retries/repairs). Included in 0.4.27. This is shared CLI/Studio
   SWE behavior, not a change to other models or a claim about the failed large run.
-  See [the recovery contract](SWE-CONTRACT-VALIDATION.md#survivable-native-edit-failures-unreleased).
+  See [the recovery contract](SWE-CONTRACT-VALIDATION.md#survivable-native-edit-failures-0427).
 
 - **0.4.26 contained-native correction:** the post-0.4.25 host-only canary
   failed on native `edit` with `permission_denied`, before writing or review.

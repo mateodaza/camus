@@ -15,6 +15,14 @@ include these corrections. The contained native-write policy introduced in
 
 ## Before you start
 
+Version 0.4.28 also handles omitted summaries and adds narrow recovery
+from the last accepted candidate after a cleanly terminated schema-refused SWE
+turn. This is **not in 0.4.27**. After updating to 0.4.28, inspect the run first. If it reports the
+prior-candidate resume path, plain `camus build --resume <run-id>` starts a fresh
+bounded session from accepted work; it does not replay or adopt the refused
+mirror. Keep the agent paused until the new dispatch is authorized. Do not use
+`--retry-uncertain` for this recovery. All consumed usage stays charged.
+
 - macOS Apple Silicon, with Devin CLI `3000.10.21 (611c1cba)` and an existing
   Devin login. Camus validates the exact reviewed binary before a prompt.
 - Use Devin's own installation and login flow. A nonstandard executable can be
@@ -30,7 +38,7 @@ to guarantee zero charges; check the terms and usage in your Devin account.
 ## CLI
 
 ```sh
-npm install -g camus-cli@0.4.27
+npm install -g camus-cli@0.4.28
 camus models
 camus build --repo /path/to/clean-repository \
   --task-file /path/to/task.txt --contract-file /path/to/acceptance.txt \
@@ -107,7 +115,7 @@ shared by CLI and Studio. After the bounded final-formatting correction, the
 fresh recovery canary passed frozen verification and Luna review in 66 seconds.
 The correction is included in 0.4.27, not 0.4.26. This does not
 establish all-project reliability or authorize replay of earlier failed runs.
-See [the validation contract](SWE-CONTRACT-VALIDATION.md#survivable-native-edit-failures-unreleased).
+See [the validation contract](SWE-CONTRACT-VALIDATION.md#survivable-native-edit-failures-0427).
 
 Use 0.4.23 or later for failure diagnostics and bounded host-tool feedback.
 `list_files` provides paginated prepared-file discovery. A host response with
@@ -137,7 +145,7 @@ action allowance. Duplicate IDs, exhausted budgets, post-dispatch errors and
 security failures remain fatal; uncertain effects are never retried automatically.
 In 0.4.26, ACP file requests serialize behind host commands; pending native
 writes still prevent another write or command. Failed native events overlapping
-host work are not eligible for the unreleased no-effect recovery path.
+host work are not eligible for the no-effect recovery path introduced in 0.4.27.
 
 Sanitized diagnostics now include `boundaryRefusal` with a fixed reason code and
 known host tool name, separate from the last observed host tool. Offline regression

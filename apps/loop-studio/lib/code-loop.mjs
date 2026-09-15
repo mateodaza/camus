@@ -9,6 +9,7 @@ import { initializeCodeOwnedProcessRegistry } from './code-owned-process-registr
 import { DEVIN_OBSERVED_CONSENT, devinBudgetSemantics } from './devin-code-seat.mjs';
 import { publicDevinDiagnostic } from './devin-native-protocol.mjs';
 import { nativeBudgetPrompt } from './native-budget.mjs';
+import { canResumeDevinPriorCandidate } from './code-native-prior-candidate.mjs';
 
 const TRANSIENT = /\b(?:429|502|503|504|ECONNRESET|ETIMEDOUT|rate.limit|temporarily unavailable)\b/i;
 const TERMINAL = new Set(['complete', 'refused']);
@@ -46,6 +47,9 @@ const nativeMakerPrompt = (task, record) => [
   ...(record.feedback?.kind === 'native_recovery' ? [
     'Recovery posture: continue from the host-fingerprinted quiescent draft in this fresh native session. Re-check prior work; the previous turn supplied no accepted completion claim.',
   ] : []),
+  ...(record.feedback?.kind === 'prior_candidate_recovery' ? [
+    'Continue from the last accepted maker-turn candidate in a fresh session. The later schema-refused turn was NOT adopted and must not be replayed. Re-assess remaining work against the original contract; verification and independent review are still required.',
+  ] : []),
   `Bound human answer: ${JSON.stringify(record.answer ?? null)}`,
   'Return JSON {"done":true,"summary":"...","decision":null} when ready for host verification. Keep summary under 2000 bytes.',
   'This is a bounded work slice. Before exhausting the slice, if useful work remains, stop tools and return done:false, summary, and decision:{action:"continue",reason:"what remains and why continuing is best"}. Do not wait for the hard stop. The host may continue automatically only inside the signed limits.',
@@ -71,7 +75,7 @@ export async function runProductiveCodeLoop(options, h) {
     seatAmendment = null, priorBackendSnapshot = null } = options;
   let record, owner, heartbeat, timer, lastTick = Date.now(), writable = false;
   let limits;
-  let native = false, nativeExecutor = null;
+  let native = false, nativeExecutor = null, priorCandidateRecovery = false;
   const abort = new AbortController();
   const stop = () => abort.abort(signal?.reason ?? new Error('explicit cancellation'));
   if (signal?.aborted) stop(); else signal?.addEventListener('abort', stop, { once: true });
@@ -100,9 +104,10 @@ export async function runProductiveCodeLoop(options, h) {
     if (writable) try { persist(); } catch { status = 'infra_error'; reason = 'Checkpoint could not be saved; inspect the last durable state before recovery.'; checkpointWriteFailed = true; }
     const result = clone(record.result);
     result.candidate = clone(record.candidate);
-    if (['infra_error', 'stopped'].includes(status) || record.nativeInFlight) result.candidate = { ...result.candidate, diff: null, fingerprint: null, snapshotStatus: 'unverified_terminal' };
+    const priorCandidateAvailable = canResumeDevinPriorCandidate(record);
+    if (['infra_error', 'stopped'].includes(status) || (record.nativeInFlight && !priorCandidateAvailable)) result.candidate = { ...result.candidate, diff: null, fingerprint: null, snapshotStatus: 'unverified_terminal' };
     const value = { ...result, status, error: reason, advisory: true, gating: false, runId: record.runId,
-      receiptsDir, checkpointVersion: CODE_RUN_VERSION, resumable: !TERMINAL.has(phase),
+      receiptsDir, checkpointVersion: CODE_RUN_VERSION, resumable: !TERMINAL.has(phase) || priorCandidateAvailable,
       checkpointRevision: record.revision, stateUnchanged: !writable,
       question: record.question ?? null, usage: record.usage, limits: record.limits, attempts: record.attempts,
       checkpointWriteFailed,
@@ -414,7 +419,11 @@ export async function runProductiveCodeLoop(options, h) {
       const oldBackends = changingSeats ? priorBackendSnapshot : backendSnapshot;
       if (record.source.repoPath !== source || record.binding !== bind(record.fileActionPolicy, record.makerProgressPolicy,
         record.nativeRecoveryPolicy, record.seats, oldBackends)) throw new Error('Run contract, model, credential, connection, verification, or execution-policy binding changed; no model was called.');
-      if (TERMINAL.has(record.phase)) throw new Error('This run is already closed; inspect its existing receipt. No model was called.');
+      priorCandidateRecovery = canResumeDevinPriorCandidate(record);
+      if (TERMINAL.has(record.phase) && !priorCandidateRecovery) throw new Error('This run is already closed; inspect its existing receipt. No model was called.');
+      if (priorCandidateRecovery && (changingSeats || answer || retryUncertain || retryVerification)) {
+        throw new Error('Prior-candidate continuation cannot replay the refused turn or change authority. Use plain resume with the original contract and pair. No model was called.');
+      }
       if (changingSeats) {
         if (!seatAmendment || typeof seatAmendment !== 'object' || Array.isArray(seatAmendment)
             || seatAmendment.questionId !== record.question?.id
@@ -567,7 +576,7 @@ export async function runProductiveCodeLoop(options, h) {
         record.actionIndex++; record.pendingAction = null; await h.ensureCreatedVisible(state); await snapshot();
       } else if (current !== action.expected_sha256) throw new Error('Interrupted action has unexpected file contents.');
     }
-    if (native && record.nativeInFlight) {
+    if (native && record.nativeInFlight && !priorCandidateRecovery) {
       // A hard crash can strand writes not bound to a completed turn. Do not
       // silently adopt them or replay an effectful turn on --retry-uncertain.
       const progress = record.pendingCall?.progress;
@@ -595,8 +604,29 @@ export async function runProductiveCodeLoop(options, h) {
       return finish('needs_decision', 'Legacy file-action checkpoint recovered and parked; start a fresh run to continue under create/replace.', 'refused');
     }
     await checkCandidate();
+    if (priorCandidateRecovery) {
+      const ignored = await h.git(record.candidate.worktree, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z']);
+      if (!ignored.ok || ignored.stdout) throw new Error('Prior candidate contains ignored output outside its recorded evidence. No model was called.');
+    }
     if (authorize) await authorize();
     writable = true; record.generation = owner.generation; record.status = 'running'; record.reason = null;
+    if (priorCandidateRecovery) {
+      // No read or promotion of the refused mirror. Keep the rejected response
+      // as authenticated history; a subsequent crash resumes this transition,
+      // never charges another recovery or replays the original native session.
+      record.retiredNativeCalls ??= [];
+      record.retiredNativeCalls.push({ ...record.pendingCall, disposition: 'discarded_schema_turn',
+        candidateFingerprint: record.candidate.fingerprint });
+      record.pendingCall = null; record.nativeSession = null; record.nativeInFlight = false;
+      record.phase = 'make';
+      record.feedback = { kind: 'prior_candidate_recovery', candidateFingerprint: record.candidate.fingerprint,
+        trust: 'accepted_turn_not_reviewed', originalContract: 'unchanged' };
+      invalidateCandidateEvidence();
+      // Reserve one recovery before the first fresh dispatch. Exhaustion parks
+      // safely without a model call; an extension must be explicit as usual.
+      record.priorCandidateRecoveryPending = true;
+      await log('native_prior_candidate_restored', { candidateFingerprint: record.candidate.fingerprint });
+    }
     await log('worker_attached');
     const remaining = Math.max(1, limits.timeoutMs - record.usage.activeMs);
     timer = setTimeout(() => abort.abort(new Error('active time budget exhausted')), remaining);
@@ -612,6 +642,12 @@ export async function runProductiveCodeLoop(options, h) {
         steps: record.usage.steps, actions: record.usage.actions };
       record.result.source = record.source;
       if (record.phase === 'make') {
+        if (record.priorCandidateRecoveryPending) {
+          if (record.usage.recoveries >= limits.maxRecoveries) return question('native recovery allowance exhausted; extend the recovery bound to continue from the last accepted candidate',
+            'budget', { type: 'budget_extension', cause: 'native recovery allowance exhausted' });
+          record.usage.recoveries++; record.priorCandidateRecoveryPending = false;
+          await log('native_prior_candidate_recovery_reserved', { recovery: record.usage.recoveries });
+        }
         const discovery = native ? null : discoveryProgress(record.history);
         if (!native && !record.pendingCall?.response && discovery.noNewSteps >= DISCOVERY_STALL_STEPS) {
           return finish('stopped', 'Repeated discovery produced no new evidence after a bounded recovery warning; candidate preserved. Increasing the call cap alone is not justified.', 'refused');

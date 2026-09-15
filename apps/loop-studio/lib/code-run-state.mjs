@@ -6,6 +6,7 @@ import { readFile, lstat, realpath, appendFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadMachineSalt, studioAtomicWrite } from './grandfather.mjs';
 import { publicDevinDiagnostic } from './devin-native-protocol.mjs';
+import { canResumeDevinPriorCandidate } from './code-native-prior-candidate.mjs';
 
 export const CODE_RUN_VERSION = 2;
 export const digest = (value) => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
@@ -78,7 +79,7 @@ export async function codeRunStatus(dir) {
       version: 'devin-observed/v1', internalModelCalls: null, totalInferenceTokens: null,
       calls: 'Camus dispatches; not internal Devin inferences', tokens: 'planning reservations; not a billing cap',
     } } : {}),
-    resumable: !owned && !['complete', 'refused'].includes(state.phase) };
+    resumable: !owned && (!['complete', 'refused'].includes(state.phase) || canResumeDevinPriorCandidate(state)) };
 }
 
 export async function requestCodeStop(dir) {

@@ -260,6 +260,12 @@ export async function runNativeDevin(options, dependencies = {}) {
     try { ({ value: decision, normalizations: decisionNormalizations } = parseDevinDecisionText(outcome.text)); }
     catch { throw new Error('Devin completion was not the required JSON decision.'); }
     refusalStage = 'decision_schema';
+    // Summary is descriptive metadata, never execution/acceptance authority.
+    // Normalize absence only; malformed supplied values still fail validation.
+    if (!Object.hasOwn(decision, 'summary')) {
+      decision = { ...decision, summary: '' };
+      decisionNormalizations = [...decisionNormalizations, 'missing_summary_defaulted_empty'];
+    }
     if (typeof decision?.done !== 'boolean' || typeof decision.summary !== 'string' || Buffer.byteLength(decision.summary) > 2000
         || !Object.hasOwn(decision, 'decision') || Object.keys(decision).some(key => !['done', 'summary', 'decision'].includes(key)))
       throw new Error('Devin decision schema is invalid.');

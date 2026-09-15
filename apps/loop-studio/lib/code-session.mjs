@@ -7,6 +7,7 @@ import { publicDevinDiagnostic } from './devin-native-protocol.mjs';
 import { FILE_ACTION_POLICY, NATIVE_RECOVERY_POLICY } from './code-loop.mjs';
 import { MAKER_PROGRESS_POLICY } from './code-context.mjs';
 import { isNativeExecutor } from './code-native-policy.mjs';
+import { canResumeDevinPriorCandidate } from './code-native-prior-candidate.mjs';
 
 const USAGE_FIELDS = [
   'calls', 'rawProviderResponses', 'steps', 'actions', 'repairs', 'retries', 'recoveries',
@@ -164,6 +165,10 @@ function nextSafeAction(state, { owned, resumable, question, questionBound, poli
     reason: 'A worker owns this run. Observe or attach; do not start a second worker.',
   };
   const uncertain = hasUncertainWork(state);
+  if (resumable && canResumeDevinPriorCandidate(state)) return {
+    action: 'resume_candidate',
+    reason: 'Explicit resume revalidates the last accepted candidate and starts a fresh bounded session. The schema-refused turn stays discarded; its draft is neither adopted nor replayed.',
+  };
   if (uncertain && question?.kind === 'uncertain_call' && questionBound && !state.nativeInFlight) return {
     action: 'authorize_uncertain_retry',
     reason: 'Explicitly authorize the bounded provider retry; duplicate billing remains possible.',
@@ -292,7 +297,8 @@ export async function inspectCodeRun(dir) {
     && (!native || state.nativeRecoveryPolicy === NATIVE_RECOVERY_POLICY);
   const unsafeRecovery = state.nativeInFlight === true
     || Boolean(state.verifierInFlight && state.verificationReady !== true);
-  const resumable = !owned && policyCompatible && !unsafeRecovery && !['complete', 'refused'].includes(phase);
+  const resumable = !owned && policyCompatible && (canResumeDevinPriorCandidate(state)
+    || (!unsafeRecovery && !['complete', 'refused'].includes(phase)));
   const textRoots = [dir, state.source?.repoPath, state.candidate?.worktree].filter(Boolean);
   const question = questionProjection(state.question, textRoots);
   const questionBound = question == null || (typeof state.question?.candidateFingerprint === 'string'
@@ -363,7 +369,7 @@ export async function codeContinuation(dir) {
     return { mode: 'code_checkpoint', canResume: state.resumable, ...state,
       updatedAt: state.checkpoint?.updatedAt ?? null, revision: state.checkpoint?.revision ?? null,
       presentation: { title: state.owned ? 'Worker active' : state.resumable ? 'Continue the same candidate' : 'Inspect the preserved candidate',
-        detail: state.owned ? 'Attach to this run; no second worker is started.' : state.reason ?? 'Recovery uses saved responses and file hashes; it does not restart planning.' } };
+        detail: state.owned ? 'Attach to this run; no second worker is started.' : state.nextSafeAction?.reason ?? state.reason ?? 'Recovery uses saved responses and file hashes; it does not restart planning.' } };
   } catch (error) {
     return { mode: 'code_checkpoint', canResume: false, legacy: error.code === 'ENOENT',
       presentation: { title: 'Inspection only', detail: error.code === 'ENOENT' ? 'This historical run has no authenticated checkpoint. Start a fresh run to use recovery.' : 'The saved checkpoint could not be authenticated. No recovery is authorized.' } };

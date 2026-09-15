@@ -5,6 +5,53 @@ Status: **survivable-edit and bounded-formatting corrections are included in
 This is a compatibility and regression gate, not a promise of bug-free native
 execution or a successful Company Brain run.
 
+## Summary and prior-candidate recovery correction (0.4.28)
+
+Company Brain run `code-1789435781661-50eb06c8` completed and adopted its
+first maker slice into the isolated candidate. The second slice reached
+`end_turn` with confirmed cleanup, but its final JSON omitted `summary`.
+`done:false` and the explicit `continue` decision were present. The adapter
+refused at `decision_schema` before staged adoption. This was not a completed
+Company Brain task: verification and independent review had not run.
+
+The correction treats an **absent** summary as empty descriptive metadata and
+records `missing_summary_defaulted_empty` in the accepted native result receipt.
+Supplied null, non-string or oversized summaries remain invalid. No default is
+provided for `done`, the `decision` field, action or reason. Unknown fields and
+invalid authority still refuse. Native completion, cleanup and checked adoption
+are unchanged; no model retry is needed to fill descriptive metadata.
+
+A narrow explicit-resume path also supports already-refused SWE schema turns
+under the recognized checkpoint policies. It requires an authenticated checkpoint,
+an earlier `verified_turn` candidate, a completed/cleaned-up native turn refused
+at `decision_schema` before adoption, and a preserved, unadopted staging record.
+The worker obtains ownership and revalidates the contract/pair/credential binding,
+source baseline, candidate Git custody, exact fingerprint and absence of ignored
+output before continuing. It retains the refused call in authenticated history,
+does not read or adopt its mirror, clears the old session and starts a new bounded
+session from the **previous accepted candidate**. This is not acceptance of that
+candidate: verification and independent review are still required.
+
+One recovery is reserved; consumed calls, actions, time and token reservations
+remain charged. Exhausted allowances park for an explicit extension. Replay flags
+or simultaneous authority amendments are refused. Missing cleanup, native tool
+failures, interrupted adoption, candidate drift and unsupported policies do not
+qualify. CLI and Studio use the same eligibility and execution path.
+
+Read-only inspection of the real run confirmed revision 94, no owner, matching
+candidate fingerprint/branch/HEAD, isolated Git custody and zero ignored files.
+The run and its failed mirror have **not** been modified or resumed. Offline
+regressions cover missing-summary continuation through two maker slices and
+verification/review, unsafe schema controls, prior-candidate resume, candidate
+drift, replay refusal and exhausted recovery/call budgets. No new live model
+evaluation is claimed for this correction.
+
+Validation: full root/CLI `npm test`, full Studio `npm test`, and packaged-runtime
+parity passed. The broader focused run passed 139 tests with one existing skip;
+the final native suite passed all 32 tests, including additional source-baseline
+drift and ignored-output refusal controls. `git diff --check` passed. These are
+offline regression results, not a fresh provider-backed success claim.
+
 ## Why this gate exists
 
 Success through one tool channel is not evidence that another channel works.
@@ -34,7 +81,7 @@ checks byte-for-byte parity, including the new filesystem handlers.
 | Integrity | Retain protected/denied paths, read-only inputs, source-drift checks, current-hash checks, link/ownership checks, file-count and byte envelopes. |
 | Concurrent requests | ACP and MCP share a bounded host queue. A pending approved native operation prevents another native write or host command; matching bytes alone do not prove the native tool has finished. Queued host work is canceled before dispatch. |
 | Request identity | SWE reverse RPC IDs remain consumed after completion; duplicate IDs and request floods fail closed. Other executors do not opt into this policy. |
-| Recoverable errors | Host-proven pre-effect conflicts provide correction guidance. In the unreleased correction, native edit/write failures may continue only after serialized host reconciliation proves unchanged target bytes and validates the staged manifest. Error wording is never proof. Unsafe operations, overlapping activity and uncertain effects still stop. |
+| Recoverable errors | Host-proven pre-effect conflicts provide correction guidance. Since 0.4.27, native edit/write failures may continue only after serialized host reconciliation proves unchanged target bytes and validates the staged manifest. Error wording is never proof. Unsafe operations, overlapping activity and uncertain effects still stop. |
 | Budget | Native events and host requests, including permission requests, consume the same allowance. Corrections cannot expand it. Internal SWE inference usage remains unknown. |
 | Completion | A terminal response with host work still pending is incomplete even if cleanup subsequently succeeds. No adoption or automatic replay follows. |
 
@@ -91,7 +138,7 @@ approvals and native/delegated shared-engine completion. The full root/CLI and
 Studio suites, packaged-runtime parity and `git diff --check` also passed. No
 fresh provider call was made during this implementation pass.
 
-## Survivable native edit failures (unreleased)
+## Survivable native edit failures (0.4.27)
 
 The first larger 0.4.26 workload performed implementation but ended on a native
 `edit` failure with an unclassified diagnostic. Its exact cause is unproven;
@@ -176,7 +223,7 @@ authority or candidate verification checks; validate offline, then obtain fresh
 authorization for one full recovery-path canary. Do not repeat the large workload
 or declare this attempt successful. The consumed authorization UUID is not reusable.
 
-### Bounded final-response formatting correction (unreleased)
+### Bounded final-response formatting correction (0.4.27)
 
 The SWE decision parser now follows the existing file-actions formatting policy:
 accept one whole JSON object, one whole `json` fence, or one complete JSON object

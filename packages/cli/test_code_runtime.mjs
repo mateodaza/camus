@@ -52,7 +52,7 @@ try {
   assert(entries.includes('package/runtime/apps/loop-studio/lib/code-seats.mjs'), 'tarball includes the shared code-seat engine');
   for (const name of ['code-loop', 'code-context', 'code-run-state', 'code-session', 'code-setup', 'code-diagnostics', 'code-verify-child', 'code-native-policy', 'code-native-child', 'code-owned-process', 'code-owned-process-registry', 'code-owned-process-supervisor', 'native-process', 'native-gateway', 'native-harness-policy', 'codex-rpc', 'adapters/codex-native', 'adapters/native-harness', 'adapters/qwen-native', 'adapters/grok-native']) assert(entries.includes(`package/runtime/apps/loop-studio/lib/${name}.mjs`), `tarball includes ${name}`);
   assert(entries.includes('package/runtime/apps/loop-studio/lib/adapters/registry.mjs'), 'tarball includes the shared adapter registry');
-  for (const name of ['native-budget', 'devin-native-files', 'devin-native-workspace', 'devin-native-turn', 'devin-native-protocol', 'devin-native-preflight',
+  for (const name of ['code-native-prior-candidate', 'native-budget', 'devin-native-files', 'devin-native-workspace', 'devin-native-turn', 'devin-native-protocol', 'devin-native-preflight',
     'devin-native-context', 'devin-native-permission', 'devin-native-mcp', 'devin-code-seat', 'adapters/devin-native']) {
     const path = `apps/loop-studio/lib/${name}.mjs`;
     assert(entries.includes(`package/runtime/${path}`), `tarball includes shared ${name}`);
