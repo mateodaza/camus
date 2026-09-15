@@ -81,6 +81,56 @@ test('truncated native file is refused, diagnosed and discarded rather than ackn
     assert.doesNotMatch(JSON.stringify(result.diagnostic), /private failure detail|calc\.mjs/);
   }));
 
+test('ACP wrap-up finishes a granted write, refuses new discovery, then accepts an honest partial decision',
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    ctx.defaults.observedBudget.maxObservedTools = 16;
+    const result = await runNativeDevin(ctx.defaults, ctx.dependencies(async ({ callbacks, sourceMirror, sessionId, update }) => {
+      const path = join(sourceMirror, 'calc.mjs'), content = 'export const add=(a,b)=>a+b;';
+      update({ sessionUpdate: 'tool_call', toolCallId: 'write', kind: 'edit', _meta: { 'cognition.ai/inferenceToolName': 'write' }, rawInput: { file_path: path, content } });
+      await callbacks.onRequest('session/request_permission', { sessionId, toolCall: { toolCallId: 'write' }, options: [{ kind: 'allow_once', optionId: 'write' }] });
+      for (let n = 0; n < 9; n++) await callbacks.onRequest('fs/read_text_file', { sessionId, path });
+      // Crossing the soft threshold must not strand an already-granted write.
+      await callbacks.onRequest('fs/write_text_file', { sessionId, path, content });
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'write', status: 'completed' });
+      update({ sessionUpdate: 'tool_call', toolCallId: 'discovery', kind: 'read', _meta: { 'cognition.ai/inferenceToolName': 'read' }, rawInput: { file_path: path } });
+      await assert.rejects(callbacks.onRequest('fs/read_text_file', { sessionId, path }), error => error.code === 'slice_wrap_up' && /remainingActions/.test(error.message));
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'discovery', status: 'failed' });
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '{"done":false,"summary":"addition fixed","decision":{"action":"continue","reason":"tests remain"}}' } });
+      return { stopReason: 'end_turn' };
+    }));
+    assert.equal(result.ok, true, result.error);
+    assert.equal(JSON.parse(result.text).done, false);
+    assert.equal(await readFile(join(ctx.candidate, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>a+b;');
+    const receipt = JSON.parse(await readFile(join(ctx.receipts, (await readdir(ctx.receipts)).find(n => n.startsWith('devin-no-effect-'))), 'utf8'));
+    assert.equal(receipt.operation, 'host_budget_denial'); assert.equal(receipt.operationCompleted, false);
+  }));
+
+test('MCP soft limit refuses a new write before effect and preserves room for terminal JSON',
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    ctx.defaults.observedBudget.maxObservedTools = 16;
+    const result = await runNativeDevin(ctx.defaults, ctx.dependencies(async ({ mcp, update }) => {
+      for (let n = 0; n < 11; n++) await mcp('tools/call', { name: 'read_file', arguments: { path: 'calc.mjs' } });
+      const reply = await mcp('tools/call', { name: 'write_file', arguments: { path: 'forbidden-new.mjs', content: 'not written', expectedSha256: null } });
+      assert.equal(JSON.parse(reply.result.content[0].text).code, 'slice_wrap_up');
+      assert.equal(JSON.parse(reply.result.content[1].text).remainingActions, 4);
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '{"done":false,"summary":"inspected","decision":{"action":"continue","reason":"implementation remains"}}' } });
+      return { stopReason: 'end_turn' };
+    }));
+    assert.equal(result.ok, true, result.error);
+    await assert.rejects(readFile(join(ctx.candidate, 'forbidden-new.mjs')), { code: 'ENOENT' });
+  }));
+
+for (const cause of ['provider phase timeout', 'operator cancelled']) test(`parent stop classification: ${cause}`,
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    const control = new AbortController(); ctx.defaults.signal = control.signal;
+    const result = await runNativeDevin(ctx.defaults, ctx.dependencies(async () => {
+      control.abort(new Error(cause)); return { stopReason: 'end_turn' };
+    }));
+    assert.equal(result.ok, false); assert.equal(result.diagnostic.cleanupConfirmed, true);
+    assert.equal(result.diagnostic.reason, cause === 'provider phase timeout' ? 'deadline' : 'cancelled');
+    assert.equal(result.recoveryDisposition, cause === 'provider phase timeout' ? 'discard_mirror_v1' : undefined);
+  }));
+
 test('host-proven missing ACP read permits correction to creation in the same native turn',
   { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
     const result = await runNativeDevin(ctx.defaults, ctx.dependencies(async ({ callbacks, sourceMirror, update }) => {
@@ -478,7 +528,7 @@ test('command corrections cannot extend an exhausted budget',
     let executed = 0;
     const deps = ctx.dependencies(async ({ mcp }) => {
       const bad = await mcp('tools/call', { name: 'run_command', arguments: { command: 'pnpm test', args: [] } });
-      assert.equal(JSON.parse(bad.result.content[0].text).code, 'invalid_command');
+      assert.equal(JSON.parse(bad.result.content[0].text).code, 'slice_wrap_up');
       const corrected = await mcp('tools/call', { name: 'run_command', arguments: { command: '/usr/bin/env', args: ['pnpm', 'test'] } });
       assert(corrected.error);
       return { stopReason: 'end_turn' };
@@ -486,7 +536,9 @@ test('command corrections cannot extend an exhausted budget',
     deps.runProcess = async () => { executed++; return { code: 0, stdout: '' }; };
     const result = await runNativeDevin(ctx.defaults, deps);
     assert.equal(result.ok, false); assert.equal(executed, 0);
-    assert.deepEqual(result.diagnostic.boundaryRefusal, { code: 'call_limit', tool: 'run_command' });
+    assert.equal(result.diagnostic.reason, 'observed_tool_limit');
+    assert.equal(result.diagnostic.boundaryRefusal, null);
+    assert.equal(result.recoveryDisposition, 'discard_mirror_v1');
   }));
 
 async function fixture(fn) {

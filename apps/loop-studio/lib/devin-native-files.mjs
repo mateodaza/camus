@@ -10,7 +10,7 @@ const validate = (params, keys) => {
       || Object.keys(params).some(key => ![...keys, '_meta'].includes(key))) throw new Error('Invalid ACP file parameters.');
 };
 
-export function createDevinFileHandlers({ workspace, cwd, sessionId, calls, permissions, onWriteApproved = async () => {} }) {
+export function createDevinFileHandlers({ workspace, cwd, sessionId, calls, permissions, onWriteApproved = async () => {}, beforeOperation = async () => {} }) {
   const checkSession = params => { if (params?.sessionId !== sessionId()) throw new Error('ACP filesystem session mismatch.'); };
   return {
     async 'fs/read_text_file'(params) {
@@ -20,6 +20,7 @@ export function createDevinFileHandlers({ workspace, cwd, sessionId, calls, perm
           && (!Number.isSafeInteger(params[key]) || params[key] < 1 || params[key] > 1048576))
         throw new Error('Invalid ACP read range.');
       const path = workspace.hostPath(params.path);
+      await beforeOperation({ method: 'fs/read_text_file', path });
       const { content } = await workspace.readText(path);
       if (params.line === undefined && params.limit === undefined) return { content };
       const lines = content.match(/[^\n]*\n|[^\n]+$/g) ?? [];
@@ -29,7 +30,9 @@ export function createDevinFileHandlers({ workspace, cwd, sessionId, calls, perm
     async 'fs/write_text_file'(params) {
       checkSession(params);
       validate(params, ['sessionId', 'path', 'content']);
-      await workspace.writeDelegated({ path: workspace.hostPath(params.path), content: params.content });
+      const path = workspace.hostPath(params.path);
+      await beforeOperation({ method: 'fs/write_text_file', path });
+      await workspace.writeDelegated({ path, content: params.content });
       return {};
     },
     async 'session/request_permission'(params) {
@@ -44,6 +47,9 @@ export function createDevinFileHandlers({ workspace, cwd, sessionId, calls, perm
         maxInputBytes: 65536, delegatedState });
       const result = selectDevinOneTimePermission({ expectedSessionId: sessionId(), params, assessment, seen: permissions });
       if (result.outcome.outcome !== 'selected') throw new Error('Native edit permission refused.');
+      // Validate options and duplicate IDs first. Nothing is authorized until
+      // this result is returned; a budget refusal grants no write permission.
+      await beforeOperation({ method: 'session/request_permission', path, tool });
       const receipt = await workspace.authorizeNativeWrite(tool, delegatedState);
       if (receipt) await onWriteApproved(receipt);
       // Permission itself creates no file. In native mode its expected output

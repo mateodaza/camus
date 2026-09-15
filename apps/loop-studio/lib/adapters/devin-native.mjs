@@ -9,7 +9,7 @@ import { createDevinWorkspace, isDevinVisiblePath, DevinToolFeedback } from '../
 import { runDevinProtocolTurn, devinObservedContract } from '../devin-native-turn.mjs';
 import { startDevinMcp } from '../devin-native-mcp.mjs';
 import { createDevinFileHandlers } from '../devin-native-files.mjs';
-import { DEVIN_NATIVE_MODEL, DEVIN_NATIVE_DIGEST, publicDevinDiagnostic, parseDevinDecisionText } from '../devin-native-protocol.mjs';
+import { DEVIN_NATIVE_MODEL, DEVIN_NATIVE_DIGEST, publicDevinDiagnostic, parseDevinDecisionText, devinDiscardableStop } from '../devin-native-protocol.mjs';
 import { CodexRpc } from '../codex-rpc.mjs';
 import { runNativeProcess } from '../native-process.mjs';
 import { grokSubscriptionPolicy } from './grok-subscription.mjs';
@@ -34,14 +34,26 @@ export async function runNativeDevin(options, dependencies = {}) {
   const contract = devinObservedContract(observedBudget);
   if (!Array.isArray(sourceFiles) || !sourceFiles.length || !receiptsDir) throw new Error('Devin needs a host-prepared source inventory and private receipt directory.');
   let context, mirror, toolScratch, workspace, broker, outcome, adopted = false, active = false, sessionId;
+  let localStopReason = null, lastHostTool = null, boundaryRefusal = null, reconciliationFailure = null;
+  const budgetDeniedTools = new Map(), toolStartHashes = new Map();
   const control = new AbortController(), calls = new Map(), permissions = new Set(), tasks = new Set();
-  const abort = () => control.abort(); signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
+  const abort = () => control.abort();
+  const parentAbort = () => {
+    if (['provider phase timeout', 'active time budget exhausted'].includes(signal?.reason?.message)) localStopReason ??= 'deadline';
+    abort();
+  };
+  signal?.addEventListener('abort', parentAbort, { once: true }); if (signal?.aborted) parentAbort();
   const started = Date.now(); const timer = setTimeout(() => { localStopReason ??= 'deadline'; abort(); }, contract.maxWallMs);
   let closed = true, mutated = false;
   let nativeTools = 0, hostTools = 0;
   let refusalStage = 'preparation';
-  let localStopReason = null, lastHostTool = null, boundaryRefusal = null, reconciliationFailure = null;
-  const refuseTool = detail => { boundaryRefusal ??= detail ?? null; localStopReason ??= 'tool_boundary_refused'; abort(); };
+  const refuseTool = detail => {
+    // A host counter refusing the next operation is a budget stop, not an
+    // authority breach. All other broker refusals remain fail-closed boundaries.
+    if (['call_limit', 'action_limit'].includes(detail?.code)) localStopReason ??= 'observed_tool_limit';
+    else { boundaryRefusal ??= detail ?? null; localStopReason ??= 'tool_boundary_refused'; }
+    abort();
+  };
   const diagnostic = () => publicDevinDiagnostic({ ...outcome, stage: refusalStage, lastHostTool, boundaryRefusal, reconciliationFailure,
     reason: outcome?.reason === 'cancelled' && localStopReason ? localStopReason : outcome?.reason });
   const reportActions = () => {
@@ -54,6 +66,11 @@ export async function runNativeDevin(options, dependencies = {}) {
   const hostAction = ({ tool } = {}) => { if (tool) lastHostTool = tool; hostTools++; reportActions(); };
   const budgetSnapshot = () => devinBudgetSnapshot({ maximumActions: contract.maxObservedTools,
     usedActions: nativeTools + hostTools, maximumMs: contract.maxWallMs, elapsedMs: Date.now() - started });
+  const wrapUpError = () => {
+    const error = new DevinToolFeedback('slice_wrap_up');
+    error.message += ` Host budget: ${JSON.stringify(budgetSnapshot())}`;
+    return error;
+  };
   let hostTail = Promise.resolve(), queued = 0;
   const serializeHost = async fn => {
     if (!active || control.signal.aborted || queued >= 8) {
@@ -93,7 +110,10 @@ export async function runNativeDevin(options, dependencies = {}) {
       + `\n(allow file-read-metadata ${[...parents].map(path => `(literal ${JSON.stringify(path)})`).join(' ')})`
       + `\n(deny file-write* (subpath ${JSON.stringify(mirror)}))`;
     const runTool = fn => async args => {
-      try { return await serializeHost(() => fn(args)); }
+      try { return await serializeHost(() => {
+        if (budgetSnapshot().wrapUp) throw wrapUpError();
+        return fn(args);
+      }); }
       catch (error) {
         if (!(error instanceof DevinToolFeedback) || control.signal.aborted) throw error;
         // The RPC succeeded in reporting a no-write conflict. This is not a
@@ -102,6 +122,18 @@ export async function runNativeDevin(options, dependencies = {}) {
       }
     };
     const fileHandlers = createDevinFileHandlers({ workspace, cwd: mirror, sessionId: () => sessionId, calls, permissions,
+      beforeOperation: async ({ method, path, tool }) => {
+        if (!budgetSnapshot().wrapUp) return;
+        // A permission already returned can still finish its delegated I/O.
+        const pending = workspace.nativeWriteEvidence().writes.some(item => item.path === path && !item.noEffectVerified
+          && !['completed', 'failed'].includes(calls.get(item.toolCallId)?.status));
+        if (method !== 'session/request_permission' && pending) return;
+        const matching = [...calls.values()].filter(call => !['completed', 'failed'].includes(call.status)
+          && (tool ? call.toolCallId === tool.toolCallId : call.rawInput?.file_path === join(mirror, path)));
+        if (matching.length === 1 && toolStartHashes.has(matching[0].toolCallId))
+          budgetDeniedTools.set(matching[0].toolCallId, toolStartHashes.get(matching[0].toolCallId));
+        throw wrapUpError();
+      },
       onWriteApproved: async receipt => {
         const file = await open(join(receiptsDir, `devin-write-${hash(sessionId)}-${hash(receipt.toolCallId)}.json`), 'wx', 0o600);
         try {
@@ -172,7 +204,7 @@ export async function runNativeDevin(options, dependencies = {}) {
         callbacks.signal.addEventListener('abort', abort, { once: true });
         return (dependencies.rpcFactory ?? (value => new CodexRpc(value)))({ ...callbacks,
         command: '/usr/bin/sandbox-exec', args: ['-p', workspace.profile, context.harness, '--config', context.config, '--sandbox', 'acp', '--model', model],
-        cwd: context.root, env: context.env, protocol: 'jsonrpc2', maxInboundRequests: contract.maxObservedTools,
+        cwd: context.root, env: context.env, protocol: 'jsonrpc2', maxInboundRequests: Math.min(1000, contract.maxObservedTools + 1),
         requestError: error => error instanceof DevinToolFeedback ? { code: -32002, message: error.message }
           : { code: -32000, message: 'Camus refused the bounded tool request.' } });
       },
@@ -190,6 +222,7 @@ export async function runNativeDevin(options, dependencies = {}) {
       },
       onToolEvent(update) {
         const prior = calls.get(update.toolCallId);
+        if (!prior && update.sessionUpdate === 'tool_call') toolStartHashes.set(update.toolCallId, workspace.checkedStateHash());
         calls.set(update.toolCallId, { ...prior, ...Object.fromEntries(Object.entries(update).filter(([, value]) => value != null)),
           status: update.status ?? prior?.status ?? 'pending' });
         const current = calls.get(update.toolCallId);
@@ -199,15 +232,17 @@ export async function runNativeDevin(options, dependencies = {}) {
       onToolFailure(update) {
         const tool = calls.get(update.toolCallId);
         const kind = tool?._meta?.['cognition.ai/inferenceToolName'];
-        if (!['edit', 'write', 'exec'].includes(kind)) { reconciliationFailure = 'unsupported_tool'; return null; }
-        if (kind !== 'exec' && typeof tool.rawInput?.file_path !== 'string') { reconciliationFailure = 'missing_target'; return null; }
+        const budgetDenied = budgetDeniedTools.has(update.toolCallId);
+        if (!budgetDenied && !['edit', 'write', 'exec'].includes(kind)) { reconciliationFailure = 'unsupported_tool'; return null; }
+        if (!budgetDenied && kind !== 'exec' && typeof tool.rawInput?.file_path !== 'string') { reconciliationFailure = 'missing_target'; return null; }
         if (tasks.size || broker.stats().active || [...calls.values()].some(call => !['completed', 'failed'].includes(call.status))) {
           reconciliationFailure = 'overlapping_operations'; return null;
         }
         return serializeHost(async () => {
           let receipt;
           try {
-            if (kind === 'exec') {
+            if (budgetDenied) receipt = await workspace.reconcileBudgetDeniedTool(tool, budgetDeniedTools.get(update.toolCallId));
+            else if (kind === 'exec') {
               const denial = await context.verifyExecDenial();
               if (denial?.policy !== 'native-exec-denied/v1' || denial.artifactDigest !== context.digest
                   || !/^[a-f0-9]{64}$/.test(denial.configHash ?? '')) throw new Error('Native exec denial is unbound.');
@@ -274,7 +309,7 @@ export async function runNativeDevin(options, dependencies = {}) {
         noModelCalled: outcome.promptsSent === 0, usage: null, usageIncomplete: true,
         stagedDraft: outcome.promptsSent > 0 && closed ? { path: mirror, adopted: false, replayAllowed: false } : null,
         diagnostic: detail, candidateQuiescent: false, failureCode: 'devin_native_incomplete',
-        ...(closed && detail.cleanupConfirmed && detail.reason === 'tool_failed'
+        ...(closed && detail.cleanupConfirmed && devinDiscardableStop(detail.reason)
           && detail.rpcFailure === null && detail.boundaryRefusal === null
           ? { recoveryDisposition: 'discard_mirror_v1' } : {}),
         error: 'Devin native turn did not supply a complete contained result.' };
@@ -317,7 +352,7 @@ export async function runNativeDevin(options, dependencies = {}) {
       diagnostic: diagnostic(),
       error: `Devin native ${refusalStage} refused. No fallback or replay.` };
   } finally {
-    clearTimeout(timer); signal?.removeEventListener('abort', abort); active = false; abort();
+    clearTimeout(timer); signal?.removeEventListener('abort', parentAbort); active = false; abort();
     try { await broker?.close(); } catch { closed = false; }
     if (closed) {
       await context?.release({ writerStopped: true });

@@ -104,15 +104,16 @@ try {
         if(turn===2)return {ok:false,uncertain:true,noModelCalled:false,usage:null,candidateQuiescent:false,failureCode:'devin_native_incomplete',
           ...(process.env.CAMUS_AUTO_RECOVERY==='true'?{recoveryDisposition:'discard_mirror_v1'}:{}),
           stagedDraft:{path:join(root,'refused-mirror'),adopted:false,replayAllowed:false},
-          diagnostic:{stage:'native_turn',reason:'tool_failed',terminalReceived:false,cleanupConfirmed:true,protocolStage:'prompt',stopReason:null,rpcFailure:null,boundaryRefusal:null,
+          diagnostic:{stage:'native_turn',reason:process.env.CAMUS_STOP_REASON||'tool_failed',terminalReceived:false,cleanupConfirmed:true,protocolStage:'prompt',stopReason:null,rpcFailure:null,boundaryRefusal:null,
             toolFailures:[{nativeTool:'edit',categories:['unclassified']}]}};
         if(turn===3 && await readFile(join(args.worktree,'answer.txt'),'utf8')!=='accepted')throw Error('Accepted draft lost');
         await writeFile(join(args.worktree,'answer.txt'),turn===1?'accepted':'finished');
         return {ok:true,definitiveTurnEnd:true,candidateQuiescent:true,usage:null,text:JSON.stringify({actions:[],done:turn===3,summary:'Progress',decision:turn===1?{action:'continue',reason:'Finish remaining work'}:null})};
       },reviewer:async()=>({ran:true,verdict:'APPROVED',findings:[],usage:{total_tokens:5}})}});
     process.stdout.write(JSON.stringify(result));`);
+  for (const reason of ['tool_failed', 'observed_tool_limit', 'deadline'])
   for (const window of ['native_prior_candidate_restored', 'native_prior_candidate_recovery_reserved', 'auto_response_saved', 'auto_restored', 'auto_reserved']) {
-    const dir = join(root, window), repo = join(dir, 'repo');
+    const dir = join(root, reason + '-' + window), repo = join(dir, 'repo');
     await mkdir(repo, { recursive: true }); await mkdir(join(dir, 'run'));
     await writeFile(join(repo, 'README.md'), 'base\n');
     const git = args => execFileSync('git', ['-C', repo, ...args], { stdio: 'ignore' });
@@ -120,7 +121,7 @@ try {
     await writeFile(join(dir, 'refused-mirror'), 'never adopt');
     const nativeRun = async (resume, crash = '') => {
       const proc = spawn(process.execPath, ['--experimental-loader', loader, nativeChild, dir, resume ? 'resume' : 'new'],
-        { env: { ...process.env, CAMUS_CRASH_WINDOW: crash, CAMUS_AUTO_RECOVERY: String(window.startsWith('auto_')) }, stdio: ['ignore', 'pipe', 'pipe'] });
+        { env: { ...process.env, CAMUS_CRASH_WINDOW: crash, CAMUS_AUTO_RECOVERY: String(window.startsWith('auto_')), CAMUS_STOP_REASON: reason }, stdio: ['ignore', 'pipe', 'pipe'] });
       let output = '', errors = ''; proc.stdout.on('data', b => { output += b; }); proc.stderr.on('data', b => { errors += b; });
       const [code, signal] = await once(proc, 'exit');
       if (crash) { assert.equal(signal, 'SIGKILL', errors); return; }
@@ -137,7 +138,7 @@ try {
     assert.equal(resumed.usage.recoveries, 1); assert.equal(resumed.usage.calls, 4); assert.equal(resumed.usage.retries, 0);
     assert.equal(await readFile(join(resumed.candidate.worktree, 'answer.txt'), 'utf8'), 'finished');
     assert.equal(await readFile(join(dir, 'refused-mirror'), 'utf8'), 'never adopt');
-    console.log('ok - SIGKILL/restart SWE at ' + window);
+    console.log('ok - SIGKILL/restart SWE ' + reason + ' at ' + window);
   }
   // Hard death of the owner must not strand a test process with no deadline.
   const check = join(root, 'long-check.cjs'), pidFile = join(root, 'verifier.pid');

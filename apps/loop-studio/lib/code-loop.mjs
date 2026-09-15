@@ -48,7 +48,7 @@ const nativeMakerPrompt = (task, record) => [
     'Recovery posture: continue from the host-fingerprinted quiescent draft in this fresh native session. Re-check prior work; the previous turn supplied no accepted completion claim.',
   ] : []),
   ...(record.feedback?.kind === 'prior_candidate_recovery' ? [
-    'Continue from the last accepted maker-turn candidate in a fresh session. The later refused turn was NOT adopted and must not be replayed. Re-assess remaining work against the original contract; verification and independent review are still required.',
+    'Continue from the host-verified baseline or last accepted maker-turn candidate in a fresh session. The later refused turn was NOT adopted and must not be replayed. Re-assess remaining work against the original contract; verification and independent review are still required.',
   ] : []),
   `Bound human answer: ${JSON.stringify(record.answer ?? null)}`,
   'Return JSON {"done":true,"summary":"...","decision":null} when ready for host verification. Keep summary under 2000 bytes.',
@@ -175,7 +175,7 @@ export async function runProductiveCodeLoop(options, h) {
     record.pendingCall = null; record.nativeSession = null; record.nativeInFlight = false;
     record.phase = 'make';
     record.feedback = { kind: 'prior_candidate_recovery', candidateFingerprint: record.candidate.fingerprint,
-      trust: 'accepted_turn_not_reviewed', originalContract: 'unchanged',
+      trust: record.candidate.snapshotStatus === 'verified_baseline' ? 'verified_baseline_not_reviewed' : 'accepted_turn_not_reviewed', originalContract: 'unchanged',
       instruction: 'The failed mirror was discarded. Use checked Camus MCP read_file/write_file for remaining edits instead of repeating the failed native write path. Reassess the original contract from the accepted candidate.' };
     invalidateCandidateEvidence();
     record.priorCandidateRecoveryPending = true;
@@ -309,7 +309,9 @@ export async function runProductiveCodeLoop(options, h) {
         const actual = await h.candidate(record.candidate.worktree, limits);
         if (actual.head !== record.candidate.head || actual.branch !== record.candidate.branch) throw new Error('Native changed candidate git identity.');
         if (response?.noModelCalled && actual.fingerprint !== record.candidate.fingerprint) throw new Error('Candidate changed during native preflight.');
-        record.candidate = { ...actual, snapshotStatus: recoveryDraft ? 'untrusted_recovery' : 'verified_turn' };
+        const snapshotStatus = response?.noModelCalled && nativeExecutor === 'devin_native'
+          ? record.candidate.snapshotStatus : recoveryDraft ? 'untrusted_recovery' : 'verified_turn';
+        record.candidate = { ...actual, snapshotStatus };
         record.nativeInFlight = false;
         record.reads = [];
         for (const path of (changed.stdout + untracked.stdout).split('\0').filter(Boolean)) {
@@ -373,7 +375,7 @@ export async function runProductiveCodeLoop(options, h) {
     if (response.budget) return question(response.budget, 'budget', { type: 'budget_extension' });
     if (response.uncertain) {
       if (native && role === 'maker' && response.recoveryDisposition === 'discard_mirror_v1'
-          && !abort.signal.aborted && canResumeDevinPriorCandidate({ ...record, phase: 'refused', status: 'needs_decision' })) {
+          && (!abort.signal.aborted || activeBudgetAborted()) && canResumeDevinPriorCandidate({ ...record, phase: 'refused', status: 'needs_decision' })) {
         // This is a fresh session over accepted work, not a retry of the failed
         // operation. The adapter has stopped all writers; no mirror is imported.
         await restorePriorCandidate();
@@ -571,6 +573,10 @@ export async function runProductiveCodeLoop(options, h) {
         }
       }
       record.candidate = await h.candidate(record.candidate.worktree, limits);
+      if (nativeExecutor === 'devin_native') {
+        if (record.candidate.diff || record.candidate.head !== record.source.head) throw new Error('Initial SWE baseline changed before verification.');
+        record.candidate.snapshotStatus = 'verified_baseline';
+      }
       record.tracked = await h.sourceTrackedFiles(record.candidate.worktree);
       if (native) record.nativeDeniedPaths = await h.nativeDeniedPaths(record.candidate.worktree, limits);
       record.scratch = await mkdtemp(join(receiptsDir, 'adapter-scratch-'));

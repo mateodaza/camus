@@ -1,9 +1,15 @@
 # SWE through native Devin: integration contract
 
 Status: **synthetic and real-package checks passed; prepared for 0.4.22 as an optional, bounded coding maker in shared CLI/Studio.** Flexible Build remains advisory and public alpha; no reviewer admission, routing or all-project qualification is granted.
-Owner: Camus maintainer. Updated September 14, 2026.
+Owner: Camus maintainer. Updated September 15, 2026.
 
 ## Current checkpoint
+
+- **0.4.31 slice closure:** cleaned-up action/time stops use the same bounded
+  discard-and-continue lifecycle; exhaustion parks for explicit extension. New
+  runs seal a distinct verified baseline. Soft wrap-up reaches ACP and MCP host
+  paths, preserving pending granted I/O and final-decision capacity without
+  extending hard limits. Validation remains offline. See [the evidence](SWE-CONTRACT-VALIDATION.md#slice-closure-and-resumable-budget-stops-0431).
 
 - **0.4.30 continuous isolated-turn recovery:** eligible cleaned-up tool failures
   discard their entire mirror and can continue from the last accepted candidate,

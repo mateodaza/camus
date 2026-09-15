@@ -76,9 +76,12 @@ bounded native session. Otherwise the candidate stays inspection-only.
 Exception: an eligible cleaned-up SWE schema or isolated tool refusal may resume from
 its unchanged, previously accepted candidate. Its refused mirror is never
 adopted or replayed; current usage and recovery limits still apply. Inspect first.
-Fresh eligible SWE tool failures can discard their isolated mirror and continue
+Fresh eligible SWE tool failures and action/time stops can discard their isolated mirror and continue
 automatically from accepted work within those same limits. Cleanup, integrity or
 authority failures still stop. No failed output is upgraded to success.
+New SWE runs also record a verified starting baseline. Soft wrap-up refuses new
+host work before the hard cap; already-granted I/O may finish within that cap.
+Exhausted recovery budgets park for an explicit extension, not a fresh run.
 On resume, --max-calls may explicitly lower the cumulative ceiling, but never
 below consumed calls. It is a total, not an additional-call allowance.
 Legacy camus run and /camus-feat retain their existing Claude/Codex gate.

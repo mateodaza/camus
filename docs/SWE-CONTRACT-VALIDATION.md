@@ -5,6 +5,55 @@ Status: **survivable-edit and bounded-formatting corrections are included in
 This is a compatibility and regression gate, not a promise of bug-free native
 execution or a successful Company Brain run.
 
+## Slice closure and resumable budget stops (0.4.31)
+
+Company Brain maker-8 stopped at revision 401 on `observed_tool_limit`: 34 native
+events plus 31 host requests reached the shared 64-action slice ceiling. Cleanup
+was confirmed and the last accepted candidate remained recorded, but 0.4.30 only
+classified `tool_failed` as discardable. Its four recovery slots were also used.
+These are separate issues: eligibility must allow safe parking; additional
+recovery authority must still be explicitly granted before another dispatch.
+
+The shared CLI/Studio correction now covers host-observed tool failure, action
+exhaustion and deadline exhaustion through the same discard-and-continue checks.
+Protocol, containment and cleanup failures remain excluded; stopped runs are not
+blanket-reopened. Failed mirrors are never imported, replayed or accepted.
+Existing completed runs remain closed. Cumulative call and recovery limits remain
+enforced through parking, repeated inspection/resume and explicit extensions.
+
+New SWE runs additionally seal a `verified_baseline` before the first dispatch.
+This is a clean source baseline, not an accepted maker turn or reviewed output.
+It allows a first-slice budget stop to recover without starting a replacement run.
+Old checkpoints with no such evidence do not acquire it retroactively.
+
+At the soft wrap-up threshold (75% of the action or time allowance), new MCP host
+operations and ACP file operations/permission grants receive a pre-effect
+`slice_wrap_up` refusal with the current numerical budget and explicit final-JSON
+guidance. Already-granted native writes may finish their delegated I/O, always
+inside the unchanged hard cap. File read contents and ACP success-response shapes
+are not modified. Host-denied native tool failures can continue only with durable
+no-effect proof that checked state has not changed since that tool started.
+If the model ignores the refusal, the hard stop still applies and cleanly stopped
+work can park/recover rather than depend on a perfect model exit.
+
+Host ACP/MCP count exhaustion is classified as a budget stop rather than an
+authority breach. Parent call-timeout and active-timeout signals map to deadline;
+operator cancellation remains cancellation, never automatic continuation.
+
+Offline validation covers soft closure through native-only ACP and MCP, finishing
+an already-granted write, refusing new writes before effect, historical action/time
+stops, exhausted recovery authority, repeated parking, explicit extension, baseline
+recovery, and completion through the independent reviewer. Fifteen actual SWE
+SIGKILL/restart windows span tool failure/action limit/deadline across failed
+response publication, restoration and recovery reservation. No live SWE call or
+Company Brain completion is claimed.
+
+The recorded Company Brain limits remain 10 cumulative calls and 4 recoveries;
+8 calls and all 4 recoveries are consumed. Installing this release does not grant
+more authority. Without a separately approved extension, resume must park before
+another model dispatch. The two unspent calls are not a credible promise of
+completing its substantial remaining scope.
+
 ## Continuous isolated-turn recovery (0.4.30)
 
 Company Brain maker-4 ended at checkpoint revision 186 with `tool_failed`, a

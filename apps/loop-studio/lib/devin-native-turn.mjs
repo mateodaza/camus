@@ -74,9 +74,11 @@ export async function runDevinProtocolTurn({ prompt, cwd, contract: inputContrac
       },
       async onRequest(method, params) {
         if (!dispatched || stopped || observation || params?.sessionId !== session?.sessionId
-            || !['session/request_permission', 'fs/read_text_file', 'fs/write_text_file'].includes(method)
-            || ++hostCount > contract.maxObservedTools) {
+            || !['session/request_permission', 'fs/read_text_file', 'fs/write_text_file'].includes(method)) {
           stop('tool_boundary_refused'); throw new Error('Devin host authority refused.');
+        }
+        if (++hostCount > contract.maxObservedTools) {
+          stop('observed_tool_limit'); throw new Error('Devin host request allowance exhausted.');
         }
         const pending = Promise.resolve().then(() => onToolRequest(method, params, { signal: control.signal }));
         active.add(pending);

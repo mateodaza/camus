@@ -4,7 +4,7 @@
 // A discarded isolated mirror is never reclassified as no-effect or adopted.
 // Historical isolated tool failures need no retroactive success receipt: this path
 // starts over ONLY from the previous accepted snapshot after proven cleanup.
-import { DEVIN_NATIVE_DIGEST } from './devin-native-protocol.mjs';
+import { DEVIN_NATIVE_DIGEST, devinDiscardableStop } from './devin-native-protocol.mjs';
 
 export function canResumeDevinPriorCandidate(state) {
   const call = state?.pendingCall, response = call?.response, diagnostic = response?.diagnostic;
@@ -14,7 +14,7 @@ export function canResumeDevinPriorCandidate(state) {
   // Tool labels are diagnostic, not custody evidence. A stopped isolated edit
   // may have partial effects in its mirror; that mirror is discarded wholesale.
   const isolatedToolRefusal = response?.failureCode === 'devin_native_incomplete'
-    && diagnostic?.stage === 'native_turn' && diagnostic.reason === 'tool_failed'
+    && diagnostic?.stage === 'native_turn' && devinDiscardableStop(diagnostic.reason)
     && diagnostic.protocolStage === 'prompt' && diagnostic.terminalReceived === false && diagnostic.stopReason === null
     && state.nativeSession?.artifactDigest === DEVIN_NATIVE_DIGEST && state.nativeSession.replayable === false;
   const restartablePhase = state?.phase === 'refused' && state.status === 'needs_decision'
@@ -30,9 +30,9 @@ export function canResumeDevinPriorCandidate(state) {
     && state.seats.maker.observedBudgetConsent === 'devin-observed/v1'
     && state.nativeInFlight === true && !state.verifierInFlight
     && !state.pendingAction && !state.question
-    && state.candidate?.snapshotStatus === 'verified_turn'
+    && (state.candidate?.snapshotStatus === 'verified_turn' && Number.isSafeInteger(state.usage?.steps) && state.usage.steps > 0
+      || state.candidate?.snapshotStatus === 'verified_baseline' && state.usage?.steps === 0)
     && /^[a-f0-9]{64}$/.test(state.candidate.fingerprint ?? '')
-    && Number.isSafeInteger(state.usage?.steps) && state.usage.steps > 0
     && call?.role === 'maker' && call.native === true
     && response?.ok === false && response.uncertain === true && response.noModelCalled === false
     && response.stagedDraft?.adopted === false && response.stagedDraft.replayAllowed === false

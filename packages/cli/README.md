@@ -28,15 +28,15 @@ for the first real candidate, model setup, and honest terminal states.
 > it; configured API credentials remain local and go only to that endpoint.
 
 <details>
-<summary><strong>Current release: 0.4.30</strong></summary>
+<summary><strong>Current release: 0.4.31</strong></summary>
 
-**New in 0.4.30:** eligible isolated SWE tool failures can discard their failed
-mirror and continue from the last accepted candidate after cleanup and integrity
-checks. Recovery can repeat within authorized limits; failed output is never
-promoted to success. CLI and Studio share the correction. Offline multi-turn,
-truncation, crash/restart and package checks passed; no new live SWE success is
+**New in 0.4.31:** eligible SWE action/time stops remain recoverable; exhausted
+budgets park for explicit extension. Soft wrap-up reaches ACP and MCP host paths,
+preserving final-decision capacity without extending hard limits. New runs seal
+a distinct verified baseline. CLI and Studio share the correction. Offline
+lifecycle, crash/restart and package checks passed; no new live SWE success is
 claimed.
-[Maintenance notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.30.md).
+[Maintenance notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.31.md).
 
 **Added in 0.4.22:** optional **SWE-2 High through native Devin**, with independent
 reviewer selection in CLI and Studio. Use `--maker devin:swe-2-high
@@ -569,7 +569,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.4.30
+npm i -g camus-cli@0.4.31
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)

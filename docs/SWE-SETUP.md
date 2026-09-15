@@ -15,6 +15,12 @@ include these corrections. The contained native-write policy introduced in
 
 ## Before you start
 
+**0.4.31 slice closure:** eligible cleaned-up action/time stops stay recoverable,
+including first slices of new runs with a verified baseline. Soft wrap-up refuses
+new host work through ACP and MCP while retaining room for the model's final
+decision. Exhausted recovery authority parks for an explicit budget extension;
+it is never silently increased. See [the evidence](SWE-CONTRACT-VALIDATION.md#slice-closure-and-resumable-budget-stops-0431).
+
 **0.4.30 continuity correction, not included in 0.4.29:** repeated isolated tool failures can
 discard their mirror and continue from the last accepted candidate after cleanup
 and integrity checks, within existing budgets. This includes partial/truncated
@@ -63,7 +69,7 @@ to guarantee zero charges; check the terms and usage in your Devin account.
 ## CLI
 
 ```sh
-npm install -g camus-cli@0.4.30
+npm install -g camus-cli@0.4.31
 camus models
 camus build --repo /path/to/clean-repository \
   --task-file /path/to/task.txt --contract-file /path/to/acceptance.txt \

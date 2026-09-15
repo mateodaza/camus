@@ -14,6 +14,7 @@
 set -uo pipefail
 export CAMUS_MAKER_TRAINING_ORG=anthropic
 here="$(cd "$(dirname "$0")" && pwd)"
+real_git="$(command -v git)"
 ROOT="$(mktemp -d)"
 trap 'rm -rf "$ROOT"' EXIT
 pass=0; fail=0
@@ -219,7 +220,7 @@ mkdir -p "$ROOT/diffbin"
 cat > "$ROOT/diffbin/git" <<EOF
 #!/usr/bin/env bash
 for a in "\$@"; do case "\$a" in diff) exit 9 ;; esac; done
-exec /usr/bin/git "\$@"
+exec "$real_git" "\$@"
 EOF
 chmod +x "$ROOT/diffbin/git"
 out14="$(PATH="$ROOT/diffbin:$PATH" run_start "$NONCE" "b task" light)"

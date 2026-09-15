@@ -20,7 +20,7 @@ const session = { version: 'codex-native/v1', threadId: '01900000-0000-7000-8000
 const usage = { input_tokens: 10, output_tokens: 5, cached_input_tokens: 4, total_tokens: 15 };
 const done = () => ({ ok: true, definitiveTurnEnd: true, text: JSON.stringify({ actions: [], done: true, summary: 'Ready for host verification.' }), usage, nativeSession: session, modelActual: 'openai:fixture' });
 
-for (const mode of ['complete', 'recovery_budget', 'call_budget', 'drift', 'cleanup', 'boundary', 'cancel'])
+for (const mode of ['complete', 'slice_limit', 'deadline', 'limit_budget', 'recovery_budget', 'call_budget', 'drift', 'cleanup', 'boundary', 'cancel'])
 test(`SWE automatic discard-and-continue across repeated failed edits: ${mode}`, async t => {
   let turns = 0, reviews = 0, verifies = 0;
   const stop = new AbortController();
@@ -37,7 +37,7 @@ test(`SWE automatic discard-and-continue across repeated failed edits: ${mode}`,
       return { ok: false, uncertain: true, noModelCalled: false, candidateQuiescent: false,
         recoveryDisposition: 'discard_mirror_v1', failureCode: 'devin_native_incomplete',
         stagedDraft: { path: mirror, adopted: false, replayAllowed: false },
-        diagnostic: { stage: 'native_turn', reason: 'tool_failed', terminalReceived: false,
+        diagnostic: { stage: 'native_turn', reason: mode === 'deadline' ? 'deadline' : ['slice_limit', 'limit_budget'].includes(mode) ? 'observed_tool_limit' : 'tool_failed', terminalReceived: false,
           cleanupConfirmed: mode !== 'cleanup', protocolStage: 'prompt', stopReason: null, rpcFailure: null,
           boundaryRefusal: mode === 'boundary' ? { code: 'host_operation_refused', tool: null } : null,
           reconciliationFailure: 'target_changed', toolFailures: [{ nativeTool: 'edit', categories: ['unclassified'] }] } };
@@ -54,18 +54,18 @@ test(`SWE automatic discard-and-continue across repeated failed edits: ${mode}`,
   f.options.backendSnapshot.maker = DEVIN_CODE_BACKEND;
   f.options.signal = stop.signal;
   f.options.limits = { maxTokens: 1000000, maxCalls: mode === 'call_budget' ? 3 : 6,
-    maxSteps: 4, maxActions: 100, maxRecoveries: mode === 'recovery_budget' ? 1 : 3, maxRetries: 0 };
+    maxSteps: 4, maxActions: 100, maxRecoveries: ['recovery_budget', 'limit_budget'].includes(mode) ? 1 : 3, maxRetries: 0 };
   const verify = async ({ worktree }) => { verifies++; assert.equal(await readFile(join(worktree, 'answer.txt'), 'utf8'), 'finished'); return { ran: true, pass: true, exitCode: 0 }; };
   verify.command = 'offline'; verify.repeatable = true; f.options.verify = verify;
   const result = await f.run();
-  if (mode === 'complete') {
+  if (['complete', 'slice_limit', 'deadline'].includes(mode)) {
     assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
     assert.equal(turns, 4); assert.equal(reviews, 1); assert.equal(verifies, 1);
     assert.equal(result.usage.calls, 5); assert.equal(result.usage.recoveries, 2); assert.equal(result.usage.retries, 0);
   } else {
     assert.equal(reviews, 0); assert.equal(verifies, 0);
-    assert.equal(turns, ['call_budget', 'recovery_budget'].includes(mode) ? 3 : 2);
-    if (['call_budget', 'recovery_budget'].includes(mode)) {
+    assert.equal(turns, ['call_budget', 'recovery_budget', 'limit_budget'].includes(mode) ? 3 : 2);
+    if (['call_budget', 'recovery_budget', 'limit_budget'].includes(mode)) {
       assert.equal(result.question.kind, 'budget');
       assert.equal(await readFile(join(result.candidate.worktree, 'answer.txt'), 'utf8'), 'accepted');
     }
@@ -73,6 +73,65 @@ test(`SWE automatic discard-and-continue across repeated failed edits: ${mode}`,
   const checkpoint = await f.checkpoint();
   if (mode === 'complete') assert.equal(checkpoint.retiredNativeCalls.length, 2);
   assert.equal(await readFile(join(f.options.receiptsDir, 'discarded-2/answer.txt'), 'utf8'), '');
+});
+
+for (const reason of ['observed_tool_limit', 'deadline']) test(`historical ${reason} parks at exhausted recovery budget, then extends without replay`, async t => {
+  let turns = 0, reviews = 0;
+  const f = await fixture(t, async args => {
+    turns++;
+    await args.onNativeSession({ executor: 'devin_native', model: 'swe-2-high', sessionId: `old-${turns}`, artifactDigest: DEVIN_NATIVE_DIGEST, replayable: false });
+    if (turns === 2) return { ok: false, uncertain: true, noModelCalled: false, candidateQuiescent: false, failureCode: 'devin_native_incomplete',
+      stagedDraft: { path: join(f.options.receiptsDir, 'refused-mirror'), adopted: false, replayAllowed: false },
+      diagnostic: { stage: 'native_turn', reason, terminalReceived: false, cleanupConfirmed: true, protocolStage: 'prompt', stopReason: null, rpcFailure: null, boundaryRefusal: null, toolFailures: [] } };
+    if (turns === 3) assert.equal(await readFile(join(args.worktree, 'answer.txt'), 'utf8'), 'accepted');
+    await writeFile(join(args.worktree, 'answer.txt'), turns === 1 ? 'accepted' : 'finished');
+    return { ok: true, definitiveTurnEnd: true, candidateQuiescent: true, text: JSON.stringify({ actions: [], done: turns === 3, summary: 'progress', decision: turns === 1 ? { action: 'continue', reason: 'remaining work' } : null }) };
+  }, async () => { reviews++; return { ran: true, verdict: 'APPROVED', findings: [], usage: { total_tokens: 5 } }; });
+  f.options.seats.maker = { backend: 'devin', model: 'swe-2-high', codeExecutor: 'devin_native', observedBudgetConsent: 'devin-observed/v1' };
+  f.options.backendSnapshot.maker = DEVIN_CODE_BACKEND;
+  f.options.limits = { maxCalls: 4, maxRecoveries: 0, maxTokens: 1000000 };
+  await writeFile(join(f.options.receiptsDir, 'refused-mirror'), 'never import');
+  const first = await f.run(); assert.equal(first.resumable, true); assert.equal(turns, 2);
+  const before = await f.checkpoint();
+  for (const mutate of [s => { s.pendingCall.response.diagnostic.cleanupConfirmed = false; }, s => { s.pendingCall.response.diagnostic.reason = 'cancelled'; },
+    s => { s.pendingCall.response.diagnostic.rpcFailure = 'request_timeout'; }, s => { s.pendingCall.response.diagnostic.boundaryRefusal = { code: 'host_operation_refused' }; },
+    s => { s.nativeSession.artifactDigest = 'changed'; }]) {
+    const invalid = structuredClone(before); mutate(invalid); assert.equal(canResumeDevinPriorCandidate(invalid), false);
+  }
+  const parked = await f.run({ resume: true });
+  assert.equal(parked.question.kind, 'budget'); assert.equal(parked.question.request.type, 'budget_extension');
+  assert.equal(parked.resumable, true); assert.equal(parked.usage.calls, 2); assert.equal(parked.usage.recoveries, 0); assert.equal(turns, 2);
+  const again = await f.run({ resume: true }); assert.equal(again.usage.calls, 2); assert.equal(turns, 2);
+  const finished = await f.run({ resume: true, limits: { maxRecoveries: 1 } });
+  assert.equal(finished.completion, 'candidate_ready_for_acceptance', finished.error);
+  assert.equal(turns, 3); assert.equal(reviews, 1); assert.equal(finished.usage.calls, 4); assert.equal(finished.usage.recoveries, 1);
+  assert.equal(await readFile(join(f.options.receiptsDir, 'refused-mirror'), 'utf8'), 'never import');
+});
+
+for (const preflight of [false, true]) test(`first-slice budget stop retains a verified baseline (preflight refusal: ${preflight})`, async t => {
+  let turns = 0;
+  const f = await fixture(t, async args => {
+    turns++;
+    if (preflight && turns === 1) return { ok: false, noModelCalled: true, error: 'fixture preflight' };
+    await args.onNativeSession({ executor: 'devin_native', model: 'swe-2-high', sessionId: `baseline-${turns}`, artifactDigest: DEVIN_NATIVE_DIGEST, replayable: false });
+    if (turns === (preflight ? 2 : 1)) return { ok: false, uncertain: true, noModelCalled: false, candidateQuiescent: false, failureCode: 'devin_native_incomplete', recoveryDisposition: 'discard_mirror_v1',
+      stagedDraft: { path: join(f.options.receiptsDir, 'discarded'), adopted: false, replayAllowed: false },
+      diagnostic: { stage: 'native_turn', reason: 'observed_tool_limit', terminalReceived: false, cleanupConfirmed: true, protocolStage: 'prompt', stopReason: null, rpcFailure: null, boundaryRefusal: null } };
+    const before = await f.checkpoint();
+    assert.equal(before.usage.steps, 0); assert.equal(before.candidate.snapshotStatus, 'verified_baseline');
+    assert.equal(before.feedback.trust, 'verified_baseline_not_reviewed');
+    await writeFile(join(args.worktree, 'answer.txt'), 'finished'); return done();
+  });
+  f.options.seats.maker = { backend: 'devin', model: 'swe-2-high', codeExecutor: 'devin_native', observedBudgetConsent: 'devin-observed/v1' };
+  f.options.backendSnapshot.maker = DEVIN_CODE_BACKEND;
+  f.options.limits = { maxCalls: 3, maxRecoveries: 1, maxTokens: 1000000 };
+  if (preflight) {
+    const refused = await f.run(); assert.equal(refused.usage.calls, 0);
+    assert.equal((await f.checkpoint()).candidate.snapshotStatus, 'verified_baseline');
+  }
+  const result = await f.run(preflight ? { resume: true } : {});
+  assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+  assert.equal(turns, preflight ? 3 : 2); assert.equal(result.usage.steps, 1); assert.equal(result.usage.calls, 3);
 });
 
 test('native tracked inventory is byte-bounded and reports omitted paths', () => {

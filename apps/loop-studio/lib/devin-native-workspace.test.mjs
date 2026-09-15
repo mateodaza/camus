@@ -17,6 +17,15 @@ async function nativePermission(workspace, options, id, path, input) {
   return handlers['session/request_permission']({ sessionId: 's', toolCall: { toolCallId: id }, options: [{ kind: 'allow_once', optionId: 'once' }] });
 }
 
+test('budget-denied tool requires unchanged checked state since that tool started', () => fixture(async options => {
+  const workspace = await createDevinWorkspace({ ...options, containedNativeWrites: true });
+  const before = workspace.checkedStateHash();
+  const tool = { toolCallId: 'denied-read', status: 'failed' };
+  assert.equal((await workspace.reconcileBudgetDeniedTool(tool, before)).operation, 'host_budget_denial');
+  await workspace.writeText({ path: 'src/a.mjs', content: 'changed', expectedSha256: (await workspace.readText('src/a.mjs')).sha256 });
+  await assert.rejects(workspace.reconcileBudgetDeniedTool(tool, before), /prior effects/);
+}));
+
 for (const creation of [false, true]) test(`failed native ${creation ? 'creation' : 'edit'} with unchanged bytes revokes only its pending grant`, () => fixture(async options => {
   const workspace = await createDevinWorkspace({ ...options, containedNativeWrites: true });
   const path = creation ? 'nested/retry.mjs' : 'src/a.mjs';

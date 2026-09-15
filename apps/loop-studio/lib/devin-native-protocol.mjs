@@ -5,6 +5,9 @@ export const DEVIN_NATIVE_MODEL = 'swe-2-high';
 export const DEVIN_NATIVE_VERSION = '3000.10.21';
 export const DEVIN_NATIVE_DIGEST = 'e7a86b3d4c8b198e1cbf0cab974b80d1a811f38251ceed28e28c5507ba3949b2';
 export const DEVIN_NATIVE_PROTOCOL_VERSION = 'devin-acp-preflight/v1';
+// Host-observed stop classes, never inferred from provider error prose. These
+// permit discarding an isolated mirror only; cleanup/custody remain mandatory.
+export const devinDiscardableStop = reason => ['tool_failed', 'observed_tool_limit', 'deadline'].includes(reason);
 
 // Match the existing file-actions formatting tolerance, without importing that
 // engine or inferring any missing decision field. Call only on the completed

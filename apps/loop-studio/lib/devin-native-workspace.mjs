@@ -17,11 +17,13 @@ const protectedPartRegex = () => protectedNames.source.slice(1, -1).replace(/\(\
 // or arbitrary filesystem/permission errors as recoverable.
 export class DevinToolFeedback extends Error {
   constructor(code) {
-    super(code === 'invalid_command'
+    super(code === 'slice_wrap_up'
+      ? 'Camus slice is wrapping up. This NEW host operation was not executed. Stop requesting tools and return the final JSON now: done:false, summary, decision:{action:"continue",reason:"remaining work and next step"} if work remains. No extra calls, actions or time are granted.'
+      : code === 'invalid_command'
       ? 'Nothing executed. Supply exactly command (an absolute executable path using letters, digits, _, ., /, + or -) and args (at most 100 strings without NUL); total JSON at most 16384 bytes. Example: {"command":"/usr/bin/env","args":["pnpm","test"]}. Do not put a shell command line in command. The read-only, network-denied sandbox still applies.'
       : code === 'native_write_pending' ? 'Wait for the approved native write to complete before another write or command.'
       : code === 'stale_file' ? 'Read the file again and use its current hash.' : 'Use list_files to choose a prepared file.');
-    if (!['stale_file', 'file_not_prepared', 'invalid_command', 'native_write_pending'].includes(code)) throw new Error('Invalid Devin feedback.');
+    if (!['stale_file', 'file_not_prepared', 'invalid_command', 'native_write_pending', 'slice_wrap_up'].includes(code)) throw new Error('Invalid Devin feedback.');
     this.code = code;
   }
 }
@@ -177,6 +179,16 @@ export async function createDevinWorkspace({ candidate, mirror, root, harness, f
   const workspace = { profile, containedNativeWrites, manifest: Object.freeze(manifest), manifestHash: hash(JSON.stringify(manifest)),
     nativeWriteEvidence() { return { policy: containedNativeWrites ? 'contained-native/v1' : 'host-or-legacy',
       writes: nativeWrites.map(item => ({ ...item })) }; },
+    checkedStateHash() { return hash(JSON.stringify(snapshots.map(item => [item.path, acceptedHashes.get(item.path)]))); },
+    async reconcileBudgetDeniedTool(tool, beforeHash) {
+      if (!containedNativeWrites || adopted || signal?.aborted || tool?.status !== 'failed') throw new Error('Budget denial is not reconcilable.');
+      // Caller must hold a host-created, pre-effect refusal record for this ID.
+      await workspace.verifyNativeWrites(); await verifyInventory(); await workspace.verifyNativeWrites();
+      if (typeof beforeHash !== 'string' || beforeHash !== workspace.checkedStateHash()) throw new Error('Budget-denied tool has prior effects.');
+      if (signal?.aborted) throw new Error('Budget reconciliation cancelled.');
+      return Object.freeze({ toolCallId: tool.toolCallId, recovery: 'verified_no_effect', operation: 'host_budget_denial',
+        checkedStateHash: beforeHash });
+    },
     async reconcileDeniedNativeExec(tool) {
       if (!containedNativeWrites || adopted || signal?.aborted || tool?.status !== 'failed'
           || tool?._meta?.['cognition.ai/inferenceToolName'] !== 'exec')
