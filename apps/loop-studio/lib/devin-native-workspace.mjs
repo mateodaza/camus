@@ -169,7 +169,7 @@ export async function createDevinWorkspace({ candidate, mirror, root, harness, f
       for (const entry of await readdir(path, { withFileTypes: true })) {
         const child = join(path, entry.name);
         if (entry.isDirectory() && dirs.has(child)) await walk(child);
-        else if (!entry.isFile() || !expected.has(child)) throw new Error('Unexpected staged file or link.');
+        else if (!entry.isFile() || !expected.has(child)) throw Object.assign(new Error('Unexpected staged file or link.'), { reconciliationCode: 'inventory_mismatch' });
       }
     };
     await walk(mirror);
@@ -207,7 +207,7 @@ export async function createDevinWorkspace({ candidate, mirror, root, harness, f
       // output reported as failed is not silently promoted to a successful edit.
       const state = await workspace.writeState(name);
       if (state.sha256 !== (grant ? grant.beforeHash : acceptedHashes.get(name) ?? null))
-        throw new Error('Failed native write has uncertain effects.');
+        throw Object.assign(new Error('Failed native write has uncertain effects.'), { reconciliationCode: 'target_changed' });
       await workspace.verifyNativeWrites({ allowPendingPath: grant ? name : null });
       await verifyInventory();
       if ((await workspace.writeState(name)).sha256 !== state.sha256)
@@ -241,7 +241,7 @@ export async function createDevinWorkspace({ candidate, mirror, root, harness, f
             if (allowPendingPath === item.path) continue;
             throw new DevinToolFeedback('native_write_pending');
           }
-          throw new Error('Staged content does not match an approved write.');
+          throw Object.assign(new Error('Staged content does not match an approved write.'), { reconciliationCode: 'approved_write_mismatch' });
         }
       }
       if (totalBytes > maxTotalBytes) throw new Error('Staged byte envelope exceeded.');

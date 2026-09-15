@@ -5,6 +5,14 @@ Owner: Camus maintainer. Updated September 14, 2026.
 
 ## Current checkpoint
 
+- **0.4.30 continuous isolated-turn recovery:** eligible cleaned-up tool failures
+  discard their entire mirror and can continue from the last accepted candidate,
+  repeatedly within the existing recovery and spend limits. Partial writes never
+  become no-effect or success claims. Fixed host diagnostics explain failed
+  reconciliation without exposing private text. Multi-turn, truncated-file,
+  budget, stop and crash/restart regressions passed offline; no new live success
+  is claimed. See [the evidence](SWE-CONTRACT-VALIDATION.md#continuous-isolated-turn-recovery-0430).
+
 - **0.4.29 denied-exec continuity:** native command authority stays denied. Host
   policy, artifact and staged-state evidence can allow correction through checked
   MCP commands. Eligible historical refusals can explicitly resume the prior

@@ -9,6 +9,16 @@ import { runNativeProcess } from './native-process.mjs';
 import { assertDevinModelSelection, validateDevinSession, inspectDevinUsage, createDevinProtocolObserver, classifyDevinToolFailure,
   DEVIN_NATIVE_MODEL } from './devin-native-protocol.mjs';
 import { publicDevinDiagnostic, parseDevinDecisionText } from './devin-native-protocol.mjs';
+
+test('reconciliation diagnostics expose only fixed host labels, never error text or paths', () => {
+  for (const label of ['unsupported_tool', 'missing_target', 'overlapping_operations', 'target_changed',
+    'approved_write_mismatch', 'inventory_mismatch', 'state_verification_failed', 'receipt_persistence_failed']) {
+    assert.equal(publicDevinDiagnostic({ stage: 'native_turn', reconciliationFailure: label }).reconciliationFailure, label);
+  }
+  const output = publicDevinDiagnostic({ stage: 'native_turn', reconciliationFailure: '/private/path secret-token', error: 'private error' });
+  assert.equal(output.reconciliationFailure, undefined);
+  assert.doesNotMatch(JSON.stringify(output), /private|secret-token/);
+});
 import { devinBudgetSnapshot, nativeBudgetPrompt } from './native-budget.mjs';
 
 for (const fault of ['none', 'config', 'artifact', 'mode', 'symlink', 'hardlink', 'no_deny'])

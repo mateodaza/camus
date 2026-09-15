@@ -162,6 +162,25 @@ export async function runProductiveCodeLoop(options, h) {
     record.result.reviewBinding = null; record.result.verificationBinding = null;
     record.verificationReady = false;
   };
+  const restorePriorCandidate = async () => {
+    await checkCandidate();
+    const base = await h.git(record.source.repoPath, ['rev-parse', 'HEAD']);
+    if (!base.ok || base.stdout.trim() !== record.source.head) throw new Error('Source baseline changed; recovery refused.');
+    const ignored = await h.git(record.candidate.worktree, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z']);
+    if (!ignored.ok || ignored.stdout) throw new Error('Prior candidate contains ignored output outside its recorded evidence. No model was called.');
+    record.retiredNativeCalls ??= [];
+    record.retiredNativeCalls.push({ ...record.pendingCall,
+      disposition: record.pendingCall.response?.diagnostic?.stage === 'decision_schema' ? 'discarded_schema_turn' : 'discarded_incomplete_turn',
+      candidateFingerprint: record.candidate.fingerprint });
+    record.pendingCall = null; record.nativeSession = null; record.nativeInFlight = false;
+    record.phase = 'make';
+    record.feedback = { kind: 'prior_candidate_recovery', candidateFingerprint: record.candidate.fingerprint,
+      trust: 'accepted_turn_not_reviewed', originalContract: 'unchanged',
+      instruction: 'The failed mirror was discarded. Use checked Camus MCP read_file/write_file for remaining edits instead of repeating the failed native write path. Reassess the original contract from the accepted candidate.' };
+    invalidateCandidateEvidence();
+    record.priorCandidateRecoveryPending = true;
+    await log('native_prior_candidate_restored', { candidateFingerprint: record.candidate.fingerprint });
+  };
   const call = async (role, prompt, { emptyAssessmentLedgers = false } = {}) => {
     if (record.pendingCall?.response && !record.pendingCall.response.uncertain) {
       if (record.pendingCall.role !== role || record.pendingCall.promptHash !== digest(prompt)) throw new Error('Saved response does not bind this role and context.');
@@ -353,6 +372,13 @@ export async function runProductiveCodeLoop(options, h) {
       ? ` Native diagnostic: ${response.failureCode}${devinDiagnostic?.reason ? ` (${devinDiagnostic.reason})` : ''}.` : '';
     if (response.budget) return question(response.budget, 'budget', { type: 'budget_extension' });
     if (response.uncertain) {
+      if (native && role === 'maker' && response.recoveryDisposition === 'discard_mirror_v1'
+          && !abort.signal.aborted && canResumeDevinPriorCandidate({ ...record, phase: 'refused', status: 'needs_decision' })) {
+        // This is a fresh session over accepted work, not a retry of the failed
+        // operation. The adapter has stopped all writers; no mirror is imported.
+        await restorePriorCandidate();
+        return null;
+      }
       if (native && role === 'maker' && response.recoveryCheckpoint === true) {
         // The uncertain turn is never replayed or promoted to completion. Its
         // quiescent filesystem is a new evidence-bound draft, and the next
@@ -617,19 +643,7 @@ export async function runProductiveCodeLoop(options, h) {
       // No read or promotion of the refused mirror. Keep the rejected response
       // as authenticated history; a subsequent crash resumes this transition,
       // never charges another recovery or replays the original native session.
-      record.retiredNativeCalls ??= [];
-      record.retiredNativeCalls.push({ ...record.pendingCall,
-        disposition: record.pendingCall.response?.diagnostic?.stage === 'decision_schema' ? 'discarded_schema_turn' : 'discarded_incomplete_turn',
-        candidateFingerprint: record.candidate.fingerprint });
-      record.pendingCall = null; record.nativeSession = null; record.nativeInFlight = false;
-      record.phase = 'make';
-      record.feedback = { kind: 'prior_candidate_recovery', candidateFingerprint: record.candidate.fingerprint,
-        trust: 'accepted_turn_not_reviewed', originalContract: 'unchanged' };
-      invalidateCandidateEvidence();
-      // Reserve one recovery before the first fresh dispatch. Exhaustion parks
-      // safely without a model call; an extension must be explicit as usual.
-      record.priorCandidateRecoveryPending = true;
-      await log('native_prior_candidate_restored', { candidateFingerprint: record.candidate.fingerprint });
+      await restorePriorCandidate();
     }
     await log('worker_attached');
     const remaining = Math.max(1, limits.timeoutMs - record.usage.activeMs);
@@ -647,6 +661,9 @@ export async function runProductiveCodeLoop(options, h) {
       record.result.source = record.source;
       if (record.phase === 'make') {
         if (record.priorCandidateRecoveryPending) {
+          const exhausted = budgetReason();
+          if (exhausted) return question(`${exhausted}; accepted candidate preserved before reserving recovery`,
+            'budget', { type: 'budget_extension', cause: exhausted });
           if (record.usage.recoveries >= limits.maxRecoveries) return question('native recovery allowance exhausted; extend the recovery bound to continue from the last accepted candidate',
             'budget', { type: 'budget_extension', cause: 'native recovery allowance exhausted' });
           record.usage.recoveries++; record.priorCandidateRecoveryPending = false;

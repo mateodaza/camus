@@ -10,6 +10,76 @@ import { execFileSync } from 'node:child_process';
 import { runCodeSeats } from '../code-seats.mjs';
 import { DEVIN_CODE_BACKEND } from '../devin-code-seat.mjs';
 import { DevinToolFeedback } from '../devin-native-workspace.mjs';
+import { DEVIN_NATIVE_DIGEST } from '../devin-native-protocol.mjs';
+
+test('shared Build discards a truncated native turn then completes via checked writes without a human restart',
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 20000 }, () => fixture(async ctx => {
+    const git = (...args) => execFileSync('git', ['-C', ctx.candidate, ...args], { stdio: 'ignore' });
+    git('init', '-q'); git('add', 'calc.mjs');
+    git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'base');
+    ctx.context.digest = DEVIN_NATIVE_DIGEST; // pinned identity in the offline transport fixture
+    let turns = 0, reviews = 0, verifies = 0, failedMirror;
+    const deps = ctx.dependencies(async ({ callbacks, update, sourceMirror, sessionId, mcp }) => {
+      turns++;
+      const path = join(sourceMirror, 'calc.mjs');
+      if (turns === 2) {
+        failedMirror = sourceMirror;
+        const tool = { toolCallId: 'truncate', kind: 'edit', _meta: { 'cognition.ai/inferenceToolName': 'edit' },
+          rawInput: { file_path: path, old_string: 'a+b', new_string: 'Number(a)+Number(b)' } };
+        update({ sessionUpdate: 'tool_call', ...tool });
+        await callbacks.onRequest('session/request_permission', { sessionId, toolCall: { toolCallId: 'truncate' }, options: [{ kind: 'allow_once', optionId: 'truncate' }] });
+        await writeFile(path, '');
+        update({ sessionUpdate: 'tool_call_update', toolCallId: 'truncate', status: 'failed' });
+        await callbacks.onRequest('fs/read_text_file', { sessionId, path }).catch(() => {});
+        return { stopReason: 'end_turn' };
+      }
+      const content = turns === 1 ? 'export const add=(a,b)=>a+b;' : 'export const add=(a,b)=>Number(a)+Number(b);';
+      const current = (await callbacks.onRequest('fs/read_text_file', { sessionId, path })).content;
+      if (turns === 3) assert.equal(current, 'export const add=(a,b)=>a+b;', 'prior accepted turn retained, failed mirror excluded');
+      const reply = await mcp('tools/call', { name: 'write_file', arguments: { path: 'calc.mjs', content,
+        expectedSha256: createHash('sha256').update(current).digest('hex') } });
+      assert.equal(reply.error, undefined);
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify({ done: turns === 3, summary: 'progress',
+        decision: turns === 1 ? { action: 'continue', reason: 'remaining work' } : null }) } });
+      return { stopReason: 'end_turn' };
+    });
+    const verify = async ({ worktree }) => { verifies++; assert.equal(await readFile(join(worktree, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>Number(a)+Number(b);'); return { ran: true, pass: true, exitCode: 0 }; };
+    verify.command = 'offline fixture'; verify.repeatable = true;
+    const result = await runCodeSeats({ repoPath: ctx.candidate, receiptsDir: ctx.receipts, task: 'Fix addition and normalize numeric arguments.',
+      seats: { maker: { backend: 'devin', model: 'swe-2-high', codeExecutor: 'devin_native', observedBudgetConsent: 'devin-observed/v1' }, reviewer: { backend: 'claude', model: 'fixture-review' } },
+      backendSnapshot: { maker: DEVIN_CODE_BACKEND, reviewer: { kind: 'claude_cli', transport: 'vendor_managed', provider: 'anthropic' } },
+      adapters: { nativeMaker: options => runNativeDevin(options, deps), maker: () => { throw new Error('No fallback'); },
+        reviewer: async () => { reviews++; return { ran: true, verdict: 'APPROVED', findings: [], usage: { total_tokens: 5 } }; } },
+      verify, limits: { maxTokens: 1000000, maxCalls: 4, maxSteps: 2, maxActions: 100, maxRecoveries: 1, maxRetries: 0, maxRepairs: 0 } });
+    assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+    assert.equal(turns, 3); assert.equal(reviews, 1); assert.equal(verifies, 1);
+    assert.equal(result.usage.calls, 4); assert.equal(result.usage.recoveries, 1); assert.equal(result.usage.retries, 0);
+    assert.equal(await readFile(join(failedMirror, 'calc.mjs'), 'utf8'), '');
+    assert.equal(await readFile(join(ctx.candidate, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>a-b;');
+  }));
+
+test('truncated native file is refused, diagnosed and discarded rather than acknowledged as no effect',
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    const result = await runNativeDevin(ctx.defaults, ctx.dependencies(async ({ callbacks, sourceMirror, update }) => {
+      const path = join(sourceMirror, 'calc.mjs');
+      const tool = { toolCallId: 'truncate', kind: 'edit', _meta: { 'cognition.ai/inferenceToolName': 'edit' },
+        rawInput: { file_path: path, old_string: 'a-b', new_string: 'a+b' } };
+      update({ sessionUpdate: 'tool_call', ...tool });
+      await callbacks.onRequest('session/request_permission', { sessionId: 'fixture-s1', toolCall: { toolCallId: 'truncate' },
+        options: [{ kind: 'allow_once', optionId: 'truncate' }] });
+      await writeFile(path, '');
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'truncate', status: 'failed', rawOutput: 'private failure detail' });
+      await callbacks.onRequest('fs/read_text_file', { sessionId: 'fixture-s1', path }).catch(() => {});
+      return { stopReason: 'end_turn' };
+    }));
+    assert.equal(result.ok, false); assert.equal(result.diagnostic.cleanupConfirmed, true);
+    assert.equal(result.diagnostic.reconciliationFailure, 'target_changed');
+    assert.equal(result.recoveryDisposition, 'discard_mirror_v1');
+    assert.equal(await readFile(join(result.stagedDraft.path, 'calc.mjs'), 'utf8'), '');
+    assert.equal(await readFile(join(ctx.candidate, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>a-b;');
+    assert.equal((await readdir(ctx.receipts)).filter(name => name.startsWith('devin-no-effect-')).length, 0);
+    assert.doesNotMatch(JSON.stringify(result.diagnostic), /private failure detail|calc\.mjs/);
+  }));
 
 test('host-proven missing ACP read permits correction to creation in the same native turn',
   { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {

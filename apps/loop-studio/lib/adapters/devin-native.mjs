@@ -40,9 +40,9 @@ export async function runNativeDevin(options, dependencies = {}) {
   let closed = true, mutated = false;
   let nativeTools = 0, hostTools = 0;
   let refusalStage = 'preparation';
-  let localStopReason = null, lastHostTool = null, boundaryRefusal = null;
+  let localStopReason = null, lastHostTool = null, boundaryRefusal = null, reconciliationFailure = null;
   const refuseTool = detail => { boundaryRefusal ??= detail ?? null; localStopReason ??= 'tool_boundary_refused'; abort(); };
-  const diagnostic = () => publicDevinDiagnostic({ ...outcome, stage: refusalStage, lastHostTool, boundaryRefusal,
+  const diagnostic = () => publicDevinDiagnostic({ ...outcome, stage: refusalStage, lastHostTool, boundaryRefusal, reconciliationFailure,
     reason: outcome?.reason === 'cancelled' && localStopReason ? localStopReason : outcome?.reason });
   const reportActions = () => {
     // Deliberately conservative: ACP tool events and host executions both
@@ -199,10 +199,11 @@ export async function runNativeDevin(options, dependencies = {}) {
       onToolFailure(update) {
         const tool = calls.get(update.toolCallId);
         const kind = tool?._meta?.['cognition.ai/inferenceToolName'];
-        if (!['edit', 'write', 'exec'].includes(kind)
-            || (kind !== 'exec' && typeof tool.rawInput?.file_path !== 'string') || tasks.size || broker.stats().active
-            || [...calls.values()].some(call => !['completed', 'failed'].includes(call.status)))
-          return null;
+        if (!['edit', 'write', 'exec'].includes(kind)) { reconciliationFailure = 'unsupported_tool'; return null; }
+        if (kind !== 'exec' && typeof tool.rawInput?.file_path !== 'string') { reconciliationFailure = 'missing_target'; return null; }
+        if (tasks.size || broker.stats().active || [...calls.values()].some(call => !['completed', 'failed'].includes(call.status))) {
+          reconciliationFailure = 'overlapping_operations'; return null;
+        }
         return serializeHost(async () => {
           let receipt;
           try {
@@ -213,9 +214,10 @@ export async function runNativeDevin(options, dependencies = {}) {
               receipt = { ...await workspace.reconcileDeniedNativeExec(tool), denial };
             } else receipt = await workspace.reconcileFailedNativeWrite(tool);
           }
-          catch {
+          catch (error) {
             // Cancel synchronously inside the queue, before it can dispatch a
             // subsequent host operation. Preserve the original failure label.
+            reconciliationFailure = error?.reconciliationCode ?? 'state_verification_failed';
             localStopReason ??= 'tool_failed'; abort(); return null;
           }
           try {
@@ -228,6 +230,7 @@ export async function runNativeDevin(options, dependencies = {}) {
           } catch {
             // Storage failure is an evidence failure too. Cancel while holding
             // the host queue, not later in the observer's promise callback.
+            reconciliationFailure = 'receipt_persistence_failed';
             localStopReason ??= 'tool_failed'; abort(); return null;
           }
           return receipt;
@@ -266,10 +269,14 @@ export async function runNativeDevin(options, dependencies = {}) {
     }), { flag: 'wx', mode: 0o600 });
     if (outcome.execution !== 'completed') {
       refusalStage = 'native_turn';
+      const detail = diagnostic();
       return { ok: false, uncertain: outcome.promptsSent > 0,
         noModelCalled: outcome.promptsSent === 0, usage: null, usageIncomplete: true,
         stagedDraft: outcome.promptsSent > 0 && closed ? { path: mirror, adopted: false, replayAllowed: false } : null,
-        diagnostic: diagnostic(), candidateQuiescent: false, failureCode: 'devin_native_incomplete',
+        diagnostic: detail, candidateQuiescent: false, failureCode: 'devin_native_incomplete',
+        ...(closed && detail.cleanupConfirmed && detail.reason === 'tool_failed'
+          && detail.rpcFailure === null && detail.boundaryRefusal === null
+          ? { recoveryDisposition: 'discard_mirror_v1' } : {}),
         error: 'Devin native turn did not supply a complete contained result.' };
     }
     refusalStage = 'decision_json';

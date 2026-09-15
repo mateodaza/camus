@@ -5,6 +5,59 @@ Status: **survivable-edit and bounded-formatting corrections are included in
 This is a compatibility and regression gate, not a promise of bug-free native
 execution or a successful Company Brain run.
 
+## Continuous isolated-turn recovery (0.4.30)
+
+Company Brain maker-4 ended at checkpoint revision 186 with `tool_failed`, a
+failed native edit, and confirmed cleanup. A read-only comparison found that
+three new modules matched their approved output hashes, but `index.ts` was zero
+bytes despite a nonempty approved output. The preserved control-directory copy
+matched that empty file. This is changed/uncertain staged state, not a proven
+no-effect edit miss. The precise reason the native operation truncated the file
+is not established; no upstream harness fix or live success is claimed.
+
+The correction separates acceptance from continued execution:
+
+- A tool-failed isolated SWE turn with proven cleanup can be discarded in its
+  entirety. Explicit resume revalidates the last accepted candidate, not the
+  failed mirror. Eligibility no longer depends on whether the tool was called
+  `exec` versus `edit`, nor on provider error categories.
+- Fresh adapter results can request `discard_mirror_v1`. The shared CLI/Studio
+  loop independently checks pinned identity, cleanup, absence of protocol or
+  boundary failures, accepted snapshot, source baseline, custody, fingerprint
+  and ignored output before continuing in a new native session. No uncertain
+  tool is replayed or reclassified as successful.
+- This can repeat within the existing recovery, call, step, action, token and
+  active-time limits. An exhausted limit requests authority; it is not extended.
+  User stop is honored. Calls include failures and reviews; counters do not reset.
+- Recovery feedback directs remaining edits through checked Camus MCP reads and
+  writes rather than repeating the failed native-write channel. This is guidance,
+  not a claim that the model is guaranteed to choose that channel.
+- Specific reconciliation failures use fixed host labels (changed target,
+  approved-output mismatch, inventory mismatch, overlapping operations, missing
+  target, receipt persistence failure). Raw errors, paths and credentials are
+  excluded from public diagnostics.
+
+The accepted candidate still requires frozen verification and independent review.
+No per-file salvage or automatic publication is added. Failures without an
+accepted snapshot, proven cleanup or valid custody remain blocked.
+
+Offline tests cover repeated failed edits followed by verification/review,
+recovery/call-budget exhaustion, drift, missing cleanup, boundary failures,
+operator cancellation, and an adapter-to-loop truncation followed by a fresh
+checked-write session. Actual SIGKILL/restart tests cover response publication,
+candidate restoration and recovery reservation without double charging or replay.
+
+Validation completed: full root/CLI and Studio suites passed; the final
+adapter/loop run passed 87 tests and diagnostic/workspace tests passed 51, with
+zero failures or skips. Five SWE SIGKILL/restart windows passed, as did packaged
+CLI runtime parity and `git diff --check`. All validation was offline; Company
+Brain was inspected only and no provider dispatch was made.
+
+For Company Brain, the local inspector reports revision 186, unowned,
+`resume_candidate`, four calls and two recoveries consumed. The run is untouched.
+With 0.4.30, retain the six-call remainder with cumulative `--max-calls 10`;
+all other saved ceilings remain unchanged. Do not import any refused mirror.
+
 ## Denied native exec and continuity hardening (0.4.29)
 
 The Company Brain continuation on 0.4.28 performed one checked mirror write,

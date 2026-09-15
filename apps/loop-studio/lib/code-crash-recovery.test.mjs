@@ -29,6 +29,9 @@ try {
       if(window==='write_started' && event.type==='action_started') kill();
       if(window==='write_saved' && event.type==='action_completed') kill();
       if(['native_prior_candidate_restored','native_prior_candidate_recovery_reserved'].includes(window) && event.type===window) kill();
+      if(window==='auto_response_saved' && event.type==='call_response_saved' && event.id==='maker-2') kill();
+      if(window==='auto_restored' && event.type==='native_prior_candidate_restored') kill();
+      if(window==='auto_reserved' && event.type==='native_prior_candidate_recovery_reserved') kill();
     }`;
   await writeFile(loader, `export async function load(url,ctx,next){if(url===${JSON.stringify(moduleUrl)})return {format:'module',shortCircuit:true,source:${JSON.stringify(injected)}};return next(url,ctx);}`);
   await writeFile(child, `import {runCodeSeats} from ${JSON.stringify(pathToFileURL(join(here, 'code-seats.mjs')).href)};
@@ -99,15 +102,16 @@ try {
         if(args.nativeSession!==null)throw Error('No session replay');
         await args.onNativeSession({executor:'devin_native',sessionId:'s'+turn,replayable:false,artifactDigest:DEVIN_NATIVE_DIGEST});
         if(turn===2)return {ok:false,uncertain:true,noModelCalled:false,usage:null,candidateQuiescent:false,failureCode:'devin_native_incomplete',
+          ...(process.env.CAMUS_AUTO_RECOVERY==='true'?{recoveryDisposition:'discard_mirror_v1'}:{}),
           stagedDraft:{path:join(root,'refused-mirror'),adopted:false,replayAllowed:false},
           diagnostic:{stage:'native_turn',reason:'tool_failed',terminalReceived:false,cleanupConfirmed:true,protocolStage:'prompt',stopReason:null,rpcFailure:null,boundaryRefusal:null,
-            toolFailures:[{nativeTool:'exec',categories:['permission_denied']}]}};
+            toolFailures:[{nativeTool:'edit',categories:['unclassified']}]}};
         if(turn===3 && await readFile(join(args.worktree,'answer.txt'),'utf8')!=='accepted')throw Error('Accepted draft lost');
         await writeFile(join(args.worktree,'answer.txt'),turn===1?'accepted':'finished');
         return {ok:true,definitiveTurnEnd:true,candidateQuiescent:true,usage:null,text:JSON.stringify({actions:[],done:turn===3,summary:'Progress',decision:turn===1?{action:'continue',reason:'Finish remaining work'}:null})};
       },reviewer:async()=>({ran:true,verdict:'APPROVED',findings:[],usage:{total_tokens:5}})}});
     process.stdout.write(JSON.stringify(result));`);
-  for (const window of ['native_prior_candidate_restored', 'native_prior_candidate_recovery_reserved']) {
+  for (const window of ['native_prior_candidate_restored', 'native_prior_candidate_recovery_reserved', 'auto_response_saved', 'auto_restored', 'auto_reserved']) {
     const dir = join(root, window), repo = join(dir, 'repo');
     await mkdir(repo, { recursive: true }); await mkdir(join(dir, 'run'));
     await writeFile(join(repo, 'README.md'), 'base\n');
@@ -116,14 +120,17 @@ try {
     await writeFile(join(dir, 'refused-mirror'), 'never adopt');
     const nativeRun = async (resume, crash = '') => {
       const proc = spawn(process.execPath, ['--experimental-loader', loader, nativeChild, dir, resume ? 'resume' : 'new'],
-        { env: { ...process.env, CAMUS_CRASH_WINDOW: crash }, stdio: ['ignore', 'pipe', 'pipe'] });
+        { env: { ...process.env, CAMUS_CRASH_WINDOW: crash, CAMUS_AUTO_RECOVERY: String(window.startsWith('auto_')) }, stdio: ['ignore', 'pipe', 'pipe'] });
       let output = '', errors = ''; proc.stdout.on('data', b => { output += b; }); proc.stderr.on('data', b => { errors += b; });
       const [code, signal] = await once(proc, 'exit');
       if (crash) { assert.equal(signal, 'SIGKILL', errors); return; }
       assert.equal(code, 0, errors); return JSON.parse(output);
     };
-    const seeded = await nativeRun(false); assert.equal(seeded.resumable, true); assert.equal(seeded.usage.calls, 2);
-    await nativeRun(true, window);
+    if (window.startsWith('auto_')) await nativeRun(false, window);
+    else {
+      const seeded = await nativeRun(false); assert.equal(seeded.resumable, true); assert.equal(seeded.usage.calls, 2);
+      await nativeRun(true, window);
+    }
     assert.equal((await readFile(join(dir, 'calls'), 'utf8')).trim().split('\n').length, 2, 'crash precedes any fresh maker dispatch');
     const resumed = await nativeRun(true);
     assert.equal(resumed.completion, 'candidate_ready_for_acceptance', resumed.error);

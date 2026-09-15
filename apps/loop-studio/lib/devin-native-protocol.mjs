@@ -50,6 +50,8 @@ const STAGES = new Set(['preparation', 'native_turn', 'terminal_evidence', 'deci
 const CATEGORIES = new Set(['permission_denied', 'path_unavailable', 'metadata_or_symlink',
   'prior_read_required', 'stale_file', 'permission_required', 'match_not_found', 'unclassified']);
 const HOST_TOOLS = new Set(['list_files', 'read_file', 'search', 'write_file', 'run_command']);
+const RECONCILIATION_FAILURES = new Set(['unsupported_tool', 'missing_target', 'overlapping_operations',
+  'target_changed', 'approved_write_mismatch', 'inventory_mismatch', 'state_verification_failed', 'receipt_persistence_failed']);
 const BOUNDARY_CODES = new Set(['invalid_dispatch', 'bridge_closed', 'duplicate_request',
   'call_limit', 'action_limit', 'tool_execution_refused', 'native_command_overlap', 'host_operation_refused', 'native_exec_unexpected_completion']);
 const RPC_ERRORS = new Map([
@@ -72,6 +74,7 @@ export function publicDevinDiagnostic(value) {
     protocolStage: ['initialize', 'session', 'dispatch', 'prompt', 'completion'].includes(value.protocolStage) ? value.protocolStage : null,
     rpcFailure: [...RPC_ERRORS.values()].includes(value.rpcFailure) ? value.rpcFailure : null,
     lastHostTool: HOST_TOOLS.has(value.lastHostTool) ? value.lastHostTool : null,
+    ...(RECONCILIATION_FAILURES.has(value.reconciliationFailure) ? { reconciliationFailure: value.reconciliationFailure } : {}),
     boundaryRefusal: BOUNDARY_CODES.has(value.boundaryRefusal?.code) ? {
       code: value.boundaryRefusal.code, tool: HOST_TOOLS.has(value.boundaryRefusal.tool) ? value.boundaryRefusal.tool : null,
     } : null,

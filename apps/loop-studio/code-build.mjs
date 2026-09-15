@@ -73,9 +73,12 @@ Tools cannot read Git/Camus private state or use arbitrary network. Completed
 turns can resume. An uncertain turn is never replayed; when adapter cleanup is
 proven, Camus may fingerprint its untrusted draft and continue in a fresh
 bounded native session. Otherwise the candidate stays inspection-only.
-Exception: an eligible cleaned-up SWE schema or denied-exec refusal may resume from
+Exception: an eligible cleaned-up SWE schema or isolated tool refusal may resume from
 its unchanged, previously accepted candidate. Its refused mirror is never
 adopted or replayed; current usage and recovery limits still apply. Inspect first.
+Fresh eligible SWE tool failures can discard their isolated mirror and continue
+automatically from accepted work within those same limits. Cleanup, integrity or
+authority failures still stop. No failed output is upgraded to success.
 On resume, --max-calls may explicitly lower the cumulative ceiling, but never
 below consumed calls. It is a total, not an additional-call allowance.
 Legacy camus run and /camus-feat retain their existing Claude/Codex gate.

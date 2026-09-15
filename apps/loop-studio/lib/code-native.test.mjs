@@ -20,6 +20,61 @@ const session = { version: 'codex-native/v1', threadId: '01900000-0000-7000-8000
 const usage = { input_tokens: 10, output_tokens: 5, cached_input_tokens: 4, total_tokens: 15 };
 const done = () => ({ ok: true, definitiveTurnEnd: true, text: JSON.stringify({ actions: [], done: true, summary: 'Ready for host verification.' }), usage, nativeSession: session, modelActual: 'openai:fixture' });
 
+for (const mode of ['complete', 'recovery_budget', 'call_budget', 'drift', 'cleanup', 'boundary', 'cancel'])
+test(`SWE automatic discard-and-continue across repeated failed edits: ${mode}`, async t => {
+  let turns = 0, reviews = 0, verifies = 0;
+  const stop = new AbortController();
+  const f = await fixture(t, async args => {
+    turns++;
+    await args.onNativeSession({ executor: 'devin_native', model: 'swe-2-high', sessionId: `slice-${turns}`,
+      artifactDigest: DEVIN_NATIVE_DIGEST, replayable: false });
+    if (turns === 2 || turns === 3) {
+      assert.equal(await readFile(join(args.worktree, 'answer.txt'), 'utf8'), 'accepted');
+      const mirror = join(f.options.receiptsDir, `discarded-${turns}`);
+      await mkdir(mirror); await writeFile(join(mirror, 'answer.txt'), '');
+      if (mode === 'drift') await writeFile(join(args.worktree, 'answer.txt'), 'external drift');
+      if (mode === 'cancel') stop.abort(new Error('Operator stop'));
+      return { ok: false, uncertain: true, noModelCalled: false, candidateQuiescent: false,
+        recoveryDisposition: 'discard_mirror_v1', failureCode: 'devin_native_incomplete',
+        stagedDraft: { path: mirror, adopted: false, replayAllowed: false },
+        diagnostic: { stage: 'native_turn', reason: 'tool_failed', terminalReceived: false,
+          cleanupConfirmed: mode !== 'cleanup', protocolStage: 'prompt', stopReason: null, rpcFailure: null,
+          boundaryRefusal: mode === 'boundary' ? { code: 'host_operation_refused', tool: null } : null,
+          reconciliationFailure: 'target_changed', toolFailures: [{ nativeTool: 'edit', categories: ['unclassified'] }] } };
+    }
+    if (turns > 1) {
+      assert.match(args.prompt, /checked Camus MCP read_file\/write_file/);
+      assert.equal(await readFile(join(args.worktree, 'answer.txt'), 'utf8'), 'accepted');
+    }
+    await writeFile(join(args.worktree, 'answer.txt'), turns === 1 ? 'accepted' : 'finished');
+    return { ok: true, definitiveTurnEnd: true, candidateQuiescent: true, usage: null,
+      text: JSON.stringify({ actions: [], done: turns !== 1, summary: 'progress', decision: turns === 1 ? { action: 'continue', reason: 'more work' } : null }) };
+  }, async () => { reviews++; return { ran: true, verdict: 'APPROVED', findings: [], usage: { total_tokens: 5 } }; });
+  f.options.seats.maker = { backend: 'devin', model: 'swe-2-high', codeExecutor: 'devin_native', observedBudgetConsent: 'devin-observed/v1' };
+  f.options.backendSnapshot.maker = DEVIN_CODE_BACKEND;
+  f.options.signal = stop.signal;
+  f.options.limits = { maxTokens: 1000000, maxCalls: mode === 'call_budget' ? 3 : 6,
+    maxSteps: 4, maxActions: 100, maxRecoveries: mode === 'recovery_budget' ? 1 : 3, maxRetries: 0 };
+  const verify = async ({ worktree }) => { verifies++; assert.equal(await readFile(join(worktree, 'answer.txt'), 'utf8'), 'finished'); return { ran: true, pass: true, exitCode: 0 }; };
+  verify.command = 'offline'; verify.repeatable = true; f.options.verify = verify;
+  const result = await f.run();
+  if (mode === 'complete') {
+    assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+    assert.equal(turns, 4); assert.equal(reviews, 1); assert.equal(verifies, 1);
+    assert.equal(result.usage.calls, 5); assert.equal(result.usage.recoveries, 2); assert.equal(result.usage.retries, 0);
+  } else {
+    assert.equal(reviews, 0); assert.equal(verifies, 0);
+    assert.equal(turns, ['call_budget', 'recovery_budget'].includes(mode) ? 3 : 2);
+    if (['call_budget', 'recovery_budget'].includes(mode)) {
+      assert.equal(result.question.kind, 'budget');
+      assert.equal(await readFile(join(result.candidate.worktree, 'answer.txt'), 'utf8'), 'accepted');
+    }
+  }
+  const checkpoint = await f.checkpoint();
+  if (mode === 'complete') assert.equal(checkpoint.retiredNativeCalls.length, 2);
+  assert.equal(await readFile(join(f.options.receiptsDir, 'discarded-2/answer.txt'), 'utf8'), '');
+});
+
 test('native tracked inventory is byte-bounded and reports omitted paths', () => {
   const tracked = Array.from({ length: 1000 }, (_, index) => `${String(index).padStart(4, '0')}-${'x'.repeat(500)}`);
   const inventory = nativeTrackedInventory({ tracked });
@@ -137,7 +192,7 @@ for (const mode of ['resume', 'drift', 'source_drift', 'ignored', 'authority', '
   if (mode === 'exec_resume') {
     for (const mutate of [s => { s.nativeSession.artifactDigest = 'unknown'; },
       s => { s.nativeSession.replayable = true; }, s => { s.pendingCall.response.diagnostic.rpcFailure = 'request_timeout'; },
-      s => { s.pendingCall.response.diagnostic.toolFailures.push({ nativeTool: 'write', categories: ['unclassified'] }); }]) {
+      s => { s.pendingCall.response.diagnostic.reason = 'protocol_refused'; }]) {
       const invalid = structuredClone(checkpoint); mutate(invalid); assert.equal(canResumeDevinPriorCandidate(invalid), false);
     }
   }
