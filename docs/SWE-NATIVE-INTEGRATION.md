@@ -5,6 +5,14 @@ Owner: Camus maintainer. Updated September 15, 2026.
 
 ## Current checkpoint
 
+- **0.4.33 verified partial checkpoints:** clean missing-control-text turns and
+  host-enforced time/action stops can preserve non-empty checked work only after
+  cleanup and complete contained-workspace inspection. The host normalizes the
+  result to partial `continue`; it never manufactures completion or authority.
+  Pending exec/unknown tools, unproven failures, mismatched bytes, extra files,
+  cleanup failures, and empty checkpoints remain refused. See
+  [the evidence](SWE-CONTRACT-VALIDATION.md#verified-partial-checkpoints-0433).
+
 - **0.4.32 routine-failure continuity:** versioned config prevents the observed
   session migration from invalidating exec-denial evidence. Post-session policy
   checks precede inference. Checked read failures and bounded operation settlement

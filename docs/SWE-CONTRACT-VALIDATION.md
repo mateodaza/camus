@@ -5,6 +5,44 @@ Status: **survivable-edit and bounded-formatting corrections are included in
 This is a compatibility and regression gate, not a promise of bug-free native
 execution or a successful Company Brain run.
 
+## Verified partial checkpoints (0.4.33)
+
+Company Brain revision 809 exposed a distinction the earlier recovery policy did
+not encode. One turn reached the host deadline, one accepted turn made no file
+change, and the last turn reached clean `end_turn` after two checked writes and a
+proven-no-effect write failure but returned zero final control-text bytes. The
+accepted candidate remained safe, yet the missing descriptive/control envelope
+closed the run and discarded inspectable work.
+
+The shared CLI/Studio adapter now separates contained filesystem certainty from
+maker completion authority. A clean `end_turn` with no final control text may
+adopt only a fully inspected checked mirror, and is normalized to an explicit
+`done:false` / `continue` result under the unchanged contract. A host-enforced
+deadline or action stop may do the same only when cleanup is confirmed, at least
+one candidate file changed, every failed tool has durable no-effect evidence,
+the complete mirror inventory and exact bytes validate, and any non-terminal
+native operation is a contained read/edit/write. Pending exec or unknown tools,
+RPC/boundary/reconciliation failures, extra files, mismatched writes, empty
+checkpoints, and operator cancellation remain ineligible.
+
+This is not semantic acceptance. The host does not infer `done:true`, a model or
+scope change, extra spend, verification success, reviewer approval, merge, or
+publication. Normal verification and independent review still gate closure. A
+native `continue` that changes no candidate file is recorded and the next slice
+is explicitly redirected from broad discovery to one unfinished criterion.
+
+Historical `decision_json` refusals with a cleaned-up terminal and intact prior
+candidate now share the narrow existing prior-candidate resume path. Their failed
+mirror is discarded rather than imported. Read-only inspection of Company Brain
+revision 809 confirms that it becomes resumable from accepted fingerprint
+`e7c226e2…`; the run itself was not modified or dispatched during this release.
+
+Offline regressions cover clean zero-text adoption, deadline checkpointing with
+a pending contained read, refusal beside pending exec, invalid non-empty control
+text, no-progress guidance, crash/resume progress binding, historical
+`decision_json` recovery, full verification/review, and all prior containment
+controls. No provider call or live Company Brain completion is claimed.
+
 ## Routine tool-failure continuity (0.4.32)
 
 Company Brain revision 616 recorded four refused turns out of five in the latest

@@ -50,6 +50,9 @@ const nativeMakerPrompt = (task, record) => [
   ...(record.feedback?.kind === 'prior_candidate_recovery' ? [
     'Continue from the host-verified baseline or last accepted maker-turn candidate in a fresh session. The later refused turn was NOT adopted and must not be replayed. Re-assess remaining work against the original contract; verification and independent review are still required.',
   ] : []),
+  ...(record.feedback?.kind === 'native_no_progress' ? [
+    'The prior accepted native slice made no candidate change. Do not repeat broad discovery. Choose one unfinished acceptance criterion, implement it now, and record the exact next criterion in the final continuation handoff.',
+  ] : []),
   `Bound human answer: ${JSON.stringify(record.answer ?? null)}`,
   'Return JSON {"done":true,"summary":"...","decision":null} when ready for host verification. Keep summary under 2000 bytes.',
   'This is a bounded work slice. Before exhausting the slice, if useful work remains, stop tools and return done:false, summary, and decision:{action:"continue",reason:"what remains and why continuing is best"}. Do not wait for the hard stop. The host may continue automatically only inside the signed limits.',
@@ -170,7 +173,8 @@ export async function runProductiveCodeLoop(options, h) {
     if (!ignored.ok || ignored.stdout) throw new Error('Prior candidate contains ignored output outside its recorded evidence. No model was called.');
     record.retiredNativeCalls ??= [];
     record.retiredNativeCalls.push({ ...record.pendingCall,
-      disposition: record.pendingCall.response?.diagnostic?.stage === 'decision_schema' ? 'discarded_schema_turn' : 'discarded_incomplete_turn',
+      disposition: ['decision_json', 'decision_schema'].includes(record.pendingCall.response?.diagnostic?.stage)
+        ? 'discarded_metadata_turn' : 'discarded_incomplete_turn',
       candidateFingerprint: record.candidate.fingerprint });
     record.pendingCall = null; record.nativeSession = null; record.nativeInFlight = false;
     record.phase = 'make';
@@ -227,7 +231,8 @@ export async function runProductiveCodeLoop(options, h) {
     // Keep the logical prompt hash for saved-response binding; separately seal
     // the exact dispatch including this turn's changing budget snapshot.
     record.pendingCall = { id, role, promptHash: digest(prompt), startedAt: Date.now(),
-      ...(nativeCall ? { native: true, dispatchPromptHash: digest(dispatchPrompt) } : {}) };
+      ...(nativeCall ? { native: true, dispatchPromptHash: digest(dispatchPrompt),
+        candidateFingerprintBefore: record.candidate.fingerprint } : {}) };
     if (nativeCall) { invalidateCandidateEvidence(); record.nativeInFlight = true; }
     record.usage.calls++; record.usage.accountedTokens += limits.unknownTokenReserve;
     await log('call_started', { id, role });
@@ -690,6 +695,10 @@ export async function runProductiveCodeLoop(options, h) {
           : codeMakerContext(record, h);
         record.context = context;
         emit('stage', { stage: record.feedback ? 'fix' : 'make', actor: 'maker' });
+        // A completed native response may be replayed from the durable
+        // checkpoint after a host crash. Bind progress to the fingerprint from
+        // the original dispatch, not merely the already-updated current state.
+        const candidateBeforeCall = record.pendingCall?.candidateFingerprintBefore ?? record.candidate.fingerprint;
         const response = await call('maker', prompt);
         if (native && response?.definitiveTurnEnd && response.interrupted) {
           record.pendingCall = null; await log('native_interrupted');
@@ -726,8 +735,12 @@ export async function runProductiveCodeLoop(options, h) {
           const { action, reason } = message.decision;
           if (action === 'continue') {
             if (!native) throw new Error('Only a native maker may request another bounded work slice.');
-            record.feedback = { kind: 'metacognitive_continue', candidateFingerprint: record.candidate.fingerprint,
-              evidence: cleanError(reason), originalContract: 'unchanged' };
+            const changed = record.candidate.fingerprint !== candidateBeforeCall;
+            record.nativeNoProgressTurns = changed ? 0 : (record.nativeNoProgressTurns ?? 0) + 1;
+            record.feedback = { kind: changed ? 'metacognitive_continue' : 'native_no_progress',
+              candidateFingerprint: record.candidate.fingerprint, evidence: cleanError(reason), originalContract: 'unchanged',
+              ...(changed ? {} : { consecutiveNoProgressTurns: record.nativeNoProgressTurns,
+                instruction: 'Implement one remaining criterion now; do not repeat repository-wide discovery.' }) };
             record.nativeDecisions ??= [];
             record.nativeDecisions.push({ step: record.usage.steps, action, reason: cleanError(reason),
               candidateFingerprint: record.candidate.fingerprint });

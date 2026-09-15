@@ -59,6 +59,9 @@ export async function runNativeDevin(options, dependencies = {}) {
   };
   const diagnostic = () => publicDevinDiagnostic({ ...outcome, stage: refusalStage, lastHostTool, boundaryRefusal, reconciliationFailure,
     reason: outcome?.reason === 'cancelled' && localStopReason ? localStopReason : outcome?.reason });
+  const partialDecision = reason => ({ done: false,
+    summary: 'Camus preserved a host-verified partial native checkpoint; task completion is not claimed.',
+    decision: { action: 'continue', reason } });
   const reportActions = () => {
     // Deliberately conservative: ACP tool events and host executions both
     // consume allowance, even when they describe the same underlying action.
@@ -346,6 +349,49 @@ export async function runNativeDevin(options, dependencies = {}) {
     if (outcome.execution !== 'completed') {
       refusalStage = 'native_turn';
       const detail = diagnostic();
+      const callsEffectBound = [...calls.values()].every(call => ['completed', 'failed'].includes(call.status)
+        || ['read', 'edit', 'write'].includes(call?._meta?.['cognition.ai/inferenceToolName']));
+      const failedCalls = [...calls.values()].filter(call => call.status === 'failed').length;
+      const failuresProvenNoEffect = (outcome.toolFailures ?? []).length === failedCalls
+        && outcome.toolFailures.every(item => item.recovery === 'verified_no_effect');
+      const writesEffectBound = workspace.nativeWriteEvidence().writes.every(item => {
+        const call = calls.get(item.toolCallId);
+        return item.noEffectVerified || call?.status === 'completed'
+          || ['pending', 'in_progress'].includes(call?.status)
+            && ['edit', 'write'].includes(call?._meta?.['cognition.ai/inferenceToolName']);
+      });
+      // A host-enforced time/action stop is not task completion. Once the
+      // process and tools are closed, every failed operation is proven
+      // no-effect, and every staged byte still matches a checked write, Camus
+      // can safely retain those bytes as a partial checkpoint. The only
+      // synthesized authority is `continue` under the unchanged signed run;
+      // verification/review remain mandatory and no budget is extended.
+      const hostCheckpoint = outcome.promptsSent === 1 && detail.cleanupConfirmed
+        && ['deadline', 'observed_tool_limit'].includes(detail.reason)
+        && detail.protocolStage === 'prompt' && detail.terminalReceived === false
+        && detail.rpcFailure === null && detail.boundaryRefusal === null
+        && !detail.reconciliationFailure && callsEffectBound && failuresProvenNoEffect && writesEffectBound;
+      let checkpointHasChanges = false;
+      if (hostCheckpoint) {
+        try { checkpointHasChanges = (await workspace.inspect({ writersStopped: true })).changes.length > 0; }
+        catch { checkpointHasChanges = false; }
+      }
+      if (hostCheckpoint && checkpointHasChanges) {
+        refusalStage = 'staged_adoption';
+        mutated = true;
+        const adoption = await workspace.adopt({ writersStopped: true }); adopted = true;
+        const decision = partialDecision(`The prior native slice reached its host-enforced ${detail.reason === 'deadline' ? 'time' : 'action'} boundary after checked work was preserved. Continue the original contract from this checkpoint.`);
+        const decisionNormalizations = [`host_partial_checkpoint_${detail.reason}`];
+        refusalStage = 'result_receipt';
+        await writeFile(join(receiptsDir, `devin-result-${hash(sessionId)}.json`), JSON.stringify({ ...outcome, text: undefined,
+          adoption, decisionNormalizations, hostPartialCheckpoint: true,
+          writeEvidence: { ...workspace.nativeWriteEvidence(), verifiedAfterCleanup: true },
+          artifactDigest: context.digest, modelSelected: model }), { flag: 'wx', mode: 0o600 });
+        return { ok: true, definitiveTurnEnd: true, candidateQuiescent: true,
+          text: JSON.stringify({ actions: [], ...decision }), usage: null, usageIncomplete: true,
+          modelActual: null, modelReported: model, modelActualEvidence: 'selection_only',
+          observedBudget: contract, durationMs: outcome.durationMs, hostPartialCheckpoint: true };
+      }
       return { ok: false, uncertain: outcome.promptsSent > 0,
         noModelCalled: outcome.promptsSent === 0, usage: null, usageIncomplete: true,
         stagedDraft: outcome.promptsSent > 0 && closed ? { path: mirror, adopted: false, replayAllowed: false } : null,
@@ -357,7 +403,10 @@ export async function runNativeDevin(options, dependencies = {}) {
     }
     refusalStage = 'decision_json';
     let decision, decisionNormalizations;
-    try { ({ value: decision, normalizations: decisionNormalizations } = parseDevinDecisionText(outcome.text)); }
+    if (!outcome.text.trim()) {
+      decision = partialDecision('The native slice ended cleanly after checked work, but supplied no final control metadata. Continue the original contract from this checkpoint.');
+      decisionNormalizations = ['missing_decision_defaulted_partial_continue'];
+    } else try { ({ value: decision, normalizations: decisionNormalizations } = parseDevinDecisionText(outcome.text)); }
     catch { throw new Error('Devin completion was not the required JSON decision.'); }
     refusalStage = 'decision_schema';
     // Summary is descriptive metadata, never execution/acceptance authority.

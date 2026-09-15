@@ -8,8 +8,8 @@ import { DEVIN_NATIVE_DIGEST, devinDiscardableStop } from './devin-native-protoc
 
 export function canResumeDevinPriorCandidate(state) {
   const call = state?.pendingCall, response = call?.response, diagnostic = response?.diagnostic;
-  const schemaRefusal = response?.failureCode === 'devin_native_refused'
-    && diagnostic?.stage === 'decision_schema' && diagnostic.terminalReceived === true
+  const metadataRefusal = response?.failureCode === 'devin_native_refused'
+    && ['decision_json', 'decision_schema'].includes(diagnostic?.stage) && diagnostic.terminalReceived === true
     && diagnostic.protocolStage === 'completion' && diagnostic.stopReason === 'end_turn' && diagnostic.reason === null;
   // Tool labels are diagnostic, not custody evidence. A stopped isolated edit
   // may have partial effects in its mirror; that mirror is discarded wholesale.
@@ -37,7 +37,7 @@ export function canResumeDevinPriorCandidate(state) {
     && response?.ok === false && response.uncertain === true && response.noModelCalled === false
     && response.stagedDraft?.adopted === false && response.stagedDraft.replayAllowed === false
     && typeof response.stagedDraft.path === 'string' && response.stagedDraft.path !== state.candidate.worktree
-    && (schemaRefusal || isolatedToolRefusal)
+    && (metadataRefusal || isolatedToolRefusal)
     && diagnostic.cleanupConfirmed === true
     && diagnostic.rpcFailure === null && diagnostic.boundaryRefusal === null;
 }

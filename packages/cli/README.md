@@ -28,15 +28,17 @@ for the first real candidate, model setup, and honest terminal states.
 > it; configured API credentials remain local and go only to that endpoint.
 
 <details>
-<summary><strong>Current release: 0.4.32</strong></summary>
+<summary><strong>Current release: 0.4.33</strong></summary>
 
-**New in 0.4.32:** the pinned Devin config is versioned before session creation,
-and exact exec-denial evidence is checked before inference. Checked harmless read
-failures can continue; overlapping work gets a bounded settlement window before
-later host operations execute. Uncertain writes still stop. CLI and Studio share
-the correction. Real no-prompt setup and offline multi-turn regressions support
-it; no new live SWE completion is claimed.
-[Maintenance notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.32.md).
+**New in 0.4.33:** fully checked native edits can become an explicit partial
+checkpoint when SWE ends cleanly without final control text, or when a host
+time/action boundary closes the harness after all effects are inspectable. Camus
+synthesizes only `done:false` / `continue` under the unchanged contract. It does
+not infer completion or extend authority. No-change slices receive targeted
+progress guidance; uncertain effects remain refused. CLI and Studio share the
+correction. Offline containment and multi-turn regressions support it; no new
+live SWE completion is claimed.
+[Maintenance notes](https://github.com/mateodaza/camus/blob/main/docs/RELEASE-0.4.33.md).
 
 **Added in 0.4.22:** optional **SWE-2 High through native Devin**, with independent
 reviewer selection in CLI and Studio. Use `--maker devin:swe-2-high
@@ -569,7 +571,7 @@ camus/
 ## Install
 
 ```bash
-npm i -g camus-cli@0.4.32
+npm i -g camus-cli@0.4.33
 camus install        # copy skill + workflows into ~/.claude (a frozen copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 camus env-check .    # will this repo's toolchain actually run? (node version, deps)

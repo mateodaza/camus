@@ -55,17 +55,18 @@ the release history.
 > repositories you trust; Camus is not an OS sandbox and should never run as root.
 
 <details>
-<summary><strong>What ships in 0.4.32 and how current evidence is bounded</strong></summary>
+<summary><strong>What ships in 0.4.33 and how current evidence is bounded</strong></summary>
 
 **Makes it work. Knows when to stop.**
 
-0.4.32 fixes a pinned Devin config-migration mismatch that broke denied-exec
-reconciliation. Checked, harmless read failures can continue; overlapping work
-gets a bounded settlement window before later host operations may execute.
-Uncertain writes still stop. CLI and Studio share the fix. A real no-prompt
-session check and offline multi-turn verification/repair/review regressions
-support this correction; no new live SWE completion is claimed.
-[Maintenance release notes](docs/RELEASE-0.4.32.md).
+0.4.33 preserves checked SWE progress when a clean turn omits final control text,
+or a host time/action boundary stops a turn after contained effects are fully
+inspectable. Camus records only `done:false` and continues the unchanged contract;
+it cannot infer completion, authority, or extra budget. No-change turns receive
+focused next-slice guidance, while uncertain effects still stop. CLI and Studio
+share the fix. Offline containment and multi-turn regressions support this
+correction; no new live SWE completion is claimed.
+[Maintenance release notes](docs/RELEASE-0.4.33.md).
 
 Added in 0.4.22: select **SWE-2 High through native Devin** as an optional coding
 maker in both CLI and Studio, with a separately selected reviewer. The saved
@@ -186,7 +187,7 @@ The native proof gate needs [Claude Code](https://code.claude.com) and the
 `camus build` needs only the backends you choose, Node 18.17+, and Git.
 
 ```bash
-npm i -g camus-cli@0.4.32
+npm i -g camus-cli@0.4.33
 camus install        # frozen copy of the gate into ~/.claude — what you ran is what runs
 camus check          # exit 0 = installed matches the package
 ```
@@ -210,7 +211,7 @@ own tests; anything less arrives as a named halt with the remedy in the note
 (`camus status` shows the board). Budget guidance, postures, and every env lever:
 [`packages/cli/README.md`](packages/cli/README.md).
 
-### Public alpha: 0.4.32
+### Public alpha: 0.4.33
 
 `camus build --inspect RUN_ID [--json]` authenticates and projects a bounded
 checkpoint without contacting a provider or mutating the run. File-action builds
@@ -389,7 +390,7 @@ CAMUS-SPEC.md             # the full design
 ## Start here
 
 ```bash
-npm i -g camus-cli@0.4.32
+npm i -g camus-cli@0.4.33
 camus install        # freeze the gate into ~/.claude (a copy, not a symlink)
 camus check          # exit 0 = installed matches package. Run before every auto run.
 ```

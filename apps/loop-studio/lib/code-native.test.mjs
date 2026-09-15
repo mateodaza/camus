@@ -208,7 +208,7 @@ test('SWE refuses missing consent before any maker and preserves uncertainty wit
   assert.equal(result.review, null);
 });
 
-for (const mode of ['resume', 'drift', 'source_drift', 'ignored', 'authority', 'recovery_budget', 'call_budget', 'exec_resume', 'exec_cleanup', 'tight_call_cap', 'below_spent_cap']) test(`SWE refusal retains the accepted candidate: ${mode}`, async t => {
+for (const mode of ['resume', 'json_resume', 'drift', 'source_drift', 'ignored', 'authority', 'recovery_budget', 'call_budget', 'exec_resume', 'exec_cleanup', 'tight_call_cap', 'below_spent_cap']) test(`SWE refusal retains the accepted candidate: ${mode}`, async t => {
   let turns = 0, reviews = 0, verifies = 0;
   const f = await fixture(t, async args => {
     turns++;
@@ -220,7 +220,7 @@ for (const mode of ['resume', 'drift', 'source_drift', 'ignored', 'authority', '
       diagnostic: mode.startsWith('exec') ? { stage: 'native_turn', reason: 'tool_failed', terminalReceived: false,
         cleanupConfirmed: mode !== 'exec_cleanup', protocolStage: 'prompt', stopReason: null, rpcFailure: null, boundaryRefusal: null,
         toolFailures: [{ nativeTool: 'exec', categories: ['permission_denied'] }] }
-        : { stage: 'decision_schema', terminalReceived: true, cleanupConfirmed: true,
+        : { stage: mode === 'json_resume' ? 'decision_json' : 'decision_schema', terminalReceived: true, cleanupConfirmed: true,
         protocolStage: 'completion', stopReason: 'end_turn', reason: null, rpcFailure: null, boundaryRefusal: null } };
     if (turns === 3) {
       assert.equal(await readFile(join(args.worktree, 'answer.txt'), 'utf8'), 'accepted turn 1');
@@ -330,7 +330,7 @@ for (const mode of ['resume', 'drift', 'source_drift', 'ignored', 'authority', '
     assert.equal(reviews, 1); assert.equal(verifies, 1);
     const final = await f.checkpoint();
     assert.equal(final.retiredNativeCalls[0].response.uncertain, true);
-    assert.equal(final.retiredNativeCalls[0].disposition, mode === 'exec_resume' ? 'discarded_incomplete_turn' : 'discarded_schema_turn');
+    assert.equal(final.retiredNativeCalls[0].disposition, mode === 'exec_resume' ? 'discarded_incomplete_turn' : 'discarded_metadata_turn');
   }
   assert.equal(await readFile(join(f.options.receiptsDir, 'refused-mirror'), 'utf8'), 'NEVER ADOPT THIS');
   assert.equal(git(f.options.repoPath, 'status', '--porcelain'), '');
@@ -373,6 +373,27 @@ test('completed native response survives stop/resume without replaying tools', a
   assert.equal(first.status, 'stopped');
   const resumed = await f.run({ resume: true });
   assert.equal(resumed.completion, 'candidate_ready_for_acceptance', resumed.error); assert.equal(calls, 1);
+});
+
+test('completed partial response keeps its original progress binding across stop and resume', async t => {
+  const control = new AbortController(); let calls = 0;
+  const f = await fixture(t, async args => {
+    calls++;
+    if (calls === 1) {
+      await writeFile(join(args.worktree, 'answer.txt'), 'partial');
+      control.abort();
+      return { ...done(), text: JSON.stringify({ actions: [], done: false, summary: 'Partial implementation.',
+        decision: { action: 'continue', reason: 'Finish the remaining criterion.' } }) };
+    }
+    assert.doesNotMatch(args.prompt, /prior accepted native slice made no candidate change/i);
+    await writeFile(join(args.worktree, 'answer.txt'), 'correct');
+    return done();
+  });
+  const first = await f.run({ signal: control.signal });
+  assert.equal(first.status, 'stopped'); assert.equal(calls, 1);
+  const resumed = await f.run({ resume: true });
+  assert.equal(resumed.completion, 'candidate_ready_for_acceptance', resumed.error);
+  assert.equal(calls, 2);
 });
 
 test('definitive budget interruption preserves the same session and candidate for explicit continuation', async t => {
@@ -455,6 +476,25 @@ test('native metacognitive continue reuses a trusted session while model-change 
     text: 'Continue with the existing model; visual inspection is not required.' } });
   assert.equal(resumed.completion, 'candidate_ready_for_acceptance', resumed.error);
   assert.equal(calls, 3);
+});
+
+test('native no-progress continuation redirects the next slice to an unfinished criterion', async t => {
+  let calls = 0;
+  const f = await fixture(t, async args => {
+    calls++;
+    if (calls === 1) return { ...done(), text: JSON.stringify({ actions: [], done: false,
+      summary: 'Inspected only.', decision: { action: 'continue', reason: 'Implementation remains.' } }) };
+    assert.match(args.prompt, /prior accepted native slice made no candidate change/i);
+    assert.match(args.prompt, /Do not repeat broad discovery/i);
+    await writeFile(join(args.worktree, 'answer.txt'), 'correct');
+    return done();
+  });
+  const result = await f.run();
+  assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+  assert.equal(calls, 2);
+  const checkpoint = await f.checkpoint();
+  assert.equal(checkpoint.nativeNoProgressTurns, 1);
+  assert.equal(checkpoint.feedback.kind, 'native_no_progress');
 });
 
 test('a human-authorized model amendment rebinds the preserved native candidate and starts a fresh session', async t => {

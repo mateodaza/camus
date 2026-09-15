@@ -15,6 +15,15 @@ include these corrections. The contained native-write policy introduced in
 
 ## Before you start
 
+**0.4.33 verified partial checkpoints:** a clean native turn with checked work
+no longer loses that work merely because SWE omitted final control JSON. A host
+time/action stop may also preserve a non-empty partial checkpoint after process
+cleanup, full mirror inspection, exact-byte/write verification, and exclusion of
+pending exec or unknown operations. Camus supplies only `done:false` / `continue`
+under the original contract. No completion, budget, model, scope, verification,
+review, or acceptance authority is inferred. See
+[the evidence](SWE-CONTRACT-VALIDATION.md#verified-partial-checkpoints-0433).
+
 **0.4.32 routine-failure correction:** the pinned CLI's config schema is supplied
 upfront, and exact deny-policy evidence is checked after session creation but
 before a model prompt. Harmless native read failures can reconcile against
@@ -77,7 +86,7 @@ to guarantee zero charges; check the terms and usage in your Devin account.
 ## CLI
 
 ```sh
-npm install -g camus-cli@0.4.32
+npm install -g camus-cli@0.4.33
 camus models
 camus build --repo /path/to/clean-repository \
   --task-file /path/to/task.txt --contract-file /path/to/acceptance.txt \

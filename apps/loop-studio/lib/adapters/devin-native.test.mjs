@@ -787,6 +787,70 @@ test('composed adapter checks MCP writes, completes, adopts into isolated candid
     assert((await readdir(ctx.receipts)).some(name => name.startsWith('devin-result-')));
   }));
 
+test('clean native turn with no final control text preserves checked work only as a partial continuation',
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    const result = await runNativeDevin(ctx.defaults, ctx.dependencies(async ({ mcp }) => {
+      const read = await mcp('tools/call', { name: 'read_file', arguments: { path: 'calc.mjs' } });
+      const file = JSON.parse(read.result.content[0].text);
+      const written = await mcp('tools/call', { name: 'write_file', arguments: { path: 'calc.mjs',
+        content: 'export const add=(a,b)=>a+b;', expectedSha256: file.sha256 } });
+      assert.equal(written.result.isError, false);
+      return { stopReason: 'end_turn' };
+    }));
+    assert.equal(result.ok, true, result.error);
+    const decision = JSON.parse(result.text);
+    assert.equal(decision.done, false); assert.equal(decision.decision.action, 'continue');
+    assert.match(decision.summary, /partial native checkpoint/);
+    assert.equal(await readFile(join(ctx.candidate, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>a+b;');
+    const receipt = (await readdir(ctx.receipts)).find(name => name.startsWith('devin-result-'));
+    assert.deepEqual(JSON.parse(await readFile(join(ctx.receipts, receipt), 'utf8')).decisionNormalizations,
+      ['missing_decision_defaulted_partial_continue']);
+  }));
+
+test('host deadline preserves fully checked settled writes as a partial continuation without claiming completion',
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    ctx.defaults.observedBudget.maxWallMs = 100;
+    const result = await runNativeDevin(ctx.defaults, ctx.dependencies(async ({ mcp, update, sourceMirror }) => {
+      const read = await mcp('tools/call', { name: 'read_file', arguments: { path: 'calc.mjs' } });
+      const file = JSON.parse(read.result.content[0].text);
+      const written = await mcp('tools/call', { name: 'write_file', arguments: { path: 'calc.mjs',
+        content: 'export const add=(a,b)=>a+b;', expectedSha256: file.sha256 } });
+      assert.equal(written.result.isError, false);
+      update({ sessionUpdate: 'tool_call', toolCallId: 'pending-read-at-deadline', status: 'in_progress',
+        kind: 'read', rawInput: { file_path: join(sourceMirror, 'calc.mjs') },
+        _meta: { 'cognition.ai/inferenceToolName': 'read' } });
+      await new Promise(resolve => setTimeout(resolve, 150));
+      return { stopReason: 'end_turn' };
+    }));
+    assert.equal(result.ok, true, result.error); assert.equal(result.hostPartialCheckpoint, true);
+    const decision = JSON.parse(result.text);
+    assert.equal(decision.done, false); assert.equal(decision.decision.action, 'continue');
+    assert.match(decision.decision.reason, /time boundary/);
+    assert.equal(await readFile(join(ctx.candidate, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>a+b;');
+    const receipt = (await readdir(ctx.receipts)).find(name => name.startsWith('devin-result-'));
+    const evidence = JSON.parse(await readFile(join(ctx.receipts, receipt), 'utf8'));
+    assert.equal(evidence.hostPartialCheckpoint, true);
+    assert.deepEqual(evidence.decisionNormalizations, ['host_partial_checkpoint_deadline']);
+  }));
+
+test('host deadline never checkpoints checked writes beside a pending native exec',
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    ctx.defaults.observedBudget.maxWallMs = 100;
+    const result = await runNativeDevin(ctx.defaults, ctx.dependencies(async ({ mcp, update }) => {
+      const read = await mcp('tools/call', { name: 'read_file', arguments: { path: 'calc.mjs' } });
+      const file = JSON.parse(read.result.content[0].text);
+      await mcp('tools/call', { name: 'write_file', arguments: { path: 'calc.mjs',
+        content: 'export const add=(a,b)=>a+b;', expectedSha256: file.sha256 } });
+      update({ sessionUpdate: 'tool_call', toolCallId: 'pending-exec-at-deadline', status: 'in_progress',
+        kind: 'execute', _meta: { 'cognition.ai/inferenceToolName': 'exec' } });
+      await new Promise(resolve => setTimeout(resolve, 150));
+      return { stopReason: 'end_turn' };
+    }));
+    assert.equal(result.ok, false); assert.equal(result.diagnostic.reason, 'deadline');
+    assert.equal(await readFile(join(ctx.candidate, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>a-b;');
+    assert.equal((await readdir(ctx.receipts)).filter(name => name.startsWith('devin-result-')).length, 0);
+  }));
+
 for (const value of [
   { done: false, summary: null, decision: { action: 'continue', reason: 'More work' } },
   { done: false, summary: 1, decision: { action: 'continue', reason: 'More work' } },
