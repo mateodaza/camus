@@ -1,7 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyCanaryPath, createCanaryRequestDiagnostics } from './devin-canary-diagnostics.mjs';
+import { classifyCanaryPath, createCanaryRequestDiagnostics, canaryEditRecoveryPassed } from './devin-canary-diagnostics.mjs';
 const roots = { mirror: '/fixture/mirror', candidate: '/fixture/candidate' };
+
+test('recovery canary requires no-effect proof and a subsequent applied correction, not a happy path', () => {
+  const hash = 'a'.repeat(64);
+  const fixture = () => ({ expectedBaseHash: hash, sessionId: 's1', nativeResult: {
+    execution: 'completed', cleanupConfirmed: true, artifactDigest: 'artifact',
+    toolFailures: [{ nativeTool: 'edit', recovery: 'verified_no_effect' }],
+    writeEvidence: { verifiedAfterCleanup: true, writes: [{ path: 'calc.mjs', beforeHash: hash, afterHash: 'b'.repeat(64) }] },
+  }, receipts: [{ recovery: 'verified_no_effect', operationCompleted: false, path: 'calc.mjs', unchangedHash: hash,
+    checkedStateHash: hash, sessionId: 's1', artifactDigest: 'artifact', policy: 'contained-native/v1' }] });
+  assert.equal(canaryEditRecoveryPassed(fixture()), true);
+  for (const mutate of [value => { value.nativeResult.toolFailures = []; }, value => { value.receipts = []; },
+    value => { value.receipts[0].sessionId = 'other'; }, value => { value.receipts[0].unchangedHash = 'c'.repeat(64); },
+    value => { value.nativeResult.writeEvidence.writes[0].noEffectVerified = true; },
+    value => { value.nativeResult.cleanupConfirmed = false; }]) {
+    const value = fixture(); mutate(value); assert.equal(canaryEditRecoveryPassed(value), false);
+  }
+});
 
 test('diagnostics distinguish completed host reads from native tool failure', async () => {
   const log = createCanaryRequestDiagnostics(roots);

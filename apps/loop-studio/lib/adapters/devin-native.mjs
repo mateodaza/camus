@@ -9,7 +9,7 @@ import { createDevinWorkspace, isDevinVisiblePath, DevinToolFeedback } from '../
 import { runDevinProtocolTurn, devinObservedContract } from '../devin-native-turn.mjs';
 import { startDevinMcp } from '../devin-native-mcp.mjs';
 import { createDevinFileHandlers } from '../devin-native-files.mjs';
-import { DEVIN_NATIVE_MODEL, DEVIN_NATIVE_DIGEST, publicDevinDiagnostic } from '../devin-native-protocol.mjs';
+import { DEVIN_NATIVE_MODEL, DEVIN_NATIVE_DIGEST, publicDevinDiagnostic, parseDevinDecisionText } from '../devin-native-protocol.mjs';
 import { CodexRpc } from '../codex-rpc.mjs';
 import { runNativeProcess } from '../native-process.mjs';
 import { grokSubscriptionPolicy } from './grok-subscription.mjs';
@@ -149,7 +149,7 @@ export async function runNativeDevin(options, dependencies = {}) {
               || args.args.some(arg => typeof arg !== 'string' || arg.includes('\0'))
               || Buffer.byteLength(JSON.stringify(args)) > 16384) throw new DevinToolFeedback('invalid_command');
           await workspace.verifyNativeWrites();
-          if (workspace.nativeWriteEvidence().writes.some(item => calls.get(item.toolCallId)?.status !== 'completed'))
+          if (workspace.nativeWriteEvidence().writes.some(item => !item.noEffectVerified && calls.get(item.toolCallId)?.status !== 'completed'))
             throw new DevinToolFeedback('native_write_pending');
           const result = await (dependencies.runProcess ?? runNativeProcess)({ command: '/usr/bin/sandbox-exec',
               args: ['-p', commandProfile, args.command, ...args.args], cwd: mirror,
@@ -164,7 +164,8 @@ export async function runNativeDevin(options, dependencies = {}) {
     closed = false;
     refusalStage = 'native_turn';
     const toolPolicy = 'Camus native tool policy: native edit/write tools may write only the isolated staging workspace after a checked one-time permission. Each permission binds the exact expected file content; Camus checks the result before adoption. ACP file delegation and checked Camus MCP tools are also supported. Complete each approved native write before another write or command. Direct native exec is blocked. Use camus MCP list_files (offset 0, then nextOffset), search/read_file/write_file/run_command for discovery and tests. Host-proven no-effect conflicts provide correction guidance, never successful-write claims. Commands see read-only staging, no credentials or network. Use TMPDIR for temporary outputs. Request new authority rather than bypassing unavailable operations. Return the requested JSON decision without Markdown.';
-    const dispatchPrompt = `${prompt}\n\nHost-observed SWE budget snapshot before protocol setup: ${JSON.stringify(budgetSnapshot())}\nHost MCP responses include a separate camus_native_budget block. Follow wrapUp guidance before exhaustion; stop tool use and return the requested final JSON. Native events plus host operations share the allowance; internal inference spend remains unknown.\n\n${toolPolicy}`;
+    const recoveryPolicy = 'A failed native edit/write is not a successful edit. Camus may let you continue only after checking that it left no changes. If the turn remains active, read the target again and make a corrected tool call with a new ID, within the remaining budget. Never assume a failed edit applied, bypass permission checks, or replay an uncertain operation.';
+    const dispatchPrompt = `${prompt}\n\nHost-observed SWE budget snapshot before protocol setup: ${JSON.stringify(budgetSnapshot())}\nHost MCP responses include a separate camus_native_budget block. Follow wrapUp guidance before exhaustion; stop tool use and return the requested final JSON. Native events plus host operations share the allowance; internal inference spend remains unknown.\n\n${toolPolicy}\n${recoveryPolicy}`;
     outcome = await runDevinProtocolTurn({ model, cwd: mirror, contract, signal: control.signal,
       prompt: dispatchPrompt,
       rpcFactory: callbacks => {
@@ -191,6 +192,29 @@ export async function runNativeDevin(options, dependencies = {}) {
         const prior = calls.get(update.toolCallId);
         calls.set(update.toolCallId, { ...prior, ...Object.fromEntries(Object.entries(update).filter(([, value]) => value != null)),
           status: update.status ?? prior?.status ?? 'pending' });
+      },
+      onToolFailure(update) {
+        const tool = calls.get(update.toolCallId);
+        if (!['edit', 'write'].includes(tool?._meta?.['cognition.ai/inferenceToolName'])
+            || typeof tool.rawInput?.file_path !== 'string' || tasks.size || broker.stats().active
+            || [...calls.values()].some(call => !['completed', 'failed'].includes(call.status)))
+          return null;
+        return serializeHost(async () => {
+          let receipt;
+          try { receipt = await workspace.reconcileFailedNativeWrite(tool); }
+          catch {
+            // Cancel synchronously inside the queue, before it can dispatch a
+            // subsequent host operation. Preserve the original failure label.
+            localStopReason ??= 'tool_failed'; abort(); return null;
+          }
+          const file = await open(join(receiptsDir, `devin-no-effect-${hash(sessionId)}-${hash(update.toolCallId)}.json`), 'wx', 0o600);
+          try {
+            await file.writeFile(JSON.stringify({ ...receipt, sessionId, artifactDigest: context.digest,
+              policy: 'contained-native/v1', operationCompleted: false }));
+            await file.sync();
+          } finally { await file.close(); }
+          return receipt;
+        });
       },
       onProgress({ observedTools }) {
         nativeTools = observedTools; reportActions();
@@ -232,8 +256,9 @@ export async function runNativeDevin(options, dependencies = {}) {
         error: 'Devin native turn did not supply a complete contained result.' };
     }
     refusalStage = 'decision_json';
-    let decision;
-    try { decision = JSON.parse(outcome.text); } catch { throw new Error('Devin completion was not the required JSON decision.'); }
+    let decision, decisionNormalizations;
+    try { ({ value: decision, normalizations: decisionNormalizations } = parseDevinDecisionText(outcome.text)); }
+    catch { throw new Error('Devin completion was not the required JSON decision.'); }
     refusalStage = 'decision_schema';
     if (typeof decision?.done !== 'boolean' || typeof decision.summary !== 'string' || Buffer.byteLength(decision.summary) > 2000
         || !Object.hasOwn(decision, 'decision') || Object.keys(decision).some(key => !['done', 'summary', 'decision'].includes(key)))
@@ -250,7 +275,7 @@ export async function runNativeDevin(options, dependencies = {}) {
     const adoption = await workspace.adopt({ writersStopped: true }); adopted = true;
     refusalStage = 'result_receipt';
     await writeFile(join(receiptsDir, `devin-result-${hash(sessionId)}.json`), JSON.stringify({ ...outcome, text: undefined,
-      adoption, writeEvidence: { ...workspace.nativeWriteEvidence(), verifiedAfterCleanup: true },
+      adoption, decisionNormalizations, writeEvidence: { ...workspace.nativeWriteEvidence(), verifiedAfterCleanup: true },
       artifactDigest: context.digest, modelSelected: model }), { flag: 'wx', mode: 0o600 });
     return { ok: true, definitiveTurnEnd: true, candidateQuiescent: true, text: JSON.stringify({ actions: [], ...decision }),
       usage: null, usageIncomplete: true, modelActual: null, modelReported: model, modelActualEvidence: 'selection_only',

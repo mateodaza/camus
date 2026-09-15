@@ -6,6 +6,38 @@ export const DEVIN_NATIVE_VERSION = '3000.10.21';
 export const DEVIN_NATIVE_DIGEST = 'e7a86b3d4c8b198e1cbf0cab974b80d1a811f38251ceed28e28c5507ba3949b2';
 export const DEVIN_NATIVE_PROTOCOL_VERSION = 'devin-acp-preflight/v1';
 
+// Match the existing file-actions formatting tolerance, without importing that
+// engine or inferring any missing decision field. Call only on the completed
+// native turn's uninterrupted post-tool text, never a tool output/transcript.
+export function parseDevinDecisionText(text) {
+  if (typeof text !== 'string' || !text.trim() || Buffer.byteLength(text) > 65536)
+    throw new Error('Invalid bounded Devin decision text.');
+  const trimmed = text.trim(), normalizations = [];
+  let json = trimmed;
+  const fenced = trimmed.match(/^```json\r?\n([\s\S]+)\r?\n```$/);
+  if (fenced) {
+    json = fenced[1]; normalizations.push('single_json_fence_removed');
+  } else {
+    const candidates = [], separator = /\r?\n\r?\n(?=\{)/g;
+    let match, count = 0;
+    while ((match = separator.exec(trimmed)) && ++count <= 16) {
+      const prefix = trimmed.slice(0, match.index).trim();
+      if (!prefix || Buffer.byteLength(prefix) > 2000 || /[{}]/.test(prefix) || prefix.includes('```')) continue;
+      const candidate = trimmed.slice(match.index + match[0].length);
+      try {
+        const value = JSON.parse(candidate);
+        if (value && typeof value === 'object' && !Array.isArray(value)) candidates.push(candidate);
+      } catch {}
+    }
+    if (count <= 16 && candidates.length === 1) {
+      json = candidates[0]; normalizations.push('leading_plaintext_removed');
+    }
+  }
+  const value = JSON.parse(json);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Devin decision must be one object.');
+  return { value, normalizations: Object.freeze(normalizations) };
+}
+
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const id = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
 const integer = value => Number.isSafeInteger(value) && value >= 0;
@@ -49,6 +81,7 @@ export function publicDevinDiagnostic(value) {
     toolFailures: (Array.isArray(value.toolFailures) ? value.toolFailures : []).slice(0, 16).map(item => ({
       nativeTool: ['read', 'edit', 'write', 'exec'].includes(item?.nativeTool) ? item.nativeTool : 'unreported',
       categories: [...new Set((Array.isArray(item?.categories) ? item.categories : []).filter(c => CATEGORIES.has(c)))],
+      ...(item?.recovery === 'verified_no_effect' ? { recovery: 'verified_no_effect' } : {}),
     })) };
 }
 
@@ -146,11 +179,12 @@ export function createDevinProtocolObserver({ sessionId, model = DEVIN_NATIVE_MO
         const base = { ...previous, status, kind: update.kind ?? previous?.kind,
           _meta: update._meta ?? previous?._meta };
         calls.set(update.toolCallId, { ...base, ...(status === 'failed'
-          ? { failure: classifyDevinToolFailure({ ...base, ...update }) } : {}) });
+          ? { failure: Object.freeze({ ...classifyDevinToolFailure({ ...base, ...update }),
+            ...(previous?.noEffectVerified ? { recovery: 'verified_no_effect' } : {}) }) } : {}) });
         // ACP uses agent_message_chunk for progress as well as completion.
         // Only the uninterrupted text AFTER the last tool event can be a final
-        // decision about that work. Never extract JSON from arbitrary prose or
-        // reuse a decision emitted before a later tool action. The total byte
+        // decision about that work. Formatting normalization is limited to this
+        // suffix; never reuse a decision emitted before a later tool action. The total byte
         // allowance above remains cumulative across all discarded progress.
         progressTextBytes += Buffer.byteLength(text);
         text = '';
@@ -163,6 +197,13 @@ export function createDevinProtocolObserver({ sessionId, model = DEVIN_NATIVE_MO
     diagnostics() {
       return Object.freeze([...calls.values()].filter(call => call.failure).map(call => call.failure));
     },
+    acknowledgeNoEffect(toolCallId) {
+      const call = calls.get(toolCallId);
+      if (failed || consumed || call?.status !== 'failed' || call.noEffectVerified)
+        return reject('Invalid host failure reconciliation.');
+      call.noEffectVerified = true;
+      call.failure = Object.freeze({ ...call.failure, recovery: 'verified_no_effect' });
+    },
     finish(response) {
       if (failed || consumed) return reject('Devin terminal observation is invalid or already consumed.');
       consumed = true;
@@ -170,7 +211,7 @@ export function createDevinProtocolObserver({ sessionId, model = DEVIN_NATIVE_MO
       return Object.freeze({ terminalReceived, stopReason: terminalReceived ? response.stopReason : null,
         endTurn: terminalReceived && response.stopReason === 'end_turn',
         completedTools: [...calls.values()].filter(call => call.status === 'completed').length,
-        toolsComplete: [...calls.values()].every(call => call.status === 'completed'),
+        toolsComplete: [...calls.values()].every(call => call.status === 'completed' || call.status === 'failed' && call.noEffectVerified),
         observedTools: calls.size, text: text.trim(), progressTextBytes,
         completionTextPolicy: 'after-last-tool/v1', usageNotifications, decoratedUsageNotifications,
         usage: null, usageIncomplete: true, providerCalls: null, modelSelected: model, modelActual: null,

@@ -163,9 +163,55 @@ export async function createDevinWorkspace({ candidate, mirror, root, harness, f
     }
     return item;
   };
+  const verifyInventory = async () => {
+    const expected = new Set(snapshots.map(item => join(mirror, item.path)));
+    const walk = async path => {
+      for (const entry of await readdir(path, { withFileTypes: true })) {
+        const child = join(path, entry.name);
+        if (entry.isDirectory() && dirs.has(child)) await walk(child);
+        else if (!entry.isFile() || !expected.has(child)) throw new Error('Unexpected staged file or link.');
+      }
+    };
+    await walk(mirror);
+  };
   const workspace = { profile, containedNativeWrites, manifest: Object.freeze(manifest), manifestHash: hash(JSON.stringify(manifest)),
     nativeWriteEvidence() { return { policy: containedNativeWrites ? 'contained-native/v1' : 'host-or-legacy',
       writes: nativeWrites.map(item => ({ ...item })) }; },
+    async reconcileFailedNativeWrite(tool) {
+      // A failed terminal event is not proof of no effect. The caller serializes
+      // this check with host work and refuses overlapping native operations.
+      if (!containedNativeWrites || adopted || signal?.aborted || tool?.status !== 'failed'
+          || !['edit', 'write'].includes(tool?._meta?.['cognition.ai/inferenceToolName']))
+        throw new Error('Native failure is not reconcilable.');
+      const name = workspace.hostPath(tool.rawInput?.file_path);
+      const grant = nativeWrites.find(item => item.toolCallId === tool.toolCallId);
+      if (grant && (grant.path !== name || nativeLatest.get(name) !== grant || grant.noEffectVerified))
+        throw new Error('Native failure grant is not current.');
+      // Only the exact pre-write state is recoverable. Even a fully applied
+      // output reported as failed is not silently promoted to a successful edit.
+      const state = await workspace.writeState(name);
+      if (state.sha256 !== (grant ? grant.beforeHash : acceptedHashes.get(name) ?? null))
+        throw new Error('Failed native write has uncertain effects.');
+      await workspace.verifyNativeWrites({ allowPendingPath: grant ? name : null });
+      await verifyInventory();
+      if ((await workspace.writeState(name)).sha256 !== state.sha256)
+        throw new Error('Failed native write changed during reconciliation.');
+      if (signal?.aborted) throw new Error('Native failure reconciliation cancelled.');
+      if (grant) {
+        acceptedHashes.set(name, grant.beforeHash);
+        nativeLatest.delete(name);
+        readHashes.delete(name);
+        grant.noEffectVerified = true;
+        if (grant.beforeHash === null) {
+          // An approved but never-created file must not become a phantom input.
+          const index = snapshots.findIndex(item => item.path === name);
+          snapshots.splice(index, 1); paths.delete(name.toLowerCase()); acceptedHashes.delete(name);
+        }
+      }
+      return Object.freeze({ toolCallId: tool.toolCallId, recovery: 'verified_no_effect', path: name,
+        unchangedHash: state.sha256,
+        checkedStateHash: hash(JSON.stringify(snapshots.map(item => [item.path, acceptedHashes.get(item.path)]))) });
+    },
     async verifyNativeWrites({ allowPendingPath = null } = {}) {
       if (!containedNativeWrites) return;
       let totalBytes = 0;
@@ -307,15 +353,7 @@ export async function createDevinWorkspace({ candidate, mirror, root, harness, f
       if (writersStopped !== true) throw new Error('Stop all staging writers before inspection.');
       await workspace.verifyNativeWrites();
       // Read every staged entry, rejecting extra entries before returning changes.
-      const expected = new Set(snapshots.map(item => join(mirror, item.path)));
-      const walk = async path => {
-        for (const entry of await readdir(path, { withFileTypes: true })) {
-          const child = join(path, entry.name);
-          if (entry.isDirectory() && dirs.has(child)) await walk(child);
-          else if (!entry.isFile() || !expected.has(child)) throw new Error('Unexpected staged file or link.');
-        }
-      };
-      await walk(mirror);
+      await verifyInventory();
       const changes = []; let bytesTotal = 0;
       for (const item of snapshots) {
         const baseline = await readBounded(candidate, item.path, maxFileBytes, item.mode === 'create');

@@ -122,6 +122,39 @@ test('tool cap and deadline cancel with no replay', async () => {
   assert.equal(result.reason, 'deadline'); assert.equal(timed.log.filter(x => x === 'session/prompt').length, 1);
 });
 
+test('host-verified failure stays failed in diagnostics but can reach a real terminal', async () => {
+  let reconciled = 0;
+  const { options } = fixture({ prompt: async ({ update }) => {
+    update({ sessionUpdate: 'tool_call', toolCallId: 'miss', status: 'failed', _meta: { 'cognition.ai/inferenceToolName': 'edit' } });
+    update({ sessionUpdate: 'tool_call', toolCallId: 'correction', status: 'completed' });
+    update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Corrected.' } });
+    return { stopReason: 'end_turn' };
+  } });
+  const result = await runDevinProtocolTurn({ ...options, onToolFailure: async update => {
+    await new Promise(resolve => setTimeout(resolve, 10)); reconciled++;
+    return { toolCallId: update.toolCallId, recovery: 'verified_no_effect' };
+  } });
+  assert.equal(reconciled, 1); assert.equal(result.execution, 'completed');
+  assert.equal(result.toolFailures[0].recovery, 'verified_no_effect');
+  assert.equal(result.observedTools, 2); assert.equal(result.runTokens, null);
+});
+
+test('no-effect proof cannot bypass deadline, malformed proof, missing terminal or cleanup', async () => {
+  for (const variant of ['deadline', 'wrong-id', 'missing-terminal', 'cleanup']) {
+    const { options } = fixture({ prompt: ({ update }) => {
+      update({ sessionUpdate: 'tool_call', toolCallId: 'miss', status: 'failed' });
+      return { stopReason: variant === 'missing-terminal' ? 'cancelled' : 'end_turn' };
+    } });
+    const result = await runDevinProtocolTurn({ ...options, contract: { ...budget(), maxWallMs: 30 },
+      closeTools: async () => { if (variant === 'cleanup') throw new Error('unproven'); },
+      onToolFailure: async () => {
+        if (variant === 'deadline') await new Promise(resolve => setTimeout(resolve, 60));
+        return { toolCallId: variant === 'wrong-id' ? 'other' : 'miss', recovery: 'verified_no_effect' };
+      } });
+    assert.equal(result.execution, 'uncertain', variant);
+  }
+});
+
 test('host shell requests and host cleanup failure refuse safely', async () => {
   const fixture1 = fixture({ prompt: async ({ callbacks }) => {
     await callbacks.onRequest('terminal/create', { sessionId: 's1' }); return { stopReason: 'end_turn' };

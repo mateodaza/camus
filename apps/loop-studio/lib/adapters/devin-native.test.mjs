@@ -51,8 +51,22 @@ for (const channel of ['delegated', 'native']) test(`shared Build completes ${ch
         const pending = await mcp('tools/call', { name: 'run_command', arguments: { command: '/bin/echo', args: ['must wait'] } });
         assert.equal(JSON.parse(pending.result.content[0].text).code, 'native_write_pending', 'bytes alone do not prove the native tool has stopped');
         update({ sessionUpdate: 'tool_call_update', toolCallId: id, status: 'completed' });
+        if (channel === 'native' && id === 'create') {
+          const miss = { toolCallId: 'miss', kind: 'edit', _meta: { 'cognition.ai/inferenceToolName': 'edit' },
+            rawInput: { file_path: join(sourceMirror, 'calc.mjs'), old_string: 'not in file', new_string: 'correction' } };
+          update({ sessionUpdate: 'tool_call', ...miss });
+          await assert.rejects(callbacks.onRequest('session/request_permission', { sessionId: 'fixture-s1',
+            toolCall: { toolCallId: 'miss' }, options: [{ kind: 'allow_once', optionId: 'miss' }] }), e => e.code === 'stale_file');
+          update({ sessionUpdate: 'tool_call_update', toolCallId: 'miss', status: 'failed' });
+          // The next host operation is queued behind reconciliation, not a new
+          // model dispatch or an automatic replay of the failed edit.
+          await callbacks.onRequest('fs/read_text_file', { sessionId: 'fixture-s1', path: join(sourceMirror, 'calc.mjs') });
+        }
       }
-      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '{"done":true,"summary":"Created and edited","decision":null}' } });
+      const decision = '{"done":true,"summary":"Created and edited","decision":null}';
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: channel === 'native'
+        ? `All steps complete: corrected the file and verified the created file.\n\n${decision}`
+        : `\`\`\`json\n${decision}\n\`\`\`` } });
       return { stopReason: 'end_turn' };
     });
     const verify = async ({ worktree }) => {
@@ -74,10 +88,94 @@ for (const channel of ['delegated', 'native']) test(`shared Build completes ${ch
     assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
     const nativeName = (await readdir(ctx.receipts)).find(name => name.startsWith('devin-result-'));
     const evidence = JSON.parse(await readFile(join(ctx.receipts, nativeName), 'utf8')).writeEvidence;
+    assert.deepEqual(JSON.parse(await readFile(join(ctx.receipts, nativeName), 'utf8')).decisionNormalizations,
+      [channel === 'native' ? 'leading_plaintext_removed' : 'single_json_fence_removed']);
     assert.equal(evidence.verifiedAfterCleanup, true); assert.equal(evidence.writes.length, 2);
+    if (channel === 'native') {
+      const receipt = JSON.parse(await readFile(join(ctx.receipts, nativeName), 'utf8'));
+      assert.equal(receipt.toolFailures[0].recovery, 'verified_no_effect');
+      assert.equal((await readdir(ctx.receipts)).filter(name => name.startsWith('devin-no-effect-')).length, 1);
+    }
     assert.equal(reviews, 1); assert.equal(verifications, 1); assert.equal(ctx.state().prompts, 1);
     assert.equal(await readFile(join(ctx.candidate, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>a-b;');
     await assert.rejects(readFile(join(ctx.candidate, 'nested/new.mjs')), { code: 'ENOENT' });
+  }));
+
+test('two bounded SWE slices survive failed grants, preserve progress and reach candidate-bound verification/review',
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 15000 }, () => fixture(async ctx => {
+    const git = (...args) => execFileSync('git', ['-C', ctx.candidate, ...args], { stdio: 'ignore' });
+    git('init', '-q'); git('add', 'calc.mjs');
+    git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'base');
+    let slices = 0, reviews = 0, verifies = 0;
+    const deps = ctx.dependencies(async ({ callbacks, update, sourceMirror, sessionId, mcp }) => {
+      slices++;
+      const path = join(sourceMirror, 'calc.mjs');
+      const before = (await callbacks.onRequest('fs/read_text_file', { sessionId, path })).content;
+      assert.equal(before, slices === 1 ? 'export const add=(a,b)=>a-b;' : 'export const add=(a,b)=>a+b;');
+      const content = slices === 1 ? 'export const add=(a,b)=>a+b;' : 'export const add=(a,b)=>Number(a)+Number(b);';
+      for (const id of ['failed', 'corrected']) {
+        const tool = { toolCallId: id, kind: 'edit', _meta: { 'cognition.ai/inferenceToolName': 'write' }, rawInput: { file_path: path, content } };
+        update({ sessionUpdate: 'tool_call', ...tool });
+        await callbacks.onRequest('session/request_permission', { sessionId, toolCall: { toolCallId: id }, options: [{ kind: 'allow_once', optionId: id }] });
+        if (id === 'corrected') await writeFile(path, content);
+        update({ sessionUpdate: 'tool_call_update', toolCallId: id, status: id === 'failed' ? 'failed' : 'completed',
+          rawOutput: id === 'failed' ? 'sensitive-provider-text' : undefined });
+        await callbacks.onRequest('fs/read_text_file', { sessionId, path });
+      }
+      const command = await mcp('tools/call', { name: 'run_command', arguments: { command: '/bin/echo', args: [] } });
+      assert.equal(JSON.parse(command.result.content[0].text).exitCode, 0, 'revoked grants do not block later commands');
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify({ done: slices === 2,
+        summary: 'Bounded progress.', decision: slices === 1 ? { action: 'continue', reason: 'Finish numeric input support.' } : null }) } });
+      return { stopReason: 'end_turn' };
+    });
+    deps.runProcess = async () => ({ code: 0, stdout: '' });
+    const verify = async ({ worktree }) => {
+      verifies++;
+      assert.equal(await readFile(join(worktree, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>Number(a)+Number(b);');
+      return { ran: true, pass: true, exitCode: 0 };
+    };
+    verify.command = 'frozen offline recovery fixture'; verify.repeatable = false;
+    const result = await runCodeSeats({ repoPath: ctx.candidate, receiptsDir: ctx.receipts, task: 'Fix addition including numeric strings.',
+      seats: { maker: { backend: 'devin', model: 'swe-2-high', codeExecutor: 'devin_native', observedBudgetConsent: 'devin-observed/v1' }, reviewer: { backend: 'claude', model: 'fixture-review' } },
+      backendSnapshot: { maker: DEVIN_CODE_BACKEND, reviewer: { kind: 'claude_cli', transport: 'vendor_managed', provider: 'anthropic' } },
+      adapters: { nativeMaker: options => runNativeDevin(options, deps), maker: () => { throw new Error('No fallback'); },
+        reviewer: async () => { reviews++; return { ran: true, verdict: 'APPROVED', findings: [], usage: { total_tokens: 5 } }; } },
+      verify, limits: { maxTokens: 1000000, maxCalls: 3, maxSteps: 2, maxActions: 64, maxRepairs: 0, maxRetries: 0, maxRecoveries: 0 } });
+    assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+    assert.equal(slices, 2); assert.equal(reviews, 1); assert.equal(verifies, 1);
+    assert.equal(await readFile(join(ctx.candidate, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>a-b;');
+    const results = (await readdir(ctx.receipts)).filter(name => name.startsWith('devin-result-'));
+    assert.equal(results.length, 2);
+    for (const name of results) {
+      const receipt = await readFile(join(ctx.receipts, name), 'utf8');
+      assert.doesNotMatch(receipt, /sensitive-provider-text/);
+      assert.equal(JSON.parse(receipt).writeEvidence.writes[0].noEffectVerified, true);
+      assert.equal(JSON.parse(receipt).toolFailures[0].recovery, 'verified_no_effect');
+    }
+  }));
+
+for (const effect of ['partial', 'applied', 'extra', 'overlap']) test(`failed native edit refuses ${effect} evidence without adoption`,
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    const result = await runNativeDevin(ctx.defaults, ctx.dependencies(async ({ callbacks, update, sourceMirror, sessionId }) => {
+      const path = join(sourceMirror, 'calc.mjs'), content = 'approved';
+      update({ sessionUpdate: 'tool_call', toolCallId: 'bad', kind: 'edit',
+        _meta: { 'cognition.ai/inferenceToolName': 'write' }, rawInput: { file_path: path, content } });
+      await callbacks.onRequest('session/request_permission', { sessionId, toolCall: { toolCallId: 'bad' }, options: [{ kind: 'allow_once', optionId: 'bad' }] });
+      if (effect === 'partial' || effect === 'applied') await writeFile(path, effect === 'partial' ? 'partial' : content);
+      if (effect === 'extra') await writeFile(join(sourceMirror, 'unapproved'), 'x');
+      if (effect === 'overlap') update({ sessionUpdate: 'tool_call', toolCallId: 'other', status: 'in_progress' });
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'bad', status: 'failed' });
+      const rejected = callbacks.onRequest('fs/write_text_file', { sessionId,
+        path: join(sourceMirror, 'queued-must-not-exist'), content: 'must not execute after failed reconciliation' });
+      await assert.rejects(rejected);
+      await assert.rejects(readFile(join(sourceMirror, 'queued-must-not-exist')), { code: 'ENOENT' });
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '{"done":true,"summary":"Claim","decision":null}' } });
+      return { stopReason: 'end_turn' };
+    }));
+    assert.equal(result.ok, false); assert.equal(result.uncertain, true);
+    assert.equal(result.diagnostic.reason, 'tool_failed');
+    assert.equal(await readFile(join(ctx.candidate, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>a-b;');
+    assert.equal((await readdir(ctx.receipts)).filter(name => name.startsWith('devin-result-')).length, 0);
   }));
 
 test('cancellation drains queued ACP writes without creating their files',
@@ -269,16 +367,17 @@ async function fixture(fn) {
   };
   const dependencies = prompt => ({ prepareContext: async () => context,
     rpcFactory(callbacks) {
-      const update = value => callbacks.onNotification('session/update', { sessionId: 'fixture-s1', update: value });
+      const sessionId = `fixture-s${prompts + 1}`;
+      const update = value => callbacks.onNotification('session/update', { sessionId, update: value });
       return { fail() {}, async close() {}, async request(method, params) {
         if (method === 'initialize') return { protocolVersion: 1, authMethods: [{ id: 'devin-browser' }] };
-        if (method === 'session/new') { sourceMirror = params.cwd; return { sessionId: 'fixture-s1',
+        if (method === 'session/new') { sourceMirror = params.cwd; return { sessionId,
           configOptions: [{ category: 'model', currentValue: 'swe-2-high' }], modes: { currentModeId: 'autonomous' } }; }
         if (method === 'session/prompt') {
           prompts++;
           assert((await readdir(receipts)).some(name => name.startsWith('devin-dispatch-')));
           await mcp('initialize', { protocolVersion: '2025-03-26' }); await mcp('tools/list', {});
-          return prompt({ update, callbacks, mcp, sourceMirror, promptText: params.prompt[0].text });
+          return prompt({ update, callbacks, mcp, sourceMirror, sessionId, promptText: params.prompt[0].text });
         }
         throw new Error('Unexpected RPC.');
       } };
@@ -317,11 +416,13 @@ test('composed adapter checks MCP writes, completes, adopts into isolated candid
     assert((await readdir(ctx.receipts)).some(name => name.startsWith('devin-result-')));
   }));
 
-test('invalid final decision preserves staging without adopting or replaying',
+for (const wrapper of ['plain', 'preamble', 'fence']) test(`invalid ${wrapper} final decision preserves staging without adopting or replaying`,
   { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
     const result = await runNativeDevin(ctx.defaults, ctx.dependencies(async ({ update, sourceMirror }) => {
       await writeFile(join(sourceMirror, 'calc.mjs'), 'untrusted draft');
-      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '{"done":true,"summary":"Done","decision":{"action":"publish","reason":"go"}}' } });
+      const json = '{"done":true,"summary":"Done","decision":{"action":"publish","reason":"go"}}';
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: wrapper === 'preamble'
+        ? `Complete.\n\n${json}` : wrapper === 'fence' ? `\`\`\`json\n${json}\n\`\`\`` : json } });
       return { stopReason: 'end_turn' };
     }));
     assert.equal(result.ok, false); assert.equal(result.uncertain, true); assert.equal(result.candidateQuiescent, false);

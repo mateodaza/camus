@@ -17,15 +17,17 @@ export function devinObservedContract(value) {
 }
 
 export async function runDevinProtocolTurn({ prompt, cwd, contract: inputContract, model = DEVIN_NATIVE_MODEL,
-  nativeSession = null, signal, rpcFactory, beforePrompt, onToolRequest, closeTools, onProgress = () => {}, onToolEvent = () => {} }) {
+  nativeSession = null, signal, rpcFactory, beforePrompt, onToolRequest, closeTools, onProgress = () => {}, onToolEvent = () => {},
+  onToolFailure = () => null }) {
   const contract = devinObservedContract(inputContract);
   if (model !== DEVIN_NATIVE_MODEL || nativeSession !== null || typeof prompt !== 'string' || !prompt.trim()
       || Buffer.byteLength(prompt) > 262144 || typeof cwd !== 'string' || !cwd.startsWith('/')
-      || [rpcFactory, beforePrompt, onToolRequest, closeTools, onProgress, onToolEvent].some(fn => typeof fn !== 'function'))
+      || [rpcFactory, beforePrompt, onToolRequest, closeTools, onProgress, onToolEvent, onToolFailure].some(fn => typeof fn !== 'function'))
     throw new Error('Invalid fresh Devin turn dependencies or selection; no replay or substitution.');
   let rpc, session, observer, dispatched = false, stopped = null, toolCount = 0, hostCount = 0;
   let observation = null, closeConfirmed = false, toolsClosed = false;
   let protocolStage = 'initialize', rpcFailure = null;
+  const reconciliations = new Map();
   const active = new Set(), control = new AbortController(), started = Date.now();
   const stop = reason => {
     if (stopped) return;
@@ -56,7 +58,18 @@ export async function runDevinProtocolTurn({ prompt, cwd, contract: inputContrac
             if (toolCount >= contract.maxObservedTools) stop('observed_tool_limit');
           }
           if (method === 'session/update' && ['tool_call', 'tool_call_update'].includes(update?.sessionUpdate)
-              && update.status === 'failed') stop('tool_failed');
+              && update.status === 'failed' && !reconciliations.has(update.toolCallId)) {
+            // Invoke synchronously so the adapter reserves its host queue before
+            // the next request. Provider error text never authorizes recovery.
+            const proof = onToolFailure(update);
+            if (!proof) { stop('tool_failed'); return; }
+            const pending = Promise.resolve(proof).then(receipt => {
+              if (stopped) return;
+              if (receipt?.toolCallId !== update.toolCallId || receipt?.recovery !== 'verified_no_effect') stop('tool_failed');
+              else observer.acknowledgeNoEffect(update.toolCallId);
+            }).catch(() => stop('tool_failed'));
+            reconciliations.set(update.toolCallId, pending);
+          }
         } catch { stop('protocol_refused'); }
       },
       async onRequest(method, params) {
@@ -94,6 +107,9 @@ export async function runDevinProtocolTurn({ prompt, cwd, contract: inputContrac
     const result = await rpc.request('session/prompt', { sessionId: session.sessionId,
       prompt: [{ type: 'text', text: prompt }] }, remaining());
     if (active.size) stop('tool_boundary_refused');
+    // Host evidence processing must finish within the original deadline. This
+    // does not excuse any provider/host tool still executing at terminal.
+    await Promise.all(reconciliations.values());
     if (stopped) throw new Error('Stopped prompt.');
     protocolStage = 'completion';
     observation = observer.finish(result);

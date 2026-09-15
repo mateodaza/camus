@@ -9,6 +9,23 @@ const stages = new Set(['received', 'session', 'permission', 'permission_state',
 const codes = new Set(['EPERM', 'EACCES', 'ENOENT', 'ENOTDIR', 'EISDIR', 'EINVAL', 'ELOOP', 'ENOSPC']);
 const within = (parent, path) => path === parent || path.startsWith(parent + sep);
 
+// A completed happy-path edit is not evidence for recovery. Inspect only
+// host-owned receipts; provider prose is never the pass criterion.
+export function canaryEditRecoveryPassed({ nativeResult, receipts, expectedBaseHash, sessionId }) {
+  if (!nativeResult || nativeResult.execution !== 'completed' || !nativeResult.cleanupConfirmed
+      || nativeResult.writeEvidence?.verifiedAfterCleanup !== true || typeof sessionId !== 'string'
+      || !/^[a-f0-9]{64}$/.test(expectedBaseHash ?? '') || !Array.isArray(receipts) || receipts.length !== 1) return false;
+  const receipt = receipts[0];
+  return receipt?.recovery === 'verified_no_effect' && receipt.operationCompleted === false
+    && receipt.path === 'calc.mjs' && receipt.unchangedHash === expectedBaseHash
+    && /^[a-f0-9]{64}$/.test(receipt.checkedStateHash ?? '')
+    && receipt.sessionId === sessionId && receipt.artifactDigest === nativeResult.artifactDigest
+    && receipt.policy === 'contained-native/v1'
+    && nativeResult.toolFailures?.filter(item => item.nativeTool === 'edit' && item.recovery === 'verified_no_effect').length === 1
+    && nativeResult.writeEvidence.writes?.some(item => item.path === 'calc.mjs' && !item.noEffectVerified
+      && item.beforeHash === expectedBaseHash && item.afterHash !== expectedBaseHash) === true;
+}
+
 export function classifyCanaryPath(path, { mirror, candidate }) {
   if (typeof path !== 'string') return 'missing_or_nonstring';
   if (path.includes('\0')) return 'invalid';

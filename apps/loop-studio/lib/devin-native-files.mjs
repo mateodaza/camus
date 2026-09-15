@@ -35,7 +35,7 @@ export function createDevinFileHandlers({ workspace, cwd, sessionId, calls, perm
     async 'session/request_permission'(params) {
       checkSession(params);
       validate(params, ['sessionId', 'toolCall', 'options']);
-      if (workspace.nativeWriteEvidence().writes.some(item => calls.has(item.toolCallId)
+      if (workspace.nativeWriteEvidence().writes.some(item => !item.noEffectVerified && calls.has(item.toolCallId)
           && calls.get(item.toolCallId).status !== 'completed')) throw new DevinToolFeedback('native_write_pending');
       const tool = mergeDevinPermissionTool(calls.get(params.toolCall?.toolCallId), params.toolCall);
       const path = workspace.hostPath(tool?.rawInput?.file_path);

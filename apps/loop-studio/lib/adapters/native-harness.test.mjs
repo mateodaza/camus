@@ -81,6 +81,20 @@ test('Grok protocol records bounded error terminals and refuses unknown or prohi
   assert.throws(() => createGrokProtocolReducer().push({ type: 'tool_call', toolName: 'WebSearch' }), /unsupported tool/);
 });
 
+test('Grok API native per-tool failure does not become an execution error or a completion receipt', () => {
+  let actions = 0;
+  const protocol = createGrokProtocolReducer({ onAction: () => { actions++; } });
+  protocol.push({ type: 'tool_call', toolName: 'Edit', toolCallId: 'miss' });
+  protocol.push({ type: 'tool_call_update', toolCallId: 'miss', status: 'failed' });
+  assert.equal(protocol.finish().reportedError, false);
+  assert.equal(protocol.finish().result, null, 'a tool failure alone cannot finish the turn');
+  protocol.push({ type: 'tool_call', toolName: 'Edit', toolCallId: 'corrected' });
+  protocol.push({ type: 'tool_call_update', toolCallId: 'corrected', status: 'completed' });
+  protocol.push({ type: 'text', data: '{"done":true,"summary":"Corrected","decision":null}' });
+  protocol.push({ type: 'end', stopReason: 'end_turn' });
+  assert.equal(protocol.finish().result.done, true); assert.equal(actions, 2);
+});
+
 test('Qwen receives limits derived from the enclosing native turn', () => {
   const session = { resumed: false, sessionId: '01900000-0000-7000-8000-000000000001' };
   const args = qwenNativeArgs({ model: 'qwen-fixture', prompt: 'task', session,

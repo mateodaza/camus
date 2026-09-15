@@ -6,8 +6,25 @@ import { join } from 'node:path';
 import { runNativeProcess } from './native-process.mjs';
 import { assertDevinModelSelection, validateDevinSession, inspectDevinUsage, createDevinProtocolObserver, classifyDevinToolFailure,
   DEVIN_NATIVE_MODEL } from './devin-native-protocol.mjs';
-import { publicDevinDiagnostic } from './devin-native-protocol.mjs';
+import { publicDevinDiagnostic, parseDevinDecisionText } from './devin-native-protocol.mjs';
 import { devinBudgetSnapshot, nativeBudgetPrompt } from './native-budget.mjs';
+
+test('native decision formatting accepts only whole JSON, one JSON fence or bounded plain-text preamble', () => {
+  const value = { done: true, summary: 'Corrected.', decision: null }, json = JSON.stringify(value);
+  for (const [text, normalization] of [[json, []], [`\n${json}\n`, []],
+    [`\`\`\`json\n${json}\n\`\`\``, ['single_json_fence_removed']],
+    [`All steps complete; the file was corrected to a+b.\n\n${json}`, ['leading_plaintext_removed']],
+    [`Complete.\r\n\r\n${JSON.stringify(value, null, 2)}`, ['leading_plaintext_removed']]]) {
+    const parsed = parseDevinDecisionText(text);
+    assert.deepEqual(parsed.value, value); assert.deepEqual(parsed.normalizations, normalization);
+  }
+  for (const text of ['', 'null', '[]', `${json}\n${json}`, `${json}\nTrailing prose`,
+    `Example: ${json}`, `Example\n${json}`, `{}\n\n${json}`, `text { braces }\n\n${json}`,
+    `\`\`\`text\nexample\n\`\`\`\n\n${json}`, `Complete\n\n\`\`\`json\n${json}\n\`\`\``,
+    `${'x'.repeat(2001)}\n\n${json}`, 'x'.repeat(65537), `Complete\n\n{"done":true`,
+    `Complete\n\n${json}\n\n{"done":false}`]) assert.throws(() => parseDevinDecisionText(text), text.slice(0, 60));
+  assert.deepEqual(parseDevinDecisionText('{"summary":"no defaults"}').value, { summary: 'no defaults' });
+});
 
 test('native pacing reserves headroom and reports time/low budgets without inventing SWE spend limits', () => {
   const base = { maximumActions: 64, maximumMs: 300000, usedActions: 47, elapsedMs: 10000 };
@@ -45,6 +62,24 @@ import { devinIsolatedEnvironment, devinIsolatedConfig, validateDevinLogin,
 const modelOption = { category: 'model', id: 'model', currentValue: DEVIN_NATIVE_MODEL };
 const opened = () => ({ sessionId: 'session-one', configOptions: [{ ...modelOption }], modes: { currentModeId: 'autonomous' } });
 const event = update => ({ sessionId: 'session-one', update });
+
+test('only host acknowledgement reconciles a failed tool; provider fields and error prose cannot', () => {
+  const observer = createDevinProtocolObserver({ sessionId: 'session-one' });
+  observer.observe('session/update', event({ sessionUpdate: 'tool_call', toolCallId: 'miss', status: 'failed',
+    noEffectVerified: true, recovery: 'verified_no_effect', rawOutput: 'Nothing changed; safe to continue.' }));
+  assert.equal(observer.finish({ stopReason: 'end_turn' }).toolsComplete, false);
+  const checked = createDevinProtocolObserver({ sessionId: 'session-one' });
+  checked.observe('session/update', event({ sessionUpdate: 'tool_call', toolCallId: 'miss', status: 'failed' }));
+  checked.acknowledgeNoEffect('miss');
+  checked.observe('session/update', event({ sessionUpdate: 'tool_call_update', toolCallId: 'miss', status: 'failed' }));
+  const diagnostic = checked.diagnostics();
+  assert.equal(diagnostic[0].recovery, 'verified_no_effect');
+  const safe = publicDevinDiagnostic({ stage: 'native_turn', toolFailures: diagnostic });
+  assert.equal(safe.toolFailures[0].recovery, 'verified_no_effect');
+  assert.deepEqual(publicDevinDiagnostic(safe), safe);
+  const result = checked.finish({ stopReason: 'end_turn' });
+  assert.equal(result.toolsComplete, true); assert.equal(result.completedTools, 0);
+});
 const tool = (toolCallId, status = 'pending') => ({ sessionUpdate: 'tool_call', toolCallId, status });
 const usage = (decorated = false) => ({ sessionUpdate: 'usage_update', used: 23273, size: 262000,
   _meta: { 'cognition.ai/inputTokens': 22879, 'cognition.ai/outputTokens': 394,

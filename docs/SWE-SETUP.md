@@ -5,10 +5,12 @@ SWE-2 High is an optional coding maker in Camus CLI and Loop Studio starting in
 become a reviewer, or grant an automatic merge or an admitted proof gate.
 Flexible Build retains its public-alpha, advisory standing.
 
-**0.4.26 compatibility fix:** native write/permission failures in 0.4.25
-are addressed with a contained native-write policy. Its fresh native
-edit/create canary passed verification and independent Luna review in 99 seconds.
-Install 0.4.26 or newer; 0.4.25 does not include this fix. See the
+**0.4.27 compatibility fix:** native edit misses can recover after host
+verification of no effect; bounded JSON presentation wrappers no longer require
+another model attempt. Its fresh recovery canary passed verification and
+independent Luna review in 66 seconds. Install 0.4.27 or newer; 0.4.26 does not
+include these corrections. The contained native-write policy introduced in
+0.4.26 remains in force. See the
 [native contract gate](SWE-CONTRACT-VALIDATION.md) for evidence and scope limits.
 
 ## Before you start
@@ -28,7 +30,7 @@ to guarantee zero charges; check the terms and usage in your Devin account.
 ## CLI
 
 ```sh
-npm install -g camus-cli@0.4.26
+npm install -g camus-cli@0.4.27
 camus models
 camus build --repo /path/to/clean-repository \
   --task-file /path/to/task.txt --contract-file /path/to/acceptance.txt \
@@ -98,6 +100,15 @@ in this release are specific to SWE host tools. See [0.4.25 notes](RELEASE-0.4.2
 
 ### Earlier diagnostic and command-boundary fixes
 
+**0.4.27 survivable-edit correction:** 0.4.26 still aborts on every native
+failed-tool event. The local correction permits only host-verified no-effect
+edit/write failures, within existing budgets, without automatic replay. It is
+shared by CLI and Studio. After the bounded final-formatting correction, the
+fresh recovery canary passed frozen verification and Luna review in 66 seconds.
+The correction is included in 0.4.27, not 0.4.26. This does not
+establish all-project reliability or authorize replay of earlier failed runs.
+See [the validation contract](SWE-CONTRACT-VALIDATION.md#survivable-native-edit-failures-unreleased).
+
 Use 0.4.23 or later for failure diagnostics and bounded host-tool feedback.
 `list_files` provides paginated prepared-file discovery. A host response with
 `operationCompleted:false` reports a no-write conflict, not a completed edit;
@@ -124,7 +135,9 @@ nothing executed or queued. Wait for the earlier response and use a fresh reques
 ID, within the original budget. Both malformed commands and busy attempts consume
 action allowance. Duplicate IDs, exhausted budgets, post-dispatch errors and
 security failures remain fatal; uncertain effects are never retried automatically.
-Direct native filesystem/permission requests during a command still fail closed.
+In 0.4.26, ACP file requests serialize behind host commands; pending native
+writes still prevent another write or command. Failed native events overlapping
+host work are not eligible for the unreleased no-effect recovery path.
 
 Sanitized diagnostics now include `boundaryRefusal` with a fixed reason code and
 known host tool name, separate from the last observed host tool. Offline regression

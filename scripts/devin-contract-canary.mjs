@@ -11,9 +11,12 @@ import { createCodeVerifier } from '../apps/loop-studio/lib/code-seat-verify.mjs
 import { runNativeDevin } from '../apps/loop-studio/lib/adapters/devin-native.mjs';
 import { CodexRpc } from '../apps/loop-studio/lib/codex-rpc.mjs';
 import { startDevinMcp } from '../apps/loop-studio/lib/devin-native-mcp.mjs';
+import { canaryEditRecoveryPassed } from './devin-canary-diagnostics.mjs';
 
 const id = process.argv[2]?.match(/^--authorize-id=([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/)?.[1];
-if (!id || process.argv.length !== 4 || process.argv[3] !== '--accept-unknown-spend')
+const exerciseRecovery = process.argv[4] === '--exercise-edit-recovery';
+if (!id || !([4, 5].includes(process.argv.length)) || process.argv[3] !== '--accept-unknown-spend'
+    || process.argv.length === 5 && !exerciseRecovery)
   throw new Error('Requires fresh explicit consent: --authorize-id=<uuid> --accept-unknown-spend. No prior authorization may be reused.');
 
 const evidence = join(homedir(), '.camus', 'canaries', `devin-contract-${id}`);
@@ -23,7 +26,7 @@ const limits = { maxCalls: 2, maxSteps: 1, maxActions: 40, maxTokens: 131072, ti
 const marker = await open(join(evidence, 'authorization-consumed.json'), 'wx', 0o600);
 try {
   await marker.writeFile(JSON.stringify({ id, limits, maxSwePrompts: 1, maxLunaReviews: 1, billingUncertaintyAccepted: true,
-    apiFallback: false, replay: false, publication: false,
+    apiFallback: false, replay: false, publication: false, exerciseRecovery,
     driverHash: createHash('sha256').update(await readFile(fileURLToPath(import.meta.url))).digest('hex') }));
   await marker.sync();
 } finally { await marker.close(); }
@@ -67,7 +70,8 @@ const {label}=await import(pathToFileURL(join(process.cwd(),'nested/label.mjs'))
 assert.equal(add(2,3),5);assert.equal(add(-4,1),-3);assert.equal(label,'ready');console.log('canary verified');\n`, { mode: 0o600 });
   const receiptsDir = await prepareCodeReceiptsDir(join(evidence, 'run'), source);
   const verify = createCodeVerifier(`${process.execPath} ${verifierPath}`, { receiptsDir, timeoutMs: 15000, repeatable: false });
-  const task = 'Fix calc.mjs to add its arguments using the native edit tool. Create nested/label.mjs exporting const label="ready" using the native write tool. Read back the created file through ACP or Camus read_file. Preserve README.md; no other paths may change. This canary tests native writes after checked permission, not an MCP-write workaround. No install, commits, network or publication. Return the requested JSON when ready; the host runs a frozen verifier and independent review.';
+  const task = (exerciseRecovery ? 'Recovery acceptance test: BEFORE changing any file, deliberately call the native edit tool exactly once on calc.mjs with old_string="CAMUS_INTENTIONAL_ABSENT_MATCH" and new_string="unused". The old string is intentionally absent; this one expected edit failure tests recovery. Do not skip or simulate this call. After it fails, read calc.mjs again and perform the real correction below with a new tool call. Do not repeat the intentional failure. The host checks the failure/recovery receipts separately; the independent reviewer judges the final code. ' : '')
+    + 'Fix calc.mjs to add its arguments using the native edit tool. Create nested/label.mjs exporting const label="ready" using the native write tool. Read back the created file through ACP or Camus read_file. Preserve README.md; no other paths may change. This canary tests native writes after checked permission, not an MCP-write workaround. No install, commits, network or publication. Return the requested JSON when ready; the host runs a frozen verifier and independent review.';
   const metadata = { id: 'run', codeMode: 'independent', lane: 'build', task, goal: task, acceptanceContract: task,
     targetPath: source, models: prepared.models, startedAt: started, experimental: true, gating: false,
     verifyCmd: `${process.execPath} ${verifierPath}`, verifyRepeatable: false, codeLimits: limits };
@@ -109,8 +113,15 @@ assert.equal(add(2,3),5);assert.equal(add(-4,1),-3);assert.equal(label,'ready');
     } });
   await writeFile(join(receiptsDir, 'report.json'), JSON.stringify({ ...metadata, ...result }), { flag: 'wx', mode: 0o600 });
   const nativeResults = (await readdir(receiptsDir)).filter(name => /^devin-result-[a-f0-9]{64}\.json$/.test(name));
-  const writeEvidence = nativeResults.length === 1 ? JSON.parse(await readFile(join(receiptsDir, nativeResults[0]), 'utf8')).writeEvidence : null;
-  const approvedPaths = new Set(writeEvidence?.writes?.map(item => item.path) ?? []);
+  const nativeResult = nativeResults.length === 1 ? JSON.parse(await readFile(join(receiptsDir, nativeResults[0]), 'utf8')) : null;
+  const writeEvidence = nativeResult?.writeEvidence;
+  const approvedPaths = new Set(writeEvidence?.writes?.filter(item => !item.noEffectVerified).map(item => item.path) ?? []);
+  const recoveryFiles = (await readdir(receiptsDir)).filter(name => /^devin-no-effect-[a-f0-9]{64}-[a-f0-9]{64}\.json$/.test(name));
+  const recoveryReceipts = await Promise.all(recoveryFiles.map(async name => JSON.parse(await readFile(join(receiptsDir, name), 'utf8'))));
+  const dispatchNames = (await readdir(receiptsDir)).filter(name => /^devin-dispatch-[a-f0-9]{64}\.json$/.test(name));
+  const dispatch = dispatchNames.length === 1 ? JSON.parse(await readFile(join(receiptsDir, dispatchNames[0]), 'utf8')) : null;
+  const recoveryPassed = canaryEditRecoveryPassed({ nativeResult, receipts: recoveryReceipts,
+    expectedBaseHash: createHash('sha256').update('export const add=(a,b)=>a-b;\n').digest('hex'), sessionId: dispatch?.sessionId });
   const sourceUnchanged = git('status', '--porcelain').trim() === '';
   const changed = result.candidate?.worktree ? [...new Set([
     execFileSync('git', ['-C', result.candidate.worktree, 'diff', '--name-only', 'HEAD'], { encoding: 'utf8' }),
@@ -121,9 +132,10 @@ assert.equal(add(2,3),5);assert.equal(add(-4,1),-3);assert.equal(label,'ready');
     && channels.acpCreatedReads + channels.mcpCreatedReads > 0 && channels.acpEdits === 0 && channels.mcpWriteAttempts === 0
     && writeEvidence?.policy === 'contained-native/v1' && writeEvidence.verifiedAfterCleanup === true
     && approvedPaths.has('calc.mjs') && approvedPaths.has('nested/label.mjs')
+    && (!exerciseRecovery || recoveryPassed)
     && JSON.stringify(changed) === JSON.stringify(['calc.mjs', 'nested/label.mjs'])
     && result.usage.calls <= 2 && result.usage.actions <= 40 && result.usage.accountedTokens <= 131072 && Date.now() - started <= 300000;
-  const summary = { id, passed, prompts, reviews, channels, writeEvidence, sourceUnchanged, changed, usage: result.usage,
+  const summary = { id, passed, prompts, reviews, channels, writeEvidence, exerciseRecovery, recoveryPassed, sourceUnchanged, changed, usage: result.usage,
     completion: result.completion, elapsedMs: Date.now() - started, liveEvidence: 'bounded_contained_native_canary_only',
     inferenceSpend: 'unknown', publication: false, replayAllowed: false };
   await writeFile(join(evidence, 'summary.json'), JSON.stringify(summary, null, 2), { flag: 'wx', mode: 0o600 });

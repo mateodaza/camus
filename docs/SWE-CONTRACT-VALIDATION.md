@@ -1,6 +1,7 @@
 # SWE native contract validation
 
-Status: **contained-native live canary passed; included in 0.4.26**.
+Status: **survivable-edit and bounded-formatting corrections are included in
+0.4.27. The fresh live recovery canary passed verification and Luna review**.
 This is a compatibility and regression gate, not a promise of bug-free native
 execution or a successful Company Brain run.
 
@@ -33,7 +34,7 @@ checks byte-for-byte parity, including the new filesystem handlers.
 | Integrity | Retain protected/denied paths, read-only inputs, source-drift checks, current-hash checks, link/ownership checks, file-count and byte envelopes. |
 | Concurrent requests | ACP and MCP share a bounded host queue. A pending approved native operation prevents another native write or host command; matching bytes alone do not prove the native tool has finished. Queued host work is canceled before dispatch. |
 | Request identity | SWE reverse RPC IDs remain consumed after completion; duplicate IDs and request floods fail closed. Other executors do not opt into this policy. |
-| Recoverable errors | Only host-proven no-effect conflicts provide correction guidance. Provider-reported failed tools, unsafe operations and uncertain effects still stop the turn. |
+| Recoverable errors | Host-proven pre-effect conflicts provide correction guidance. In the unreleased correction, native edit/write failures may continue only after serialized host reconciliation proves unchanged target bytes and validates the staged manifest. Error wording is never proof. Unsafe operations, overlapping activity and uncertain effects still stop. |
 | Budget | Native events and host requests, including permission requests, consume the same allowance. Corrections cannot expand it. Internal SWE inference usage remains unknown. |
 | Completion | A terminal response with host work still pending is incomplete even if cleanup subsequently succeeds. No adoption or automatic replay follows. |
 
@@ -84,11 +85,175 @@ The provider transport and reviewer in that engine test are mocked. Passing it
 does **not** establish live SWE behavior. Platform-skipped sandbox tests do not
 count as macOS validation.
 
-Local verification for this revision: **53 focused tests passed with no skips**,
+Local verification for the **0.4.26 revision**: **53 focused tests passed with no skips**,
 including native atomic replacement, nested creation, link/import denial, durable
 approvals and native/delegated shared-engine completion. The full root/CLI and
 Studio suites, packaged-runtime parity and `git diff --check` also passed. No
 fresh provider call was made during this implementation pass.
+
+## Survivable native edit failures (unreleased)
+
+The first larger 0.4.26 workload performed implementation but ended on a native
+`edit` failure with an unclassified diagnostic. Its exact cause is unproven;
+the preserved attempt is not retrospectively declared safe, adopted or replayed.
+The prior blanket `failed` → abort policy made ordinary editing mistakes fatal.
+
+The correction checks failed native `edit`/`write` calls only. It requires an
+identified safe target, no overlapping host/native work at the failure event,
+unchanged target bytes (the approved pre-write hash, or the current accepted hash
+when no permission was issued), valid hashes for other prepared files, and no
+unexpected inventory entries. It runs in the same serialized host queue as ACP
+and MCP. An unused native grant is retired; a never-created path is removed from
+the prepared-file inventory. A private, session/artifact-bound
+`devin-no-effect-*.json` receipt is synced before acknowledging recovery. The
+failed tool stays failed, with `recovery: verified_no_effect` in diagnostics; it
+does not become a successful edit or a completion receipt.
+
+The model sees its ordinary harness error and may make a new correction within
+the existing prompt/action/time allowances. Camus sends no retry prompt, grants
+no budget extension and replays no uncertain operation. Final native completion,
+writer cleanup, complete inventory/output validation, candidate-bound verification
+and independent review remain necessary. The live process is still a trusted,
+pinned harness: reconciliation is a checked snapshot, not an OS guarantee that a
+defective process cannot attempt a later write. Final post-cleanup checks remain
+mandatory. Partial writes and even exact expected output reported as failed are
+not promoted to success by this no-effect path.
+
+Offline regression coverage includes stale permission denial → failed native
+event → correction → verification/review, and two bounded slices each containing
+an approved-but-unapplied failure followed by correction. Controls cover partial
+and applied writes, extra files, changed other files, links, overlapping tools,
+missing terminal, cleanup failure, deadline, forged provider recovery claims,
+redaction and unchanged source. Mock provider/reviewer fixtures do not establish
+live recovery behavior. A fresh small canary must actually observe a failed
+native edit, host no-effect evidence, correction, verification and review; a
+happy-path-only pass cannot satisfy this gate. Do not use the large task to
+discover the next compatibility failure.
+
+Validation in this implementation pass: **98 focused tests passed, no skips**
+(workspace, protocol, turn, MCP, SWE adapter, shared native-harness reducer and
+RPC). The full root/CLI and Studio suites passed. After the final queue-ordering
+hardening, the focused suite and packed CLI runtime/parity check were rerun and
+passed; `git diff --check` is clean. The refusal controls explicitly attempt a
+queued write after failed reconciliation and prove that it never reaches disk.
+No live model call, release, or Company Brain retry was made in this pass.
+
+### Subsequent live recovery canary: partial evidence, not a pass
+
+With fresh user approval, canary `4dc32dd3-14a6-4898-ab5d-b21553e26da1`
+ran once with `--exercise-edit-recovery`: one SWE prompt, at most one Luna medium
+review, 40 actions, 131,072 accounted tokens and five minutes. No automatic
+retry/repair, API fallback or publication was permitted; SWE inference spend
+remained explicitly unknown.
+
+Result after **45.544 seconds: failed**, one SWE prompt, 13 actions, 32,768
+reserved/accounted tokens, zero observed tokens (not zero spend), no review and
+no verification. The intentional `edit_2` miss returned `match_not_found`;
+Camus persisted `verified_no_effect` against the unchanged `calc.mjs` hash.
+SWE continued, corrected `calc.mjs` via `edit_4`, created `nested/label.mjs` via
+`write_5`, and read back the new file. Both preserved outputs match their exact
+approved hashes. Native `end_turn` and cleanup were confirmed.
+
+The final response contained an explanatory paragraph followed by the JSON
+decision. Strict `JSON.parse` rejected the complete response at `decision_json`.
+No decision was extracted from prose, no candidate was adopted, and the original
+source remained unchanged. Thus the edit-recovery behavior is live evidence,
+but **the whole canary is not a pass**. `summary.json` correctly records
+`passed:false` and `recoveryPassed:false`: the latter requires a completed,
+post-adoption native receipt and must not be confused with the observed no-effect
+receipt alone. No additional model call was made.
+
+Private evidence:
+`~/.camus/canaries/devin-contract-4dc32dd3-14a6-4898-ab5d-b21553e26da1/`.
+Tested dirty working tree based on `c66fc51c48118452cd39b8622e3c0ba4b020baba`,
+not that commit alone. Library fingerprint (same 85-file algorithm as below):
+`181491154ea177375785068d0118d641dcc4c491b1a94f35bbb0cd390189806d`.
+Driver SHA-256:
+`9230ebf442f6637f9e45e9b2b71cdb1d5fc3e1c8f056cdc2b4ab24a9195a928a`.
+
+Next gate: address final-response formatting without relaxing decision-schema,
+authority or candidate verification checks; validate offline, then obtain fresh
+authorization for one full recovery-path canary. Do not repeat the large workload
+or declare this attempt successful. The consumed authorization UUID is not reusable.
+
+### Bounded final-response formatting correction (unreleased)
+
+The SWE decision parser now follows the existing file-actions formatting policy:
+accept one whole JSON object, one whole `json` fence, or one complete JSON object
+after a blank line and at most 2,000 bytes of plain-text preamble. A preamble
+cannot contain braces or code fences. Multiple objects, trailing prose, truncated
+JSON and non-object roots remain refused. The whole response remains bounded to
+65,536 bytes. No missing fields or decisions are inferred.
+
+Normalization runs only after a successful native terminal and cleanup, on the
+uninterrupted text after the last tool event. It never searches tool output or
+earlier progress for a decision. Existing schema, authority, output-hash,
+inventory, verification and reviewer checks remain unchanged. The private native
+result records `decisionNormalizations`; the original terminal text is preserved.
+No extra model prompt is needed to remove a harmless presentation wrapper.
+
+The exact captured response from the first recovery canary passes this parser
+offline, without adopting or replaying that run. **105 focused tests passed,
+zero skips**, including wrapped unauthorized decisions, invalid/ambiguous output,
+native recovery plus preamble → verification/review, and delegated writes plus
+JSON fence → verification/review. Packed CLI runtime/parity and diff checks pass.
+
+### Fresh full recovery canary passed
+
+With renewed user approval, `3caf45ec-4862-42ef-8761-098f750d8788` ran once under
+the same bounds and **passed in 66.103 seconds**:
+
+- One SWE-2 High prompt, one GPT-5.6 Luna medium review; no substitution or API fallback.
+- An intentional native edit miss, one durable `verified_no_effect` receipt,
+  a corrected native edit, native file creation and checked created-file readback.
+- Native `end_turn`, confirmed cleanup and both exact-output hashes verified.
+- Frozen verification passed in 151 ms; Luna approved with zero findings in 6.798 s.
+- `candidate_ready_for_acceptance`; only `calc.mjs` and `nested/label.mjs` changed
+  in the isolated candidate, and the original fixture source stayed unchanged.
+- 12 accounted actions, 43,342 accounted tokens (10,574 observed reviewer tokens
+  plus the 32,768 SWE reservation); zero retries, repairs or workflow recoveries.
+  The in-turn no-effect correction is recorded separately, not disguised as a
+  successful first edit. SWE internal spend remains unknown.
+
+The fresh response was already JSON-only (`decisionNormalizations: []`). Thus
+live evidence establishes full recovery/verification/review on the patched
+runtime; tolerant formatting is independently covered by the prior captured
+response and end-to-end offline preamble/fence fixtures. Do not claim the fresh
+model exercised normalization when it did not.
+
+Private evidence:
+`~/.camus/canaries/devin-contract-3caf45ec-4862-42ef-8761-098f750d8788/`.
+Tested dirty working tree based on `c66fc51c48118452cd39b8622e3c0ba4b020baba`.
+Library fingerprint (85 files):
+`6c7fdb3fb23b2a10d8200168d5dce988cf63deaae53d9e4c9def5e5deae391c1`.
+Driver SHA-256:
+`9230ebf442f6637f9e45e9b2b71cdb1d5fc3e1c8f056cdc2b4ab24a9195a928a`.
+
+This closes the bounded recovery release gate, not all-project qualification.
+Ship the focused maintenance patch, then let the Company Brain agent launch a
+fresh isolated run under its existing task/contract/verifier and separately
+authorized workload budget. Preserve all prior runs and draft mirrors; no
+uncertain replay, direct draft adoption, budget extension or new Camus feature
+work is part of this handoff. No release or Company Brain run occurred in the
+canary session.
+
+### Other executor boundary check
+
+This runtime change is SWE-only and reaches both CLI and Studio through their
+shared adapter. No model admission, billing, routing or default changes apply.
+
+- Qwen native checks its final `result`; individual tool-result errors are not
+  an unconditional Camus abort in `adapters/native-harness.mjs`.
+- API-backed Grok distinguishes tool updates from top-level execution errors;
+  an added reducer regression pins failure → correction → real terminal.
+- Grok subscription ACP does not abort on each `tool_call_update: failed`;
+  host authorization, cleanup and terminal identity/usage checks remain separate.
+- Codex native uses `turn/completed` rather than an individual failed item as its
+  terminal boundary. Claude's adapter checks the terminal result's `is_error`,
+  not an arbitrary internal edit miss.
+
+These are code-path findings, not new live-model certifications. Host-side
+security/protocol refusals in those adapters are intentionally not relaxed.
 
 ## Live canary result and repeatable gate
 

@@ -17,6 +17,35 @@ async function nativePermission(workspace, options, id, path, input) {
   return handlers['session/request_permission']({ sessionId: 's', toolCall: { toolCallId: id }, options: [{ kind: 'allow_once', optionId: 'once' }] });
 }
 
+for (const creation of [false, true]) test(`failed native ${creation ? 'creation' : 'edit'} with unchanged bytes revokes only its pending grant`, () => fixture(async options => {
+  const workspace = await createDevinWorkspace({ ...options, containedNativeWrites: true });
+  const path = creation ? 'nested/retry.mjs' : 'src/a.mjs';
+  await nativePermission(workspace, options, 'failed', path, { content: 'new' });
+  const receipt = await workspace.reconcileFailedNativeWrite({ toolCallId: 'failed', status: 'failed',
+    _meta: { 'cognition.ai/inferenceToolName': 'write' }, rawInput: { file_path: join(options.mirror, path) } });
+  assert.equal(receipt.recovery, 'verified_no_effect');
+  assert.equal(workspace.nativeWriteEvidence().writes[0].noEffectVerified, true);
+  await workspace.inspect({ writersStopped: true });
+  await nativePermission(workspace, options, 'corrected', path, { content: 'corrected' });
+  if (creation) await mkdir(join(options.mirror, 'nested'), { recursive: true });
+  await writeFile(join(options.mirror, path), 'corrected');
+  await workspace.adopt({ writersStopped: true });
+  assert.equal(await readFile(join(options.candidate, path), 'utf8'), 'corrected');
+}));
+
+for (const effect of ['partial', 'applied', 'extra', 'other-file', 'symlink']) test(`native failure with ${effect} effects is not recoverable`, () => fixture(async options => {
+  const workspace = await createDevinWorkspace({ ...options, containedNativeWrites: true });
+  await nativePermission(workspace, options, 'bad', 'src/a.mjs', { content: 'approved' });
+  if (effect === 'partial' || effect === 'applied') await writeFile(join(options.mirror, 'src/a.mjs'), effect === 'partial' ? 'part' : 'approved');
+  if (effect === 'extra') await writeFile(join(options.mirror, 'extra'), 'x');
+  if (effect === 'other-file') await writeFile(join(options.mirror, 'test.mjs'), 'x');
+  if (effect === 'symlink') { await rm(join(options.mirror, 'src/a.mjs')); await symlink(options.outside, join(options.mirror, 'src/a.mjs')); }
+  await assert.rejects(workspace.reconcileFailedNativeWrite({ toolCallId: 'bad', status: 'failed',
+    _meta: { 'cognition.ai/inferenceToolName': 'write' }, rawInput: { file_path: join(options.mirror, 'src/a.mjs') } }));
+  assert.equal(workspace.nativeWriteEvidence().writes[0].noEffectVerified, undefined);
+  assert.equal(await readFile(join(options.candidate, 'src/a.mjs'), 'utf8'), 'old');
+}));
+
 test('contained native edit and nested creation execute in the real sandbox, then adopt only approved bytes',
   { skip: process.platform !== 'darwin', timeout: 10000 }, () => fixture(async options => {
     const workspace = await createDevinWorkspace({ ...options, containedNativeWrites: true, deniedPaths: ['private'] });
