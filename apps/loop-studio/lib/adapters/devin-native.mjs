@@ -36,6 +36,9 @@ export async function runNativeDevin(options, dependencies = {}) {
   let context, mirror, toolScratch, workspace, broker, outcome, adopted = false, active = false, sessionId;
   let localStopReason = null, lastHostTool = null, boundaryRefusal = null, reconciliationFailure = null;
   const budgetDeniedTools = new Map(), toolStartHashes = new Map();
+  const settlementWaiters = new Set(), settlingIds = new Set();
+  let reconciling = 0, reconciliationTail = Promise.resolve();
+  const wakeSettlement = () => { for (const wake of settlementWaiters) wake(); };
   const control = new AbortController(), calls = new Map(), permissions = new Set(), tasks = new Set();
   const abort = () => control.abort();
   const parentAbort = () => {
@@ -72,12 +75,15 @@ export async function runNativeDevin(options, dependencies = {}) {
     return error;
   };
   let hostTail = Promise.resolve(), queued = 0;
-  const serializeHost = async fn => {
+  const serializeHost = async (fn, { settlement = false } = {}) => {
     if (!active || control.signal.aborted || queued >= 8) {
       if (!control.signal.aborted) refuseTool({ code: 'host_operation_refused', tool: null });
       throw new Error('Native host queue refused.');
     }
     queued++;
+    // Queue later work behind the evidence barrier without spending another
+    // model action on a synthetic busy error. It receives no authority yet.
+    while (reconciling && !settlement) await reconciliationTail;
     const operation = hostTail.then(async () => {
       if (!active || control.signal.aborted) throw new Error('Native host operation cancelled before dispatch.');
       try {
@@ -92,7 +98,20 @@ export async function runNativeDevin(options, dependencies = {}) {
     });
     hostTail = operation.catch(() => {}); tasks.add(operation);
     try { return await operation; }
-    finally { queued--; tasks.delete(operation); }
+    finally { queued--; tasks.delete(operation); wakeSettlement(); }
+  };
+  const waitForSettlement = async () => {
+    const deadline = Math.min(started + contract.maxWallMs, Date.now() + 5000);
+    while (tasks.size || [...settlingIds].some(id => !['completed', 'failed'].includes(calls.get(id)?.status))) {
+      if (control.signal.aborted) throw new Error('Settlement cancelled.');
+      if (Date.now() >= deadline) throw Object.assign(new Error('Native operations did not settle.'), { reconciliationCode: 'settlement_timeout' });
+      await new Promise(resolve => {
+        let timer;
+        const wake = () => { clearTimeout(timer); settlementWaiters.delete(wake); control.signal.removeEventListener('abort', wake); resolve(); };
+        settlementWaiters.add(wake); control.signal.addEventListener('abort', wake, { once: true });
+        timer = setTimeout(wake, Math.max(1, deadline - Date.now()));
+      });
+    }
   };
   try {
     context = await (dependencies.prepareContext ?? prepareDevinContext)({ signal: control.signal });
@@ -209,6 +228,10 @@ export async function runNativeDevin(options, dependencies = {}) {
           : { code: -32000, message: 'Camus refused the bounded tool request.' } });
       },
       beforePrompt: async marker => {
+        // Check the real post-session configuration before any completion can
+        // be billed. A CLI migration must not first surface after a failed exec.
+        try { await context.verifyExecDenial(); }
+        catch (error) { reconciliationFailure = error?.reconciliationCode ?? 'state_verification_failed'; throw error; }
         sessionId = marker.sessionId;
         const markerPath = join(receiptsDir, `devin-dispatch-${hash(sessionId)}.json`);
         const file = await open(markerPath, 'wx', 0o600);
@@ -228,48 +251,60 @@ export async function runNativeDevin(options, dependencies = {}) {
         const current = calls.get(update.toolCallId);
         if (current?._meta?.['cognition.ai/inferenceToolName'] === 'exec' && current.status === 'completed')
           refuseTool({ code: 'native_exec_unexpected_completion', tool: null });
+        wakeSettlement();
       },
       onToolFailure(update) {
         const tool = calls.get(update.toolCallId);
         const kind = tool?._meta?.['cognition.ai/inferenceToolName'];
         const budgetDenied = budgetDeniedTools.has(update.toolCallId);
-        if (!budgetDenied && !['edit', 'write', 'exec'].includes(kind)) { reconciliationFailure = 'unsupported_tool'; return null; }
+        if (!budgetDenied && !['read', 'edit', 'write', 'exec'].includes(kind)) { reconciliationFailure = 'unsupported_tool'; return null; }
         if (!budgetDenied && kind !== 'exec' && typeof tool.rawInput?.file_path !== 'string') { reconciliationFailure = 'missing_target'; return null; }
-        if (tasks.size || broker.stats().active || [...calls.values()].some(call => !['completed', 'failed'].includes(call.status))) {
-          reconciliationFailure = 'overlapping_operations'; return null;
-        }
-        return serializeHost(async () => {
-          let receipt;
-          try {
-            if (budgetDenied) receipt = await workspace.reconcileBudgetDeniedTool(tool, budgetDeniedTools.get(update.toolCallId));
-            else if (kind === 'exec') {
-              const denial = await context.verifyExecDenial();
-              if (denial?.policy !== 'native-exec-denied/v1' || denial.artifactDigest !== context.digest
-                  || !/^[a-f0-9]{64}$/.test(denial.configHash ?? '')) throw new Error('Native exec denial is unbound.');
-              receipt = { ...await workspace.reconcileDeniedNativeExec(tool), denial };
-            } else receipt = await workspace.reconcileFailedNativeWrite(tool);
-          }
+        // Reserve a barrier synchronously, before any later host request can
+        // start. Existing host work and already-granted native writes may drain;
+        // no new write/command authority is admitted while effects are checked.
+        if (!reconciling) for (const call of calls.values())
+          if (!['completed', 'failed'].includes(call.status)) settlingIds.add(call.toolCallId);
+        reconciling++;
+        const operation = reconciliationTail.then(async () => {
+          try { await waitForSettlement(); }
           catch (error) {
-            // Cancel synchronously inside the queue, before it can dispatch a
-            // subsequent host operation. Preserve the original failure label.
             reconciliationFailure = error?.reconciliationCode ?? 'state_verification_failed';
             localStopReason ??= 'tool_failed'; abort(); return null;
           }
-          try {
-            const file = await open(join(receiptsDir, `devin-no-effect-${hash(sessionId)}-${hash(update.toolCallId)}.json`), 'wx', 0o600);
+          return serializeHost(async () => {
+            let receipt;
             try {
-              await file.writeFile(JSON.stringify({ ...receipt, sessionId, artifactDigest: context.digest,
-                policy: 'contained-native/v1', operationCompleted: false }));
-              await file.sync();
-            } finally { await file.close(); }
-          } catch {
-            // Storage failure is an evidence failure too. Cancel while holding
-            // the host queue, not later in the observer's promise callback.
-            reconciliationFailure = 'receipt_persistence_failed';
-            localStopReason ??= 'tool_failed'; abort(); return null;
-          }
-          return receipt;
-        });
+              if (budgetDenied) receipt = await workspace.reconcileBudgetDeniedTool(tool, budgetDeniedTools.get(update.toolCallId));
+              else if (kind === 'exec') {
+                const denial = await context.verifyExecDenial();
+                if (denial?.policy !== 'native-exec-denied/v1' || denial.artifactDigest !== context.digest
+                    || !/^[a-f0-9]{64}$/.test(denial.configHash ?? '')) throw new Error('Native exec denial is unbound.');
+                receipt = { ...await workspace.reconcileDeniedNativeExec(tool), denial };
+              } else if (kind === 'read') receipt = await workspace.reconcileFailedNativeRead(tool, toolStartHashes.get(update.toolCallId));
+              else receipt = await workspace.reconcileFailedNativeWrite(tool);
+            }
+            catch (error) {
+              // Cancel inside the queue, before any later host dispatch.
+              reconciliationFailure = error?.reconciliationCode ?? 'state_verification_failed';
+              localStopReason ??= 'tool_failed'; abort(); return null;
+            }
+            try {
+              const file = await open(join(receiptsDir, `devin-no-effect-${hash(sessionId)}-${hash(update.toolCallId)}.json`), 'wx', 0o600);
+              try {
+                await file.writeFile(JSON.stringify({ ...receipt, sessionId, artifactDigest: context.digest,
+                  policy: 'contained-native/v1', operationCompleted: false }));
+                await file.sync();
+              } finally { await file.close(); }
+            } catch {
+              // Persistence failure cancels before acknowledging no effect.
+              reconciliationFailure = 'receipt_persistence_failed';
+              localStopReason ??= 'tool_failed'; abort(); return null;
+            }
+            return receipt;
+          }, { settlement: true });
+        }).finally(() => { if (--reconciling === 0) settlingIds.clear(); });
+        reconciliationTail = operation.catch(() => {});
+        return operation;
       },
       onProgress({ observedTools }) {
         nativeTools = observedTools; reportActions();
@@ -279,7 +314,13 @@ export async function runNativeDevin(options, dependencies = {}) {
         try {
           if (!Object.hasOwn(fileHandlers, method)) throw new Error('Unsupported ACP host method.');
           hostAction();
-          return await serializeHost(() => fileHandlers[method](params));
+          // Do not deadlock an earlier granted write whose completion requires
+          // delegated ACP I/O. This exception cannot issue a new permission.
+          const settlement = reconciling > 0 && ['fs/read_text_file', 'fs/write_text_file'].includes(method)
+            && workspace.nativeWriteEvidence().writes.some(item => settlingIds.has(item.toolCallId)
+              && !item.noEffectVerified && join(mirror, item.path) === params.path
+              && !['completed', 'failed'].includes(calls.get(item.toolCallId)?.status));
+          return await serializeHost(() => fileHandlers[method](params), { settlement });
         } catch (error) {
           if (!(error instanceof DevinToolFeedback) && !control.signal.aborted) refuseTool({ code: 'host_operation_refused', tool: null });
           throw error;

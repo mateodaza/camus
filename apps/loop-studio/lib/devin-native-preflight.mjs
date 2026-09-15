@@ -26,7 +26,9 @@ export function devinIsolatedEnvironment(root) {
 }
 
 export function devinIsolatedConfig() {
-  return { agent: { model: DEVIN_NATIVE_MODEL }, auto_update: false, subagents_enabled: false,
+  // The pinned CLI migrates an unversioned config on session/new. Declare its
+  // observed schema upfront so exact deny-policy evidence remains unchanged.
+  return { version: 1, agent: { model: DEVIN_NATIVE_MODEL }, auto_update: false, subagents_enabled: false,
     attribution: false, notify: 'never', proxy: { mode: 'off' },
     read_config_from: { cursor: false, windsurf: false, claude: false },
     permissions: { allow: [], ask: [], deny: [] } };

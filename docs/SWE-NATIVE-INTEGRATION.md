@@ -5,6 +5,13 @@ Owner: Camus maintainer. Updated September 15, 2026.
 
 ## Current checkpoint
 
+- **0.4.32 routine-failure continuity:** versioned config prevents the observed
+  session migration from invalidating exec-denial evidence. Post-session policy
+  checks precede inference. Checked read failures and bounded operation settlement
+  reduce whole-turn refusals without adopting uncertain writes. Evidence includes
+  a real no-prompt session and an offline multi-turn repair/review campaign, not
+  a new live completion. See [the evidence](SWE-CONTRACT-VALIDATION.md#routine-tool-failure-continuity-0432).
+
 - **0.4.31 slice closure:** cleaned-up action/time stops use the same bounded
   discard-and-continue lifecycle; exhaustion parks for explicit extension. New
   runs seal a distinct verified baseline. Soft wrap-up reaches ACP and MCP host

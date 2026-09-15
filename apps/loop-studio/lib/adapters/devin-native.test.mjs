@@ -5,12 +5,187 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { runNativeDevin } from './devin-native.mjs';
-import { devinIsolatedEnvironment } from '../devin-native-preflight.mjs';
+import { devinIsolatedEnvironment, devinIsolatedConfig } from '../devin-native-preflight.mjs';
+import { verifyDevinExecDenial } from '../devin-native-context.mjs';
 import { execFileSync } from 'node:child_process';
 import { runCodeSeats } from '../code-seats.mjs';
 import { DEVIN_CODE_BACKEND } from '../devin-code-seat.mjs';
 import { DevinToolFeedback } from '../devin-native-workspace.mjs';
 import { DEVIN_NATIVE_DIGEST } from '../devin-native-protocol.mjs';
+
+test('Build survives recurring exec/read/edit failures across turns, repairs verification, and reaches independent review',
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 20000 }, () => fixture(async ctx => {
+    const git = (...args) => execFileSync('git', ['-C', ctx.candidate, ...args], { stdio: 'ignore' });
+    git('init', '-q'); git('add', 'calc.mjs');
+    git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'base');
+    ctx.context.digest = DEVIN_NATIVE_DIGEST; // offline transport's pinned-seat fixture, not a live identity claim
+    let turns = 0, verifies = 0, reviews = 0;
+    const deps = ctx.dependencies(async ({ update, sourceMirror, mcp }) => {
+      turns++;
+      const path = join(sourceMirror, 'calc.mjs');
+      const read = async () => JSON.parse((await mcp('tools/call', { name: 'read_file', arguments: { path: 'calc.mjs' } })).result.content[0].text);
+      // Three routine failures in each slice, including one that overlaps a
+      // still-running earlier operation. No mock adapter success bypasses them.
+      update({ sessionUpdate: 'tool_call', toolCallId: 'exec', kind: 'execute', _meta: { 'cognition.ai/inferenceToolName': 'exec' } });
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'exec', status: 'failed', rawOutput: 'permission denied' });
+      await read();
+      update({ sessionUpdate: 'tool_call', toolCallId: 'read-miss', kind: 'read', _meta: { 'cognition.ai/inferenceToolName': 'read' }, rawInput: { file_path: join(sourceMirror, 'missing.txt') } });
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'read-miss', status: 'failed', rawOutput: 'unclassified' });
+      await read();
+      update({ sessionUpdate: 'tool_call', toolCallId: 'earlier-read', kind: 'read', status: 'in_progress' });
+      update({ sessionUpdate: 'tool_call', toolCallId: 'edit-miss', kind: 'edit', _meta: { 'cognition.ai/inferenceToolName': 'edit' }, rawInput: { file_path: path } });
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'edit-miss', status: 'failed', rawOutput: 'unclassified' });
+      const waiting = read();
+      setTimeout(() => update({ sessionUpdate: 'tool_call_update', toolCallId: 'earlier-read', status: 'completed' }), 20);
+      const file = await waiting;
+      if (turns > 1) assert.match(file.content, /prior accepted milestone/);
+      const content = `// prior accepted milestone ${turns}\nexport const add=(a,b)=>${turns === 3 ? 'Number(a)+Number(b)' : 'a-b'};`;
+      const written = await mcp('tools/call', { name: 'write_file', arguments: { path: 'calc.mjs', content, expectedSha256: file.sha256 } });
+      assert.equal(written.result.isError, false);
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify({ done: turns > 1, summary: 'milestone',
+        decision: turns === 1 ? { action: 'continue', reason: 'remaining work' } : null }) } });
+      return { stopReason: 'end_turn' };
+    });
+    const verify = async ({ worktree }) => {
+      verifies++;
+      try {
+        execFileSync(process.execPath, ['--input-type=module', '-e', `import assert from 'node:assert/strict';import {add} from './calc.mjs';assert.equal(add('2',3),5);`], { cwd: worktree, stdio: 'ignore' });
+        return { ran: true, pass: true, exitCode: 0 };
+      } catch { return { ran: true, pass: false, exitCode: 1, stderr: 'Addition contract failed' }; }
+    };
+    verify.command = 'offline numeric acceptance test'; verify.repeatable = true;
+    const result = await runCodeSeats({ repoPath: ctx.candidate, receiptsDir: ctx.receipts, task: 'Fix numeric addition.',
+      seats: { maker: { backend: 'devin', model: 'swe-2-high', codeExecutor: 'devin_native', observedBudgetConsent: 'devin-observed/v1' }, reviewer: { backend: 'claude', model: 'fixture-review' } },
+      backendSnapshot: { maker: DEVIN_CODE_BACKEND, reviewer: { kind: 'claude_cli', transport: 'vendor_managed', provider: 'anthropic' } },
+      adapters: { nativeMaker: options => runNativeDevin(options, deps), maker: () => { throw Error('No fallback'); },
+        reviewer: async () => { reviews++; assert.equal(verifies, 2); return { ran: true, verdict: 'APPROVED', findings: [], usage: { total_tokens: 5 } }; } },
+      verify, limits: { maxCalls: 4, maxSteps: 3, maxActions: 100, maxTokens: 1000000, maxRecoveries: 0, maxRetries: 0, maxRepairs: 1 } });
+    assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+    assert.equal(turns, 3); assert.equal(reviews, 1); assert.equal(verifies, 2);
+    assert.equal(result.usage.calls, 4); assert.equal(result.usage.recoveries, 0); assert.equal(result.usage.repairs, 1);
+    const proofs = (await readdir(ctx.receipts)).filter(name => name.startsWith('devin-no-effect-'));
+    assert.equal(proofs.length, 9, 'every failed operation has durable no-effect evidence');
+    assert.equal(await readFile(join(ctx.candidate, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>a-b;', 'original repository is untouched');
+  }));
+
+for (const legacy of [false, true]) test(`real config evidence survives session migration without a paid failure (legacy=${legacy})`,
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    const config = { ...devinIsolatedConfig(), permissions: { allow: [], ask: [], deny: ['exec'] } };
+    if (legacy) delete config.version;
+    const configBytes = JSON.stringify(config);
+    await writeFile(ctx.context.config, configBytes, { mode: 0o600 });
+    ctx.context.digest = createHash('sha256').update(await readFile(ctx.context.harness)).digest('hex');
+    ctx.context.verifyExecDenial = () => verifyDevinExecDenial({ config: ctx.context.config, configBytes,
+      harness: ctx.context.harness, artifactDigest: ctx.context.digest });
+    const deps = ctx.dependencies(async ({ update, mcp }) => {
+      update({ sessionUpdate: 'tool_call', toolCallId: 'denied', kind: 'execute', _meta: { 'cognition.ai/inferenceToolName': 'exec' } });
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'denied', status: 'failed' });
+      await mcp('tools/call', { name: 'read_file', arguments: { path: 'calc.mjs' } });
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '{"done":true,"summary":"Checked","decision":null}' } });
+      return { stopReason: 'end_turn' };
+    });
+    const factory = deps.rpcFactory;
+    deps.rpcFactory = callbacks => {
+      const rpc = factory(callbacks);
+      return { ...rpc, async request(method, params) {
+        if (method === 'session/new' && legacy) await writeFile(ctx.context.config, JSON.stringify({ ...config, version: 1 }));
+        return rpc.request(method, params);
+      } };
+    };
+    const result = await runNativeDevin(ctx.defaults, deps);
+    if (legacy) {
+      assert.equal(result.noModelCalled, true); assert.equal(ctx.state().prompts, 0);
+      assert.equal(result.diagnostic.reconciliationFailure, 'exec_policy_changed');
+    } else {
+      assert.equal(result.ok, true, result.error); assert.equal(ctx.state().prompts, 1);
+      const terminal = (await readdir(ctx.receipts)).find(name => name.startsWith('devin-terminal-'));
+      assert.equal(JSON.parse(await readFile(join(ctx.receipts, terminal), 'utf8')).diagnostic.toolFailures[0].recovery, 'verified_no_effect');
+    }
+  }));
+
+for (const fault of ['none', 'changed', 'extra', 'outside', 'protected', 'missing_input']) test(`failed native read reconciles only checked no-effect evidence: ${fault}`,
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    const result = await runNativeDevin(ctx.defaults, ctx.dependencies(async ({ update, sourceMirror, mcp }) => {
+      const path = fault === 'outside' ? join(ctx.candidate, 'calc.mjs') : join(sourceMirror, fault === 'protected' ? '.env' : 'missing.txt');
+      update({ sessionUpdate: 'tool_call', toolCallId: 'read-miss', kind: 'read', _meta: { 'cognition.ai/inferenceToolName': 'read' },
+        ...(fault === 'missing_input' ? {} : { rawInput: { file_path: path } }) });
+      if (fault === 'changed') await writeFile(join(sourceMirror, 'calc.mjs'), 'unapproved');
+      if (fault === 'extra') await writeFile(join(sourceMirror, 'extra'), 'unapproved');
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'read-miss', status: 'failed', rawOutput: 'private read error' });
+      await mcp('tools/call', { name: 'read_file', arguments: { path: 'calc.mjs' } }).catch(() => {});
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '{"done":true,"summary":"Checked","decision":null}' } });
+      return { stopReason: 'end_turn' };
+    }));
+    assert.equal(result.ok, fault === 'none', result.error);
+    assert.doesNotMatch(JSON.stringify(result.diagnostic ?? {}), /private read error|missing\.txt/);
+    const proofs = (await readdir(ctx.receipts)).filter(name => name.startsWith('devin-no-effect-'));
+    assert.equal(proofs.length, fault === 'none' ? 1 : 0);
+    assert.equal(await readFile(join(ctx.candidate, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>a-b;');
+  }));
+
+test('failed edit waits for an earlier native read to settle and then admits the corrected write',
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    const result = await runNativeDevin(ctx.defaults, ctx.dependencies(async ({ update, sourceMirror, mcp }) => {
+      update({ sessionUpdate: 'tool_call', toolCallId: 'earlier-read', kind: 'read', status: 'in_progress' });
+      update({ sessionUpdate: 'tool_call', toolCallId: 'miss', kind: 'edit', _meta: { 'cognition.ai/inferenceToolName': 'edit' }, rawInput: { file_path: join(sourceMirror, 'calc.mjs') } });
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'miss', status: 'failed' });
+      let finished = false;
+      const waiting = mcp('tools/call', { name: 'read_file', arguments: { path: 'calc.mjs' } }).then(value => { finished = true; return value; });
+      await new Promise(resolve => setTimeout(resolve, 40)); assert.equal(finished, false);
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'earlier-read', status: 'completed' });
+      const file = JSON.parse((await waiting).result.content[0].text);
+      const written = await mcp('tools/call', { name: 'write_file', arguments: { path: 'calc.mjs', content: 'fixed', expectedSha256: file.sha256 } });
+      assert.equal(written.result.isError, false);
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '{"done":true,"summary":"Fixed","decision":null}' } });
+      return { stopReason: 'end_turn' };
+    }));
+    assert.equal(result.ok, true, result.error); assert.equal(await readFile(join(ctx.candidate, 'calc.mjs'), 'utf8'), 'fixed');
+  }));
+
+test('denied exec lets a previously granted ACP write finish through the settlement barrier',
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    const result = await runNativeDevin(ctx.defaults, ctx.dependencies(async ({ update, callbacks, sourceMirror, sessionId, mcp }) => {
+      const path = join(sourceMirror, 'calc.mjs');
+      update({ sessionUpdate: 'tool_call', toolCallId: 'prior-write', kind: 'edit', _meta: { 'cognition.ai/inferenceToolName': 'write' }, rawInput: { file_path: path, content: 'fixed' } });
+      await callbacks.onRequest('session/request_permission', { sessionId, toolCall: { toolCallId: 'prior-write' }, options: [{ kind: 'allow_once', optionId: 'once' }] });
+      update({ sessionUpdate: 'tool_call', toolCallId: 'denied', kind: 'execute', _meta: { 'cognition.ai/inferenceToolName': 'exec' } });
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'denied', status: 'failed' });
+      await callbacks.onRequest('fs/write_text_file', { sessionId, path, content: 'fixed' });
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'prior-write', status: 'completed' });
+      await mcp('tools/call', { name: 'read_file', arguments: { path: 'calc.mjs' } });
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '{"done":true,"summary":"Fixed","decision":null}' } });
+      return { stopReason: 'end_turn' };
+    }));
+    assert.equal(result.ok, true, result.error); assert.equal(await readFile(join(ctx.candidate, 'calc.mjs'), 'utf8'), 'fixed');
+  }));
+
+for (const cancel of [false, true]) test(`settlement drains an existing host command without admitting later work (cancel=${cancel})`,
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    const control = new AbortController(); ctx.defaults.signal = control.signal;
+    let release, entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    const waiting = new Promise(resolve => { release = resolve; });
+    const deps = ctx.dependencies(async ({ update, mcp, callbacks, sourceMirror, sessionId }) => {
+      const first = mcp('tools/call', { name: 'run_command', arguments: { command: '/bin/echo', args: [] } });
+      await started;
+      update({ sessionUpdate: 'tool_call', toolCallId: 'denied', kind: 'execute', _meta: { 'cognition.ai/inferenceToolName': 'exec' } });
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'denied', status: 'failed' });
+      let finished = false;
+      const later = callbacks.onRequest('fs/read_text_file', { sessionId, path: join(sourceMirror, 'calc.mjs') }).then(value => { finished = true; return value; }).catch(() => null);
+      try {
+        await new Promise(resolve => setTimeout(resolve, 40)); assert.equal(finished, false);
+        if (cancel) control.abort();
+      } finally { release(); }
+      await first.catch(() => {}); await later;
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '{"done":true,"summary":"Checked","decision":null}' } });
+      return { stopReason: 'end_turn' };
+    });
+    deps.runProcess = async () => { entered(); await waiting; return { code: 0, stdout: '' }; };
+    const result = await runNativeDevin(ctx.defaults, deps);
+    assert.equal(result.ok, !cancel, result.error);
+    const receipts = (await readdir(ctx.receipts)).filter(name => name.startsWith('devin-no-effect-'));
+    assert.equal(receipts.length, cancel ? 0 : 1);
+  }));
 
 test('shared Build discards a truncated native turn then completes via checked writes without a human restart',
   { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 20000 }, () => fixture(async ctx => {
@@ -326,9 +501,9 @@ for (const fault of ['missing_policy', 'changed_policy', 'partial_write', 'extra
   test(`native exec recovery refuses ${fault}`,
     { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
       let executed = 0;
-      if (fault === 'missing_policy') ctx.context.verifyExecDenial = undefined;
-      if (fault === 'changed_policy') ctx.context.verifyExecDenial = async () => { throw new Error('Changed host policy'); };
       const deps = ctx.dependencies(async ({ update, sourceMirror, mcp }) => {
+        if (fault === 'missing_policy') ctx.context.verifyExecDenial = undefined;
+        if (fault === 'changed_policy') ctx.context.verifyExecDenial = async () => { throw new Error('Changed host policy'); };
         if (fault === 'receipt_collision') {
           const hash = value => createHash('sha256').update(value).digest('hex');
           await writeFile(join(ctx.receipts, `devin-no-effect-${hash('fixture-s1')}-${hash('exec')}.json`), 'do not overwrite');
@@ -550,7 +725,7 @@ async function fixture(fn) {
   const env = devinIsolatedEnvironment(auth);
   const context = { root: auth, env, harness: await realpath(process.execPath), config: join(auth, 'config.json'),
     digest: 'offline-fixture', configureMcp: async value => { brokerDefinition = value; },
-    verifyExecDenial: async () => ({ policy: 'native-exec-denied/v1', artifactDigest: 'offline-fixture', configHash: 'a'.repeat(64) }),
+    verifyExecDenial: async () => ({ policy: 'native-exec-denied/v1', artifactDigest: context.digest, configHash: 'a'.repeat(64) }),
     release: async ({ writerStopped }) => { assert(writerStopped); releaseCalled = true; } };
   const defaults = { model: 'swe-2-high', backend: { name: 'devin', kind: 'devin_cli' }, prompt: 'Fix addition and return the agreed JSON.',
     worktree: candidate, receiptsDir: receipts, sourceFiles: ['calc.mjs'],

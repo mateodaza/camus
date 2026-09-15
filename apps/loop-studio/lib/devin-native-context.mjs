@@ -11,15 +11,23 @@ import { DEVIN_NATIVE_DIGEST, DEVIN_NATIVE_MODEL, DEVIN_NATIVE_VERSION } from '.
 // Pure local evidence check, factored for hermetic tamper controls. Production
 // always supplies DEVIN_NATIVE_DIGEST, never a user-selected trust anchor.
 export async function verifyDevinExecDenial({ config, configBytes, harness, artifactDigest }) {
-  const stat = await lstat(config);
+  const fail = code => Object.assign(new Error('Devin execution policy evidence failed.'), { reconciliationCode: code });
+  let stat, bytes;
+  try { stat = await lstat(config); }
+  catch { throw fail('exec_policy_unavailable'); }
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== process.getuid()
-      || (stat.mode & 0o077) || stat.size !== Buffer.byteLength(configBytes)
-      || await readFile(config, 'utf8') !== configBytes
-      || createHash('sha256').update(await readFile(harness)).digest('hex') !== artifactDigest)
-    throw new Error('Devin execution policy changed.');
+      || (stat.mode & 0o077)) throw fail('exec_policy_metadata');
+  if (stat.size !== Buffer.byteLength(configBytes)) throw fail('exec_policy_changed');
+  try { bytes = await readFile(config, 'utf8'); }
+  catch { throw fail('exec_policy_unavailable'); }
+  if (bytes !== configBytes) throw fail('exec_policy_changed');
+  let digest;
+  try { digest = createHash('sha256').update(await readFile(harness)).digest('hex'); }
+  catch { throw fail('exec_artifact_unavailable'); }
+  if (digest !== artifactDigest) throw fail('exec_artifact_changed');
   const policy = JSON.parse(configBytes);
   if (!Array.isArray(policy.permissions?.deny) || !policy.permissions.deny.includes('exec'))
-    throw new Error('Devin execution denial absent.');
+    throw fail('exec_denial_absent');
   return Object.freeze({ policy: 'native-exec-denied/v1', artifactDigest,
     configHash: createHash('sha256').update(configBytes).digest('hex') });
 }

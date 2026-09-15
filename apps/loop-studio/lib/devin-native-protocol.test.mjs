@@ -12,7 +12,9 @@ import { publicDevinDiagnostic, parseDevinDecisionText } from './devin-native-pr
 
 test('reconciliation diagnostics expose only fixed host labels, never error text or paths', () => {
   for (const label of ['unsupported_tool', 'missing_target', 'overlapping_operations', 'target_changed',
-    'approved_write_mismatch', 'inventory_mismatch', 'state_verification_failed', 'receipt_persistence_failed']) {
+    'approved_write_mismatch', 'inventory_mismatch', 'state_verification_failed', 'receipt_persistence_failed',
+    'settlement_timeout', 'exec_policy_unavailable', 'exec_policy_metadata', 'exec_policy_changed',
+    'exec_artifact_unavailable', 'exec_artifact_changed', 'exec_denial_absent']) {
     assert.equal(publicDevinDiagnostic({ stage: 'native_turn', reconciliationFailure: label }).reconciliationFailure, label);
   }
   const output = publicDevinDiagnostic({ stage: 'native_turn', reconciliationFailure: '/private/path secret-token', error: 'private error' });
@@ -266,6 +268,7 @@ test('isolated environment is an allowlist, with no model/key/fallback/proxy inh
   assert(Object.isFrozen(env));
   for (const root of ['/', '', '/tmp/../Users', 'relative']) assert.throws(() => devinIsolatedEnvironment(root));
   const config = devinIsolatedConfig();
+  assert.equal(config.version, 1, 'pinned CLI must not migrate unversioned host policy at session/new');
   assert.equal(config.auto_update, false); assert.equal(config.subagents_enabled, false);
   assert.deepEqual(config.read_config_from, { cursor: false, windsurf: false, claude: false });
   assert.deepEqual(config.proxy, { mode: 'off' });

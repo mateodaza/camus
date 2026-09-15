@@ -5,6 +5,58 @@ Status: **survivable-edit and bounded-formatting corrections are included in
 This is a compatibility and regression gate, not a promise of bug-free native
 execution or a successful Company Brain run.
 
+## Routine tool-failure continuity (0.4.32)
+
+Company Brain revision 616 recorded four refused turns out of five in the latest
+block. None hit the slice cap: two denied exec calls failed state verification,
+one native read was unsupported by reconciliation, and an edit failure overlapped
+another operation. Accepted candidate `e7c226e2…` stayed preserved. Recovery alone
+was working, but useful progress remained too expensive.
+
+### Reproduced config cause
+
+A local check using the pinned `3000.10.21` binary sent only ACP `initialize` and
+`session/new`, never `session/prompt`. The CLI added `version: 1` to Camus's
+unversioned config, leaving permissions unchanged but invalidating the exact-byte
+exec-denial proof. Config mode remained 0600. After generating `version: 1`
+upfront, a second no-prompt check passed the exact post-session policy proof.
+This reproduces a cause for the exec-refusal class; old generic diagnostics cannot
+prove that every historical failure had that cause.
+
+The adapter now checks that evidence before writing its dispatch marker or
+sending a prompt. No permission or artifact check was relaxed. New diagnostics
+distinguish config availability, metadata, bytes, artifact, and missing-denial
+failures through fixed labels, never raw errors, paths, or credentials.
+
+### Bounded settlement and read failures
+
+A failed native read is eligible only inside the permitted mirror, with no write
+grant attributed to it, unchanged checked state, verified writes and inventory.
+Outside/protected targets, missing input and changed state stay refused.
+
+Known reconcilable failures reserve a host barrier immediately. Previously
+admitted work can settle for at most five seconds inside the original deadline;
+already-granted native writes may finish their delegated ACP I/O. Later host work
+queues without executing until durable no-effect evidence is complete. No new
+write permission is granted through the settlement exception. Unsettled work,
+cancellation, partial effects, policy drift and persistence failure still stop.
+
+### Evidence and limits
+
+Offline tests exercise the real config verifier, migration-before-prompt refusal,
+read-failure negative controls, native/host overlap, granted delegated writes,
+cancellation, and existing partial-write/authority/cleanup refusals. A shared
+Build campaign drives the real adapter with scripted ACP transport through nine
+routine failures over three maker turns, a real arithmetic verifier failure,
+repair, and a separate fixture reviewer. It reaches acceptance readiness with
+zero recovery slots consumed. The original repository remains untouched.
+
+This is not a live SWE task evaluation or a guarantee of Company Brain completion.
+The latest run has 13 consumed calls, eight recoveries, 536 actions and about
+87 active minutes. Upgrading grants no additional authority; a full continuation
+needs an explicit budget covering implementation, verification, review and repairs.
+The existing accepted candidate must be resumed, not replaced with a refused mirror.
+
 ## Slice closure and resumable budget stops (0.4.31)
 
 Company Brain maker-8 stopped at revision 401 on `observed_tool_limit`: 34 native

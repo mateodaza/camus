@@ -180,6 +180,20 @@ export async function createDevinWorkspace({ candidate, mirror, root, harness, f
     nativeWriteEvidence() { return { policy: containedNativeWrites ? 'contained-native/v1' : 'host-or-legacy',
       writes: nativeWrites.map(item => ({ ...item })) }; },
     checkedStateHash() { return hash(JSON.stringify(snapshots.map(item => [item.path, acceptedHashes.get(item.path)]))); },
+    async reconcileFailedNativeRead(tool, beforeHash) {
+      if (!containedNativeWrites || adopted || signal?.aborted || tool?.status !== 'failed'
+          || tool?._meta?.['cognition.ai/inferenceToolName'] !== 'read') throw new Error('Native read failure is not reconcilable.');
+      // Only a pinned native read inside the permitted mirror is eligible.
+      // A read label alone cannot excuse changed bytes, an external target, or
+      // a write grant attributed to the same operation.
+      const path = workspace.hostPath(tool.rawInput?.file_path);
+      if (nativeWrites.some(item => item.toolCallId === tool.toolCallId)) throw new Error('Read has write authority.');
+      await workspace.verifyNativeWrites(); await verifyInventory(); await workspace.verifyNativeWrites();
+      if (typeof beforeHash !== 'string' || beforeHash !== workspace.checkedStateHash())
+        throw Object.assign(new Error('Read interval has changed checked state.'), { reconciliationCode: 'target_changed' });
+      if (signal?.aborted) throw new Error('Read reconciliation cancelled.');
+      return Object.freeze({ toolCallId: tool.toolCallId, recovery: 'verified_no_effect', operation: 'read', path, checkedStateHash: beforeHash });
+    },
     async reconcileBudgetDeniedTool(tool, beforeHash) {
       if (!containedNativeWrites || adopted || signal?.aborted || tool?.status !== 'failed') throw new Error('Budget denial is not reconcilable.');
       // Caller must hold a host-created, pre-effect refusal record for this ID.

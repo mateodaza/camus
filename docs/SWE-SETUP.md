@@ -15,6 +15,14 @@ include these corrections. The contained native-write policy introduced in
 
 ## Before you start
 
+**0.4.32 routine-failure correction:** the pinned CLI's config schema is supplied
+upfront, and exact deny-policy evidence is checked after session creation but
+before a model prompt. Harmless native read failures can reconcile against
+unchanged checked state; overlapping work gets at most five seconds to settle
+inside the existing deadline before later host work may execute. Uncertain
+writes, policy drift, and missing evidence remain refused. See
+[the evidence](SWE-CONTRACT-VALIDATION.md#routine-tool-failure-continuity-0432).
+
 **0.4.31 slice closure:** eligible cleaned-up action/time stops stay recoverable,
 including first slices of new runs with a verified baseline. Soft wrap-up refuses
 new host work through ACP and MCP while retaining room for the model's final
@@ -69,7 +77,7 @@ to guarantee zero charges; check the terms and usage in your Devin account.
 ## CLI
 
 ```sh
-npm install -g camus-cli@0.4.31
+npm install -g camus-cli@0.4.32
 camus models
 camus build --repo /path/to/clean-repository \
   --task-file /path/to/task.txt --contract-file /path/to/acceptance.txt \
