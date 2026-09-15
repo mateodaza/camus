@@ -47,7 +47,29 @@ test('completed execution stays distinct from unknown billing and admission', as
   assert.equal(result.usageIncomplete, true); assert.equal(result.admissionGranted, false);
   assert.equal(result.adoptionAuthorized, false); assert.equal(result.modelActual, null);
   assert(log.indexOf('persist') < log.indexOf('session/prompt'));
-  assert.deepEqual(log.slice(-2), ['close', 'tools-close']);
+  assert.deepEqual(log.slice(-2), ['tools-close', 'close']);
+});
+
+test('unfinished host operations cannot become completion even when cleanup is confirmed', async () => {
+  const { options } = fixture();
+  const result = await runDevinProtocolTurn({ ...options, closeTools: async () => ({ unfinishedAtTerminal: true }) });
+  assert.equal(result.execution, 'uncertain'); assert.equal(result.reason, 'tool_boundary_refused');
+  assert.equal(result.cleanupConfirmed, true, 'incomplete completion is not falsely reported as unproven cleanup');
+});
+
+test('host work finishing during native process shutdown cannot erase an incomplete terminal', async () => {
+  const { options } = fixture();
+  let running = true;
+  const result = await runDevinProtocolTurn({ ...options,
+    closeTools: async () => ({ unfinishedAtTerminal: running }),
+    rpcFactory: callbacks => {
+      const rpc = options.rpcFactory(callbacks);
+      return { ...rpc, close: async () => { running = false; await rpc.close(); } };
+    },
+  });
+  assert.equal(result.execution, 'uncertain');
+  assert.equal(result.reason, 'tool_boundary_refused');
+  assert.equal(result.cleanupConfirmed, true);
 });
 
 test('missing uncertainty consent, claimed hard token caps, replay and model substitution refuse before RPC', async () => {

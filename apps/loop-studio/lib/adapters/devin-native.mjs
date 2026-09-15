@@ -2,13 +2,13 @@
 // Existing login, scoped native edits, host MCP tools, no API substitution.
 import { mkdir, mkdtemp, realpath, open, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { prepareDevinContext } from '../devin-native-context.mjs';
 import { createDevinWorkspace, isDevinVisiblePath, DevinToolFeedback } from '../devin-native-workspace.mjs';
 import { runDevinProtocolTurn, devinObservedContract } from '../devin-native-turn.mjs';
 import { startDevinMcp } from '../devin-native-mcp.mjs';
-import { assessDevinFilePermission, mergeDevinPermissionTool, selectDevinOneTimePermission } from '../devin-native-permission.mjs';
+import { createDevinFileHandlers } from '../devin-native-files.mjs';
 import { DEVIN_NATIVE_MODEL, DEVIN_NATIVE_DIGEST, publicDevinDiagnostic } from '../devin-native-protocol.mjs';
 import { CodexRpc } from '../codex-rpc.mjs';
 import { runNativeProcess } from '../native-process.mjs';
@@ -33,7 +33,7 @@ export async function runNativeDevin(options, dependencies = {}) {
     return { ok: false, noModelCalled: true, error: 'Explicit fresh Devin native maker selection required.', usage: null };
   const contract = devinObservedContract(observedBudget);
   if (!Array.isArray(sourceFiles) || !sourceFiles.length || !receiptsDir) throw new Error('Devin needs a host-prepared source inventory and private receipt directory.');
-  let context, mirror, toolScratch, workspace, broker, outcome, adopted = false, active = false, sessionId, commandActive = false;
+  let context, mirror, toolScratch, workspace, broker, outcome, adopted = false, active = false, sessionId;
   const control = new AbortController(), calls = new Map(), permissions = new Set(), tasks = new Set();
   const abort = () => control.abort(); signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
   const started = Date.now(); const timer = setTimeout(() => { localStopReason ??= 'deadline'; abort(); }, contract.maxWallMs);
@@ -54,11 +54,35 @@ export async function runNativeDevin(options, dependencies = {}) {
   const hostAction = ({ tool } = {}) => { if (tool) lastHostTool = tool; hostTools++; reportActions(); };
   const budgetSnapshot = () => devinBudgetSnapshot({ maximumActions: contract.maxObservedTools,
     usedActions: nativeTools + hostTools, maximumMs: contract.maxWallMs, elapsedMs: Date.now() - started });
+  let hostTail = Promise.resolve(), queued = 0;
+  const serializeHost = async fn => {
+    if (!active || control.signal.aborted || queued >= 8) {
+      if (!control.signal.aborted) refuseTool({ code: 'host_operation_refused', tool: null });
+      throw new Error('Native host queue refused.');
+    }
+    queued++;
+    const operation = hostTail.then(async () => {
+      if (!active || control.signal.aborted) throw new Error('Native host operation cancelled before dispatch.');
+      try {
+        const result = await fn();
+        if (control.signal.aborted) throw new Error('Native host operation cancelled before acknowledgement.');
+        return result;
+      }
+      catch (error) {
+        if (!(error instanceof DevinToolFeedback) && !control.signal.aborted) refuseTool({ code: 'host_operation_refused', tool: null });
+        throw error;
+      }
+    });
+    hostTail = operation.catch(() => {}); tasks.add(operation);
+    try { return await operation; }
+    finally { queued--; tasks.delete(operation); }
+  };
   try {
     context = await (dependencies.prepareContext ?? prepareDevinContext)({ signal: control.signal });
     mirror = await realpath(await mkdtemp(join(tmpdir(), 'camus-devin-workspace-')));
     toolScratch = await realpath(await mkdtemp(join(tmpdir(), 'camus-devin-tools-')));
     workspace = await createDevinWorkspace({ candidate: worktree, mirror, root: context.root, harness: context.harness,
+      containedNativeWrites: true, signal: control.signal,
       files: sourceFiles.filter(path => isDevinVisiblePath(path) && !deniedPaths.some(denied => path === denied || path.startsWith(denied + '/')))
         .map(path => ({ path, mode: 'write' })), deniedPaths });
     const toolsPolicy = await grokSubscriptionPolicy({ worktree: mirror, scratch: toolScratch, harness: context.harness,
@@ -69,17 +93,23 @@ export async function runNativeDevin(options, dependencies = {}) {
       + `\n(allow file-read-metadata ${[...parents].map(path => `(literal ${JSON.stringify(path)})`).join(' ')})`
       + `\n(deny file-write* (subpath ${JSON.stringify(mirror)}))`;
     const runTool = fn => async args => {
-      if (!active || control.signal.aborted || commandActive) throw new Error('Native tools are outside the active turn.');
-      const pending = Promise.resolve().then(() => fn(args)); tasks.add(pending);
-      try { return await pending; }
+      try { return await serializeHost(() => fn(args)); }
       catch (error) {
         if (!(error instanceof DevinToolFeedback) || control.signal.aborted) throw error;
         // The RPC succeeded in reporting a no-write conflict. This is not a
         // successful file operation or permission to retry an uncertain effect.
         return JSON.stringify({ operationCompleted: false, code: error.code, guidance: error.message });
-      } finally { tasks.delete(pending); }
+      }
     };
-    const relativePath = value => relative(mirror, workspace.mapPath(value));
+    const fileHandlers = createDevinFileHandlers({ workspace, cwd: mirror, sessionId: () => sessionId, calls, permissions,
+      onWriteApproved: async receipt => {
+        const file = await open(join(receiptsDir, `devin-write-${hash(sessionId)}-${hash(receipt.toolCallId)}.json`), 'wx', 0o600);
+        try {
+          await file.writeFile(JSON.stringify({ ...receipt, sessionId, artifactDigest: context.digest,
+            policy: 'contained-native/v1', approvalOnly: true }));
+          await file.sync();
+        } finally { await file.close(); }
+      } });
     broker = await (dependencies.startBroker ?? startDevinMcp)({ maxCalls: contract.maxObservedTools,
       onRefusal: refuseTool, onCall: hostAction, getBudget: budgetSnapshot, tools: [
       { name: 'list_files', description: 'List prepared file paths and write permissions, 100 per page. Start at offset 0. Includes host-created files.',
@@ -118,27 +148,33 @@ export async function runNativeDevin(options, dependencies = {}) {
               || !Array.isArray(args.args) || args.args.length > 100
               || args.args.some(arg => typeof arg !== 'string' || arg.includes('\0'))
               || Buffer.byteLength(JSON.stringify(args)) > 16384) throw new DevinToolFeedback('invalid_command');
-          commandActive = true;
-          try {
-            const result = await (dependencies.runProcess ?? runNativeProcess)({ command: '/usr/bin/sandbox-exec',
+          await workspace.verifyNativeWrites();
+          if (workspace.nativeWriteEvidence().writes.some(item => calls.get(item.toolCallId)?.status !== 'completed'))
+            throw new DevinToolFeedback('native_write_pending');
+          const result = await (dependencies.runProcess ?? runNativeProcess)({ command: '/usr/bin/sandbox-exec',
               args: ['-p', commandProfile, args.command, ...args.args], cwd: mirror,
               env: verificationEnvironment({ PATH: '/opt/homebrew/bin:/usr/bin:/bin' }, toolsPolicy.toolHome), signal: control.signal,
               timeoutMs: Math.max(1, Math.min(60000, contract.maxWallMs - (Date.now() - started))), maxBytes: 32768 });
-            return JSON.stringify({ exitCode: result.code, stdout: result.stdout });
-          } finally { commandActive = false; }
+          await workspace.verifyNativeWrites();
+          return JSON.stringify({ exitCode: result.code, stdout: result.stdout });
         }) },
     ] });
     await context.configureMcp(broker.definition);
     await mkdir(receiptsDir, { recursive: true, mode: 0o700 });
     closed = false;
     refusalStage = 'native_turn';
-    const toolPolicy = 'Camus native tool policy: use native read/edit only for prepared existing files. Use camus MCP list_files (offset 0, then nextOffset) to discover the prepared inventory, and search/read_file/write_file/run_command for search, creation and tests. Discover these tools when needed. A tool response with operationCompleted:false made no change: follow its guidance within the existing budget; never treat it as a successful write. Native exec is blocked. Commands see read-only staging, no credentials or network. Use TMPDIR for temporary outputs. Request new authority rather than bypassing unavailable operations. Return the requested JSON decision without Markdown.';
+    const toolPolicy = 'Camus native tool policy: native edit/write tools may write only the isolated staging workspace after a checked one-time permission. Each permission binds the exact expected file content; Camus checks the result before adoption. ACP file delegation and checked Camus MCP tools are also supported. Complete each approved native write before another write or command. Direct native exec is blocked. Use camus MCP list_files (offset 0, then nextOffset), search/read_file/write_file/run_command for discovery and tests. Host-proven no-effect conflicts provide correction guidance, never successful-write claims. Commands see read-only staging, no credentials or network. Use TMPDIR for temporary outputs. Request new authority rather than bypassing unavailable operations. Return the requested JSON decision without Markdown.';
     const dispatchPrompt = `${prompt}\n\nHost-observed SWE budget snapshot before protocol setup: ${JSON.stringify(budgetSnapshot())}\nHost MCP responses include a separate camus_native_budget block. Follow wrapUp guidance before exhaustion; stop tool use and return the requested final JSON. Native events plus host operations share the allowance; internal inference spend remains unknown.\n\n${toolPolicy}`;
     outcome = await runDevinProtocolTurn({ model, cwd: mirror, contract, signal: control.signal,
       prompt: dispatchPrompt,
-      rpcFactory: callbacks => (dependencies.rpcFactory ?? (value => new CodexRpc(value)))({ ...callbacks,
+      rpcFactory: callbacks => {
+        callbacks.signal.addEventListener('abort', abort, { once: true });
+        return (dependencies.rpcFactory ?? (value => new CodexRpc(value)))({ ...callbacks,
         command: '/usr/bin/sandbox-exec', args: ['-p', workspace.profile, context.harness, '--config', context.config, '--sandbox', 'acp', '--model', model],
-        cwd: context.root, env: context.env, protocol: 'jsonrpc2' }),
+        cwd: context.root, env: context.env, protocol: 'jsonrpc2', maxInboundRequests: contract.maxObservedTools,
+        requestError: error => error instanceof DevinToolFeedback ? { code: -32002, message: error.message }
+          : { code: -32000, message: 'Camus refused the bounded tool request.' } });
+      },
       beforePrompt: async marker => {
         sessionId = marker.sessionId;
         const markerPath = join(receiptsDir, `devin-dispatch-${hash(sessionId)}.json`);
@@ -161,20 +197,20 @@ export async function runNativeDevin(options, dependencies = {}) {
         onTick(`Devin native: ${nativeTools + hostTools} accounted actions (native events plus host executions); inference usage unavailable.`);
       },
       onToolRequest: async (method, params) => {
-        if (commandActive) {
-          refuseTool({ code: 'native_command_overlap', tool: null });
-          throw new Error('Concurrent native write/verification refused.');
+        try {
+          if (!Object.hasOwn(fileHandlers, method)) throw new Error('Unsupported ACP host method.');
+          hostAction();
+          return await serializeHost(() => fileHandlers[method](params));
+        } catch (error) {
+          if (!(error instanceof DevinToolFeedback) && !control.signal.aborted) refuseTool({ code: 'host_operation_refused', tool: null });
+          throw error;
         }
-        if (method === 'fs/read_text_file') { hostAction(); return { content: (await workspace.readText(relativePath(params.path))).content }; }
-        if (method !== 'session/request_permission') throw new Error('Native delegated write is unsupported; use checked MCP write_file.');
-        const tool = mergeDevinPermissionTool(calls.get(params.toolCall?.toolCallId), params.toolCall);
-        const target = workspace.mapPath(tool?.rawInput?.file_path, { writable: true });
-        const assessment = await assessDevinFilePermission({ cwd: mirror, target, tool, maxInputBytes: 65536 });
-        const result = selectDevinOneTimePermission({ expectedSessionId: sessionId, params, assessment, seen: permissions });
-        if (result.outcome.outcome !== 'selected') throw new Error('Native edit permission refused.');
-        return result;
       },
-      closeTools: async () => { active = false; abort(); await broker.close(); await Promise.allSettled([...tasks]); },
+      closeTools: async () => {
+        const unfinished = tasks.size > 0 || broker.stats().active > 0;
+        active = false; abort(); await broker.close(); await Promise.allSettled([...tasks]);
+        return { unfinishedAtTerminal: unfinished };
+      },
     });
     closed = outcome.cleanupConfirmed;
     // Keep terminal evidence BEFORE parsing/adoption. This bounded private file
@@ -183,6 +219,7 @@ export async function runNativeDevin(options, dependencies = {}) {
     refusalStage = 'terminal_evidence';
     await writeFile(join(receiptsDir, `devin-terminal-${sessionId ? hash(sessionId) : randomUUID()}.json`), JSON.stringify({
       ...outcome, artifactDigest: context.digest, modelSelected: model,
+      writeEvidence: workspace.nativeWriteEvidence(),
       diagnostic: diagnostic(),
       candidateAdopted: false, privateTaskContent: true,
     }), { flag: 'wx', mode: 0o600 });
@@ -213,7 +250,8 @@ export async function runNativeDevin(options, dependencies = {}) {
     const adoption = await workspace.adopt({ writersStopped: true }); adopted = true;
     refusalStage = 'result_receipt';
     await writeFile(join(receiptsDir, `devin-result-${hash(sessionId)}.json`), JSON.stringify({ ...outcome, text: undefined,
-      adoption, artifactDigest: context.digest, modelSelected: model }), { flag: 'wx', mode: 0o600 });
+      adoption, writeEvidence: { ...workspace.nativeWriteEvidence(), verifiedAfterCleanup: true },
+      artifactDigest: context.digest, modelSelected: model }), { flag: 'wx', mode: 0o600 });
     return { ok: true, definitiveTurnEnd: true, candidateQuiescent: true, text: JSON.stringify({ actions: [], ...decision }),
       usage: null, usageIncomplete: true, modelActual: null, modelReported: model, modelActualEvidence: 'selection_only',
       observedBudget: contract, durationMs: outcome.durationMs };

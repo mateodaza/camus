@@ -6,6 +6,97 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { runNativeDevin } from './devin-native.mjs';
 import { devinIsolatedEnvironment } from '../devin-native-preflight.mjs';
+import { execFileSync } from 'node:child_process';
+import { runCodeSeats } from '../code-seats.mjs';
+import { DEVIN_CODE_BACKEND } from '../devin-code-seat.mjs';
+import { DevinToolFeedback } from '../devin-native-workspace.mjs';
+
+test('host-proven missing ACP read permits correction to creation in the same native turn',
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    const result = await runNativeDevin(ctx.defaults, ctx.dependencies(async ({ callbacks, sourceMirror, update }) => {
+      const params = { sessionId: 'fixture-s1', path: join(sourceMirror, 'new.mjs') };
+      await assert.rejects(callbacks.onRequest('fs/read_text_file', params), e => e instanceof DevinToolFeedback && e.code === 'file_not_prepared');
+      await callbacks.onRequest('fs/write_text_file', { ...params, content: 'export const ready=true;' });
+      assert.equal((await callbacks.onRequest('fs/read_text_file', params)).content, 'export const ready=true;');
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '{"done":true,"summary":"Created","decision":null}' } });
+      return { stopReason: 'end_turn' };
+    }));
+    assert.equal(result.ok, true, result.error);
+    assert.equal(await readFile(join(ctx.candidate, 'new.mjs'), 'utf8'), 'export const ready=true;');
+  }));
+
+for (const channel of ['delegated', 'native']) test(`shared Build completes ${channel} create/read/edit, frozen verification and independent review without changing the source`,
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 15000 }, () => fixture(async ctx => {
+    const git = (...args) => execFileSync('git', ['-C', ctx.candidate, ...args], { stdio: 'ignore' });
+    git('init', '-q'); git('add', 'calc.mjs');
+    git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'base');
+    let reviews = 0, verifications = 0;
+    const deps = ctx.dependencies(async ({ callbacks, update, sourceMirror, mcp }) => {
+      for (const [id, name, content] of [['create', 'nested/new.mjs', 'export const ready=true;'],
+        ['edit', 'calc.mjs', 'export const add=(a,b)=>a+b;']]) {
+        const path = join(sourceMirror, name);
+        const tool = { toolCallId: id, kind: 'edit', _meta: { 'cognition.ai/inferenceToolName': 'write' },
+          rawInput: { file_path: path, content } };
+        update({ sessionUpdate: 'tool_call', ...tool });
+        const permission = await callbacks.onRequest('session/request_permission', { sessionId: 'fixture-s1',
+          toolCall: { toolCallId: id }, options: [{ kind: 'allow_once', optionId: id }] });
+        assert.equal(permission.outcome.optionId, id);
+        const approvals = (await readdir(ctx.receipts)).filter(name => name.startsWith('devin-write-'));
+        assert.equal(approvals.length, id === 'create' ? 1 : 2, 'approval is durable before returning permission');
+        if (channel === 'delegated') await callbacks.onRequest('fs/write_text_file', { sessionId: 'fixture-s1', path, content });
+        else execFileSync('/usr/bin/sandbox-exec', ['-p', callbacks.args[1], callbacks.args[2], '-e',
+          `const f=require('node:fs'),p=require('node:path');f.mkdirSync(p.dirname(${JSON.stringify(path)}),{recursive:true});f.writeFileSync(${JSON.stringify(path)},${JSON.stringify(content)});`],
+        { cwd: sourceMirror, env: callbacks.env, stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 });
+        assert.equal((await callbacks.onRequest('fs/read_text_file', { sessionId: 'fixture-s1', path })).content, content);
+        const pending = await mcp('tools/call', { name: 'run_command', arguments: { command: '/bin/echo', args: ['must wait'] } });
+        assert.equal(JSON.parse(pending.result.content[0].text).code, 'native_write_pending', 'bytes alone do not prove the native tool has stopped');
+        update({ sessionUpdate: 'tool_call_update', toolCallId: id, status: 'completed' });
+      }
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '{"done":true,"summary":"Created and edited","decision":null}' } });
+      return { stopReason: 'end_turn' };
+    });
+    const verify = async ({ worktree }) => {
+      verifications++;
+      assert.equal(await readFile(join(worktree, 'nested/new.mjs'), 'utf8'), 'export const ready=true;');
+      assert.equal(await readFile(join(worktree, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>a+b;');
+      return { ran: true, pass: true, exitCode: 0 };
+    };
+    verify.command = 'frozen offline fixture'; verify.repeatable = false;
+    const result = await runCodeSeats({ repoPath: ctx.candidate, receiptsDir: ctx.receipts, task: 'Create nested/new.mjs and fix addition.',
+      seats: { maker: { backend: 'devin', model: 'swe-2-high', codeExecutor: 'devin_native', observedBudgetConsent: 'devin-observed/v1' },
+        reviewer: { backend: 'claude', model: 'fixture-review' } },
+      backendSnapshot: { maker: DEVIN_CODE_BACKEND, reviewer: { kind: 'claude_cli', transport: 'vendor_managed', provider: 'anthropic' } },
+      adapters: { nativeMaker: options => runNativeDevin(options, deps),
+        maker: () => { throw new Error('No fallback'); }, reviewer: async ({ prompt }) => {
+          reviews++; assert.match(prompt, /nested\/new.mjs/);
+          return { ran: true, verdict: 'APPROVED', findings: [], usage: { total_tokens: 5 } };
+        } }, verify, limits: { maxTokens: 1000000, maxCalls: 3, maxSteps: 1, maxActions: 40, maxRepairs: 0, maxRetries: 0, maxRecoveries: 0 } });
+    assert.equal(result.completion, 'candidate_ready_for_acceptance', result.error);
+    const nativeName = (await readdir(ctx.receipts)).find(name => name.startsWith('devin-result-'));
+    const evidence = JSON.parse(await readFile(join(ctx.receipts, nativeName), 'utf8')).writeEvidence;
+    assert.equal(evidence.verifiedAfterCleanup, true); assert.equal(evidence.writes.length, 2);
+    assert.equal(reviews, 1); assert.equal(verifications, 1); assert.equal(ctx.state().prompts, 1);
+    assert.equal(await readFile(join(ctx.candidate, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>a-b;');
+    await assert.rejects(readFile(join(ctx.candidate, 'nested/new.mjs')), { code: 'ENOENT' });
+  }));
+
+test('cancellation drains queued ACP writes without creating their files',
+  { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
+    const control = new AbortController(); ctx.defaults.signal = control.signal;
+    let started; const entered = new Promise(resolve => { started = resolve; });
+    const deps = ctx.dependencies(async ({ mcp, callbacks, sourceMirror }) => {
+      const command = mcp('tools/call', { name: 'run_command', arguments: { command: '/bin/echo', args: [] } });
+      await entered;
+      const write = callbacks.onRequest('fs/write_text_file', { sessionId: 'fixture-s1', path: join(sourceMirror, 'must-not-exist'), content: 'x' });
+      const rejected = assert.rejects(write);
+      await new Promise(resolve => setImmediate(resolve)); control.abort();
+      await Promise.all([command, rejected]); return { stopReason: 'end_turn' };
+    });
+    deps.runProcess = async ({ signal }) => { started(); await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true })); throw new Error('Cancelled'); };
+    const result = await runNativeDevin(ctx.defaults, deps);
+    assert.equal(result.ok, false);
+    await assert.rejects(readFile(join(ctx.state().sourceMirror, 'must-not-exist')), { code: 'ENOENT' });
+  }));
 
 test('SWE sees the actual budget and a live warning, then returns a valid partial completion without another prompt',
   { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
@@ -110,7 +201,7 @@ test('post-dispatch process errors remain fatal, redacted and unreplayed',
     deps.runProcess = async () => { executed++; throw new Error('private-process-error'); };
     const result = await runNativeDevin(ctx.defaults, deps);
     assert.equal(result.ok, false); assert.equal(executed, 1); assert.equal(result.uncertain, true);
-    assert.deepEqual(result.diagnostic.boundaryRefusal, { code: 'tool_execution_refused', tool: 'run_command' });
+    assert.deepEqual(result.diagnostic.boundaryRefusal, { code: 'host_operation_refused', tool: null });
     assert.doesNotMatch(JSON.stringify(result), /private-process-error/);
     const terminalName = (await readdir(ctx.receipts)).find(name => name.startsWith('devin-terminal-'));
     const terminal = JSON.parse(await readFile(join(ctx.receipts, terminalName), 'utf8'));
@@ -118,24 +209,25 @@ test('post-dispatch process errors remain fatal, redacted and unreplayed',
     assert.equal(await readFile(join(ctx.candidate, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>a-b;');
   }));
 
-test('native file requests overlapping a command remain fail-closed with an exact boundary label',
+test('native file requests wait for a command, then complete without concurrent effects',
   { skip: process.platform !== 'darwin' || process.arch !== 'arm64', timeout: 10000 }, () => fixture(async ctx => {
-    let started;
+    let started, release, readFinished = false;
     const entered = new Promise(resolve => { started = resolve; });
-    const deps = ctx.dependencies(async ({ mcp, callbacks, sourceMirror }) => {
+    const waiting = new Promise(resolve => { release = resolve; });
+    const deps = ctx.dependencies(async ({ mcp, callbacks, sourceMirror, update }) => {
       const first = mcp('tools/call', { name: 'run_command', arguments: { command: '/bin/echo', args: [] } });
       await entered;
-      await assert.rejects(callbacks.onRequest('fs/read_text_file', { sessionId: 'fixture-s1', path: join(sourceMirror, 'calc.mjs') }));
+      const read = callbacks.onRequest('fs/read_text_file', { sessionId: 'fixture-s1', path: join(sourceMirror, 'calc.mjs') }).then(value => { readFinished = true; return value; });
+      await new Promise(resolve => setImmediate(resolve)); assert.equal(readFinished, false);
+      release();
       await first;
+      assert.equal((await read).content, 'export const add=(a,b)=>a-b;');
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '{"done":true,"summary":"Checked","decision":null}' } });
       return { stopReason: 'end_turn' };
     });
-    deps.runProcess = async ({ signal }) => {
-      started(); await new Promise(resolve => { signal.addEventListener('abort', resolve, { once: true }); });
-      throw new Error('cancelled-private-command');
-    };
+    deps.runProcess = async () => { started(); await waiting; return { code: 0, stdout: '' }; };
     const result = await runNativeDevin(ctx.defaults, deps);
-    assert.equal(result.ok, false); assert.equal(result.uncertain, true);
-    assert.deepEqual(result.diagnostic.boundaryRefusal, { code: 'native_command_overlap', tool: null }, 'first refusal survives later command cancellation');
+    assert.equal(result.ok, true, result.error); assert.equal(readFinished, true);
     assert.equal(await readFile(join(ctx.candidate, 'calc.mjs'), 'utf8'), 'export const add=(a,b)=>a-b;');
   }));
 
@@ -254,7 +346,7 @@ test('native edit permission and MCP commands use separate credential-free autho
       const permission = await callbacks.onRequest('session/request_permission', { sessionId: 'fixture-s1', toolCall: tool,
         options: [{ kind: 'allow_once', optionId: 'once' }, { kind: 'allow_always', optionId: 'always' }] });
       assert.equal(permission.outcome.optionId, 'once');
-      await writeFile(join(sourceMirror, 'calc.mjs'), 'export const add=(a,b)=>a+b;');
+      await callbacks.onRequest('fs/write_text_file', { sessionId: 'fixture-s1', path: join(sourceMirror, 'calc.mjs'), content: 'export const add=(a,b)=>a+b;' });
       update({ sessionUpdate: 'tool_call_update', toolCallId: 'edit', status: 'completed' });
       update({ sessionUpdate: 'tool_call', toolCallId: 'command', kind: 'execute', status: 'pending' });
       const script = `const f=require('node:fs'),a=require('node:assert/strict'),net=require('node:net');

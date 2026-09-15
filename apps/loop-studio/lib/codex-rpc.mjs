@@ -6,7 +6,10 @@ import { nativeChildPath } from './code-native-child.mjs';
 // command output or arbitrary server error bodies to the UI/checkpoint.
 export class CodexRpc {
   constructor({ command = 'codex', args, cwd, env, timeoutMs, onNotification = () => {}, onDiagnostic = () => {},
-    onRequest = null, protocol = 'codex' }) {
+    onRequest = null, protocol = 'codex', maxInboundRequests = null,
+    requestError = () => ({ code: -32000, message: 'Camus refused the bounded tool request.' }) }) {
+    if (maxInboundRequests !== null && (!Number.isSafeInteger(maxInboundRequests) || maxInboundRequests < 1 || maxInboundRequests > 1000))
+      throw new Error('Invalid native inbound request allowance.');
     this.nextId = 1; this.pending = new Map(); this.incoming = new Set(); this.failure = null;
     this.onNotification = onNotification; this.onRequest = onRequest; this.protocol = protocol;
     this.child = spawn(process.execPath, [nativeChildPath, JSON.stringify({ command, args, cwd, timeoutMs })], {
@@ -24,6 +27,7 @@ export class CodexRpc {
       if (bytes > 32 * 1024 * 1024 || Buffer.byteLength(buffer) > 16 * 1024 * 1024) return this.fail('Native output limit exceeded.');
       const lines = buffer.split('\n'); buffer = lines.pop();
       for (const line of lines) {
+        if (this.failure) break;
         if (!line.trim()) continue;
         let message;
         try { message = JSON.parse(line); } catch { this.fail('Invalid native protocol message.'); break; }
@@ -38,12 +42,30 @@ export class CodexRpc {
             this.fail('Native executor requested unsupported authority.'); break;
           }
           const key = `${typeof message.id}:${String(message.id)}`;
-          if (this.incoming.has(key)) { this.fail('Native executor reused a live request id.'); break; }
+          if (this.incoming.has(key)) {
+            this.fail(maxInboundRequests === null ? 'Native executor reused a live request id.' : 'Native executor reused a request id.'); break;
+          }
+          if (maxInboundRequests !== null && (message.jsonrpc !== '2.0' || !(Number.isSafeInteger(message.id)
+              || typeof message.id === 'string' && message.id.length <= 128)
+              || this.incoming.size >= maxInboundRequests)) {
+            this.fail('Native executor requested unsupported authority.'); break;
+          }
           this.incoming.add(key);
-          Promise.resolve().then(() => this.onRequest(message.method, message.params ?? {}))
+          Promise.resolve().then(() => {
+            if (this.failure) throw this.failure;
+            return this.onRequest(message.method, message.params ?? {});
+          })
             .then(result => this.send({ id: message.id, result: result ?? {} }))
-            .catch(() => this.send({ id: message.id, error: { code: -32000, message: 'Camus refused the bounded tool request.' } }))
-            .finally(() => this.incoming.delete(key));
+            .catch(error => {
+              let safe = { code: -32000, message: 'Camus refused the bounded tool request.' };
+              try {
+                const proposed = requestError(error);
+                if ([-32000, -32002].includes(proposed?.code) && typeof proposed.message === 'string'
+                    && proposed.message.length <= 1024) safe = { code: proposed.code, message: proposed.message };
+              } catch { /* Error projection cannot disrupt cleanup or expose the original error. */ }
+              this.send({ id: message.id, error: safe });
+            })
+            .finally(() => { if (maxInboundRequests === null) this.incoming.delete(key); });
           continue;
         }
         if (message.id !== undefined) {

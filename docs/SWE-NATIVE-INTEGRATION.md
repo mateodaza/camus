@@ -5,6 +5,17 @@ Owner: Camus maintainer. Updated September 14, 2026.
 
 ## Current checkpoint
 
+- **0.4.26 contained-native correction:** the post-0.4.25 host-only canary
+  failed on native `edit` with `permission_denied`, before writing or review.
+  The adapter now supports bounded native writes inside its disposable mirror,
+  with durable exact-output approvals and post-cleanup byte/inventory validation.
+  Real sandbox and shared-engine regressions cover native and delegated writes.
+  **The fresh contained-native canary passed in 99.237 seconds:** direct native
+  edit/create, readback, frozen verification and one Luna medium review; 13
+  actions, no retries/repairs and unchanged fixture source. This is bounded
+  compatibility evidence, not all-project qualification.
+  See the [contract validation gate](SWE-CONTRACT-VALIDATION.md).
+
 - **0.4.23 diagnostic hardening:** a subsequent cross-project 0.4.22 run stopped
   before edits or review after approximately 36 seconds and nine actions. Its
   adapter returned before saving the incomplete outcome. The trigger cannot be

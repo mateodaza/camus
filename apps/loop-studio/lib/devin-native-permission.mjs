@@ -19,7 +19,7 @@ export function mergeDevinPermissionTool(prior, update) {
   return { ...prior, ...Object.fromEntries(Object.entries(update).filter(([, value]) => value != null)), status: after };
 }
 
-export async function assessDevinFilePermission({ cwd, target, tool, maxInputBytes = 16384 }) {
+export async function assessDevinFilePermission({ cwd, target, tool, maxInputBytes = 16384, delegatedState }) {
   try {
     if (!isAbsolute(cwd) || !isAbsolute(target) || resolve(cwd) !== cwd || resolve(target) !== target
       || !target.startsWith(cwd + sep) || await realpath(cwd) !== cwd
@@ -44,6 +44,16 @@ export async function assessDevinFilePermission({ cwd, target, tool, maxInputByt
     if (tool.content !== undefined && (!Array.isArray(tool.content)
       || tool.content.some(item => !object(item) || item.type === 'diff' && !samePath(item.path))))
       return refuse('Conflicting diff locations');
+    // The production host-only workspace performs stronger path, source,
+    // link, ownership and create-collision checks without creating a placeholder.
+    // This state is supplied by the host, never read from the tool payload.
+    if (delegatedState !== undefined) {
+      if (!object(delegatedState) || delegatedState.target !== target
+          || !(delegatedState.sha256 === null || /^[a-f0-9]{64}$/.test(delegatedState.sha256)))
+        return refuse('Invalid delegated workspace evidence');
+      if (delegatedState.sha256 === null && name !== 'write') return refuse('Cannot edit a missing file');
+      return { allowed: true, reason: 'One-time checked delegated file operation' };
+    }
     const info = await lstat(target);
     if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || await realpath(target) !== target)
       return refuse('Target is not the fixed unlinked regular file');

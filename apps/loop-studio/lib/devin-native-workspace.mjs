@@ -9,15 +9,19 @@ import { renderDevinPreflightProfile } from './devin-native-preflight.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const within = (a, b) => b === a || b.startsWith(a + sep);
-const protectedPart = value => /^(?:\.git|\.env(?:\..*)?|\.npmrc|\.netrc|\.camus|\.claude|\.codex|\.qwen|\.grok|\.devin|\.ssh|\.aws|\.azure|node_modules)$/i.test(value);
+const protectedNames = /^(?:\.git|\.env(?:\..*)?|\.npmrc|\.netrc|\.camus|\.claude|\.codex|\.qwen|\.grok|\.devin|\.ssh|\.aws|\.azure|node_modules)$/i;
+const protectedPart = value => protectedNames.test(value);
+const protectedPartRegex = () => protectedNames.source.slice(1, -1).replace(/\(\?:/g, '(')
+  .replace(/[a-z]/gi, char => `[${char.toLowerCase()}${char.toUpperCase()}]`);
 // Constructed only by host checks BEFORE an effect. Never classify provider prose
 // or arbitrary filesystem/permission errors as recoverable.
 export class DevinToolFeedback extends Error {
   constructor(code) {
     super(code === 'invalid_command'
       ? 'Nothing executed. Supply exactly command (an absolute executable path using letters, digits, _, ., /, + or -) and args (at most 100 strings without NUL); total JSON at most 16384 bytes. Example: {"command":"/usr/bin/env","args":["pnpm","test"]}. Do not put a shell command line in command. The read-only, network-denied sandbox still applies.'
+      : code === 'native_write_pending' ? 'Wait for the approved native write to complete before another write or command.'
       : code === 'stale_file' ? 'Read the file again and use its current hash.' : 'Use list_files to choose a prepared file.');
-    if (!['stale_file', 'file_not_prepared', 'invalid_command'].includes(code)) throw new Error('Invalid Devin feedback.');
+    if (!['stale_file', 'file_not_prepared', 'invalid_command', 'native_write_pending'].includes(code)) throw new Error('Invalid Devin feedback.');
     this.code = code;
   }
 }
@@ -78,8 +82,9 @@ async function readBounded(root, name, maxBytes, absent = false) {
 }
 
 export async function createDevinWorkspace({ candidate, mirror, root, harness, files, deniedPaths = [],
-  maxFiles = 512, maxFileBytes = 1048576, maxTotalBytes = 8388608 }) {
-  if (!Number.isSafeInteger(maxFiles) || maxFiles < 1 || maxFiles > 4096
+  hostWritesOnly = false, containedNativeWrites = false, signal, maxFiles = 512, maxFileBytes = 1048576, maxTotalBytes = 8388608 }) {
+  if (typeof hostWritesOnly !== 'boolean' || typeof containedNativeWrites !== 'boolean' || hostWritesOnly && containedNativeWrites
+      || !Number.isSafeInteger(maxFiles) || maxFiles < 1 || maxFiles > 4096
       || !Number.isSafeInteger(maxFileBytes) || maxFileBytes < 1 || maxFileBytes > 4194304
       || !Number.isSafeInteger(maxTotalBytes) || maxTotalBytes < 1 || maxTotalBytes > 67108864
       || !Array.isArray(files) || !files.length || files.length > maxFiles || !Array.isArray(deniedPaths))
@@ -123,48 +128,173 @@ export async function createDevinWorkspace({ candidate, mirror, root, harness, f
   const manifest = snapshots.map(({ path, mode, beforeHash }) => Object.freeze({ path, mode, beforeHash }));
   const writable = snapshots.filter(item => item.mode !== 'read');
   const literals = paths => paths.map(path => `(literal ${JSON.stringify(path)})`).join(' ');
+  const rePath = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // SBPL #"..." regex literals preserve regex backslashes, unlike ordinary
+  // Scheme strings. Do not double them as JSON would for a plain string.
+  const sbRegex = value => '#' + JSON.stringify(value).replace(/\\\\/g, '\\');
+  const casePath = value => [...rePath(value)].map(char => /[a-z]/i.test(char) ? `[${char.toLowerCase()}${char.toUpperCase()}]` : char).join('');
+  const deniedPatterns = [...deniedPaths, ...snapshots.filter(item => item.mode === 'read').map(item => item.path)]
+    .map(path => `(regex ${sbRegex('^' + rePath(mirror) + '/' + casePath(path) + '(/|$)')})`).join(' ');
+  const protectedPattern = '^' + rePath(mirror) + '/(.*/)?' + protectedPartRegex() + '(/|$)';
   const profile = renderDevinPreflightProfile({ root, harness, candidate: mirror, candidateMetadata: true })
     + `\n(allow file-read-data ${literals([...dirs, ...snapshots.map(item => join(mirror, item.path))])})`
     + (writable.length ? `\n(allow file-write* ${literals(writable.map(item => join(mirror, item.path)))})` : '')
+    + (hostWritesOnly ? `\n(deny file-write* (subpath ${JSON.stringify(mirror)}))` : '')
+    + (containedNativeWrites ? `\n(allow file-read-data file-write* (subpath ${JSON.stringify(mirror)}))
+(deny file-write* (literal ${JSON.stringify(mirror)}) ${deniedPatterns})
+(deny file-read* file-write* (regex ${sbRegex(protectedPattern)}))
+(deny file-link)
+(deny file-write-create (require-all (subpath ${JSON.stringify(mirror)}) (require-not (require-any (vnode-type REGULAR-FILE) (vnode-type DIRECTORY)))))` : '')
     + `\n(deny file-read* file-write* (subpath ${JSON.stringify(candidate)}))`;
   let adopted = false;
-  const workspace = { profile, manifest: Object.freeze(manifest), manifestHash: hash(JSON.stringify(manifest)),
+  const readHashes = new Map();
+  const acceptedHashes = new Map(snapshots.map(item => [item.path, hash(item.bytes ?? Buffer.alloc(0))]));
+  const nativeWrites = [], nativeLatest = new Map();
+  const checkedName = value => {
+    const name = fileName(value), lower = name.toLowerCase();
+    if (denied.some(path => lower === path || lower.startsWith(path + '/'))) throw new Error('Devin path is denied.');
+    return name;
+  };
+  const register = name => {
+    const item = { path: name, mode: 'create', beforeHash: null, explicitCreation: true };
+    snapshots.push(item); paths.add(name.toLowerCase());
+    for (let path = dirname(join(mirror, name)); within(mirror, path); path = dirname(path)) {
+      dirs.add(path); if (path === mirror) break;
+    }
+    return item;
+  };
+  const workspace = { profile, containedNativeWrites, manifest: Object.freeze(manifest), manifestHash: hash(JSON.stringify(manifest)),
+    nativeWriteEvidence() { return { policy: containedNativeWrites ? 'contained-native/v1' : 'host-or-legacy',
+      writes: nativeWrites.map(item => ({ ...item })) }; },
+    async verifyNativeWrites({ allowPendingPath = null } = {}) {
+      if (!containedNativeWrites) return;
+      let totalBytes = 0;
+      for (const item of snapshots) {
+        const bytes = await readBounded(mirror, item.path, maxFileBytes, item.explicitCreation === true);
+        totalBytes += bytes?.length ?? 0;
+        const actual = bytes === null ? null : hash(bytes), expected = acceptedHashes.get(item.path);
+        if (actual !== expected) {
+          const pending = nativeLatest.get(item.path);
+          if (pending && actual === pending.beforeHash) {
+            if (allowPendingPath === item.path) continue;
+            throw new DevinToolFeedback('native_write_pending');
+          }
+          throw new Error('Staged content does not match an approved write.');
+        }
+      }
+      if (totalBytes > maxTotalBytes) throw new Error('Staged byte envelope exceeded.');
+    },
+    async authorizeNativeWrite(tool, state) {
+      if (!containedNativeWrites) return;
+      if (signal?.aborted) throw new Error('Native write cancelled before permission.');
+      await workspace.verifyNativeWrites();
+      const name = checkedName(tool.rawInput.file_path.slice(mirror.length + 1));
+      const current = await workspace.writeState(name);
+      if (state.target !== current.target || state.sha256 !== current.sha256) throw new Error('Native write base changed.');
+      const input = tool.rawInput, kind = tool._meta['cognition.ai/inferenceToolName'];
+      let content = input.content;
+      if (kind === 'edit') {
+        const before = (await workspace.readText(name)).content;
+        const parts = before.split(input.old_string);
+        if (parts.length === 1 || !input.replace_all && parts.length !== 2) throw new DevinToolFeedback('stale_file');
+        content = parts.join(input.new_string);
+      }
+      if (typeof content !== 'string' || Buffer.byteLength(content) > maxFileBytes) throw new Error('Native write exceeds file envelope.');
+      let projected = Buffer.byteLength(content);
+      for (const item of snapshots) if (item.path !== name) projected += (await readBounded(mirror, item.path, maxFileBytes)).length;
+      if (projected > maxTotalBytes) throw new Error('Native write exceeds total envelope.');
+      if (!snapshots.some(item => item.path === name)) register(name);
+      const receipt = { toolCallId: tool.toolCallId, path: name, beforeHash: current.sha256, afterHash: hash(Buffer.from(content)) };
+      nativeWrites.push(receipt); nativeLatest.set(name, receipt); acceptedHashes.set(name, receipt.afterHash);
+      readHashes.set(name, current.sha256);
+      return Object.freeze({ ...receipt });
+    },
+    hostPath(value) {
+      if (typeof value !== 'string' || resolve(value) !== value || !value.startsWith(mirror + sep))
+        throw new Error('Devin delegated path is outside staging.');
+      return checkedName(value.slice(mirror.length + 1));
+    },
+    async writeState(value) {
+      const name = checkedName(value), lower = name.toLowerCase(), item = snapshots.find(item => item.path === name);
+      if (adopted || item?.mode === 'read') throw new Error('Devin write is not authorized.');
+      if (!item && (snapshots.length >= maxFiles
+          || [...paths].some(path => lower === path || lower.startsWith(path + '/') || path.startsWith(lower + '/'))
+          || await readBounded(candidate, name, maxFileBytes, true) !== null))
+        throw new Error('Devin creation is not an unused permitted path.');
+      const bytes = await readBounded(mirror, name, maxFileBytes, !item || containedNativeWrites && item.explicitCreation === true);
+      if (!item && bytes !== null) throw new Error('Untracked staged file refused.');
+      return { target: join(mirror, name), sha256: bytes === null ? null : hash(bytes) };
+    },
+    async writeDelegated({ path, content }) {
+      if (!hostWritesOnly && !containedNativeWrites) throw new Error('Delegated writes require a checked write policy.');
+      const name = checkedName(path), state = await workspace.writeState(name);
+      const item = snapshots.find(item => item.path === name);
+      // ACP has no expected-hash field. Bind to the last checked read, or the
+      // original snapshot for a first write. Never silently refresh a stale base.
+      const initialHash = item?.mode === 'create' && !item.explicitCreation ? hash(Buffer.alloc(0)) : item?.beforeHash ?? null;
+      const expectedSha256 = readHashes.has(name) ? readHashes.get(name) : initialHash;
+      if (expectedSha256 !== state.sha256) throw new DevinToolFeedback('stale_file');
+      return workspace.writeText({ path: name, content, expectedSha256 });
+    },
+    rememberWriteBase(path, sha256) {
+      if (adopted || (sha256 !== null && (typeof sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(sha256))))
+        throw new Error('Invalid delegated write base.');
+      readHashes.set(checkedName(path), sha256);
+    },
     listFiles() { return snapshots.map(item => ({ path: item.path, writable: item.mode !== 'read' })); },
     async readText(value) {
       const name = fileName(value), item = snapshots.find(item => item.path === name);
       if (denied.some(path => name.toLowerCase() === path || name.toLowerCase().startsWith(path + '/')))
         throw new Error('Devin read path is denied.');
       if (!item) throw new DevinToolFeedback('file_not_prepared');
-      const bytes = await readBounded(mirror, name, maxFileBytes);
+      const bytes = await readBounded(mirror, name, maxFileBytes, containedNativeWrites && item.explicitCreation === true);
+      if (bytes === null) throw new DevinToolFeedback('file_not_prepared');
+      if (containedNativeWrites && hash(bytes) !== acceptedHashes.get(name)
+          && hash(bytes) !== nativeLatest.get(name)?.beforeHash) throw new Error('Unapproved staged read.');
       const text = bytes.toString('utf8');
       if (!Buffer.from(text).equals(bytes)) throw new Error('Devin text tools refuse non-UTF-8 files.');
+      readHashes.set(name, hash(bytes));
       return { content: text, sha256: hash(bytes) };
     },
     async writeText({ path, content, expectedSha256 }) {
       const name = fileName(path), lower = name.toLowerCase();
       if (adopted || typeof content !== 'string' || Buffer.byteLength(content) > maxFileBytes)
         throw new Error('Invalid Devin text write.');
+      await workspace.writeState(name);
+      if (containedNativeWrites) {
+        await workspace.verifyNativeWrites({ allowPendingPath: name });
+        const grant = nativeLatest.get(name), state = await workspace.writeState(name);
+        if (grant && state.sha256 !== acceptedHashes.get(name) && hash(Buffer.from(content)) !== grant.afterHash)
+          throw new Error('Delegated write conflicts with the approved native operation.');
+      }
+      // Both transport paths share the byte envelope before performing effects.
+      let projectedBytes = Buffer.byteLength(content);
+      for (const existing of snapshots) if (existing.path !== name)
+        projectedBytes += (await readBounded(mirror, existing.path, maxFileBytes)).length;
+      if (projectedBytes > maxTotalBytes) throw new Error('Staged byte envelope exceeded.');
+      if (signal?.aborted) throw new Error('Devin write cancelled before effects.');
       let item = snapshots.find(item => item.path === name);
-      if (!item) {
-        if (expectedSha256 !== null || snapshots.length >= maxFiles
+      if (!item || containedNativeWrites && item.explicitCreation === true && await readBounded(mirror, name, maxFileBytes, true) === null) {
+        if (expectedSha256 !== null || !item && (snapshots.length >= maxFiles
             || denied.some(path => lower === path || lower.startsWith(path + '/'))
             || [...paths].some(path => lower === path || lower.startsWith(path + '/') || path.startsWith(lower + '/'))
-            || await readBounded(candidate, name, maxFileBytes, true) !== null)
+            || await readBounded(candidate, name, maxFileBytes, true) !== null))
           throw new Error('Devin creation is not an unused permitted path.');
         await mkdir(dirname(join(mirror, name)), { recursive: true, mode: 0o700 });
         if (await realpath(dirname(join(mirror, name))) !== dirname(join(mirror, name))) throw new Error('Linked staged parent refused.');
+        if (signal?.aborted) throw new Error('Devin write cancelled before effects.');
         await writeFile(join(mirror, name), content, { flag: 'wx', mode: 0o600 });
-        item = { path: name, mode: 'create', beforeHash: null, explicitCreation: true };
-        snapshots.push(item); paths.add(lower);
-        for (let path = dirname(join(mirror, name)); within(mirror, path); path = dirname(path)) {
-          dirs.add(path); if (path === mirror) break;
-        }
+        item ??= register(name);
       } else {
         const before = await readBounded(mirror, name, maxFileBytes);
         if (item.mode === 'read') throw new Error('Devin write is read-only.');
         if (hash(before) !== expectedSha256) throw new DevinToolFeedback('stale_file');
+        if (signal?.aborted) throw new Error('Devin write cancelled before effects.');
         await writeFile(join(mirror, name), content);
+        if (item.mode === 'create') item.explicitCreation = true;
       }
+      readHashes.delete(name);
+      if (containedNativeWrites) acceptedHashes.set(name, hash(Buffer.from(content)));
       return { sha256: hash(Buffer.from(content)) };
     },
     mapPath(value, { writable = false } = {}) {
@@ -175,6 +305,7 @@ export async function createDevinWorkspace({ candidate, mirror, root, harness, f
     },
     async inspect({ writersStopped = false } = {}) {
       if (writersStopped !== true) throw new Error('Stop all staging writers before inspection.');
+      await workspace.verifyNativeWrites();
       // Read every staged entry, rejecting extra entries before returning changes.
       const expected = new Set(snapshots.map(item => join(mirror, item.path)));
       const walk = async path => {

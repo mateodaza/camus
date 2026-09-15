@@ -14,6 +14,32 @@ async function peer(t, source, onNotification) {
   t.after(() => rpc.close()); return rpc;
 }
 
+test('SWE bounded reverse RPC consumes completed IDs and stops before duplicate effects', async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'camus-rpc-replay-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const source = `const rl=require('readline').createInterface({input:process.stdin});
+const send=m=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',...m})+'\\n');
+rl.on('line',line=>{const m=JSON.parse(line);if(m.method==='fixture'||m.id==='write')send({id:'write',method:'fs/write_text_file',params:{}});});`;
+  let effects = 0;
+  const rpc = new CodexRpc({ command: process.execPath, args: ['-e', source], cwd, env: { PATH: process.env.PATH }, timeoutMs: 5000,
+    protocol: 'jsonrpc2', maxInboundRequests: 3, onRequest: async () => { effects++; return {}; } });
+  t.after(() => rpc.close());
+  await assert.rejects(rpc.request('fixture'), /reused/);
+  assert.equal(effects, 1);
+});
+
+test('SWE inbound allowance bounds queued frames before handlers run and masks unknown errors', async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'camus-rpc-bound-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const source = `process.stdin.once('data',()=>{for(let id=10;id<15;id++)process.stdout.write(JSON.stringify({jsonrpc:'2.0',id,method:'fs/write_text_file',params:{}})+'\\n');});`;
+  let effects = 0;
+  const rpc = new CodexRpc({ command: process.execPath, args: ['-e', source], cwd, env: { PATH: process.env.PATH }, timeoutMs: 5000,
+    protocol: 'jsonrpc2', maxInboundRequests: 2, onRequest: async () => { effects++; throw new Error('synthetic-secret'); } });
+  t.after(() => rpc.close());
+  await assert.rejects(rpc.request('fixture'), error => /unsupported authority/.test(error.message) && !/synthetic-secret/.test(error.message));
+  assert(effects <= 2); assert(rpc.incoming.size <= 2);
+});
+
 test('RPC preserves split UTF-8 and JSON frames', async t => {
   const rpc = await peer(t, `process.stdin.once('data', data => { const req=JSON.parse(data);const bytes=Buffer.from(JSON.stringify({id:req.id,result:'café'})+'\\n');const split=bytes.indexOf(0xc3)+1;process.stdout.write(bytes.subarray(0,split));setTimeout(()=>process.stdout.write(bytes.subarray(split)),10); });`);
   assert.equal(await rpc.request('fixture'), 'café');

@@ -2,6 +2,8 @@
 // grant filesystem authority, admit a seat, or satisfy Build's billing ledger.
 // The adapter supplies an isolated RPC factory and separately bounded host tools.
 import { createDevinProtocolObserver, validateDevinSession, DEVIN_NATIVE_MODEL, devinRpcFailure } from './devin-native-protocol.mjs';
+import { DEVIN_CLIENT_CAPABILITIES } from './devin-native-files.mjs';
+import { DevinToolFeedback } from './devin-native-workspace.mjs';
 
 export function devinObservedContract(value) {
   const keys = ['version', 'maxPrompts', 'maxObservedTools', 'maxWallMs', 'billingUncertaintyAccepted'];
@@ -66,12 +68,15 @@ export async function runDevinProtocolTurn({ prompt, cwd, contract: inputContrac
         const pending = Promise.resolve().then(() => onToolRequest(method, params, { signal: control.signal }));
         active.add(pending);
         try { return await pending; }
-        catch { stop('tool_boundary_refused'); throw new Error('Devin host authority refused.'); }
+        catch (error) {
+          if (error instanceof DevinToolFeedback) throw error; // proven no-effect conflict, never provider prose
+          stop('tool_boundary_refused'); throw new Error('Devin host authority refused.');
+        }
         finally { active.delete(pending); }
       },
     });
     const initialized = await rpc.request('initialize', { protocolVersion: 1,
-      clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: false },
+      clientCapabilities: DEVIN_CLIENT_CAPABILITIES,
       clientInfo: { name: 'camus_devin', version: '1' } }, Math.min(25000, remaining()));
     if (initialized?.protocolVersion !== 1 || !initialized.authMethods?.some(item => item.id === 'devin-browser'))
       throw new Error('Unsupported ACP authentication.');
@@ -88,6 +93,7 @@ export async function runDevinProtocolTurn({ prompt, cwd, contract: inputContrac
     protocolStage = 'prompt';
     const result = await rpc.request('session/prompt', { sessionId: session.sessionId,
       prompt: [{ type: 'text', text: prompt }] }, remaining());
+    if (active.size) stop('tool_boundary_refused');
     if (stopped) throw new Error('Stopped prompt.');
     protocolStage = 'completion';
     observation = observer.finish(result);
@@ -97,10 +103,20 @@ export async function runDevinProtocolTurn({ prompt, cwd, contract: inputContrac
   }
   finally {
     clearTimeout(timer); signal?.removeEventListener('abort', abort); control.abort();
+    // Snapshot/drain host work immediately. Waiting for native process exit
+    // first could hide a command that was still running at the terminal reply.
+    const toolsCleanup = (async () => {
+      try {
+        const closedTools = await closeTools();
+        if (closedTools?.unfinishedAtTerminal === true) stop('tool_boundary_refused');
+        await Promise.allSettled([...active]);
+        return true;
+      } catch { return false; }
+    })();
     try { await rpc?.close(); closeConfirmed = true; } catch { closeConfirmed = false; }
     // Never inspect/adopt while a verifier or delegated file request still runs.
     // Host tools must honor cancellation and their own deadlines.
-    try { await closeTools(); await Promise.allSettled([...active]); toolsClosed = true; } catch { toolsClosed = false; }
+    toolsClosed = await toolsCleanup;
   }
   const cleanupConfirmed = closeConfirmed && toolsClosed;
   const completed = !stopped && cleanupConfirmed && observation?.endTurn === true && observation.toolsComplete;

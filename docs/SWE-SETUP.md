@@ -5,6 +5,12 @@ SWE-2 High is an optional coding maker in Camus CLI and Loop Studio starting in
 become a reviewer, or grant an automatic merge or an admitted proof gate.
 Flexible Build retains its public-alpha, advisory standing.
 
+**0.4.26 compatibility fix:** native write/permission failures in 0.4.25
+are addressed with a contained native-write policy. Its fresh native
+edit/create canary passed verification and independent Luna review in 99 seconds.
+Install 0.4.26 or newer; 0.4.25 does not include this fix. See the
+[native contract gate](SWE-CONTRACT-VALIDATION.md) for evidence and scope limits.
+
 ## Before you start
 
 - macOS Apple Silicon, with Devin CLI `3000.10.21 (611c1cba)` and an existing
@@ -22,7 +28,7 @@ to guarantee zero charges; check the terms and usage in your Devin account.
 ## CLI
 
 ```sh
-npm install -g camus-cli@0.4.25
+npm install -g camus-cli@0.4.26
 camus models
 camus build --repo /path/to/clean-repository \
   --task-file /path/to/task.txt --contract-file /path/to/acceptance.txt \
